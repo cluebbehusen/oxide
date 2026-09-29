@@ -1,5 +1,6 @@
 //! Spatially grouped observations and consequential uncertainty, never hidden tracks.
 
+use super::briefing::StartingFoundry;
 use super::difficulty::DifficultyTuning;
 use super::executive::{Army, ground_strength, strength_vs};
 use super::observation::{BuildingObs, Observation};
@@ -7,7 +8,7 @@ use crate::query_work::QueryPurpose;
 use chassis::Tick;
 use chassis::grid::TilePos;
 use oxide_sim::ids::{BuildingId, PlayerId, UnitId};
-use oxide_sim::stats::Domain;
+use oxide_sim::stats::{BuildingKind, Domain};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -155,6 +156,7 @@ impl Battlefield {
         armies: &[Army],
         tuning: DifficultyTuning,
         public_map: Option<&super::briefing::PublicMapBriefing>,
+        uncleared_starts: &[StartingFoundry],
     ) {
         if self.observed_at.is_some_and(|tick| tick >= obs.tick) {
             return;
@@ -294,6 +296,9 @@ impl Battlefield {
             }
         }
         for &tile in &obs.blips {
+            if blip_on_known_footprint(obs, uncleared_starts, tile) {
+                continue;
+            }
             if let Some(asset) = nearest_asset(&assets, tile) {
                 questions.push(BattlefieldQuestion {
                     asset: asset.id,
@@ -560,11 +565,33 @@ fn distance_to_building(tile: TilePos, building: &BuildingObs) -> i32 {
     tile.chebyshev(closest)
 }
 
+/// Whether a radar blip sits on a footprint this seat already accounts for: a
+/// visible or remembered enemy building, or a public hostile start without
+/// negative evidence. Radar reports one footprint tile of each detected
+/// hostile building as an ordinary contact, so such a blip poses no new
+/// reconnaissance question.
+pub(crate) fn blip_on_known_footprint(
+    obs: &Observation,
+    uncleared_starts: &[StartingFoundry],
+    tile: TilePos,
+) -> bool {
+    let covers = |anchor: TilePos, (width, height): (i32, i32)| {
+        (anchor.x..anchor.x + width).contains(&tile.x)
+            && (anchor.y..anchor.y + height).contains(&tile.y)
+    };
+    obs.enemy_buildings
+        .iter()
+        .any(|building| covers(building.anchor, building.kind.base_stats().size))
+        || uncleared_starts
+            .iter()
+            .any(|start| covers(start.anchor, BuildingKind::Foundry.base_stats().size))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use oxide_sim::scenario::{BotDifficulty, Scenario};
-    use oxide_sim::stats::{BuildingKind, UnitKind};
+    use oxide_sim::stats::UnitKind;
 
     fn fixture() -> Observation {
         let state = Scenario::skirmish().build().unwrap();
@@ -601,11 +628,11 @@ mod tests {
             let id = provider.id;
             obs.my_units = vec![provider];
             let mut airborne = Battlefield::default();
-            airborne.observe(&obs, &[], tuning(), None);
+            airborne.observe(&obs, &[], tuning(), None, &[]);
             assert_eq!(airborne.assessment.uncovered[0].providers, vec![id]);
             obs.my_units[0].grounded = true;
             let mut parked = Battlefield::default();
-            parked.observe(&obs, &[], tuning(), None);
+            parked.observe(&obs, &[], tuning(), None, &[]);
             assert_eq!(parked.assessment.uncovered, airborne.assessment.uncovered);
         }
     }
@@ -663,7 +690,7 @@ mod tests {
                 let mut observed = obs.clone();
                 observed.enemy_buildings = vec![building];
                 let mut battlefield = Battlefield::default();
-                battlefield.observe(&observed, &[], tuning(), None);
+                battlefield.observe(&observed, &[], tuning(), None, &[]);
                 battlefield.review_approaches(&observed, &experience);
                 battlefield.assessment.questions
             };
@@ -689,11 +716,11 @@ mod tests {
     fn lost_motion_never_extrapolates_and_empty_last_tile_does_not_answer_region() {
         let mut obs = fixture();
         let mut battlefield = Battlefield::default();
-        battlefield.observe(&obs, &[], tuning(), None);
+        battlefield.observe(&obs, &[], tuning(), None, &[]);
         obs.tick = 12;
         obs.enemy_units[0].tile.x += 1;
         let last = obs.enemy_units[0].tile;
-        battlefield.observe(&obs, &[], tuning(), None);
+        battlefield.observe(&obs, &[], tuning(), None, &[]);
         obs.tick = 24;
         obs.enemy_units.clear();
         obs.visible.fill(false);
@@ -701,7 +728,7 @@ mod tests {
             let obs = &mut *obs;
             obs.visible[(last.y * obs.map_width + last.x) as usize] = true;
         }
-        battlefield.observe(&obs, &[], tuning(), None);
+        battlefield.observe(&obs, &[], tuning(), None, &[]);
         assert_eq!(battlefield.assessment.motion[0].3, last);
         assert_eq!(battlefield.assessment.motion[0].4, 12);
         assert!(battlefield.assessment.pressure.is_empty());
@@ -709,7 +736,7 @@ mod tests {
         assert_eq!(battlefield.assessment.questions[0].size, (9, 9));
         obs.tick = 36;
         obs.visible.fill(true);
-        battlefield.observe(&obs, &[], tuning(), None);
+        battlefield.observe(&obs, &[], tuning(), None, &[]);
         assert!(battlefield.assessment.questions.is_empty());
     }
 
@@ -723,19 +750,19 @@ mod tests {
         let next = expansion.anchor.offset(4, 0);
         obs.my_buildings.push(expansion);
         let mut battlefield = Battlefield::default();
-        battlefield.observe(&obs, &[], tuning(), None);
+        battlefield.observe(&obs, &[], tuning(), None, &[]);
         assert_eq!(battlefield.assessment.pressure[0].asset, first);
         obs.tick += tuning().cadence;
-        battlefield.observe(&obs, &[], tuning(), None);
+        battlefield.observe(&obs, &[], tuning(), None, &[]);
         assert_eq!(battlefield.assessment.pressure[0].evidence_at, 0);
         obs.tick += tuning().cadence;
         obs.enemy_units[0].tile = next;
-        battlefield.observe(&obs, &[], tuning(), None);
+        battlefield.observe(&obs, &[], tuning(), None, &[]);
         assert_eq!(battlefield.assessment.pressure[0].asset, BuildingId(900));
         assert_eq!(battlefield.assessment.pressure[0].evidence_at, obs.tick);
         let arrival = obs.tick;
         obs.tick += tuning().cadence;
-        battlefield.observe(&obs, &[], tuning(), None);
+        battlefield.observe(&obs, &[], tuning(), None, &[]);
         assert_eq!(battlefield.assessment.pressure[0].evidence_at, arrival);
     }
 
@@ -745,10 +772,45 @@ mod tests {
         obs.blips = vec![obs.enemy_units[0].tile];
         obs.enemy_units.clear();
         let mut battlefield = Battlefield::default();
-        battlefield.observe(&obs, &[], tuning(), None);
+        battlefield.observe(&obs, &[], tuning(), None, &[]);
         assert!(battlefield.assessment.concentrations.is_empty());
         assert!(battlefield.assessment.pressure.is_empty());
         assert!(battlefield.assessment.questions[0].anonymous);
+    }
+
+    #[test]
+    fn radar_on_a_known_footprint_asks_nothing() {
+        let mut obs = fixture();
+        obs.enemy_units.clear();
+        let foundry = obs.enemy_buildings[0].clone();
+        let start = StartingFoundry {
+            player: foundry.player,
+            anchor: foundry.anchor,
+        };
+        let on_footprint = foundry.anchor.offset(1, 1);
+        // An own building close enough for the contact to raise a question.
+        let mut outpost = obs.my_buildings[0].clone();
+        outpost.id = BuildingId(900);
+        outpost.anchor = foundry.anchor.offset(-6, 0);
+        obs.my_buildings.push(outpost);
+        obs.visible.fill(false);
+        obs.blips = vec![on_footprint];
+        let questions = |obs: &Observation, starts: &[StartingFoundry]| {
+            let mut battlefield = Battlefield::default();
+            battlefield.observe(obs, &[], tuning(), None, starts);
+            battlefield.assessment.questions
+        };
+        // A remembered building and an uncleared public start each explain
+        // the blip; with neither, it is an unknown contact.
+        assert!(questions(&obs, &[]).is_empty());
+        obs.enemy_buildings.clear();
+        assert!(questions(&obs, &[start]).is_empty());
+        let unknown = questions(&obs, &[]);
+        assert_eq!(unknown.len(), 1);
+        assert!(unknown[0].anonymous);
+        assert_eq!(unknown[0].anchor, on_footprint);
+        obs.blips = vec![foundry.anchor.offset(2, 0)];
+        assert_eq!(questions(&obs, &[start]).len(), 1);
     }
 
     #[test]
@@ -760,7 +822,7 @@ mod tests {
         asset.anchor.x += 5;
         obs.my_buildings.push(asset);
         let mut battlefield = Battlefield::default();
-        battlefield.observe(&obs, &[], tuning(), None);
+        battlefield.observe(&obs, &[], tuning(), None, &[]);
         assert_eq!(
             battlefield
                 .assessment
@@ -774,7 +836,7 @@ mod tests {
         obs.my_buildings.reverse();
         obs.enemy_units.reverse();
         let mut permuted = Battlefield::default();
-        permuted.observe(&obs, &[], tuning(), None);
+        permuted.observe(&obs, &[], tuning(), None, &[]);
         assert_eq!(expected, permuted.assessment);
     }
 
@@ -782,14 +844,14 @@ mod tests {
     fn repeated_observation_is_inert_and_memory_expires() {
         let mut obs = fixture();
         let mut battlefield = Battlefield::default();
-        battlefield.observe(&obs, &[], tuning(), None);
+        battlefield.observe(&obs, &[], tuning(), None, &[]);
         let expected = battlefield.clone();
-        battlefield.observe(&obs, &[], tuning(), None);
+        battlefield.observe(&obs, &[], tuning(), None, &[]);
         assert_eq!(battlefield, expected);
         obs.tick = tuning().tactical_memory + 1;
         obs.enemy_units.clear();
         obs.visible.fill(false);
-        battlefield.observe(&obs, &[], tuning(), None);
+        battlefield.observe(&obs, &[], tuning(), None, &[]);
         assert!(battlefield.tracks.is_empty());
         assert!(battlefield.assessment.questions.is_empty());
     }

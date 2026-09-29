@@ -677,7 +677,7 @@ mod tests {
         }
         let tuning = DifficultyTuning::for_level(BotDifficulty::Prime);
         let mut battlefield = crate::battlefield::Battlefield::default();
-        battlefield.observe(&obs, &armies, tuning, None);
+        battlefield.observe(&obs, &armies, tuning, None, &[]);
         let mission = MissionFixture {
             battlefield: battlefield.assessment().clone(),
             inputs: MissionRoster {

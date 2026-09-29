@@ -514,6 +514,7 @@ impl UtilityPolicy {
     fn recon_questions(&self, context: EconomicInvestmentContext<'_>) -> Vec<ReconQuestion> {
         let obs = context.obs;
         let map = context.briefing;
+        let uncleared_starts = self.uncleared_hostile_starts(map, obs.me);
         let mut questions = Vec::new();
         let mut add = |consumer, tile, size, confidence, value, urgency| {
             let key = ReconQuestionKey::new(consumer, tile);
@@ -532,7 +533,7 @@ impl UtilityPolicy {
                 urgency,
             });
         };
-        for start in self.uncleared_hostile_starts(map, obs.me) {
+        for start in &uncleared_starts {
             if obs
                 .enemy_buildings
                 .iter()
@@ -674,7 +675,9 @@ impl UtilityPolicy {
                 Urgency::Pressing,
             );
         }
-        for blip in &obs.blips {
+        for blip in obs.blips.iter().filter(|&&blip| {
+            !crate::battlefield::blip_on_known_footprint(obs, &uncleared_starts, blip)
+        }) {
             if let Some(asset) = obs
                 .my_buildings
                 .iter()
