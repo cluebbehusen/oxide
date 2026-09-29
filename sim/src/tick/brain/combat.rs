@@ -590,13 +590,13 @@ pub(super) fn turret_fire(
 }
 
 /// Firing positions for a chaser around an unstandable victim tile:
-/// ring-scanned outward (row-major within a ring — the deterministic
-/// snap every goal uses), keeping only tiles the chaser can stand on
+/// ring-scanned outward, keeping only tiles the chaser can stand on
 /// AND shoot from — a stand-in beyond the weapon's Euclidean reach is
 /// no stand-in at all (ring corners sit √2 further out than their
-/// Chebyshev radius suggests). Candidates come back in scan order; the
-/// caller takes the first it can actually route to. Empty when the
-/// victim sits deeper in blocked ground than any weapon reaches.
+/// Chebyshev radius suggests). Within a ring the scan is row-major, which a
+/// half-turn does not preserve, so a caller that picks one must rank them.
+/// Empty when the victim sits deeper in blocked ground than any weapon
+/// reaches.
 fn chase_stand_ins(
     state: &State,
     domain: Domain,
@@ -1695,10 +1695,20 @@ pub(super) fn attack(
                 let routed = if direct {
                     route_for(state, kind, tile, target_tile).map(|w| (target_tile, w))
                 } else {
-                    // Scan-order candidates, first one that routes wins:
-                    // an isolated pocket next to the victim must not
-                    // stall a chaser that could fire from the far side.
-                    chase_stand_ins(state, stats.domain, target_tile, weapon.range)
+                    // Nearest ring first, then ranked in the chaser's
+                    // approach frame so a mirrored chaser tries the mirrored
+                    // stand-in; the first that routes wins, so an isolated
+                    // pocket next to the victim must not stall a chaser that
+                    // could fire from the far side.
+                    let mut stand_ins =
+                        chase_stand_ins(state, stats.domain, target_tile, weapon.range);
+                    stand_ins.sort_by_key(|goal| {
+                        (
+                            goal.chebyshev(target_tile),
+                            crate::geometry::rect_approach_key(tile, target_tile, (1, 1), *goal),
+                        )
+                    });
+                    stand_ins
                         .into_iter()
                         .find_map(|goal| route_for(state, kind, tile, goal).map(|w| (goal, w)))
                 };
