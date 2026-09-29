@@ -8,7 +8,7 @@ use crate::income::Income;
 use crate::investments::{self, Situation, Step};
 use crate::map::MapModel;
 use crate::memory::Memory;
-use crate::missions::{Lost, Missions};
+use crate::missions::Missions;
 use crate::placement;
 use crate::profile::ResolvedProfile;
 use crate::saving::Saving;
@@ -283,12 +283,9 @@ pub(crate) fn decide(
                 .map(|(step, price)| NextPurchase { step, price }),
         });
 
-    for lost in persistent.missions.prune(observation) {
-        match lost {
-            Lost::Mission(kind, anchor) => persistent.memory.abandon(kind, anchor, tick),
-            Lost::Raid(kind, anchor) => persistent.memory.raid(kind, anchor, tick),
-        }
-    }
+    persistent
+        .missions
+        .prune(observation, &mut persistent.memory);
     let short = persistent
         .missions
         .defend(observation, map, frame, &mut ledger);

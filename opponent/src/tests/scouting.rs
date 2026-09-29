@@ -340,3 +340,105 @@ fn the_mission_cap_holds_back_a_scout() {
     assert!(scouts(&missions).is_empty());
     assert!(Opponent::restore(&opponent.checkpoint(), &scenario, &state, map(&scenario)).is_ok());
 }
+
+/// The field with two West Kestrels and East Flakhounds across the middle,
+/// out of sight of the East start.
+fn flak_crossing() -> Scenario {
+    let mut scenario = field();
+    scenario.units.push(unit(0, UnitKind::Kestrel, 6, 9));
+    scenario.units.push(unit(0, UnitKind::Kestrel, 6, 13));
+    for y in 9..=13 {
+        scenario.units.push(unit(1, UnitKind::Flakhound, 24, y));
+    }
+    scenario
+}
+
+#[test]
+fn a_scout_lost_on_the_way_waits_out_its_point_before_another_goes() {
+    let scenario = flak_crossing();
+    let mut state = scenario.build().unwrap();
+    let kestrels = [at(&state, 6, 9), at(&state, 6, 13)];
+    advance_to(&mut state, STALE, &[]);
+    let mut opponent = seat(&scenario, 0);
+    let alive = |state: &State, id: UnitId| state.units().iter().any(|unit| unit.id == id);
+    let mut sent = Vec::new();
+    while kestrels.iter().all(|id| alive(&state, *id)) {
+        assert!(
+            state.current_tick() < STALE + 1_200,
+            "premise: the scout is shot down"
+        );
+        let commands = opponent.act(&state, &mut OwnEvents::default());
+        sent.extend(runs(&commands).into_iter().flat_map(|(units, _)| units));
+        state.tick(&commands);
+    }
+    let lost = state.current_tick();
+    let survivor = *kestrels.iter().find(|id| alive(&state, **id)).unwrap();
+    assert!(!sent.contains(&survivor), "premise: one scout went");
+
+    while state.current_tick() < lost + STALE - 24 {
+        let (commands, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
+        assert!(
+            runs(&commands)
+                .iter()
+                .all(|(units, _)| !units.contains(&survivor)),
+            "tick {}: the other scout is sent after it",
+            state.current_tick()
+        );
+        assert!(trace.is_none_or(|trace| scouts(&trace.missions).is_empty()));
+        state.tick(&commands);
+    }
+}
+
+#[test]
+fn an_air_scout_flies_around_remembered_anti_air() {
+    let scenario = flak_crossing();
+    let mut state = scenario.build().unwrap();
+    advance_to(&mut state, STALE, &[]);
+    let staged = |remember: bool| {
+        let mut json = serde_json::to_value(seat(&scenario, 0).checkpoint()).unwrap();
+        if remember {
+            json["memory"]["units"] = (9..=13)
+                .map(|y| {
+                    serde_json::json!({
+                        "id": at(&state, 24, y).0,
+                        "kind": "flakhound",
+                        "tile": {"x": 24, "y": y},
+                        "seen": STALE,
+                    })
+                })
+                .collect();
+        }
+        let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
+        let mut opponent =
+            Opponent::restore(&checkpoint, &scenario, &state, map(&scenario)).unwrap();
+        let (commands, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
+        let [mission] = scouts(&trace.unwrap().missions)[..] else {
+            panic!("one scout");
+        };
+        (commands, mission.goal)
+    };
+
+    let (commands, goal) = staged(false);
+    let [(ref scout, straight)] = runs(&commands)[..] else {
+        panic!("premise: one order straight there: {commands:?}");
+    };
+    assert_eq!(straight, goal);
+    let kestrel = scout[0];
+
+    let (commands, goal) = staged(true);
+    let sent: Vec<(TilePos, bool)> = commands
+        .iter()
+        .filter_map(|command| match &command.command {
+            Command::Run { units, goal, queue } if *units == [kestrel] => Some((*goal, *queue)),
+            _ => None,
+        })
+        .collect();
+    let [(via, false), (last, true)] = sent[..] else {
+        panic!("{sent:?}");
+    };
+    assert_eq!(last, goal);
+    assert!(
+        (via.y - 11).abs() > 7,
+        "the detour passes the Flakhounds out of reach: {via:?}"
+    );
+}

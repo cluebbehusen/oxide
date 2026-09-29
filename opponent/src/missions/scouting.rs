@@ -2,6 +2,7 @@
 //! has not seen for a while, hostile starts first. With no scout it asks
 //! production for one.
 
+use super::air::{self, Hazard};
 use super::{MISSION_CAP, Mission, Missions, Task, approach, mine, run};
 use crate::decision::Ledger;
 use crate::frame::{HomeFrame, doubled};
@@ -10,7 +11,7 @@ use crate::memory::Memory;
 use chassis::grid::TilePos;
 use oxide_sim::observation::{ObservationData, UnitObs};
 use oxide_sim::stats::{Domain, Role};
-use oxide_sim::{BuildingKind, PlayerId, UnitKind};
+use oxide_sim::{BuildingKind, Command, PlayerId, UnitKind};
 
 /// Ticks a point may go unseen before it is worth a look.
 const STALE_TICKS: u64 = 1_800;
@@ -67,6 +68,7 @@ impl Missions {
     ) -> bool {
         let now = observation.tick;
         let points = points(map, observation.me);
+        let hazards = air::hazards(observation, memory, Domain::Air);
         let scouted = memory.scouted(points.len());
         for (point, seen) in points.iter().zip(scouted.iter_mut()) {
             let (width, height) = BuildingKind::Foundry.base_stats().size;
@@ -98,7 +100,7 @@ impl Missions {
             };
             match best(observation, map, frame, &points, scouted, scout) {
                 Some((next, goal)) => {
-                    if ledger.order(run(vec![scout.id], goal)) {
+                    if send(observation, frame, &hazards, scout, goal, ledger) {
                         let mission = &mut self.list[index];
                         mission.task = Task::Scout { point: next };
                         mission.since = now;
@@ -139,7 +141,7 @@ impl Missions {
             best(observation, map, frame, &points, scouted, scout).map(|best| (scout, best))
         });
         if let Some((scout, (point, goal))) = chosen {
-            if ledger.order(run(vec![scout.id], goal)) {
+            if send(observation, frame, &hazards, scout, goal, ledger) {
                 self.list.push(Mission {
                     id: self.next,
                     since: now,
@@ -153,6 +155,34 @@ impl Missions {
         }
         true
     }
+}
+
+/// Sends `scout` to `goal`, an aircraft around known anti-air when the
+/// straight line crosses it. Returns whether the orders fit this decision.
+fn send(
+    observation: &ObservationData,
+    frame: HomeFrame,
+    hazards: &[Hazard],
+    scout: &UnitObs,
+    goal: TilePos,
+    ledger: &mut Ledger,
+) -> bool {
+    let flies = scout.kind.stats().domain == Domain::Air;
+    let Some(via) = flies
+        .then(|| air::route(observation, frame, hazards, scout.tile, goal))
+        .flatten()
+    else {
+        return ledger.order(run(vec![scout.id], goal));
+    };
+    if ledger.room() < 2 {
+        return false;
+    }
+    ledger.order(run(vec![scout.id], via));
+    ledger.order(Command::Run {
+        units: vec![scout.id],
+        goal,
+        queue: true,
+    })
 }
 
 /// The stale point `scout` should look at next and where to send it, with
