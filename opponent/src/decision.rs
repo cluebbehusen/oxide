@@ -240,10 +240,12 @@ pub(crate) fn decide(
         air_strikes,
     );
     // A lift carries at least the stance's minimum army, so until the seat has
-    // one it neither pulls toward an Airworks nor holds production for
-    // carriers: an army and home defense come first.
-    let exposed = army(observation) < crate::missions::minimum(profile.stance);
-    let lift = !exposed && crate::missions::lift_needed(observation, map, frame);
+    // that much a lift could take it neither pulls toward an Airworks nor holds
+    // production for carriers: an army and home defense come first.
+    let minimum = crate::missions::minimum(profile.stance);
+    let exposed = army(observation) < minimum;
+    let carryable = crate::missions::payload(observation, map).0 >= minimum;
+    let lift = carryable && crate::missions::lift_needed(observation, map, frame);
     let mut pull = needs.pull(observation);
     if lift {
         pull.push((BuildingKind::Airworks, LIFT_PULL));

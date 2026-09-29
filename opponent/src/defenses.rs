@@ -189,6 +189,7 @@ impl<'a> Guard<'a> {
         let sight: Vec<((i64, i64), i64)> = observation
             .my_buildings
             .iter()
+            .chain(&observation.ally_buildings)
             .filter(|building| building.built)
             .map(|building| {
                 let vision = i64::from(building.kind.tier_stats(building.tier).vision) * 2;
@@ -200,8 +201,15 @@ impl<'a> Guard<'a> {
             .collect();
         let mut assets = assets(observation, frame);
         for asset in &mut assets {
-            asset.ground = approach(observation, map, memory, asset, Domain::Ground, exposed);
-            asset.air = approach(observation, map, memory, asset, Domain::Air, exposed);
+            let known = Known {
+                observation,
+                map,
+                memory,
+                frame,
+                exposed,
+            };
+            asset.ground = approach(&known, asset, Domain::Ground);
+            asset.air = approach(&known, asset, Domain::Air);
             for (domain, approach) in [
                 (Domain::Ground, asset.ground.as_mut()),
                 (Domain::Air, asset.air.as_mut()),
@@ -277,8 +285,8 @@ impl<'a> Guard<'a> {
 
     /// What a defense of `kind` at `anchor` adds to `asset`'s approach: two
     /// for each sample nothing covers yet, one for each only one weapon
-    /// covers. A Bastion counts only samples its owner sees, since it fires
-    /// no further than something spots for it.
+    /// covers. A Bastion counts only samples its owner's or an ally's
+    /// buildings see, since it fires no further than something spots for it.
     fn gain(&self, asset: &Asset, kind: BuildingKind, anchor: TilePos, reach: Cover) -> u64 {
         let cover = Cover {
             centre: footprint_centre(kind, anchor),
@@ -308,11 +316,20 @@ impl<'a> Guard<'a> {
     /// only a guess from public facts. Sites are tried best first, so few
     /// placement checks run.
     fn best(&self, kind: BuildingKind) -> Option<(TilePos, u64)> {
+        self.best_where(kind, |_| true)
+    }
+
+    /// The best site for `kind` guarding one of the assets `guarded` allows.
+    fn best_where(
+        &self,
+        kind: BuildingKind,
+        guarded: impl Fn(&Asset) -> bool,
+    ) -> Option<(TilePos, u64)> {
         let size = kind.base_stats().size;
         let reach = Cover::of(kind.base_stats(), kind, TilePos::new(0, 0))?;
         let bastion = kind == BuildingKind::Bastion;
         let mut sites = Vec::new();
-        for asset in &self.assets {
+        for asset in self.assets.iter().filter(|asset| guarded(asset)) {
             let Some(approach) = asset.approach(domain(kind)) else {
                 continue;
             };
@@ -427,8 +444,9 @@ pub(crate) fn investments(
 }
 
 /// An upgrade for a built defense, worth the approach samples it covers by
-/// how sure the seat is of each threat, unless a threat is near enough to
-/// catch it down, or the next tier needs a building the seat has not built.
+/// how sure the seat is of each threat, unless an enemy in sight could hit it
+/// while it is down, from the defense's reach or its own, or the next tier
+/// needs a building the seat has not built.
 fn upgrade(guard: &Guard<'_>, building: &BuildingObs, weight: u64) -> Option<(Investment, u32)> {
     let observation = guard.observation;
     if !building.built {
@@ -450,13 +468,23 @@ fn upgrade(guard: &Guard<'_>, building: &BuildingObs, weight: u64) -> Option<(In
         .max()
         .unwrap_or(0);
     let threatened = observation.enemy_units.iter().any(|enemy| {
-        !enemy.kind.stats().weapons.is_empty()
-            && gap(
-                building.anchor,
-                building.kind.base_stats().size,
-                enemy.tile,
-                (1, 1),
-            ) < reach + UPGRADE_CLEARANCE
+        let Some(strike) = enemy
+            .kind
+            .stats()
+            .weapons
+            .iter()
+            .filter(|weapon| weapon.targets.ground)
+            .map(|weapon| weapon.range.ceil().to_num::<i32>())
+            .max()
+        else {
+            return false;
+        };
+        gap(
+            building.anchor,
+            building.kind.base_stats().size,
+            enemy.tile,
+            (1, 1),
+        ) < reach.max(strike) + UPGRADE_CLEARANCE
     });
     if !ready || threatened {
         return None;
@@ -490,10 +518,10 @@ fn upgrade(guard: &Guard<'_>, building: &BuildingObs, weight: u64) -> Option<(In
     })
 }
 
-/// Buys one defense now where visible attackers near a valuable building
-/// find its approach uncovered: a Turret against ground attackers, a Flak
-/// Turret against aircraft. Only one such defense stands unfinished at a
-/// time.
+/// Buys one defense now beside a valuable building whose approach visible
+/// attackers near it find uncovered: a Turret against ground attackers, a
+/// Flak Turret against aircraft. Only one such defense stands unfinished at
+/// a time.
 pub(crate) fn emergency(
     observation: &ObservationData,
     map: &MapModel,
@@ -515,7 +543,7 @@ pub(crate) fn emergency(
         if unfinished {
             continue;
         }
-        let pressed = guard.assets.iter().any(|asset| {
+        let pressed = |asset: &Asset| {
             asset.approach(domain).is_some_and(|approach| {
                 approach.evidence == Evidence::Current
                     && chebyshev(approach.source, asset.centre) <= 2 * EMERGENCY_TILES
@@ -524,8 +552,8 @@ pub(crate) fn emergency(
                         .iter()
                         .all(|point| guard.covered(domain, *point) == 0)
             })
-        });
-        if !pressed {
+        };
+        if !guard.assets.iter().any(pressed) {
             continue;
         }
         let price = kind
@@ -533,7 +561,7 @@ pub(crate) fn emergency(
             .construction
             .as_ref()
             .map_or(u32::MAX, |construction| construction.cost);
-        let Some((anchor, _)) = guard.best(kind) else {
+        let Some((anchor, _)) = guard.best_where(kind, pressed) else {
             continue;
         };
         let Ok(allowed) = placement::check(observation, kind, anchor, ledger.planned()) else {
@@ -599,6 +627,16 @@ fn assets(observation: &ObservationData, frame: HomeFrame) -> Vec<Asset> {
     assets
 }
 
+/// What one decision knows about where threats come from.
+struct Known<'a> {
+    observation: &'a ObservationData,
+    map: &'a MapModel,
+    memory: &'a Memory,
+    frame: HomeFrame,
+    /// Whether the seat has no army to speak of.
+    exposed: bool,
+}
+
 /// Where `asset` is attacked from in `domain`, and the samples along the
 /// way: the nearest visible enemy that fights in that domain, else the
 /// nearest remembered one, else for ground the nearest known enemy building
@@ -606,15 +644,16 @@ fn assets(observation: &ObservationData, frame: HomeFrame) -> Vec<Asset> {
 /// ground units count only on or beside the asset's ground: across a chasm,
 /// they arrive by air if at all, and land as a threat in sight. With no
 /// enemy building or start on the asset's ground, one across a chasm counts
-/// as a landing only while the seat is `exposed`, with no army to meet it.
-fn approach(
-    observation: &ObservationData,
-    map: &MapModel,
-    memory: &Memory,
-    asset: &Asset,
-    domain: Domain,
-    exposed: bool,
-) -> Option<Approach> {
+/// as a landing only while the seat is exposed, with no army to meet it. A
+/// threat too close for any sample on the way is its own sample.
+fn approach(known: &Known<'_>, asset: &Asset, domain: Domain) -> Option<Approach> {
+    let Known {
+        observation,
+        map,
+        memory,
+        frame,
+        exposed,
+    } = *known;
     let centre = asset.centre;
     let grounds: Vec<u32> = ring(asset.anchor, asset.size)
         .filter_map(|tile| map.component(tile))
@@ -631,7 +670,7 @@ fn approach(
             && (domain == Domain::Air || walkable(tile, (1, 1)))
     };
     let nearest = |points: &mut dyn Iterator<Item = (i64, i64)>| {
-        points.min_by_key(|point| (chebyshev(*point, centre), *point))
+        points.min_by_key(|point| (chebyshev(*point, centre), frame.rank(centre, *point)))
     };
     let current = nearest(
         &mut observation
@@ -693,12 +732,15 @@ fn approach(
         .or_else(prior)?;
     let (dx, dy) = (source.0 - centre.0, source.1 - centre.1);
     let length = dx.abs().max(dy.abs());
-    let samples = APPROACH
+    let mut samples: Vec<(i64, i64)> = APPROACH
         .iter()
         .map(|tiles| 2 * tiles)
         .filter(|step| *step < length)
         .map(|step| (centre.0 + dx * step / length, centre.1 + dy * step / length))
         .collect();
+    if samples.is_empty() {
+        samples.push(source);
+    }
     Some(Approach {
         samples,
         open: Vec::new(),
