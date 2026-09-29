@@ -4,7 +4,7 @@
 use crate::composition::{self, Needs};
 use crate::frame::{HomeFrame, footprint_centre, gap};
 use crate::income::Income;
-use crate::investments::{self, Investment, Situation, Step};
+use crate::investments::{self, Situation, Step};
 use crate::map::MapModel;
 use crate::memory::Memory;
 use crate::missions::Missions;
@@ -16,6 +16,7 @@ use crate::workers;
 use chassis::grid::TilePos;
 use oxide_sim::observation::{BuildingObs, ObservationData};
 use oxide_sim::scenario::{BotDifficulty, BotStance};
+use oxide_sim::stats::Role;
 use oxide_sim::{BuildingId, BuildingKind, Command, PlayerCommand, PlayerId, UnitId, UnitKind};
 
 /// What one decision emits.
@@ -212,8 +213,7 @@ pub(crate) fn decide(
     let air_strikes = observation
         .my_buildings
         .iter()
-        .any(|building| building.kind == BuildingKind::Airworks && building.built)
-        || persistent.saving.investment() == Some(Investment::Tech(BuildingKind::Airworks));
+        .any(|building| building.kind == BuildingKind::Airworks && building.built);
     let income = persistent.income.per_minute();
     let mut needs = composition::needs(
         observation,
@@ -273,14 +273,13 @@ pub(crate) fn decide(
     persistent
         .missions
         .focus(observation, frame, profile.difficulty, &mut ledger);
-    persistent.missions.scout(
-        observation,
-        map,
-        frame,
-        &mut persistent.memory,
-        &producers,
-        &mut ledger,
-    );
+    let scout =
+        persistent
+            .missions
+            .scout(observation, map, frame, &mut persistent.memory, &mut ledger);
+    if scout {
+        train_scout(observation, &producers, &mut ledger);
+    }
     produce(observation, &producers, &mut needs, &mut ledger);
 
     persistent.saving.keep_at_most(ledger.available());
@@ -341,7 +340,11 @@ fn buy(
                     .map(|allowed| (anchor, allowed))
             });
             let Some((anchor, allowed)) = site else {
-                scout(observation, map, frame, &anchors, kind, ledger);
+                // With nowhere left to look, protecting scrap for a building
+                // that cannot be placed would starve production.
+                if !scout(observation, map, frame, &anchors, kind, ledger) {
+                    ledger.protected = 0;
+                }
                 return;
             };
             let centre = footprint_centre(kind, anchor);
@@ -358,6 +361,7 @@ fn buy(
 
 /// Sends the nearest free Harvester toward the first of `anchors` whose
 /// footprint it has not fully seen, so it can be checked once explored.
+/// Returns whether any such anchor is left.
 fn scout(
     observation: &ObservationData,
     map: &MapModel,
@@ -365,12 +369,12 @@ fn scout(
     anchors: &[TilePos],
     kind: BuildingKind,
     ledger: &mut Ledger,
-) {
+) -> bool {
     let (width, height) = kind.base_stats().size;
     let Some(anchor) = anchors.iter().copied().find(|anchor| {
         (0..height).any(|dy| (0..width).any(|dx| !observation.explored(anchor.offset(dx, dy))))
     }) else {
-        return;
+        return false;
     };
     let centre = footprint_centre(kind, anchor);
     if let Some(builder) = workers::builder(observation, map, frame, anchor, centre, ledger) {
@@ -380,6 +384,46 @@ fn scout(
             queue: false,
         });
     }
+    true
+}
+
+/// Trains the scout scouting wants unless the seat already has or is making
+/// one: the faction's air scout at a built Airworks, else a Scuttler at a
+/// Foundry. Once an air scout can be trained a Scuttler no longer counts,
+/// since one that could reach a stale point would already be scouting.
+fn train_scout(observation: &ObservationData, producers: &[Producer<'_>], ledger: &mut Ledger) {
+    let air = Role::Scout.unit_for(observation.faction);
+    let airworks = producers
+        .iter()
+        .find(|producer| producer.building.kind == BuildingKind::Airworks);
+    let kinds: &[UnitKind] = if airworks.is_some() {
+        &[air]
+    } else {
+        &[air, UnitKind::Scuttler]
+    };
+    let have = observation
+        .my_units
+        .iter()
+        .map(|unit| unit.kind)
+        .chain(observation.my_queues.iter().flatten().copied())
+        .any(|kind| kinds.contains(&kind))
+        || kinds.iter().any(|kind| ledger.queued(*kind) > 0);
+    if have {
+        return;
+    }
+    let (producer, kind) = match airworks {
+        Some(producer) => (producer, air),
+        None => {
+            let Some(foundry) = producers
+                .iter()
+                .find(|producer| producer.building.kind == BuildingKind::Foundry)
+            else {
+                return;
+            };
+            (foundry, UnitKind::Scuttler)
+        }
+    };
+    ledger.train(producer.building.id, kind);
 }
 
 /// Built producers, nearest home first.

@@ -518,3 +518,115 @@ fn a_harvester_sealed_off_from_the_site_never_builds_it() {
     );
     assert!(!builders.contains(&sealed));
 }
+
+#[test]
+fn mirrored_seats_rank_equal_extractor_frames_alike() {
+    let mut scenario = Scenario::skirmish();
+    for seat in &mut scenario.players {
+        seat.bot = true;
+        seat.bot_config = Some(config());
+    }
+    let state = scenario.build().unwrap();
+    let model = map(&scenario);
+    let memory = Memory::default();
+    let first_extractor = |player: u8| {
+        let observation = ObservationData::fog_honest(&state, PlayerId(player));
+        investments::candidates(&Situation {
+            observation: &observation,
+            map: &model,
+            memory: &memory,
+            traits: traits(),
+            saturation: 1_000,
+            income: 400,
+            depletion: 0,
+            pull: Vec::new(),
+        })
+        .into_iter()
+        .find_map(|candidate| match candidate.investment {
+            Investment::Extractor(frame) => Some(frame),
+            _ => None,
+        })
+        .expect("a frame is in reach")
+    };
+    let (width, height) = (state.map().width(), state.map().height());
+    let west = first_extractor(0);
+    assert_eq!(
+        first_extractor(1),
+        TilePos::new(width - 2 - west.x, height - 2 - west.y)
+    );
+}
+
+#[test]
+fn a_target_with_nowhere_to_stand_protects_nothing() {
+    let mut scenario = saturated(130);
+    let model = map(&scenario);
+    let occupied: Vec<TilePos> = scenario
+        .units
+        .iter()
+        .map(|unit| TilePos::new(unit.x, unit.y))
+        .collect();
+    for anchor in model.spots(PlayerId(0)) {
+        if occupied.contains(anchor) {
+            continue;
+        }
+        scenario.buildings.push(BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Turret,
+            x: anchor.x,
+            y: anchor.y,
+        });
+    }
+    let state = scenario.build().unwrap();
+    let (commands, trace) = seat(&scenario, 0).act_traced(&state, &mut OwnEvents::default());
+    let trace = trace.unwrap();
+    assert!(trace.target.is_some(), "premise: a target is adopted");
+    assert!(builds(&commands).is_empty(), "premise: no spot can take it");
+    let foundry = foundries(&state, PlayerId(0))[0];
+    assert_eq!(trains(&commands), [(foundry, UnitKind::Sentinel)]);
+}
+
+#[test]
+fn checkpoints_reject_state_off_the_map_and_survive_extreme_samples() {
+    let scenario = saturated(400);
+    let state = scenario.build().unwrap();
+    let json = serde_json::to_value(seat(&scenario, 0).checkpoint()).unwrap();
+    let restore = |edit: &dyn Fn(&mut serde_json::Value)| {
+        let mut json = json.clone();
+        edit(&mut json);
+        let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
+        Opponent::restore(&checkpoint, &scenario, &state, map(&scenario))
+    };
+    assert_eq!(
+        restore(&|json| {
+            json["memory"]["units"] = serde_json::json!([
+                {"id": 1, "kind": "sentinel", "tile": {"x": i32::MIN, "y": 0}, "seen": 0}
+            ]);
+        })
+        .err()
+        .unwrap(),
+        "checkpoint enemy units are off the map"
+    );
+    assert_eq!(
+        restore(&|json| {
+            json["saving"]["target"] =
+                serde_json::json!({"investment": {"extractor": {"x": 999, "y": 0}}, "attempt": null});
+        })
+        .err()
+        .unwrap(),
+        "checkpoint saving target is off the map"
+    );
+    assert_eq!(
+        restore(&|json| json["missions"]["next"] = 1_000_000.into())
+            .err()
+            .unwrap(),
+        "checkpoint mission ids are out of order"
+    );
+    let mut opponent = restore(&|json| {
+        json["income"]["previous"] =
+            serde_json::json!({"tick": 0, "bank": u32::MAX, "spent": u32::MAX});
+    })
+    .unwrap();
+    let mut state = state.clone();
+    advance_to(&mut state, 12, &[]);
+    opponent.act(&state, &mut OwnEvents::default());
+}

@@ -8,15 +8,16 @@ working rules.
 
 Each decision spends through one running total in a fixed precedence: defense
 and other emergencies, then an affordable saving target, then workers, then
-production. A seat with no Harvester alive or queued queues one even behind
-other work, from protected scrap if it must. Each built Foundry works the four
-nearest live known scrap nodes its ground can reach within twelve tiles, none
-shared with another Foundry, and idle Foundries train Harvesters until there are
-two per worked node. Paid sites nobody is building get the nearest free
-Harvester, and idle Harvesters go to the reachable worked node with the fewest
-Harvesters. Every idle producer then trains toward the army's needs. Difficulty
-caps the unit orders one decision issues; purchases do not count against that
-allowance.
+attacks, focus fire and scouting, then production. Missions only give orders;
+what they need, such as a scout, production buys. A seat with no Harvester alive
+or queued queues one even behind other work, from protected scrap if it must.
+Each built Foundry works the four nearest live known scrap nodes its ground can
+reach within twelve tiles, none shared with another Foundry, and idle Foundries
+train Harvesters until there are two per worked node. Paid sites nobody is
+building get the nearest free Harvester, and idle Harvesters go to the reachable
+worked node with the fewest Harvesters. Every idle producer then trains toward
+the army's needs. Difficulty caps the unit orders one decision issues; purchases
+do not count against that allowance.
 
 ## Defense
 
@@ -85,17 +86,17 @@ they age and forgetting one when its last spot is in sight and empty. Enemy
 buildings need no memory of its own: the observation keeps their ghosts.
 
 From that knowledge and its own army, alive and queued, it sets a deficit for
-each role: line fighters to match the enemy's ground army or two fifths of its
-own, siege for known enemy defenses and by preference, anti-air to answer three
-quarters of the enemy air it has seen (a seen enemy Airworks counts as air), and
-air strikes by preference once it has or is saving for an Airworks. Each idle
-producer trains for the most wanted role it can serve, or line units when
-nothing is wanted, choosing the unit it can afford now by coarse suitability:
-reach against the enemy's usual reach, durability for the price, covering both
-enemy domains, splash against clustered enemies, affordability at the seat's
-income, and personality. Raiders, support units, scouts and transports are left
-to later behavior. A role it needs but cannot train at all adds to the
-investment score of the cheapest building that would let it.
+each role: line fighters to match three quarters of the enemy's ground army or
+two fifths of its own, siege for known enemy defenses and by preference,
+anti-air to answer three quarters of the enemy air it has seen (a seen enemy
+Airworks counts as air), and air strikes by preference once it has an Airworks.
+Each idle producer trains for the most wanted role it can serve, or line units
+when nothing is wanted, choosing the unit it can afford now by coarse
+suitability: reach against the enemy's usual reach, durability for the price,
+covering both enemy domains, splash against clustered enemies, affordability at
+the seat's income, and personality. Raiders, support units, scouts and
+transports are left to later behavior. A role it needs but cannot train at all
+adds to the investment score of the cheapest building that would let it.
 
 ## Investments and saving
 
@@ -117,17 +118,19 @@ an investment that scores well, keeps it while it still scores, and switches
 only for one that scores clearly higher. Prerequisites come first: saving for
 Airworks buys a Fabricator.
 
-While saving, a share of the seat's estimated income is protected from ordinary
-spending, up to the next purchase's price. Stance and greed set the share, and
-visible hostile units near the base lower it. Income is estimated from the
-bank's change between decisions plus the seat's own spending. Once the whole
-uncommitted bank covers the next purchase, the seat places it with the nearest
-free Harvester on the first spot its knowledge allows (an expansion site's
-anchors, a frame, or otherwise a home spot) or upgrades the building. If every
-spot is unexplored, the Harvester walks toward one instead. A purchase missing
-from the world at the next decision was rejected, cancelled or refunded: the
-seat keeps the target, protects its full price again, and skips that spot for a
-while.
+When it adopts a target a share of its bank is protected from ordinary spending,
+and while it saves a share of its estimated income is added, up to the next
+purchase's price. Stance and greed set the share, and visible hostile units near
+the base lower it. Income is estimated from the bank's change between decisions
+plus the seat's own spending. Once the whole uncommitted bank covers the next
+purchase, the seat places it with the nearest free Harvester on the first spot
+its knowledge allows (an expansion site's anchors, a frame, or otherwise a home
+spot) or upgrades the building. If every spot is unexplored, the Harvester walks
+toward one instead; with no spot left to place or explore, nothing is protected,
+so a target that cannot stand anywhere never starves production. A purchase
+missing from the world at the next decision was rejected, cancelled or refunded:
+the seat keeps the target, protects its full price again, and skips that spot
+for a while.
 
 Placement is checked against the fog-honest observation only: completed
 prerequisites, explored ground, frames, known rock and scrap, known buildings, a
@@ -170,15 +173,15 @@ headless, saved and recovered sessions build it from the same scenario data.
 ## Checkpoint and trace
 
 `Checkpoint` holds the seat and what carries between its decisions: remembered
-enemy units, footprints it recently failed to claim, its income sample, and its
-saving target with the protected amount and any purchase awaiting confirmation,
-its missions with their phases, members, goals and focus, since when it has gone
-without attacking, and when it last saw each scouting point. The host saves the
-seat's `OwnEvents` beside it. Restoring it checks that the seat is a configured
-`oxide-opponent` bot in the bound scenario and world and that nothing it
-remembers is from a later tick, rebuilds the profile and decision interval from
-the scenario, and takes the map model built from it. A saved buffer over the cap
-does not load.
+enemy units, footprints it recently failed to claim, enemy buildings it recently
+gave up attacking, its income sample, and its saving target with the protected
+amount and any purchase awaiting confirmation, its missions with their phases,
+members, goals and focus, since when it has gone without attacking, and when it
+last saw each scouting point. The host saves the seat's `OwnEvents` beside it.
+Restoring it checks that the seat is a configured `oxide-opponent` bot in the
+bound scenario and world and that nothing it remembers is from a later tick or
+off the map, rebuilds the profile and decision interval from the scenario, and
+takes the map model built from it. A saved buffer over the cap does not load.
 
 `Opponent::act_traced` returns a `Trace` of the decision's tick, seat, bank,
 received own events, committed spending, purchases, unit-order count, allowance,

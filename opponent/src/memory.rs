@@ -128,8 +128,18 @@ impl Memory {
     }
 
     /// Rejects a restored memory that could not have been recorded by `now`
-    /// for a seat with `points` scouting points.
-    pub(crate) fn validate(&self, now: u64, points: usize) -> Result<(), String> {
+    /// on a map of the given size with `points` scouting points.
+    pub(crate) fn validate(
+        &self,
+        now: u64,
+        width: i32,
+        height: i32,
+        points: usize,
+    ) -> Result<(), String> {
+        let on_map = |tile: TilePos| (0..width).contains(&tile.x) && (0..height).contains(&tile.y);
+        if !self.units.iter().all(|unit| on_map(unit.tile)) {
+            return Err("checkpoint enemy units are off the map".into());
+        }
         let sized = self.scouted.is_empty() || self.scouted.len() == points;
         if !sized || self.scouted.iter().any(|tick| *tick > now) {
             return Err("checkpoint scouting memory does not fit the map".into());
@@ -207,7 +217,7 @@ mod tests {
         }
         assert_eq!(memory.failures.len(), FAILURE_CAP);
         assert!(!memory.failed(BuildingKind::Fabricator, TilePos::new(0, 0), 200));
-        assert_eq!(memory.validate(200, 0), Ok(()));
-        assert!(memory.validate(199, 0).is_err());
+        assert_eq!(memory.validate(200, 8, 8, 0), Ok(()));
+        assert!(memory.validate(199, 8, 8, 0).is_err());
     }
 }

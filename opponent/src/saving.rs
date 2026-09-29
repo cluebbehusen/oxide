@@ -115,7 +115,7 @@ impl Saving {
         self.protected = if refund {
             price.min(bank)
         } else {
-            (self.protected + growth).min(price).min(bank)
+            self.protected.saturating_add(growth).min(price).min(bank)
         };
     }
 
@@ -131,6 +131,21 @@ impl Saving {
         if let Some(target) = &mut self.target {
             target.attempt = Some(Attempt { step, anchor });
         }
+    }
+
+    /// Rejects a restored target placed off a map of the given size.
+    pub(crate) fn validate(&self, width: i32, height: i32) -> Result<(), String> {
+        let on_map = |tile: TilePos| (0..width).contains(&tile.x) && (0..height).contains(&tile.y);
+        let off_map = self.target.is_some_and(|target| {
+            matches!(target.investment, Investment::Extractor(frame) if !on_map(frame))
+                || target
+                    .attempt
+                    .is_some_and(|attempt| !on_map(attempt.anchor))
+        });
+        if off_map {
+            return Err("checkpoint saving target is off the map".into());
+        }
+        Ok(())
     }
 
     /// Caps the protected amount by what the decision left uncommitted.
