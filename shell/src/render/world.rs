@@ -3,16 +3,25 @@
 
 use super::*;
 
+/// Share of a tile's width over which the veil fades into lighter ground.
+const FOG_FEATHER: f32 = 0.45;
+
 /// Fog of war from the local player's perspective: unexplored is void,
 /// explored-but-unseen is dimmed.
 pub(crate) fn draw_fog(game: &crate::game::Scene<'_>) {
-    let fog_alpha = |tile| tile_fog_alpha(game, tile);
     let (lo, hi) = game.presentation.camera.world_rect();
     let min = TilePos::new(lo.x.floor() as i32, lo.y.floor() as i32);
     let max = TilePos::new(hi.x.ceil() as i32, hi.y.ceil() as i32);
+    // One extra ring so every drawn tile sees all eight neighbors.
+    let stride = (max.x - min.x + 2) as usize;
+    let levels: Vec<f32> = (min.y - 1..=max.y)
+        .flat_map(|y| (min.x - 1..=max.x).map(move |x| tile_fog_alpha(game, TilePos::new(x, y))))
+        .collect();
+    let fog_alpha =
+        |x: i32, y: i32| levels[(y - min.y + 1) as usize * stride + (x - min.x + 1) as usize];
     for y in min.y..max.y {
         for x in min.x..max.x {
-            let alpha = fog_alpha(TilePos::new(x, y));
+            let alpha = fog_alpha(x, y);
             if alpha == 0.0 {
                 continue;
             }
@@ -35,9 +44,11 @@ pub(crate) fn draw_fog(game: &crate::game::Scene<'_>) {
     // Feather inward into known ground. Unknown tiles retain their opaque veil.
     for y in min.y..max.y {
         for x in min.x..max.x {
-            let tile = TilePos::new(x, y);
-            let current = fog_alpha(tile);
-            if current >= 1.0 {
+            let neighborhood: [[f32; 3]; 3] = std::array::from_fn(|row| {
+                std::array::from_fn(|col| fog_alpha(x + col as i32 - 1, y + row as i32 - 1))
+            });
+            let current = neighborhood[1][1];
+            if current >= 1.0 || neighborhood.iter().flatten().all(|&level| level <= current) {
                 continue;
             }
             let a = game
@@ -50,56 +61,86 @@ pub(crate) fn draw_fog(game: &crate::game::Scene<'_>) {
                 .camera
                 .to_screen(vec2((x + 1) as f32, (y + 1) as f32))
                 .floor();
-            let width = game.presentation.camera.zoom * 0.45;
-            for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-                let neighbor = fog_alpha(tile.offset(dx, dy));
-                let Some(alpha) = fog_edge_alpha(current, neighbor) else {
-                    continue;
-                };
-                let (edge_a, edge_b, inside_a, inside_b) = match (dx, dy) {
-                    (-1, 0) => (
-                        a,
-                        vec2(a.x, b.y),
-                        a + vec2(width, 0.0),
-                        vec2(a.x + width, b.y),
-                    ),
-                    (1, 0) => (
-                        vec2(b.x, a.y),
-                        b,
-                        vec2(b.x - width, a.y),
-                        b - vec2(width, 0.0),
-                    ),
-                    (0, -1) => (
-                        a,
-                        vec2(b.x, a.y),
-                        a + vec2(0.0, width),
-                        vec2(b.x, a.y + width),
-                    ),
-                    _ => (
-                        vec2(a.x, b.y),
-                        b,
-                        vec2(a.x, b.y - width),
-                        b - vec2(0.0, width),
-                    ),
-                };
-                let color = Color::new(FOG_UNEXPLORED.r, FOG_UNEXPLORED.g, FOG_UNEXPLORED.b, alpha);
-                let clear = Color::new(color.r, color.g, color.b, 0.0);
-                draw_mesh(&Mesh {
-                    vertices: [
-                        (edge_a, color),
-                        (edge_b, color),
-                        (inside_b, clear),
-                        (inside_a, clear),
-                    ]
-                    .into_iter()
-                    .map(|(p, c)| Vertex::new(p.x, p.y, 0.0, 0.0, 0.0, c))
-                    .collect(),
-                    indices: vec![0, 1, 2, 0, 2, 3],
-                    texture: None,
-                });
-            }
+            draw_fog_feather(a, b, &neighborhood);
         }
     }
+}
+
+/// Samples [`fog_feather_alpha`] on a grid over one tile's screen rect.
+fn draw_fog_feather(a: Vec2, b: Vec2, neighborhood: &[[f32; 3]; 3]) {
+    let band = (b - a).max_element() * FOG_FEATHER;
+    let steps = (band / 6.0).ceil().clamp(1.0, 8.0) as usize;
+    // Grid lines fall on the feather band boundaries so straight fades
+    // interpolate exactly; only the rounded corners are approximated.
+    let coords: Vec<f32> = (0..=steps)
+        .map(|i| FOG_FEATHER * i as f32 / steps as f32)
+        .chain((0..=steps).map(|i| 1.0 - FOG_FEATHER + FOG_FEATHER * i as f32 / steps as f32))
+        .collect();
+    let side = coords.len();
+    let vertices = coords
+        .iter()
+        .flat_map(|&v| {
+            coords.iter().map(move |&u| {
+                let p = a + (b - a) * vec2(u, v);
+                let alpha = fog_feather_alpha(neighborhood, u, v);
+                let color = Color::new(FOG_UNEXPLORED.r, FOG_UNEXPLORED.g, FOG_UNEXPLORED.b, alpha);
+                Vertex::new(p.x, p.y, 0.0, 0.0, 0.0, color)
+            })
+        })
+        .collect();
+    let indices = (0..side - 1)
+        .flat_map(|row| {
+            (0..side - 1).flat_map(move |col| {
+                let top = (row * side + col) as u16;
+                let bottom = top + side as u16;
+                [top, top + 1, bottom + 1, top, bottom + 1, bottom]
+            })
+        })
+        .collect();
+    draw_mesh(&Mesh {
+        vertices,
+        indices,
+        texture: None,
+    });
+}
+
+/// Veil alpha layered over a known tile's own cover at tile-local
+/// `(u, v)`, fading in from darker neighbors. `neighborhood[row][col]`
+/// holds fog levels with this tile at the center.
+///
+/// Fades never stack: where two darker sides meet, the corner rounds off
+/// instead of doubling, and a darker diagonal neighbor that neither side
+/// already shows gets a rounded fade rather than leaving a sharp notch.
+fn fog_feather_alpha(neighborhood: &[[f32; 3]; 3], u: f32, v: f32) -> f32 {
+    let current = neighborhood[1][1];
+    let fade = |distance: f32| (1.0 - distance / FOG_FEATHER).clamp(0.0, 1.0);
+    let edge = |neighbor| fog_edge_alpha(current, neighbor).unwrap_or(0.0);
+    let mut sides = [
+        (neighborhood[1][0], u),
+        (neighborhood[1][2], 1.0 - u),
+        (neighborhood[0][1], v),
+        (neighborhood[2][1], 1.0 - v),
+    ]
+    .into_iter()
+    .map(|(neighbor, distance)| edge(neighbor) * fade(distance))
+    .fold(0.0, f32::max);
+    let mut corner = 0.0_f32;
+    for (row, col) in [(0, 0), (0, 2), (2, 0), (2, 2)] {
+        let dx = if col == 0 { u } else { 1.0 - u };
+        let dy = if row == 0 { v } else { 1.0 - v };
+        let (across, along) = (neighborhood[1][col], neighborhood[row][1]);
+        if across > current && along > current {
+            let inset = (FOG_FEATHER - dx)
+                .max(0.0)
+                .hypot((FOG_FEATHER - dy).max(0.0));
+            sides = sides.max(edge(across.min(along)) * (inset / FOG_FEATHER).min(1.0));
+        }
+        let base = current.max(across).max(along);
+        if let Some(peak) = fog_edge_alpha(base, neighborhood[row][col]) {
+            corner = corner.max(peak * fade(dx.hypot(dy)));
+        }
+    }
+    1.0 - (1.0 - sides) * (1.0 - corner)
 }
 
 fn tile_fog_alpha(game: &crate::game::Scene<'_>, tile: TilePos) -> f32 {
@@ -766,6 +807,47 @@ mod tests {
                     assert!((current + edge * (1.0 - current) - neighbor).abs() < 1e-6);
                 } else {
                     assert!(neighbor <= current);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fog_feather_meets_across_tile_edges_without_overdarkening() {
+        let composite = |neighborhood: &[[f32; 3]; 3], u: f32, v: f32| {
+            let current = neighborhood[1][1];
+            current + (1.0 - current) * fog_feather_alpha(neighborhood, u, v)
+        };
+        let transpose = |n: [[f32; 3]; 3]| -> [[f32; 3]; 3] {
+            std::array::from_fn(|row| std::array::from_fn(|col| n[col][row]))
+        };
+        for (light, dark) in [(0.0, FOG_EXPLORED.a), (FOG_EXPLORED.a, 1.0), (0.0, 1.0)] {
+            for bits in 0..1_u32 << 12 {
+                let grid: [[f32; 4]; 3] = std::array::from_fn(|row| {
+                    std::array::from_fn(|col| {
+                        if bits >> (row * 4 + col) & 1 == 1 {
+                            dark
+                        } else {
+                            light
+                        }
+                    })
+                });
+                let [left, right]: [[[f32; 3]; 3]; 2] = std::array::from_fn(|tile| {
+                    std::array::from_fn(|row| std::array::from_fn(|col| grid[row][tile + col]))
+                });
+                let (top, bottom) = (transpose(left), transpose(right));
+                assert_eq!(fog_feather_alpha(&left, 0.5, 0.5), 0.0);
+                for step in 0..=20 {
+                    let t = step as f32 / 20.0;
+                    let seam = composite(&left, 1.0, t) - composite(&right, 0.0, t);
+                    assert!(seam.abs() < 1e-5, "{grid:?} at {t}");
+                    let seam = composite(&top, t, 1.0) - composite(&bottom, t, 0.0);
+                    assert!(seam.abs() < 1e-5, "{grid:?} at {t}");
+                }
+                let darkest = left.iter().flatten().copied().fold(0.0, f32::max);
+                for (u, v) in (0..=10).flat_map(|u| (0..=10).map(move |v| (u, v))) {
+                    let occlusion = composite(&left, u as f32 / 10.0, v as f32 / 10.0);
+                    assert!(occlusion <= darkest + 1e-5, "{grid:?} at {u}, {v}");
                 }
             }
         }
