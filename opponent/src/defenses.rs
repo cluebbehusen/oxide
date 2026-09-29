@@ -48,6 +48,9 @@ const EMERGENCY_TILES: i64 = 12;
 /// How sure the seat is of where a building's threat comes from.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Evidence {
+    /// Only public facts across a chasm: a hostile start or a known enemy
+    /// building whose units could reach the building only by landing.
+    Landing,
     /// Only public facts: a hostile start or a known enemy building.
     Prior,
     /// Enemies it remembers.
@@ -60,7 +63,7 @@ impl Evidence {
     /// How much the evidence counts.
     fn weight(self) -> u64 {
         match self {
-            Evidence::Prior => 2,
+            Evidence::Landing | Evidence::Prior => 2,
             Evidence::Remembered => 4,
             Evidence::Current => 6,
         }
@@ -193,8 +196,8 @@ impl<'a> Guard<'a> {
             .collect();
         let mut assets = assets(observation, frame);
         for asset in &mut assets {
-            asset.ground = approach(observation, map, memory, asset, Domain::Ground);
-            asset.air = approach(observation, map, memory, asset, Domain::Air);
+            asset.ground = approach(observation, map, memory, asset, Domain::Ground, exposed);
+            asset.air = approach(observation, map, memory, asset, Domain::Air, exposed);
         }
         let mut crews: Vec<u32> = observation
             .my_units
@@ -218,11 +221,13 @@ impl<'a> Guard<'a> {
         })
     }
 
-    /// How much a threat's evidence counts. A seat without an army to speak
-    /// of guards against the hostile start almost as if it had seen enemies.
-    fn weight(&self, approach: &Approach) -> u64 {
+    /// How much a threat's evidence counts for a defense of `kind`. A seat
+    /// without an army to speak of guards against the hostile start almost as
+    /// if it had seen enemies, and against a landing with a Turret.
+    fn weight(&self, approach: &Approach, kind: BuildingKind) -> u64 {
         match approach.evidence {
             Evidence::Prior if self.exposed => 5,
+            Evidence::Landing if kind == BuildingKind::Turret => 5,
             evidence => evidence.weight(),
         }
     }
@@ -278,7 +283,7 @@ impl<'a> Guard<'a> {
             let Some(approach) = asset.approach(domain(kind)) else {
                 continue;
             };
-            if approach.evidence == Evidence::Prior && !self.settled {
+            if matches!(approach.evidence, Evidence::Landing | Evidence::Prior) && !self.settled {
                 continue;
             }
             for anchor in sites_around(asset, size) {
@@ -289,10 +294,11 @@ impl<'a> Guard<'a> {
                 if !facing {
                     continue;
                 }
-                let worth = asset.value * self.gain(asset, kind, anchor) * self.weight(approach);
+                let worth =
+                    asset.value * self.gain(asset, kind, anchor) * self.weight(approach, kind);
                 if worth > 0 {
                     let toward = match approach.evidence {
-                        Evidence::Prior => asset.centre,
+                        Evidence::Landing | Evidence::Prior => asset.centre,
                         Evidence::Remembered | Evidence::Current => approach.source,
                     };
                     let rank = self.frame.rank(toward, centre);
@@ -532,17 +538,21 @@ fn assets(observation: &ObservationData, frame: HomeFrame) -> Vec<Asset> {
     assets
 }
 
-/// Where `centre` is attacked from in `domain`, and the samples along the way:
-/// the nearest visible enemy that fights in that domain, else the nearest
-/// remembered one, else for ground the nearest known enemy building or
-/// hostile start on the asset's ground, and for air the nearest known enemy
-/// Airworks.
+/// Where `asset` is attacked from in `domain`, and the samples along the
+/// way: the nearest visible enemy that fights in that domain, else the
+/// nearest remembered one, else for ground the nearest known enemy building
+/// or hostile start, and for air the nearest known enemy Airworks. Enemy
+/// ground units count only on or beside the asset's ground: across a chasm,
+/// they arrive by air if at all, and land as a threat in sight. With no
+/// enemy building or start on the asset's ground, one across a chasm counts
+/// as a landing only while the seat is `exposed`, with no army to meet it.
 fn approach(
     observation: &ObservationData,
     map: &MapModel,
     memory: &Memory,
     asset: &Asset,
     domain: Domain,
+    exposed: bool,
 ) -> Option<Approach> {
     let centre = asset.centre;
     let grounds: Vec<u32> = ring(asset.anchor, asset.size)
@@ -554,8 +564,10 @@ fn approach(
                 .is_some_and(|component| grounds.contains(&component))
         })
     };
-    let threatens = |stats: &UnitStats| {
-        stats.domain == domain && (!stats.weapons.is_empty() || stats.transport_capacity > 0)
+    let threatens = |stats: &UnitStats, tile: TilePos| {
+        stats.domain == domain
+            && (!stats.weapons.is_empty() || stats.transport_capacity > 0)
+            && (domain == Domain::Air || walkable(tile, (1, 1)))
     };
     let nearest = |points: &mut dyn Iterator<Item = (i64, i64)>| {
         points.min_by_key(|point| (chebyshev(*point, centre), *point))
@@ -564,7 +576,7 @@ fn approach(
         &mut observation
             .enemy_units
             .iter()
-            .filter(|enemy| threatens(enemy.kind.stats()))
+            .filter(|enemy| threatens(enemy.kind.stats(), enemy.tile))
             .map(|enemy| doubled(enemy.tile)),
     );
     let remembered = || {
@@ -572,13 +584,13 @@ fn approach(
             &mut memory
                 .units()
                 .iter()
-                .filter(|unit| threatens(unit.kind.stats()))
+                .filter(|unit| threatens(unit.kind.stats(), unit.tile))
                 .map(|unit| doubled(unit.tile)),
         )
     };
     let prior = || match domain {
-        Domain::Ground => nearest(
-            &mut observation
+        Domain::Ground => {
+            let known: Vec<(BuildingKind, TilePos)> = observation
                 .enemy_buildings
                 .iter()
                 .map(|building| (building.kind, building.anchor))
@@ -587,21 +599,37 @@ fn approach(
                         .filter_map(|owner| map.start(owner))
                         .map(|anchor| (BuildingKind::Foundry, anchor)),
                 )
-                .filter(|(kind, anchor)| walkable(*anchor, kind.base_stats().size))
-                .map(|(kind, anchor)| footprint_centre(kind, anchor)),
-        ),
+                .collect();
+            let centres = |walk: bool| {
+                known
+                    .iter()
+                    .filter(move |(kind, anchor)| {
+                        !walk || walkable(*anchor, kind.base_stats().size)
+                    })
+                    .map(|(kind, anchor)| footprint_centre(*kind, *anchor))
+            };
+            nearest(&mut centres(true))
+                .map(|source| (source, Evidence::Prior))
+                .or_else(|| {
+                    exposed
+                        .then(|| nearest(&mut centres(false)))
+                        .flatten()
+                        .map(|source| (source, Evidence::Landing))
+                })
+        }
         Domain::Air => nearest(
             &mut observation
                 .enemy_buildings
                 .iter()
                 .filter(|building| building.kind == BuildingKind::Airworks)
                 .map(|building| footprint_centre(building.kind, building.anchor)),
-        ),
+        )
+        .map(|source| (source, Evidence::Prior)),
     };
     let (source, evidence) = current
         .map(|source| (source, Evidence::Current))
         .or_else(|| remembered().map(|source| (source, Evidence::Remembered)))
-        .or_else(|| prior().map(|source| (source, Evidence::Prior)))?;
+        .or_else(prior)?;
     let (dx, dy) = (source.0 - centre.0, source.1 - centre.1);
     let length = dx.abs().max(dy.abs());
     let samples = APPROACH

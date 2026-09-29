@@ -50,16 +50,18 @@ The seat guards its most valuable buildings (Foundries first, then tech and
 production buildings, Extractors and Reclaimers) with Turrets, Bastions and Flak
 Turrets a short gap from the building, on the side its threat comes from:
 enemies in sight, else enemies it remembers, else known enemy buildings or the
-nearest hostile start that ground connects to the building. Flak Turrets answer
-seen or remembered enemy aircraft or a known enemy Airworks. Each site is an
-investment worth the approach it covers that no other own weapon covers yet, by
-the building's value, by how sure the seat is of the threat, and by personality:
-fortification for Turrets and Bastions, fortification and support for Flak
-Turrets. A Bastion counts only ground the seat sees. When the threat is only a
-guess from public facts, equal sites go to the one nearest the building;
-otherwise to the one nearest the threat. Sites go only on ground where one of
-the seat's Harvesters stands to build them, and a site the simulation refused is
-skipped for a while.
+nearest hostile start. Ground threats count only where ground connects them to
+the building, except that a seat under the stance's minimum army also puts up a
+Turret against enemy buildings and starts across a chasm, whose units could
+land. Flak Turrets answer seen or remembered enemy aircraft or a known enemy
+Airworks. Each site is an investment worth the approach it covers that no other
+own weapon covers yet, by the building's value, by how sure the seat is of the
+threat, and by personality: fortification for Turrets and Bastions,
+fortification and support for Flak Turrets. A Bastion counts only ground the
+seat sees. When the threat is only a guess from public facts, equal sites go to
+the one nearest the building; otherwise to the one nearest the threat. Sites go
+only on ground where one of the seat's Harvesters stands to build them, and a
+site the simulation refused is skipped for a while.
 
 Once the opening economy is up, a seat whose army is still under the stance's
 minimum weighs a hostile start nearly like seen enemies, so most seats put up an

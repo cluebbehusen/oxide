@@ -31,8 +31,20 @@ fn traits(fortification: u8) -> PersonalityTraits {
     }
 }
 
-/// West's defense and defense-upgrade investments in `state`.
+/// West's defense and defense-upgrade investments in `state`, with too
+/// small an army to hold on its own.
 fn wanted(
+    scenario: &Scenario,
+    state: &State,
+    memory: &Memory,
+    fortification: u8,
+) -> Vec<(Investment, u32)> {
+    wanted_when(true, scenario, state, memory, fortification)
+}
+
+/// West's defense and defense-upgrade investments in `state`.
+fn wanted_when(
+    exposed: bool,
     scenario: &Scenario,
     state: &State,
     memory: &Memory,
@@ -46,7 +58,7 @@ fn wanted(
         memory,
         traits(fortification),
         true,
-        true,
+        exposed,
     )
 }
 
@@ -153,9 +165,9 @@ fn flak_waits_for_air_evidence() {
 
 #[test]
 fn ground_defenses_face_only_enemies_that_can_walk_in() {
-    let ground = |scenario: &Scenario| {
+    let ground_when = |exposed: bool, scenario: &Scenario| {
         let state = scenario.build().unwrap();
-        wanted(scenario, &state, &Memory::default(), 85)
+        wanted_when(exposed, scenario, &state, &Memory::default(), 85)
             .iter()
             .any(|(investment, _)| {
                 matches!(
@@ -167,6 +179,7 @@ fn ground_defenses_face_only_enemies_that_can_walk_in() {
                 )
             })
     };
+    let ground = |scenario: &Scenario| ground_when(false, scenario);
     let mut scenario = settled(0);
     for row in &mut scenario.map[1..11] {
         row.replace_range(11..13, "##");
@@ -174,6 +187,15 @@ fn ground_defenses_face_only_enemies_that_can_walk_in() {
     assert!(
         !ground(&scenario),
         "the hostile start is across a chasm from every asset"
+    );
+    assert!(
+        ground_when(true, &scenario),
+        "with no army to meet a landing, the seat guards against one"
+    );
+    scenario.units.push(unit(1, UnitKind::Sentinel, 14, 5));
+    assert!(
+        !ground(&scenario),
+        "a raider in sight across the chasm cannot walk in"
     );
     scenario.units.push(unit(1, UnitKind::Sentinel, 9, 5));
     assert!(
@@ -186,7 +208,7 @@ fn ground_defenses_face_only_enemies_that_can_walk_in() {
 fn a_building_is_guarded_only_where_a_harvester_can_build() {
     let far_side = |scenario: &Scenario| {
         let state = scenario.build().unwrap();
-        wanted(scenario, &state, &Memory::default(), 85)
+        wanted_when(false, scenario, &state, &Memory::default(), 85)
             .iter()
             .any(|(investment, _)| {
                 matches!(investment, Investment::Defense { anchor, .. } if anchor.x > 12)
