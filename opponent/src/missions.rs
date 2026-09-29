@@ -21,7 +21,7 @@ mod lift;
 mod scouting;
 
 pub(crate) use attack::minimum;
-pub(crate) use lift::{carrier, needed as lift_needed, rides};
+pub(crate) use lift::{carrier, needed as lift_needed, payload};
 pub(crate) use scouting::points;
 
 /// Missions the seat runs at once.
@@ -524,6 +524,19 @@ fn approach(
                 frame.rank(frame.home, doubled(*tile)),
             )
         })
+}
+
+/// Whether `target` may still stand: it is known, or its ground is out of
+/// sight.
+fn standing(observation: &ObservationData, target: Objective) -> bool {
+    let known = observation.enemy_buildings.iter().any(|building| {
+        (building.player, building.kind, building.anchor)
+            == (target.owner, target.building, target.anchor)
+    });
+    let (width, height) = target.building.base_stats().size;
+    let seen = (0..height)
+        .any(|dy| (0..width).any(|dx| observation.visible(target.anchor.offset(dx, dy))));
+    known || !seen
 }
 
 fn run(units: Vec<UnitId>, goal: TilePos) -> Command {

@@ -102,6 +102,13 @@ pub(crate) fn footprint_centre(kind: BuildingKind, anchor: TilePos) -> (i64, i64
     )
 }
 
+/// Chebyshev distance in tiles, rounded down, between two points in doubled
+/// coordinates, such as footprint centres. Unlike anchors, centres keep their
+/// distances under a half-turn whatever the footprints' sizes.
+pub(crate) fn centre_distance(a: (i64, i64), b: (i64, i64)) -> u64 {
+    (a.0.abs_diff(b.0)).max(a.1.abs_diff(b.1)) / 2
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

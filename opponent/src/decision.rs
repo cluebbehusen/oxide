@@ -300,7 +300,7 @@ pub(crate) fn decide(
             .missions
             .scout(observation, map, frame, &mut persistent.memory, &mut ledger);
     let carrying =
-        lift && train_carriers(observation, map, profile, &producers, &mut ledger) && !short;
+        lift && !short && train_carriers(observation, map, profile, &producers, &mut ledger);
     if !carrying {
         if scout {
             train_scout(observation, &producers, &mut ledger);
@@ -431,7 +431,7 @@ fn explore(
 }
 
 /// Keeps enough carriers, alive and queued, to lift the stance's minimum army
-/// at the value per transport slot of the line and siege units at home,
+/// at the value per transport slot of the units at home a lift could take,
 /// training one at an idle Airworks when short. It is a stock, like the
 /// Harvesters: no mission is promised the carriers it buys. Returns whether
 /// an idle Airworks waits for the scrap to train one, so that cheaper units
@@ -443,19 +443,7 @@ fn train_carriers(
     producers: &[Producer<'_>],
     ledger: &mut Ledger,
 ) -> bool {
-    let home = map
-        .start(observation.me)
-        .and_then(|start| map.component(start));
-    let (value, slots) = observation
-        .my_units
-        .iter()
-        .filter(|unit| crate::missions::rides(unit.kind) && map.component(unit.tile) == home)
-        .fold((0_u64, 0_u64), |(value, slots), unit| {
-            (
-                value + u64::from(unit.kind.stats().cost),
-                slots + u64::from(unit.kind.stats().transport_size),
-            )
-        });
+    let (value, slots) = crate::missions::payload(observation, map);
     let per_slot = value
         .checked_div(slots)
         .map_or(EMPTY_SLOT_VALUE, |value| value.max(1));

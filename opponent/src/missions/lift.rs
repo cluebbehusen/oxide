@@ -6,11 +6,11 @@
 
 use super::attack::{FIT, building_value, defense, healthy, margin, minimum, striking};
 use super::{
-    LiftPhase, MISSION_CAP, Mission, Missions, Objective, Task, approach, hunt, mine, run,
+    LiftPhase, MISSION_CAP, Mission, Missions, Objective, Task, approach, hunt, mine, run, standing,
 };
 use crate::composition::{self, Role};
 use crate::decision::Ledger;
-use crate::frame::{HomeFrame, doubled, footprint_centre, gap, ring};
+use crate::frame::{HomeFrame, centre_distance, doubled, footprint_centre, gap, ring};
 use crate::map::MapModel;
 use crate::memory::Memory;
 use crate::profile::ResolvedProfile;
@@ -71,7 +71,7 @@ pub(crate) fn needed(observation: &ObservationData, map: &MapModel, frame: HomeF
         })
 }
 
-/// Known enemy buildings and hostile starts.
+/// Known enemy buildings, and hostile starts not seen cleared.
 fn objectives(observation: &ObservationData, map: &MapModel) -> Vec<Objective> {
     observation
         .enemy_buildings
@@ -82,11 +82,12 @@ fn objectives(observation: &ObservationData, map: &MapModel) -> Vec<Objective> {
             anchor: building.anchor,
         })
         .chain(map.hostiles(observation.me).filter_map(|owner| {
-            Some(Objective {
+            let start = Objective {
                 owner,
                 building: BuildingKind::Foundry,
                 anchor: map.start(owner)?,
-            })
+            };
+            standing(observation, start).then_some(start)
         }))
         .collect()
 }
@@ -202,7 +203,15 @@ impl Missions {
             .copied()
             .filter(|unit| rides(unit.kind) && healthy(unit, FIT))
             .collect();
-        riders.sort_by_key(rank);
+        // Most value per transport slot first, so a few strong units are not
+        // crowded out by many weak ones nearer home.
+        riders.sort_by_key(|unit| {
+            let slots = u64::from(unit.kind.stats().transport_size.max(1));
+            (
+                std::cmp::Reverse(striking(unit) * 1_000 / slots),
+                rank(unit),
+            )
+        });
         if carriers.is_empty() || riders.is_empty() {
             return;
         }
@@ -470,7 +479,7 @@ impl Missions {
         if !flight.grounded.iter().all(|unit| unit.idle) {
             return None;
         }
-        if lifting.standing(target) {
+        if standing(lifting.observation, target) {
             self.list.remove(flight.index);
             return Some((target.building, target.anchor));
         }
@@ -548,7 +557,10 @@ impl Lifting<'_> {
                     .construction
                     .as_ref()
                     .map_or(0, |construction| construction.cost);
-                let distance = u64::from(start.chebyshev(target.anchor).unsigned_abs());
+                let distance = centre_distance(
+                    footprint_centre(BuildingKind::Foundry, start),
+                    footprint_centre(target.building, target.anchor),
+                );
                 let score = u64::from(cost) * 1_000 / (100 + distance);
                 let rank = self.frame.rank(
                     self.frame.home,
@@ -614,7 +626,8 @@ impl Lifting<'_> {
     }
 
     /// Whether a ground unit could stand on `tile` of `island` as far as the
-    /// seat knows: no known building, rock or scrap covers it.
+    /// seat knows: no known building, its own, an ally's or an enemy's, and
+    /// no rock or scrap covers it.
     fn open(&self, tile: TilePos, island: u32) -> bool {
         let observation = self.observation;
         self.map.component(tile) == Some(island)
@@ -624,6 +637,7 @@ impl Lifting<'_> {
                 .enemy_buildings
                 .iter()
                 .chain(&observation.my_buildings)
+                .chain(&observation.ally_buildings)
                 .any(|building| {
                     gap(
                         building.anchor,
@@ -735,19 +749,6 @@ impl Lifting<'_> {
             })
             .map(|(via, _, _)| via)
     }
-
-    /// Whether `target` may still stand: it is known, or its ground is out of
-    /// sight.
-    fn standing(&self, target: Objective) -> bool {
-        let known = self.observation.enemy_buildings.iter().any(|building| {
-            (building.player, building.kind, building.anchor)
-                == (target.owner, target.building, target.anchor)
-        });
-        let (width, height) = target.building.base_stats().size;
-        let seen = (0..height)
-            .any(|dy| (0..width).any(|dx| self.observation.visible(target.anchor.offset(dx, dy))));
-        known || !seen
-    }
 }
 
 /// Known enemies that fire at `domain`: remembered units by confidence and
@@ -841,8 +842,26 @@ pub(crate) fn carrier(kind: UnitKind) -> bool {
     kind.stats().transport_capacity > 0
 }
 
+/// The value against ground and the transport slots of the units at home a
+/// lift could take now.
+pub(crate) fn payload(observation: &ObservationData, map: &MapModel) -> (u64, u64) {
+    let home = map
+        .start(observation.me)
+        .and_then(|start| map.component(start));
+    observation
+        .my_units
+        .iter()
+        .filter(|unit| rides(unit.kind) && healthy(unit, FIT) && map.component(unit.tile) == home)
+        .fold((0, 0), |(value, slots), unit| {
+            (
+                value + striking(unit),
+                slots + u64::from(unit.kind.stats().transport_size),
+            )
+        })
+}
+
 /// Whether `kind` is a line or siege unit a carrier can take.
-pub(crate) fn rides(kind: UnitKind) -> bool {
+fn rides(kind: UnitKind) -> bool {
     matches!(composition::role(kind), Some(Role::Line | Role::Siege))
         && kind.stats().transport_size > 0
 }

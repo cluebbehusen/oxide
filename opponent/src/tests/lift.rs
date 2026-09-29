@@ -685,3 +685,47 @@ fn a_carrier_over_a_building_moves_to_open_ground_before_anyone_boards() {
         "every rider boarded"
     );
 }
+
+#[test]
+fn a_carrier_takes_the_strongest_payload_it_can_hold() {
+    let mut scenario = strait();
+    scenario.units.clear();
+    scenario.units.push(unit(0, UnitKind::Skyhook, 10, 8));
+    for x in 6..=9 {
+        scenario.units.push(unit(0, UnitKind::Sentinel, x, 10));
+    }
+    scenario.units.push(unit(0, UnitKind::Breaker, 10, 20));
+    let state = scenario.build().unwrap();
+    let (skyhook, breaker) = (at(&state, 10, 8), at(&state, 10, 20));
+    let commands = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
+    assert_eq!(
+        loads(&commands),
+        [(skyhook, vec![breaker])],
+        "four Sentinels nearer home fall short of the minimum"
+    );
+}
+
+#[test]
+fn a_short_defense_buys_its_army_before_a_carrier() {
+    let mut scenario = strait();
+    scenario.units.clear();
+    for player in &mut scenario.players {
+        player.scrap = 400;
+    }
+    for y in 9..=13 {
+        scenario.units.push(unit(1, UnitKind::Sentinel, 6, y));
+    }
+    let state = scenario.build().unwrap();
+    let commands = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
+    let trained = trains(&commands);
+    assert!(
+        trained.iter().all(|(_, kind)| *kind != UnitKind::Skyhook),
+        "{trained:?}"
+    );
+    assert!(
+        trained
+            .iter()
+            .any(|(_, kind)| !matches!(kind, UnitKind::Harvester | UnitKind::Skyhook)),
+        "premise: the emergency buys an army: {trained:?}"
+    );
+}
