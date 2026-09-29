@@ -220,4 +220,124 @@ fn checkpoints_reject_foreign_scouting_and_stray_focus() {
         rejected(&|json| json["missions"]["list"][0]["focus"] = 3.into()),
         "checkpoint mission is in a phase its kind lacks"
     );
+    assert_eq!(
+        rejected(&|json| json["missions"]["list"][0]["kind"]["point"] = 99.into()),
+        "checkpoint mission could not have been recorded",
+        "a point the map does not have"
+    );
+}
+
+#[test]
+fn a_defense_that_stops_fighting_trades_its_focus_for_its_hunt() {
+    let (scenario, state, _) = skirmish([(8, 5), (8, 6)], 55);
+    let mut opponent = seat_with(&scenario, 0, veteran());
+    let commands = opponent.act(&state, &mut OwnEvents::default());
+    assert_eq!(attacks(&commands).len(), 1, "premise: focused");
+
+    let mut calm = scenario.clone();
+    calm.units.truncate(calm.units.len() - 2);
+    let mut state = calm.build().unwrap();
+    advance_to(&mut state, 12, &[]);
+    let mut members = vec![at(&state, 8, 5), at(&state, 8, 6)];
+    members.sort_unstable();
+    let commands = opponent.act(&state, &mut OwnEvents::default());
+    let sent = hunts(&commands);
+    assert_eq!(sent.len(), 1, "{commands:?}");
+    assert_eq!(sent[0].0, members);
+    let json = serde_json::to_value(opponent.checkpoint()).unwrap();
+    assert_eq!(json["missions"]["list"][0]["phase"], "recover");
+    assert!(json["missions"]["list"][0]["focus"].is_null());
+}
+
+#[test]
+fn air_defenders_guard_the_building_a_flyer_raids() {
+    let mut scenario = arena(0);
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Fabricator,
+        x: 12,
+        y: 8,
+    });
+    scenario.units.extend([
+        unit(0, UnitKind::Sentinel, 11, 9),
+        unit(1, UnitKind::Darter, 17, 10),
+    ]);
+    let state = scenario.build().unwrap();
+    let commands = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
+    let [(_, goal)] = &hunts(&commands)[..] else {
+        panic!("{commands:?}");
+    };
+    let size = BuildingKind::Fabricator.base_stats().size;
+    assert_eq!(
+        gap(TilePos::new(12, 8), size, *goal, (1, 1)),
+        0,
+        "the defenders wait beside the raided Fabricator, not the Foundry"
+    );
+}
+
+#[test]
+fn an_air_scout_replaces_a_scuttler_that_cannot_reach() {
+    let mut scenario = field();
+    scenario.players[0].scrap = 1_000;
+    for (row, cols) in [(19, "###"), (20, "#.#"), (21, "###")] {
+        scenario.map[row].replace_range(19..22, cols);
+    }
+    scenario.units.push(unit(0, UnitKind::Scuttler, 20, 20));
+    scenario.buildings.extend([
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Fabricator,
+            x: 6,
+            y: 16,
+        },
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Airworks,
+            x: 10,
+            y: 16,
+        },
+    ]);
+    let mut state = scenario.build().unwrap();
+    advance_to(&mut state, STALE, &[]);
+    let trained = trains(&seat(&scenario, 0).act(&state, &mut OwnEvents::default()));
+    assert!(
+        trained.iter().any(|(_, kind)| *kind == UnitKind::Kestrel),
+        "{trained:?}"
+    );
+}
+
+#[test]
+fn the_mission_cap_holds_back_a_scout() {
+    let mut scenario = field();
+    scenario.units.push(unit(0, UnitKind::Scuttler, 6, 9));
+    for index in 0..16 {
+        scenario
+            .units
+            .push(unit(0, UnitKind::Sentinel, 6 + index % 8, 14 + index / 8));
+    }
+    let mut state = scenario.build().unwrap();
+    advance_to(&mut state, STALE, &[]);
+    let home = foundries(&state, PlayerId(0))[0];
+    let list: Vec<serde_json::Value> = (0..16)
+        .map(|index: i32| {
+            serde_json::json!({
+                "id": index,
+                "kind": {"mission": "defend", "asset": home.0},
+                "phase": "engage",
+                "since": STALE,
+                "units": [at(&state, 6 + index % 8, 14 + index / 8)],
+                "goal": {"x": 6, "y": 11},
+                "focus": null,
+            })
+        })
+        .collect();
+    let mut json = serde_json::to_value(seat(&scenario, 0).checkpoint()).unwrap();
+    json["missions"] = serde_json::json!({"next": 16, "list": list, "waiting": null});
+    let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
+    let mut opponent = Opponent::restore(&checkpoint, &scenario, &state, map(&scenario)).unwrap();
+    let (_, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
+    let missions = trace.unwrap().missions;
+    assert_eq!(missions.len(), 16);
+    assert!(scouts(&missions).is_empty());
+    assert!(Opponent::restore(&opponent.checkpoint(), &scenario, &state, map(&scenario)).is_ok());
 }

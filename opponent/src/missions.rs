@@ -260,6 +260,11 @@ impl Missions {
             };
             let threatened = groups.iter().any(|(foundry, _)| foundry.id == asset);
             if !threatened && mission.phase == Phase::Engage {
+                // A focus order chases its target; without a fresh Hunt the
+                // members would follow a retreating enemy out of the base.
+                if mission.focus.take().is_some() {
+                    ledger.order(hunt(mission.units.clone(), mission.goal));
+                }
                 mission.phase = Phase::Recover;
                 mission.since = now;
             }
@@ -293,7 +298,7 @@ impl Missions {
             );
             let Some(goal) = grounded.or_else(|| {
                 let flyer = nearest(&mut threats.iter())?;
-                guard(map, frame, foundry, component, flyer)
+                guard(observation, map, frame, component, flyer)
             }) else {
                 continue;
             };
@@ -438,7 +443,13 @@ impl Missions {
 
     /// Rejects restored missions that could not have been recorded by `now`
     /// on a map of the given size.
-    pub(crate) fn validate(&self, now: u64, width: i32, height: i32) -> Result<(), String> {
+    pub(crate) fn validate(
+        &self,
+        now: u64,
+        width: i32,
+        height: i32,
+        points: usize,
+    ) -> Result<(), String> {
         if self.list.len() > MISSION_CAP {
             return Err("checkpoint holds too many missions".into());
         }
@@ -469,7 +480,8 @@ impl Missions {
                 |tile: TilePos| (0..width).contains(&tile.x) && (0..height).contains(&tile.y);
             let target_on_map = match mission.kind {
                 MissionKind::Attack { anchor, .. } => on_map(anchor),
-                MissionKind::Defend { .. } | MissionKind::Scout { .. } => true,
+                MissionKind::Scout { point } => usize::from(point) < points,
+                MissionKind::Defend { .. } => true,
             };
             if mission.since > now || !on_map(mission.goal) || !target_on_map {
                 return Err("checkpoint mission could not have been recorded".into());
@@ -548,22 +560,41 @@ fn threats<'a>(
     groups
 }
 
-/// Where ground defenders wait out an air raid: the tile beside `foundry`, on
-/// its ground, nearest `flyer`. Chasing a flyer's shadow only sends them to
-/// tiles they cannot stand on.
+/// Where ground defenders wait out an air raid: beside the seat's building
+/// on the Foundry's ground nearest `flyer`, on the tile nearest it. Chasing a
+/// flyer's shadow only sends them to tiles they cannot stand on.
 fn guard(
+    observation: &ObservationData,
     map: &MapModel,
     frame: HomeFrame,
-    foundry: &BuildingObs,
     component: Option<u32>,
     flyer: TilePos,
 ) -> Option<TilePos> {
-    let (width, height) = foundry.kind.base_stats().size;
+    component?;
+    let building = observation
+        .my_buildings
+        .iter()
+        .filter(|building| map.component(building.anchor) == component)
+        .min_by_key(|building| {
+            (
+                gap(
+                    building.anchor,
+                    building.kind.base_stats().size,
+                    flyer,
+                    (1, 1),
+                ),
+                frame.rank(
+                    doubled(flyer),
+                    footprint_centre(building.kind, building.anchor),
+                ),
+            )
+        })?;
+    let (width, height) = building.kind.base_stats().size;
     (-1..=height)
         .flat_map(|dy| (-1..=width).map(move |dx| (dx, dy)))
         .filter(|(dx, dy)| !(0..width).contains(dx) || !(0..height).contains(dy))
-        .map(|(dx, dy)| foundry.anchor.offset(dx, dy))
-        .filter(|tile| component.is_some() && map.component(*tile) == component)
+        .map(|(dx, dy)| building.anchor.offset(dx, dy))
+        .filter(|tile| map.component(*tile) == component)
         .min_by_key(|tile| frame.rank(doubled(flyer), doubled(*tile)))
 }
 

@@ -2,7 +2,7 @@
 //! has not seen for a while, hostile starts first. With no scout it trains
 //! one.
 
-use super::{Mission, MissionKind, Missions, Phase, approach, mine, run};
+use super::{MISSION_CAP, Mission, MissionKind, Missions, Phase, approach, mine, run};
 use crate::decision::{Ledger, Producer};
 use crate::frame::{HomeFrame, doubled};
 use crate::map::MapModel;
@@ -114,7 +114,7 @@ impl Missions {
         }
 
         let stale = scouted.iter().any(|seen| now - seen >= STALE_TICKS);
-        if !stale {
+        if !stale || self.list.len() >= MISSION_CAP {
             return;
         }
         let owned = self.owned();
@@ -205,9 +205,18 @@ fn best(
 
 /// Trains one scout unless the seat already has or is making one: the
 /// faction's air scout at a built Airworks, else a Scuttler at a Foundry.
+/// Once an air scout can be trained a Scuttler no longer counts, since one
+/// that could reach a stale point would already be scouting.
 fn train(observation: &ObservationData, producers: &[Producer<'_>], ledger: &mut Ledger) {
     let air = Role::Scout.unit_for(observation.faction);
-    let kinds = [air, UnitKind::Scuttler];
+    let airworks = producers
+        .iter()
+        .find(|producer| producer.building.kind == BuildingKind::Airworks);
+    let kinds: &[UnitKind] = if airworks.is_some() {
+        &[air]
+    } else {
+        &[air, UnitKind::Scuttler]
+    };
     let have = observation
         .my_units
         .iter()
@@ -218,9 +227,6 @@ fn train(observation: &ObservationData, producers: &[Producer<'_>], ledger: &mut
     if have {
         return;
     }
-    let airworks = producers
-        .iter()
-        .find(|producer| producer.building.kind == BuildingKind::Airworks);
     let (producer, kind) = match airworks {
         Some(producer) => (producer, air),
         None => {

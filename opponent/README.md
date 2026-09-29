@@ -30,11 +30,13 @@ that can hit one of its threats, ground units only from that Foundry's ground,
 nearest the Foundry first, until against ground and air attackers alike they are
 worth half again what those attackers are. It sends them in one Hunt at the
 grounded threat nearest the Foundry; against flyers alone they wait beside the
-Foundry on the raid's side, where anti-air reaches them, since the ground under a
+building nearest the raid, where anti-air reaches them, since the ground under a
 flyer may be none they can stand on. It sends them again only when its goal
-moves more than three tiles on the Foundry's ground or the mission re-engages.
-With no threat left the mission recovers, lending its units to any other
-threatened Foundry, and after 120 quiet ticks it lets them go where they stand.
+moves more than three tiles on the Foundry's ground or the mission re-engages,
+and a defense that stops fighting while focused sends its units back to its goal
+rather than after the retreating enemy. With no threat left the mission
+recovers, lending its units to any other threatened Foundry, and after 120 quiet
+ticks it lets them go where they stand.
 
 A defense that cannot recruit enough makes the decision an emergency: it skips
 the saving purchase and lets production spend protected scrap. Missions own only
