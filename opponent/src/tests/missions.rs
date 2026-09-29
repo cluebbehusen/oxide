@@ -44,7 +44,7 @@ fn a_ground_threat_draws_the_nearest_sufficient_defenders() {
 }
 
 #[test]
-fn an_air_raid_draws_only_units_that_hit_air() {
+fn an_air_raid_draws_only_units_that_hit_air_to_guard_the_foundry() {
     let scenario = raided(
         &[
             (UnitKind::Lancer, 5, 8),
@@ -55,9 +55,14 @@ fn an_air_raid_draws_only_units_that_hit_air() {
     );
     let state = scenario.build().unwrap();
     let commands = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
+    let [(units, goal)] = &hunts(&commands)[..] else {
+        panic!("{commands:?}");
+    };
+    assert_eq!(units, &[at(&state, 10, 1)]);
     assert_eq!(
-        hunts(&commands),
-        [(vec![at(&state, 10, 1)], TilePos::new(9, 5))]
+        crate::frame::gap(TilePos::new(3, 5), (2, 2), *goal, (1, 1)),
+        0,
+        "defenders wait beside the Foundry rather than under the flyer"
     );
 }
 

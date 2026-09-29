@@ -1,35 +1,5 @@
 use super::*;
 
-/// A half-turn-symmetric field wide enough that an army gathering near home
-/// is out of sight of the enemy, with room for a raid to reach home without
-/// crossing the attack's road.
-const FIELD: [&str; 24] = [
-    "################################################",
-    "#..............................................#",
-    "#..............................................#",
-    "#..............................................#",
-    "#..............................................#",
-    "#..............................................#",
-    "#..............................................#",
-    "#..............................................#",
-    "#..............................................#",
-    "#..............................................#",
-    "#..............................................#",
-    "#..1.......................................2...#",
-    "#..............................................#",
-    "#..............................................#",
-    "#..............................................#",
-    "#..............................................#",
-    "#..............................................#",
-    "#..............................................#",
-    "#..............................................#",
-    "#..............................................#",
-    "#..............................................#",
-    "#..............................................#",
-    "#..............................................#",
-    "################################################",
-];
-
 /// West army spots near home.
 const WEST: [(i32, i32); 8] = [
     (6, 9),
@@ -41,14 +11,6 @@ const WEST: [(i32, i32); 8] = [
     (8, 10),
     (9, 10),
 ];
-
-/// The field with both seats and no units.
-fn field() -> Scenario {
-    let mut scenario = arena(0);
-    scenario.map = FIELD.map(str::to_owned).to_vec();
-    scenario.units.clear();
-    scenario
-}
 
 /// The field with `west` West Sentinels and the given East units.
 fn armed(west: usize, east: &[(UnitKind, i32, i32)]) -> Scenario {
@@ -75,28 +37,6 @@ fn attack(missions: &[MissionStatus]) -> Option<MissionStatus> {
         .iter()
         .copied()
         .find(|mission| matches!(mission.kind, MissionKind::Attack { .. }))
-}
-
-fn runs(commands: &[PlayerCommand]) -> Vec<(Vec<UnitId>, TilePos)> {
-    commands
-        .iter()
-        .filter_map(|command| match &command.command {
-            Command::Run { units, goal, .. } => Some((units.clone(), *goal)),
-            _ => None,
-        })
-        .collect()
-}
-
-/// `state` with `unit` at `hp`.
-fn wounded(state: &State, unit: UnitId, hp: u32) -> State {
-    let mut value = serde_json::to_value(state).unwrap();
-    let units = value["units"].as_array_mut().unwrap();
-    let entry = units
-        .iter_mut()
-        .find(|entry| entry["id"] == unit.0)
-        .unwrap();
-    entry["hp"] = hp.into();
-    serde_json::from_value(value).unwrap()
 }
 
 /// Attack phases in the order the traces show them.

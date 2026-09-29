@@ -60,12 +60,13 @@ impl Opponent {
             return Err("checkpoint seat is not an oxide-opponent seat".into());
         }
         let now = state.current_tick();
-        checkpoint.memory.validate(now)?;
+        let points = crate::missions::points(&map, checkpoint.player).len();
+        checkpoint.memory.validate(now, points)?;
         checkpoint.income.validate(now)?;
         checkpoint.saving.validate(now)?;
         checkpoint
             .missions
-            .validate(now, state.map().width(), state.map().height())?;
+            .validate(now, state.map().width(), state.map().height(), points)?;
         let mut restored = Self::new(checkpoint.player, config, map);
         *restored.persistent = Persistent {
             memory: (*checkpoint.memory).clone(),

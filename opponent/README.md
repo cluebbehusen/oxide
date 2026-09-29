@@ -16,7 +16,7 @@ two per worked node. Paid sites nobody is building get the nearest free
 Harvester, and idle Harvesters go to the reachable worked node with the fewest
 Harvesters. Every idle producer then trains toward the army's needs. Difficulty
 caps the unit orders one decision issues; purchases do not count against that
-allowance. It does not yet scout.
+allowance.
 
 ## Defense
 
@@ -29,8 +29,12 @@ since chasing it would stall every defender. The mission recruits free units
 that can hit one of its threats, ground units only from that Foundry's ground,
 nearest the Foundry first, until against ground and air attackers alike they are
 worth half again what those attackers are. It sends them in one Hunt at the
-threat nearest the Foundry, and sends them again only when that threat moves
-more than three tiles or the mission re-engages. With no threat left the mission
+grounded threat nearest the Foundry; against flyers alone they wait beside the
+building nearest the raid, where anti-air reaches them, since the ground under a
+flyer may be none they can stand on. It sends them again only when its goal
+moves more than three tiles on the Foundry's ground or the mission re-engages,
+and a defense that stops fighting while focused sends its units back to its goal
+rather than after the retreating enemy. With no threat left the mission
 recovers, lending its units to any other threatened Foundry, and after 120 quiet
 ticks it lets them go where they stand.
 
@@ -58,6 +62,21 @@ Members under 35 percent health leave between fights and run to the rally, and a
 defense may take the attack's units in any phase but a fight. While an army that
 could attack does not, or every producer sits idle, the margin falls step by
 step toward even.
+
+At Veteran and Prime, an engaged mission focuses its fire: when every member
+that can hit an enemy near it already reaches that enemy, they shoot the weakest
+such enemy together, and keep that focus while it stays in reach. Nobody chases
+a focus, and a member out of reach leaves the mission's fire unfocused.
+
+## Scouting
+
+The seat keeps its hostile starts and expansion sites as scouting points and
+remembers when it last saw each. Once one has gone unseen for a while, one scout
+goes to the most valuable stale point, hostile starts first and then sites
+nearer an enemy than home, and moves on to the next when it sees it. The scout
+is a free Kestrel or Gnat, or else a Scuttler that can walk there. A seat
+without either trains one: its air scout once it has an Airworks, a Scuttler
+before.
 
 ## Army composition
 
@@ -153,12 +172,13 @@ headless, saved and recovered sessions build it from the same scenario data.
 `Checkpoint` holds the seat and what carries between its decisions: remembered
 enemy units, footprints it recently failed to claim, its income sample, and its
 saving target with the protected amount and any purchase awaiting confirmation,
-its missions with their phases, members and goals, and since when it has gone
-without attacking. The host saves the seat's `OwnEvents` beside it. Restoring it
-checks that the seat is a configured `oxide-opponent` bot in the bound scenario
-and world and that nothing it remembers is from a later tick, rebuilds the
-profile and decision interval from the scenario, and takes the map model built
-from it. A saved buffer over the cap does not load.
+its missions with their phases, members, goals and focus, since when it has gone
+without attacking, and when it last saw each scouting point. The host saves the
+seat's `OwnEvents` beside it. Restoring it checks that the seat is a configured
+`oxide-opponent` bot in the bound scenario and world and that nothing it
+remembers is from a later tick, rebuilds the profile and decision interval from
+the scenario, and takes the map model built from it. A saved buffer over the cap
+does not load.
 
 `Opponent::act_traced` returns a `Trace` of the decision's tick, seat, bank,
 received own events, committed spending, purchases, unit-order count, allowance,

@@ -4,7 +4,9 @@ use oxide_sim::command::RejectReason;
 use oxide_sim::scenario::{
     BotController, BotStance, BuildingSpec, PlayerSpec, ScenarioMode, UnitSpec,
 };
-use oxide_sim::{BuildingId, Command, Event, Faction, Scenario, StallReason, UnitId, UnitKind};
+use oxide_sim::{
+    AttackTarget, BuildingId, Command, Event, Faction, Scenario, StallReason, UnitId, UnitKind,
+};
 use std::sync::Arc;
 
 mod attack;
@@ -13,6 +15,7 @@ mod expansion;
 mod missions;
 mod placement;
 mod saving;
+mod scouting;
 
 /// A half-turn-symmetric arena. Each seat's Harvesters stand equally far from
 /// their two nearby scrap nodes, so the split depends on the tie-break.
@@ -200,6 +203,66 @@ fn play(
     traces
 }
 
+/// A half-turn-symmetric field wide enough that an army gathering near home
+/// is out of sight of the enemy, with room for a raid to reach home without
+/// crossing the attack's road.
+const FIELD: [&str; 24] = [
+    "################################################",
+    "#..............................................#",
+    "#..............................................#",
+    "#..............................................#",
+    "#..............................................#",
+    "#..............................................#",
+    "#..............................................#",
+    "#..............................................#",
+    "#..............................................#",
+    "#..............................................#",
+    "#..............................................#",
+    "#..1.......................................2...#",
+    "#..............................................#",
+    "#..............................................#",
+    "#..............................................#",
+    "#..............................................#",
+    "#..............................................#",
+    "#..............................................#",
+    "#..............................................#",
+    "#..............................................#",
+    "#..............................................#",
+    "#..............................................#",
+    "#..............................................#",
+    "################################################",
+];
+
+/// The field with both seats and no units.
+fn field() -> Scenario {
+    let mut scenario = arena(0);
+    scenario.map = FIELD.map(str::to_owned).to_vec();
+    scenario.units.clear();
+    scenario
+}
+
+fn runs(commands: &[PlayerCommand]) -> Vec<(Vec<UnitId>, TilePos)> {
+    commands
+        .iter()
+        .filter_map(|command| match &command.command {
+            Command::Run { units, goal, .. } => Some((units.clone(), *goal)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `state` with `unit` at `hp`.
+fn wounded(state: &State, unit: UnitId, hp: u32) -> State {
+    let mut value = serde_json::to_value(state).unwrap();
+    let units = value["units"].as_array_mut().unwrap();
+    let entry = units
+        .iter_mut()
+        .find(|entry| entry["id"] == unit.0)
+        .unwrap();
+    entry["hp"] = hp.into();
+    serde_json::from_value(value).unwrap()
+}
+
 /// The east seat's counterpart of west `commands` on a half-turn-symmetric
 /// staging: units by their rank among the seat's units, buildings by rank
 /// among its Foundries, and tiles rotated.
@@ -250,6 +313,17 @@ fn mirror(state: &State, commands: Vec<PlayerCommand>) -> Vec<PlayerCommand> {
                 } => Command::Run {
                     units: units(sent),
                     goal: rotate(goal),
+                    queue,
+                },
+                Command::Attack {
+                    units: sent,
+                    target: AttackTarget::Unit(enemy),
+                    queue,
+                } => Command::Attack {
+                    units: units(sent),
+                    target: AttackTarget::Unit(
+                        west_units[east_units.iter().position(|id| *id == enemy).unwrap()],
+                    ),
                     queue,
                 },
                 Command::Train { building, kind } => {

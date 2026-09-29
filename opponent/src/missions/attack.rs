@@ -4,19 +4,20 @@
 //! recovers to go again or disband.
 
 use super::{
-    MISSION_CAP, Mission, MissionKind, Missions, Phase, UNIT_CAP, hits, hunt, insert, mine, value,
+    MISSION_CAP, Mission, MissionKind, Missions, Phase, UNIT_CAP, approach, hits, hunt, insert,
+    mine, run, value,
 };
 use crate::composition::{self, Role};
 use crate::decision::Ledger;
 use crate::frame::{HomeFrame, doubled, gap};
-use crate::map::{MapModel, UNREACHABLE};
+use crate::map::MapModel;
 use crate::memory::Memory;
 use crate::profile::ResolvedProfile;
 use chassis::grid::TilePos;
 use oxide_sim::observation::{BuildingObs, ObservationData, UnitObs};
 use oxide_sim::scenario::{BotDifficulty, BotStance};
 use oxide_sim::stats::Domain;
-use oxide_sim::{BuildingKind, Command, PlayerId, UnitId};
+use oxide_sim::{BuildingKind, PlayerId, UnitId};
 
 /// Tiles between a member and an enemy that make contact.
 const CONTACT_TILES: i32 = 8;
@@ -180,6 +181,7 @@ impl Missions {
                 since: plan.observation.tick,
                 units: recruits,
                 goal: rally,
+                focus: None,
             });
             self.next += 1;
             self.waiting = None;
@@ -548,29 +550,6 @@ impl Plan<'_> {
     }
 }
 
-/// The tile beside the footprint of `building` at `anchor` nearest the
-/// seat's start by ground, or `None` if no ground route reaches it.
-fn approach(
-    map: &MapModel,
-    me: PlayerId,
-    frame: HomeFrame,
-    building: BuildingKind,
-    anchor: TilePos,
-) -> Option<TilePos> {
-    let (width, height) = building.base_stats().size;
-    (-1..=height)
-        .flat_map(|dy| (-1..=width).map(move |dx| (dx, dy)))
-        .filter(|(dx, dy)| !(0..width).contains(dx) || !(0..height).contains(dy))
-        .map(|(dx, dy)| anchor.offset(dx, dy))
-        .filter(|tile| map.distance(me, *tile) != UNREACHABLE)
-        .min_by_key(|tile| {
-            (
-                map.distance(me, *tile),
-                frame.rank(frame.home, doubled(*tile)),
-            )
-        })
-}
-
 /// Whether any visible armed enemy or seen enemy building is within contact
 /// of a member.
 pub(super) fn contact(observation: &ObservationData, members: &[&UnitObs]) -> bool {
@@ -673,13 +652,5 @@ fn margin(difficulty: BotDifficulty) -> u64 {
         BotDifficulty::Standard => 2_000,
         BotDifficulty::Veteran => 1_750,
         BotDifficulty::Prime => 1_500,
-    }
-}
-
-fn run(units: Vec<UnitId>, goal: TilePos) -> Command {
-    Command::Run {
-        units,
-        goal,
-        queue: false,
     }
 }
