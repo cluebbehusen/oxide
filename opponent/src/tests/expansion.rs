@@ -6,7 +6,7 @@ use crate::memory::Memory;
 
 /// A half-turn-symmetric frontier. Each seat has two home nodes, a small safe
 /// field eight tiles out, and a rich field beside the other seat's start.
-const FRONTIER: [&str; 14] = [
+pub(super) const FRONTIER: [&str; 14] = [
     "########################################",
     "############...........................#",
     "#...ss......SS............ss...........#",

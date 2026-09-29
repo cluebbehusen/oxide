@@ -173,7 +173,8 @@ raids, harvest-line harassment by air, team relief, escorts, repair, harvester
 evacuation, emergency and voluntary static defense, Extractor restoration,
 expansion timing, tech prerequisites, memory of failed objectives, a response to
 stalled production, focus fire at Veteran and Prime, and pulling wounded units
-back between fights. It does no other per-unit micro.
+back between fights. It does no other per-unit micro. It builds every building
+kind, reaches every upgrade tier, and trains every unit its faction fields.
 
 ## Difficulty, stance and personality
 

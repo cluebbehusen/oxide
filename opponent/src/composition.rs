@@ -143,6 +143,9 @@ pub(crate) struct Needs {
     enemy: Enemy,
     traits: PersonalityTraits,
     income: u32,
+    /// Units the seat has of each kind, alive, carried or queued, in
+    /// `UnitKind::ALL` order.
+    kinds: [u32; UnitKind::ALL.len()],
 }
 
 /// Per-mille weight of a 0..=100 trait.
@@ -161,6 +164,7 @@ pub(crate) fn needs(
 ) -> Needs {
     let enemy = Enemy::of(observation, memory);
     let mut own = [0_i64; 4];
+    let mut kinds = [0_u32; UnitKind::ALL.len()];
     let owned = observation
         .my_units
         .iter()
@@ -171,6 +175,7 @@ pub(crate) fn needs(
         if let Some(role) = role(kind) {
             own[role as usize] += i64::from(kind.stats().cost);
         }
+        kinds[index(kind)] += 1;
     }
     let army: i64 = own.iter().sum();
     let air = enemy.air as i64;
@@ -196,7 +201,16 @@ pub(crate) fn needs(
         enemy,
         traits,
         income,
+        kinds,
     }
+}
+
+/// `kind`'s position in `UnitKind::ALL`.
+fn index(kind: UnitKind) -> usize {
+    UnitKind::ALL
+        .iter()
+        .position(|each| *each == kind)
+        .expect("every kind is listed")
 }
 
 impl Needs {
@@ -236,12 +250,13 @@ impl Needs {
         if let Some(role) = role(kind) {
             self.need[role as usize] -= i64::from(kind.stats().cost);
         }
+        self.kinds[index(kind)] += 1;
     }
 
     /// A product of coarse per-mille factors: reach against the enemy's
     /// usual reach, durability for the price, covering both of the enemy's
     /// domains, splash against clustered enemies, affordability at the seat's
-    /// income, and personality.
+    /// income, variety within the role, and personality.
     fn suitability(&self, kind: UnitKind, role: Role) -> u64 {
         let stats = kind.stats();
         let reach = match (reach(kind), self.enemy.reach) {
@@ -276,9 +291,32 @@ impl Needs {
             Role::AntiAir => weight(self.traits.fortification),
             Role::AirStrike => weight(self.traits.air),
         };
-        [reach, durability, coverage, splash, affordable]
-            .into_iter()
-            .fold(preference, |score, factor| score * factor / 1_000)
+        [
+            reach,
+            durability,
+            coverage,
+            splash,
+            affordable,
+            self.variety(kind, role),
+        ]
+        .into_iter()
+        .fold(preference, |score, factor| score * factor / 1_000)
+    }
+
+    /// Per mille: more for a kind the seat has few of among its units in
+    /// `role`, less for one that makes up most of them, so a role's other
+    /// kinds get their turn.
+    fn variety(&self, kind: UnitKind, role: Role) -> u64 {
+        let in_role: u64 = UnitKind::ALL
+            .iter()
+            .filter(|each| self::role(**each) == Some(role))
+            .map(|each| u64::from(self.kinds[index(*each)]))
+            .sum();
+        if in_role == 0 {
+            return 1_000;
+        }
+        let share = u64::from(self.kinds[index(kind)]) * 1_000 / in_role;
+        1_200 - 400 * share / 1_000
     }
 
     /// For each role the seat needs but cannot train at all, the cheapest
@@ -374,6 +412,7 @@ mod tests {
                 guile: 50,
             },
             income: 1_000,
+            kinds: [0; UnitKind::ALL.len()],
         }
     }
 
@@ -428,5 +467,54 @@ mod tests {
             .collect();
         memory.observe(&observation);
         assert!(Enemy::of(&observation, &memory).clustered);
+    }
+
+    #[test]
+    fn every_army_unit_gets_its_turn() {
+        use oxide_sim::observation::BuildingObs;
+        use oxide_sim::{BuildingId, Faction, PlayerId, Scenario};
+        let state = Scenario::skirmish().build().unwrap();
+        let producers = [
+            BuildingKind::Foundry,
+            BuildingKind::Fabricator,
+            BuildingKind::Airworks,
+            BuildingKind::Crucible,
+        ];
+        for faction in [Faction::Ferrous, Faction::Cupric] {
+            let mut observation = ObservationData::fog_honest(&state, PlayerId(0));
+            observation.faction = faction;
+            let template = observation.my_buildings[0].clone();
+            for (id, kind) in (900..).zip(&producers[1..]) {
+                observation.my_buildings.push(BuildingObs {
+                    id: BuildingId(id),
+                    kind: *kind,
+                    built: true,
+                    ..template.clone()
+                });
+            }
+            let mut trained = Vec::new();
+            for clustered in [false, true] {
+                for role in ROLES {
+                    let mut needs = needs(None, clustered);
+                    needs.enemy.air = 1_000;
+                    needs.income = 3_000;
+                    needs.need[role as usize] = 100_000;
+                    for _ in 0..12 {
+                        for producer in producers {
+                            if let Some(kind) = needs.choose(&observation, producer, 10_000) {
+                                trained.push(kind);
+                                needs.queued(kind);
+                            }
+                        }
+                    }
+                }
+            }
+            let missing: Vec<UnitKind> = UnitKind::ALL
+                .into_iter()
+                .filter(|kind| role(*kind).is_some() && legal(&observation, *kind))
+                .filter(|kind| !trained.contains(kind))
+                .collect();
+            assert!(missing.is_empty(), "{faction:?} never trains {missing:?}");
+        }
     }
 }

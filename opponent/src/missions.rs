@@ -20,6 +20,7 @@ mod defense;
 mod focus;
 mod lift;
 mod raid;
+mod rival;
 mod scouting;
 mod strike;
 mod support;
@@ -437,7 +438,7 @@ impl Missions {
     }
 
     /// Drops members that are gone, and missions left without members or
-    /// without the Foundry they defend. Units aboard a carrier are alive.
+    /// without the own or allied Foundry they defend. Units aboard a carrier are alive.
     /// Returns the targets of attacks, lifts and strikes wiped out while
     /// committed, so
     /// the seat tries something else for a while.
@@ -470,6 +471,7 @@ impl Missions {
                     Task::Defend { asset, .. } => observation
                         .my_buildings
                         .iter()
+                        .chain(&observation.ally_buildings)
                         .any(|building| building.id == asset),
                     Task::Attack { .. }
                     | Task::Scout { .. }
