@@ -352,7 +352,8 @@ impl Missions {
         let ordered = self.list.windows(2).all(|pair| pair[0].id < pair[1].id);
         // Missions form a few at a time, so a counter far ahead of the tick
         // was not recorded by this seat and could overflow.
-        let exhausted = self.next > (now + 1).saturating_mul(MISSION_CAP as u64);
+        let exhausted =
+            self.next == u64::MAX || self.next > (now + 1).saturating_mul(MISSION_CAP as u64);
         if !ordered || exhausted || self.list.last().is_some_and(|last| last.id >= self.next) {
             return Err("checkpoint mission ids are out of order".into());
         }
