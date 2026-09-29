@@ -8,6 +8,7 @@
 
 use crate::frame::{HomeFrame, doubled, ring};
 use crate::map::{MapModel, UNREACHABLE};
+use crate::memory::Memory;
 use chassis::grid::TilePos;
 use oxide_sim::observation::{ObservationData, UnitObs};
 use oxide_sim::stats::Domain;
@@ -130,15 +131,6 @@ enum AttackPhase {
     Engage { focus: Option<UnitId> },
     Withdraw,
     Recover,
-}
-
-/// A target a mission was wiped out going after.
-pub(crate) enum Lost {
-    /// An attack, lift or strike target, left alone by every such mission
-    /// for a while.
-    Mission(BuildingKind, TilePos),
-    /// A raid target, left alone by raids for a while.
-    Raid(BuildingKind, TilePos),
 }
 
 /// An enemy building a mission goes after.
@@ -412,9 +404,11 @@ impl Mission {
         }
     }
 
-    /// The target of an attack, lift, strike or raid lost while committed to
-    /// it.
-    fn lost_target(&self) -> Option<Lost> {
+    /// Remembers losing every member at `now`: a target an attack, lift or
+    /// strike was committed to is given up for a while, a raid's target is
+    /// left to other raids for a while, and a scout's point counts as seen, so
+    /// the next scout is not sent the same way at once.
+    fn record_loss(&self, memory: &mut Memory, now: u64) {
         match self.task {
             Task::Attack {
                 target,
@@ -427,12 +421,13 @@ impl Mission {
             | Task::Strike {
                 target,
                 phase: StrikePhase::Travel | StrikePhase::Engage { .. },
-            } => Some(Lost::Mission(target.building, target.anchor)),
+            } => memory.abandon(target.building, target.anchor, now),
             Task::Raid {
                 target,
                 phase: RaidPhase::Travel | RaidPhase::Strike,
-            } => Some(Lost::Raid(target.building, target.anchor)),
-            _ => None,
+            } => memory.raid(target.building, target.anchor, now),
+            Task::Scout { point } => memory.saw(usize::from(point), now),
+            _ => {}
         }
     }
 }
@@ -455,11 +450,9 @@ impl Missions {
     }
 
     /// Drops members that are gone, and missions left without members or
-    /// without the own or allied Foundry they defend. Units aboard a carrier are alive.
-    /// Returns the targets of attacks, lifts and strikes wiped out while
-    /// committed, so
-    /// the seat tries something else for a while.
-    pub(crate) fn prune(&mut self, observation: &ObservationData) -> Vec<Lost> {
+    /// without the own or allied Foundry they defend, remembering what the
+    /// lost ones were after. Units aboard a carrier are alive.
+    pub(crate) fn prune(&mut self, observation: &ObservationData, memory: &mut Memory) {
         let mut carried: Vec<UnitId> = observation
             .my_carried_units
             .iter()
@@ -476,12 +469,9 @@ impl Missions {
         for mission in &mut self.list {
             mission.units.retain(alive);
         }
-        let lost = self
-            .list
-            .iter()
-            .filter(|mission| mission.units.is_empty())
-            .filter_map(Mission::lost_target)
-            .collect();
+        for mission in self.list.iter().filter(|mission| mission.units.is_empty()) {
+            mission.record_loss(memory, observation.tick);
+        }
         self.list.retain(|mission| {
             !mission.units.is_empty()
                 && match mission.task {
@@ -497,7 +487,6 @@ impl Missions {
                     | Task::Raid { .. } => true,
                 }
         });
-        lost
     }
 
     /// Units no mission holds, by id. A defense may also `borrow` units that

@@ -211,7 +211,9 @@ goes to the most valuable stale point, hostile starts first and then sites
 nearer an enemy than home, and moves on to the next when it sees it. The scout
 is a free Kestrel or Gnat, or else a Scuttler that can walk there. A seat
 without either trains one: its air scout once it has an Airworks, a Scuttler
-before.
+before. An air scout flies around known anti-air when the straight line crosses
+it, and a point whose scout was lost on the way counts as seen, so the next
+scout waits until it is stale again.
 
 ## Support
 
