@@ -159,9 +159,11 @@ while the bot defends:
   dedicated anti-air unit or a Flak Turret) within 1,500 ticks of first seeing
   them.
 - **Siege:** Bombards shell the base with a Kestrel spotting; by the deadline
-  they must be destroyed or out of range.
+  they must be destroyed or out of range. Killing only the spotter does not
+  pass.
 - **Lift drop:** a Skyhook sets four Sentinels down beside the harvest line;
-  every landed unit must be destroyed.
+  every landed unit must be destroyed, unless the Skyhook falls before setting
+  anyone down.
 
 `oxide-bot` passes all four. Scenario files are JSON: the staged scenario, the
 defender and attacker seats, a deadline, the script (unit ids follow scenario

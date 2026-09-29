@@ -59,9 +59,11 @@ pub enum Check {
         within: u64,
     },
     /// Every attacker indirect-fire unit is destroyed or out of its range of
-    /// the defender's buildings.
+    /// the defender's buildings. Killing only the spotter does not pass:
+    /// artillery left in range fires again once anything spots for it.
     SilencesArtillery,
-    /// Every attacker unit that was carried and set down is destroyed.
+    /// Every attacker unit that was carried and set down is destroyed, or the
+    /// carrier fell before setting anyone down.
     ClearsLanding,
 }
 
@@ -152,6 +154,9 @@ pub fn run(
         watch.observe(&state, defender, attacker);
     }
     let (passed, detail) = watch.verdict(&state, defender, attacker)?;
+    if let Some(replay) = replay.as_mut() {
+        replay.meta.ticks = Some(state.current_tick());
+    }
     let outcome = PressureOutcome {
         name: pressure.name.clone(),
         controller,
@@ -168,6 +173,7 @@ struct Watch {
     check: Check,
     first_air_sighting: Option<u64>,
     answered_air: Option<u64>,
+    carriers: Vec<UnitId>,
     carried: Vec<UnitId>,
     landed: Vec<UnitId>,
 }
@@ -178,6 +184,7 @@ impl Watch {
             check,
             first_air_sighting: None,
             answered_air: None,
+            carriers: Vec::new(),
             carried: Vec::new(),
             landed: Vec::new(),
         }
@@ -205,6 +212,9 @@ impl Watch {
             }
             Check::ClearsLanding => {
                 for carrier in state.units().iter().filter(|unit| unit.player == attacker) {
+                    if !carrier.cargo.is_empty() && !self.carriers.contains(&carrier.id) {
+                        self.carriers.push(carrier.id);
+                    }
                     for passenger in &carrier.cargo {
                         if !self.carried.contains(&passenger.id) {
                             self.carried.push(passenger.id);
@@ -292,11 +302,26 @@ impl Watch {
                     },
                 )
             }
-            Check::ClearsLanding => {
+            Check::ClearsLanding if self.landed.is_empty() => {
+                let shot_down = !self.carriers.is_empty()
+                    && self
+                        .carriers
+                        .iter()
+                        .all(|id| state.unit(*id).is_none_or(|unit| unit.hp == 0));
                 ensure!(
-                    !self.landed.is_empty(),
+                    shot_down,
                     "no carried unit was ever set down; the scenario is broken"
                 );
+                (
+                    has_foundry,
+                    if has_foundry {
+                        "the carrier fell before setting anyone down".into()
+                    } else {
+                        "the Foundry fell".into()
+                    },
+                )
+            }
+            Check::ClearsLanding => {
                 let alive = self
                     .landed
                     .iter()
@@ -460,6 +485,34 @@ mod tests {
                 .verdict(&state, defender, attacker)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn a_carrier_downed_before_landing_passes_and_one_still_flying_is_an_error() {
+        let pressure = named("lift drop");
+        let state = pressure.scenario.build().unwrap();
+        let (defender, attacker) = (PlayerId(pressure.defender), PlayerId(pressure.attacker));
+        let skyhook = state
+            .units()
+            .iter()
+            .find(|unit| unit.kind == UnitKind::Skyhook)
+            .unwrap()
+            .id;
+        let mut watch = Watch::new(Check::ClearsLanding);
+        watch.carriers.push(skyhook);
+        assert!(watch.verdict(&state, defender, attacker).is_err());
+        watch.carriers = vec![UnitId(u32::MAX)];
+        let (passed, detail) = watch.verdict(&state, defender, attacker).unwrap();
+        assert!(passed, "{detail}");
+    }
+
+    #[test]
+    fn a_recorded_replay_lasts_until_the_run_stopped() {
+        let mut pressure = named("early rush");
+        pressure.deadline = 36;
+        let (outcome, replay) = run(&pressure, BotController::Opponent, true).unwrap();
+        assert_eq!(outcome.ticks, 36);
+        assert_eq!(replay.unwrap().meta.ticks, Some(36));
     }
 
     #[test]
