@@ -251,6 +251,26 @@ fn a_lift_takes_no_more_carriers_than_one_decision_can_launch() {
 }
 
 #[test]
+fn an_army_no_lift_could_carry_buys_no_carriers() {
+    let mut scenario = strait();
+    scenario.players[0].scrap = 1_000;
+    scenario
+        .units
+        .retain(|unit| !matches!(unit.kind, UnitKind::Skyhook | UnitKind::Sentinel));
+    for y in 8..14 {
+        scenario.units.push(unit(0, UnitKind::Buzzard, 9, y));
+    }
+    let state = scenario.build().unwrap();
+    let commands = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
+    assert!(
+        trains(&commands)
+            .iter()
+            .all(|(_, kind)| *kind != UnitKind::Skyhook),
+        "aircraft ride no carrier: {commands:?}"
+    );
+}
+
+#[test]
 fn remembered_anti_air_sends_the_carriers_around_it() {
     let mut scenario = strait();
     scenario.units.push(unit(1, UnitKind::Flakhound, 27, 11));
