@@ -7,11 +7,37 @@
 use oxide_bot::checkpoint::BotCheckpoint;
 use oxide_bot::observer::PhaseObserver;
 use oxide_bot::{DecisionTrace, PublicMapBriefing, SeatBot, TracedBotAct};
-use oxide_opponent::{Opponent, OwnEvents};
+use oxide_opponent::{MapModel, Opponent, OwnEvents};
 use oxide_sim::scenario::{BotConfig, BotController, ScenarioError};
 use oxide_sim::{PlayerCommand, PlayerId, Scenario, State, TickReport};
 use serde::{Deserialize, Serialize};
+use std::cell::OnceCell;
 use std::sync::Arc;
+
+/// The `oxide-opponent` map model a roster's seats share. It is built from the
+/// scenario for the first such seat, so a roster without one never builds it.
+pub struct OpponentMap<'a> {
+    scenario: &'a Scenario,
+    model: OnceCell<Arc<MapModel>>,
+}
+
+impl<'a> OpponentMap<'a> {
+    /// A holder for `scenario`'s model. Nothing is built yet.
+    pub fn new(scenario: &'a Scenario) -> Self {
+        Self {
+            scenario,
+            model: OnceCell::new(),
+        }
+    }
+
+    fn model(&self) -> Result<Arc<MapModel>, ScenarioError> {
+        if let Some(model) = self.model.get() {
+            return Ok(Arc::clone(model));
+        }
+        let model = Arc::new(MapModel::from_scenario(self.scenario)?);
+        Ok(Arc::clone(self.model.get_or_init(|| model)))
+    }
+}
 
 /// A configured bot seat as the shell and driver run it.
 #[derive(Debug, Clone)]
@@ -78,16 +104,17 @@ impl SeatController {
         player: PlayerId,
         config: BotConfig,
         public_map: &Arc<PublicMapBriefing>,
-    ) -> Self {
-        match config.controller {
+        opponent_map: &OpponentMap<'_>,
+    ) -> Result<Self, ScenarioError> {
+        Ok(match config.controller {
             BotController::Scripted => {
                 Self::Scripted(SeatBot::scripted(player, config, Arc::clone(public_map)))
             }
             BotController::Opponent => Self::Opponent {
-                controller: Opponent::new(player, config),
+                controller: Opponent::new(player, config, opponent_map.model()?),
                 events: OwnEvents::default(),
             },
-        }
+        })
     }
 
     /// The seat this controller drives.
@@ -165,19 +192,24 @@ impl SeatController {
     }
 
     /// Restores a validated controller at a completed simulation boundary.
+    /// `opponent_map` holds the model for the same scenario.
     pub fn restore(
         checkpoint: &ControllerCheckpoint,
         scenario: &Scenario,
         state: &State,
+        opponent_map: &OpponentMap<'_>,
     ) -> Result<Self, String> {
         match checkpoint {
             ControllerCheckpoint::Scripted(checkpoint) => {
                 SeatBot::from_checkpoint(checkpoint, scenario, state).map(Self::Scripted)
             }
             ControllerCheckpoint::Opponent { controller, events } => {
-                Opponent::restore(controller, scenario, state).map(|controller| Self::Opponent {
-                    controller,
-                    events: events.clone(),
+                let map = opponent_map.model().map_err(|error| error.to_string())?;
+                Opponent::restore(controller, scenario, state, map).map(|controller| {
+                    Self::Opponent {
+                        controller,
+                        events: events.clone(),
+                    }
                 })
             }
         }
@@ -218,10 +250,13 @@ pub fn seat_controllers(scenario: &Scenario) -> Result<Vec<SeatController>, Scen
     {
         public_map.prepare_navigation();
     }
-    Ok(configured
+    let opponent_map = OpponentMap::new(scenario);
+    configured
         .into_iter()
-        .map(|(player, config)| SeatController::configured(player, config, &public_map))
-        .collect())
+        .map(|(player, config)| {
+            SeatController::configured(player, config, &public_map, &opponent_map)
+        })
+        .collect()
 }
 
 /// Skirmish with an `oxide-opponent` in seat zero and an `oxide-bot` in seat one.
@@ -264,7 +299,11 @@ mod tests {
             ]
         );
         let mut scripted = oxide_bot::seat_bots(&scenario).unwrap();
-        let mut opponent = Opponent::new(PlayerId(0), scenario.players[0].bot_config.unwrap());
+        let mut opponent = Opponent::new(
+            PlayerId(0),
+            scenario.players[0].bot_config.unwrap(),
+            Arc::new(MapModel::from_scenario(&scenario).unwrap()),
+        );
         assert!(seats.iter().all(|seat| seat.decision_due(&state)));
         assert_eq!(
             seats[0].act(&state),
@@ -282,7 +321,11 @@ mod tests {
         let state = scenario.build().unwrap();
         let mut seats = seat_controllers(&scenario).unwrap();
         let mut scripted = oxide_bot::seat_bots(&scenario).unwrap();
-        let mut opponent = Opponent::new(PlayerId(0), scenario.players[0].bot_config.unwrap());
+        let mut opponent = Opponent::new(
+            PlayerId(0),
+            scenario.players[0].bot_config.unwrap(),
+            Arc::new(MapModel::from_scenario(&scenario).unwrap()),
+        );
 
         let (commands, trace) = seats[1].act_traced(&state);
         let direct = scripted[0].act_traced(&state);
@@ -322,8 +365,10 @@ mod tests {
         );
         assert!(json[1]["scripted"].is_object());
         let decoded: Vec<ControllerCheckpoint> = serde_json::from_value(json).unwrap();
+        let opponent_map = OpponentMap::new(&scenario);
         for (seat, checkpoint) in seats.iter().zip(&decoded) {
-            let mut restored = SeatController::restore(checkpoint, &scenario, &state).unwrap();
+            let mut restored =
+                SeatController::restore(checkpoint, &scenario, &state, &opponent_map).unwrap();
             assert_eq!(
                 (restored.player(), restored.controller()),
                 (seat.player(), seat.controller())
@@ -333,9 +378,27 @@ mod tests {
 
         let mut swapped = scenario.clone();
         swapped.players.swap(0, 1);
+        let swapped_map = OpponentMap::new(&swapped);
         for checkpoint in &decoded {
-            assert!(SeatController::restore(checkpoint, &swapped, &state).is_err());
+            assert!(SeatController::restore(checkpoint, &swapped, &state, &swapped_map).is_err());
         }
+    }
+
+    #[test]
+    fn opponent_seats_share_one_map_model_built_on_first_use() {
+        let scenario = mixed_skirmish();
+        let opponent_map = OpponentMap::new(&scenario);
+        assert!(opponent_map.model.get().is_none());
+        let first = opponent_map.model().unwrap();
+        assert!(Arc::ptr_eq(&first, &opponent_map.model().unwrap()));
+
+        let mut scripted_only = scenario.clone();
+        scripted_only.players[0].bot_config = None;
+        let opponent_map = OpponentMap::new(&scripted_only);
+        let public_map = Arc::new(PublicMapBriefing::from_scenario(&scripted_only).unwrap());
+        let config = scripted_only.players[1].bot_config.unwrap();
+        SeatController::configured(PlayerId(1), config, &public_map, &opponent_map).unwrap();
+        assert!(opponent_map.model.get().is_none());
     }
 
     #[test]

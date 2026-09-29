@@ -7,7 +7,7 @@
 use anyhow::{Context, Result, ensure};
 use oxide_bot::{PublicMapBriefing, ResolvedProfile};
 use oxide_kit::GameReplay;
-use oxide_kit::controller::{SeatController, SeatTrace};
+use oxide_kit::controller::{OpponentMap, SeatController, SeatTrace};
 use oxide_sim::scenario::{BotConfig, BotController, BotDifficulty, BotStance};
 use oxide_sim::{Event, Faction, GameResult, PlayerId, SIM_VERSION, Scenario};
 use serde::{Deserialize, Serialize};
@@ -122,8 +122,10 @@ impl EvaluationController {
         self,
         player: PlayerId,
         public_map: &Arc<PublicMapBriefing>,
-    ) -> SeatController {
-        SeatController::configured(player, self.config(), public_map)
+        opponent_map: &OpponentMap<'_>,
+    ) -> Result<SeatController> {
+        SeatController::configured(player, self.config(), public_map, opponent_map)
+            .context("building an evaluation seat's map model")
     }
 }
 
@@ -267,16 +269,17 @@ impl EvaluationPlan {
             PublicMapBriefing::from_scenario(&self.scenario)
                 .context("building evaluation public map briefing")?,
         );
-        Ok(self
-            .controllers
+        let opponent_map = OpponentMap::new(&self.scenario);
+        self.controllers
             .iter()
             .copied()
             .enumerate()
             .filter_map(|(seat, controller)| {
-                controller
-                    .map(|controller| controller.seat_controller(PlayerId(seat as u8), &public_map))
+                controller.map(|controller| {
+                    controller.seat_controller(PlayerId(seat as u8), &public_map, &opponent_map)
+                })
             })
-            .collect())
+            .collect()
     }
 }
 

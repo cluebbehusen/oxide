@@ -12,12 +12,14 @@ while reusable game-independent primitives stay in `chassis`.
 
 - `controller` hosts `oxide-bot` and `oxide-opponent` behind one
   `SeatController` enum. `seat_controllers` builds each configured seat's
-  selected controller in seat order from one shared public map briefing; its
-  checkpoints and decision traces keep each controller's own format. Each
-  `oxide-opponent` seat also holds a bounded buffer of its own `OrderStalled`
-  and `CommandRejected` events. Hosts call `record_events` after every tick that
-  runs with controllers, fast-forwards included; the seat's next decision
-  consumes the buffer and its checkpoint saves it. `oxide-bot` seats have none.
+  selected controller in seat order from one shared public map briefing, and
+  `oxide-opponent` seats share one map model that `OpponentMap` builds only for
+  a roster that includes one. Checkpoints and decision traces keep each
+  controller's own format. Each `oxide-opponent` seat also holds a bounded
+  buffer of its own `OrderStalled` and `CommandRejected` events. Hosts call
+  `record_events` after every tick that runs with controllers, fast-forwards
+  included; the seat's next decision consumes the buffer and its checkpoint
+  saves it. `oxide-bot` seats have none.
 - `checkpoint` captures a completed tick boundary: scenario, validated world,
   canonical controller roster, pending inputs, and optional incremental
   statistics. Each seat's controller must match the scenario's configuration.

@@ -6,19 +6,26 @@ this crate, and the
 [oxide-opponent skill](../.agents/skills/oxide-opponent/SKILL.md) holds its
 working rules.
 
-This crate is currently a stub. On each decision it sends idle Harvesters to the
-nearest known scrap node and has each idle Foundry train a Harvester, up to six
-per Foundry, or otherwise a Sentinel, when the decision's running total covers
-the price. It does not attack, scout, build or expand.
+Each decision spends through one running total in a fixed precedence:
+emergencies, then workers, then production. A seat with no Harvester alive or
+queued queues one even behind other work. Each built Foundry works the four
+nearest live known scrap nodes its ground can reach within twelve tiles, none
+shared with another Foundry, and idle Foundries train Harvesters until there are
+two per worked node. Idle Harvesters go to the reachable worked node with the
+fewest Harvesters. Idle Foundries then train Sentinels. Difficulty caps the unit
+orders one decision issues; purchases do not count against that allowance. It
+does not yet save for investments, build, attack, scout or expand.
 
 ## Boundary
 
 The crate depends on `oxide-sim` and `chassis`, never on `oxide-bot`. It reads
 only its seat's fog-honest `ObservationData` and its own order events, and emits
-ordinary `PlayerCommand`s. It decides on its difficulty's interval and stays
-silent once the match is decided, after its seat surrenders, or while it has no
-built Foundry. Equal-distance choices are broken in the seat's home-relative
-frame, so mirrored seats make mirrored choices.
+ordinary `PlayerCommand`s. Its seats also share one immutable `MapModel`, built
+once per match from the scenario's public map: ground components and the
+authored starts. It decides on its difficulty's interval and stays silent once
+the match is decided, after its seat surrenders, or while it has no built
+Foundry. Equal-distance choices are broken in a frame anchored on the seat's
+authored start, so mirrored seats make mirrored choices.
 
 ## Own events
 
@@ -39,9 +46,10 @@ headless, saved and recovered sessions build it from the same scenario data.
 
 `Checkpoint` holds only the seat; the host saves the seat's `OwnEvents` beside
 it. Restoring it checks that the seat is a configured `oxide-opponent` bot in
-the bound scenario and world, and rebuilds the profile and decision interval
-from the scenario. A saved buffer over the cap does not load.
+the bound scenario and world, rebuilds the profile and decision interval from
+the scenario, and takes the map model built from it. A saved buffer over the cap
+does not load.
 
 `Opponent::act_traced` returns a `Trace` of the decision's tick, seat, bank,
-received own events, committed spending, purchases and unit-order count. Traces
-are diagnostics only.
+received own events, committed spending, purchases, unit-order count and
+allowance. Traces are diagnostics only.

@@ -12,7 +12,7 @@
 
 use anyhow::{Context, Result};
 use oxide_bot::{Observation, Orientation};
-use oxide_kit::controller::{SeatController, seat_controllers};
+use oxide_kit::controller::{SeatController, record_events, seat_controllers};
 use oxide_protocol::hash_hex;
 use oxide_sim::observation::ObservationData;
 use oxide_sim::scenario::{BotConfig, BotController, BotDifficulty, BotStance};
@@ -316,8 +316,9 @@ pub fn measure(workload: &str, scenario: &Scenario, ticks: u64) -> Result<CostRe
         }
         command_hash = chassis::hash::state_hash(&(command_hash, tick, &commands));
         let start = Instant::now();
-        state.tick(&commands);
+        let report = state.tick(&commands);
         simulation.push(nanos(start.elapsed()));
+        record_events(&mut seats, &report);
     }
     let controllers = BotController::ALL
         .into_iter()

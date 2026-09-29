@@ -71,8 +71,8 @@ exact-allocation, forecasting or planning-progress requirements.
   opponent-only runs end at `--ticks`.
 - **Traces:** `--decision-trace-out <file>`, with `--out` and `--candidate`,
   writes one JSONL row per decision. Opponent seats' rows carry this crate's
-  `Trace`: tick, player, bank, received own events, spent, purchases and
-  unit-order count.
+  `Trace`: tick, player, bank, received own events, spent, purchases, unit-order
+  count and allowance.
 
 ## Report at handoff
 
