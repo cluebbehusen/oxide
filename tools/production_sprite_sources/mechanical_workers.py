@@ -293,7 +293,7 @@ def sapper(faction, move=0, action=0):
     for side in (-1, 1):
         for i, y in enumerate((45, 91)):
             shift = (0, 5, -5)[move] * (1 if (i + (side == 1)) % 2 else -1)
-            spread = 5 if action else 0
+            spread = (0, 2, 4, 5)[action]
             leg(
                 d,
                 (64 + side * 21, y),
@@ -350,7 +350,7 @@ def sapper(faction, move=0, action=0):
     box(d, (60, 100, 68, 102), SCRAP_EDGE if action else DARK)
     base = finish(im)
     im, d = canvas()
-    reach = 4 if action else 0
+    reach = (0, 1, 3, 4)[action]
     for x in (51, 77):
         line(d, [(x, 44), (x, 24 - reach)], VOID, 6)
         line(d, [(x, 41), (x, 25 - reach)], IRON, 3)

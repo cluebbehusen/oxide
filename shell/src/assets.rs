@@ -17,6 +17,8 @@ pub struct Sprites {
     warden_rig: Option<UnitRig>,
     lancer_rig: Option<UnitRig>,
     buzzard_rig: Option<UnitRig>,
+    wisp_rig: Option<UnitRig>,
+    skyhook_rig: Option<UnitRig>,
     bombard_spades: Option<[Rect; 5]>,
     scout_radar: Option<Rect>,
     array_rig: Option<ArrayRig>,
@@ -393,7 +395,6 @@ const ACTION_SUFFIXES_9: [&str; 9] = [
     "_action1", "_action2", "_action3", "_action4", "_action5", "_action6", "_action7", "_action8",
     "_action9",
 ];
-const WORK_SUFFIXES_3: [&str; 3] = ["_work1", "_work2", "_work3"];
 const WORK_SUFFIXES_4: [&str; 4] = ["_work1", "_work2", "_work3", "_work4"];
 const WORK_SUFFIXES_6: [&str; 6] = ["_work1", "_work2", "_work3", "_work4", "_work5", "_work6"];
 const WORK_SUFFIXES_12: [&str; 12] = [
@@ -648,13 +649,13 @@ fn building_art(rects: &Manifest) -> Result<Vec<BuildingArt>> {
 
 fn building_work_suffixes(kind: BuildingKind) -> &'static [&'static str] {
     match kind {
-        BuildingKind::Foundry
-        | BuildingKind::Fabricator
-        | BuildingKind::RepairBay
-        | BuildingKind::Extractor => &WORK_SUFFIXES_4,
+        BuildingKind::Fabricator | BuildingKind::RepairBay | BuildingKind::Extractor => {
+            &WORK_SUFFIXES_4
+        }
         BuildingKind::Array => &WORK_SUFFIXES_6,
         BuildingKind::Reclaimer => &WORK_SUFFIXES_12,
-        BuildingKind::Crucible => &WORK_SUFFIXES_3,
+        BuildingKind::Crucible => &WORK_SUFFIXES_4,
+        BuildingKind::Foundry => &WORK_SUFFIXES_12,
         BuildingKind::Airworks => &WORK_SUFFIXES_4,
         BuildingKind::Turret
         | BuildingKind::FlakTurret
@@ -708,6 +709,8 @@ fn atlas_keys() -> Vec<String> {
         ("warden", 4),
         ("lancer", 6),
         ("buzzard", 4),
+        ("wisp", 4),
+        ("skyhook", 4),
     ] {
         for suffix in ["", "_move1", "_move2"] {
             keys.extend(variant_keys(&format!("rig_{stem}_hull"), suffix));
@@ -888,6 +891,8 @@ impl Sprites {
             warden_rig: unit_rig(&rects, "warden", 4)?,
             lancer_rig: unit_rig(&rects, "lancer", 6)?,
             buzzard_rig: unit_rig(&rects, "buzzard", 4)?,
+            wisp_rig: unit_rig(&rects, "wisp", 4)?,
+            skyhook_rig: unit_rig(&rects, "skyhook", 4)?,
             bombard_spades: bombard_spade_rows(&rects)?,
             array_rig: array_rig(&rects)?,
             scout_radar: rects
@@ -1436,6 +1441,8 @@ impl Sprites {
             UnitKind::Warden => self.warden_rig.as_ref(),
             UnitKind::Lancer => self.lancer_rig.as_ref(),
             UnitKind::Buzzard => self.buzzard_rig.as_ref(),
+            UnitKind::Wisp => self.wisp_rig.as_ref(),
+            UnitKind::Skyhook => self.skyhook_rig.as_ref(),
             _ => None,
         }
     }
@@ -1711,6 +1718,8 @@ mod tests {
             ("warden", 4),
             ("lancer", 6),
             ("buzzard", 4),
+            ("wisp", 4),
+            ("skyhook", 4),
         ] {
             assert!(unit_rig(&manifest(), stem, actions).unwrap().is_some());
             let mut atlas = Manifest::default();
