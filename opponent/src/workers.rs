@@ -18,8 +18,42 @@ const HARVESTERS_PER_NODE: usize = 2;
 /// tile of octile distance.
 const HAUL_REACH: i64 = 120;
 
+/// The nodes the seat's Foundries work and the Harvesters it has for them.
+pub(crate) struct Staffing {
+    worked: Vec<TilePos>,
+    harvesters: usize,
+}
+
+impl Staffing {
+    fn wanted(&self) -> usize {
+        self.worked.len() * HARVESTERS_PER_NODE
+    }
+
+    /// Harvesters as a per-mille share of those wanted.
+    pub(crate) fn saturation(&self) -> u32 {
+        let wanted = self.wanted();
+        if wanted == 0 {
+            return 1_000;
+        }
+        (self.harvesters.min(wanted) * 1_000 / wanted) as u32
+    }
+}
+
+/// Counts the worked nodes and the Harvesters alive, carried or queued.
+pub(crate) fn staffing(
+    observation: &ObservationData,
+    map: &MapModel,
+    frame: HomeFrame,
+    foundries: &[Foundry<'_>],
+) -> Staffing {
+    Staffing {
+        worked: worked_nodes(observation, map, frame, foundries),
+        harvesters: harvesters(observation),
+    }
+}
+
 /// With no Harvester alive or queued, the nearest Foundry queues one even
-/// behind other work.
+/// behind other work, from protected scrap if it must.
 pub(crate) fn recover(
     observation: &ObservationData,
     foundries: &[Foundry<'_>],
@@ -29,24 +63,24 @@ pub(crate) fn recover(
         return;
     }
     if let Some(foundry) = foundries.first() {
-        ledger.train(foundry.building.id, UnitKind::Harvester);
+        ledger.train_urgently(foundry.building.id, UnitKind::Harvester);
     }
 }
 
-/// Trains Harvesters at idle Foundries up to two per worked node, then sends
-/// idle Harvesters to the least-worked node they can reach.
+/// Trains Harvesters at idle Foundries up to two per worked node, sends a
+/// Harvester to each unattended construction site, then sends idle
+/// Harvesters to the least-worked node they can reach.
 pub(crate) fn run(
     observation: &ObservationData,
     map: &MapModel,
     frame: HomeFrame,
     foundries: &[Foundry<'_>],
+    staffing: &Staffing,
     ledger: &mut Ledger,
 ) {
-    let worked = worked_nodes(observation, map, frame, foundries);
-    let wanted = worked.len() * HARVESTERS_PER_NODE;
-    let mut count = harvesters(observation) + ledger.queued(UnitKind::Harvester);
+    let mut count = staffing.harvesters + ledger.queued(UnitKind::Harvester);
     for foundry in foundries {
-        if count >= wanted {
+        if count >= staffing.wanted() {
             break;
         }
         if foundry.idle
@@ -56,7 +90,67 @@ pub(crate) fn run(
             count += 1;
         }
     }
-    assign_idle(observation, map, frame, &worked, ledger);
+    resume_sites(observation, map, frame, ledger);
+    assign_idle(observation, map, frame, &staffing.worked, ledger);
+}
+
+/// The nearest Harvester to `centre` that stands on the same ground as
+/// `site`, is not constructing, and has no work from this decision yet.
+pub(crate) fn builder(
+    observation: &ObservationData,
+    map: &MapModel,
+    frame: HomeFrame,
+    site: TilePos,
+    centre: (i64, i64),
+    ledger: &Ledger,
+) -> Option<UnitId> {
+    let ground = map.component(site)?;
+    observation
+        .my_units
+        .iter()
+        .filter(|unit| {
+            unit.kind == UnitKind::Harvester
+                && unit.site.is_none()
+                && unit.founding.is_none()
+                && map.component(unit.tile) == Some(ground)
+                && !ledger.employs(unit.id)
+        })
+        .min_by_key(|unit| (frame.rank(centre, doubled(unit.tile)), unit.id))
+        .map(|unit| unit.id)
+}
+
+/// Sends the nearest free Harvester to every paid base-tier site nobody is
+/// building. Upgrades rebuild themselves and provisional scaffolds already
+/// have their founder.
+fn resume_sites(
+    observation: &ObservationData,
+    map: &MapModel,
+    frame: HomeFrame,
+    ledger: &mut Ledger,
+) {
+    for site in &observation.my_buildings {
+        let attended = observation
+            .my_units
+            .iter()
+            .any(|unit| unit.site == Some(site.id));
+        if site.built || site.provisional || site.tier > 0 || attended {
+            continue;
+        }
+        let centre = footprint_centre(site.kind, site.anchor);
+        let Some(builder) = builder(observation, map, frame, site.anchor, centre, ledger) else {
+            continue;
+        };
+        let command = Command::Build {
+            units: vec![builder],
+            kind: site.kind,
+            anchor: site.anchor,
+            queue: false,
+            defer: false,
+        };
+        if !ledger.order(command) {
+            return;
+        }
+    }
 }
 
 /// Harvesters alive, carried or queued.
@@ -135,7 +229,7 @@ fn assign_idle(
     let mut idle: Vec<_> = observation
         .my_units
         .iter()
-        .filter(|unit| unit.idle && unit.kind == UnitKind::Harvester)
+        .filter(|unit| unit.idle && unit.kind == UnitKind::Harvester && !ledger.employs(unit.id))
         .collect();
     idle.sort_by_key(|unit| (frame.rank(frame.home, doubled(unit.tile)), unit.id));
     let mut assignments: Vec<(TilePos, UnitId)> = Vec::new();

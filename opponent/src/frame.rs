@@ -33,14 +33,20 @@ impl HomeFrame {
                 .min_by_key(|building| building.id)
                 .map(|building| building.anchor)
         })?;
+        Some(Self::at(
+            anchor,
+            observation.map_width,
+            observation.map_height,
+        ))
+    }
+
+    /// The frame around a Foundry at `anchor` on a map of the given size.
+    pub(crate) fn at(anchor: TilePos, width: i32, height: i32) -> Self {
         let home = footprint_centre(BuildingKind::Foundry, anchor);
-        Some(Self {
+        Self {
             home,
-            radial: (
-                home.0 - i64::from(observation.map_width),
-                home.1 - i64::from(observation.map_height),
-            ),
-        })
+            radial: (home.0 - i64::from(width), home.1 - i64::from(height)),
+        }
     }
 
     /// Ranks `to` as seen from `from`, both in doubled coordinates. A home

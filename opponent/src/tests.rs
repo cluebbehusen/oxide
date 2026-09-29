@@ -7,6 +7,9 @@ use oxide_sim::scenario::{
 use oxide_sim::{BuildingId, Command, Event, Faction, Scenario, StallReason, UnitId, UnitKind};
 use std::sync::Arc;
 
+mod placement;
+mod saving;
+
 /// A half-turn-symmetric arena. Each seat's Harvesters stand equally far from
 /// their two nearby scrap nodes, so the split depends on the tie-break.
 const ARENA: [&str; 12] = [
@@ -180,12 +183,14 @@ fn a_staged_foundry_spreads_its_harvesters_and_trains_toward_saturation() {
             bank: 200,
             events: Vec::new(),
             spent: UnitKind::Harvester.stats().cost,
-            purchases: vec![Purchase {
+            purchases: vec![Purchase::Train {
                 building: foundry,
-                kind: UnitKind::Harvester,
+                unit: UnitKind::Harvester,
             }],
             unit_orders: 2,
             allowance: 6,
+            target: None,
+            protected: 0,
         })
     );
     let report = state.tick(&commands);
@@ -575,9 +580,9 @@ fn checkpoints_round_trip_and_restore_only_opponent_seats() {
     let state = scenario.build().unwrap();
     let opponent = seat(&scenario, 1);
     let checkpoint = opponent.checkpoint();
-    let json = serde_json::to_string(&checkpoint).unwrap();
-    assert_eq!(json, r#"{"player":1}"#);
-    let decoded: Checkpoint = serde_json::from_str(&json).unwrap();
+    let json = serde_json::to_value(&checkpoint).unwrap();
+    assert_eq!(json["player"], 1);
+    let decoded: Checkpoint = serde_json::from_value(json.clone()).unwrap();
     assert_eq!(decoded, checkpoint);
     let mut restored = Opponent::restore(&decoded, &scenario, &state, map(&scenario)).unwrap();
     assert_eq!(restored.player(), opponent.player());
@@ -586,13 +591,16 @@ fn checkpoints_round_trip_and_restore_only_opponent_seats() {
         restored.act(&state, &mut OwnEvents::default()),
         opponent.clone().act(&state, &mut OwnEvents::default())
     );
-    assert!(serde_json::from_str::<Checkpoint>(r#"{"player":1,"memory":[]}"#).is_err());
+    let mut unknown = json;
+    unknown["plans"] = serde_json::json!([]);
+    assert!(serde_json::from_value::<Checkpoint>(unknown).is_err());
 
     let model = map(&scenario);
     let rejected = |scenario: &Scenario, player: u8| {
         Opponent::restore(
             &Checkpoint {
                 player: PlayerId(player),
+                ..checkpoint.clone()
             },
             scenario,
             &state,
