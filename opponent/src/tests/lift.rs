@@ -231,6 +231,46 @@ fn a_severed_seat_lifts_its_army_across_and_takes_the_target() {
 }
 
 #[test]
+fn a_lift_takes_no_more_carriers_than_one_decision_can_launch() {
+    let mut scenario = strait();
+    for (x, y) in [(10, 4), (10, 19), (11, 6), (11, 17)] {
+        scenario.units.push(unit(0, UnitKind::Skyhook, x, y));
+    }
+    for x in 2..10 {
+        scenario.units.push(unit(0, UnitKind::Sentinel, x, 9));
+        scenario.units.push(unit(0, UnitKind::Sentinel, x, 14));
+    }
+    let mut state = scenario.build().unwrap();
+    let mut opponent = seat(&scenario, 0);
+    let history = until_phase(&mut opponent, &mut state, Phase::Fly);
+    let carriers = loads(&history).len();
+    assert!(
+        (1..=4).contains(&carriers),
+        "six Skyhooks stand ready, but a Standard decision's six orders launch four: {carriers}"
+    );
+}
+
+#[test]
+fn an_army_no_lift_could_carry_buys_no_carriers() {
+    let mut scenario = strait();
+    scenario.players[0].scrap = 1_000;
+    scenario
+        .units
+        .retain(|unit| !matches!(unit.kind, UnitKind::Skyhook | UnitKind::Sentinel));
+    for y in 8..14 {
+        scenario.units.push(unit(0, UnitKind::Buzzard, 9, y));
+    }
+    let state = scenario.build().unwrap();
+    let commands = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
+    assert!(
+        trains(&commands)
+            .iter()
+            .all(|(_, kind)| *kind != UnitKind::Skyhook),
+        "aircraft ride no carrier: {commands:?}"
+    );
+}
+
+#[test]
 fn remembered_anti_air_sends_the_carriers_around_it() {
     let mut scenario = strait();
     scenario.units.push(unit(1, UnitKind::Flakhound, 27, 11));
@@ -472,10 +512,13 @@ fn severed_seats_buy_carriers_and_the_airworks_they_need() {
     let short = banked(severed.clone(), 200);
     let (commands, _) = decide(&short);
     assert_eq!(army(&commands), 0, "cheaper units wait for the carrier");
-    let mut connected = short;
+    let mut connected = banked(severed.clone(), 400);
     connected.map = FIELD.map(str::to_owned).to_vec();
     let (commands, _) = decide(&connected);
-    assert!(army(&commands) > 0, "premise: the bank buys an army unit");
+    assert!(
+        army(&commands) > 0,
+        "premise: the bank buys an army unit: {commands:?}"
+    );
 
     let mut unequipped = banked(unhooked, 100);
     unequipped

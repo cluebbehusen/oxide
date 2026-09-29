@@ -3,6 +3,7 @@
 mod checkpoint;
 mod composition;
 mod decision;
+mod defenses;
 mod events;
 mod expansion;
 mod frame;

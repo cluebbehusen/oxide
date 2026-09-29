@@ -67,9 +67,9 @@ pub(crate) fn recover(
     }
 }
 
-/// Trains Harvesters at idle Foundries up to two per worked node, sends a
-/// Harvester to each unattended construction site, then sends idle
-/// Harvesters to the least-worked node they can reach.
+/// Trains Harvesters at idle Foundries up to two per worked node when
+/// `train` allows, sends a Harvester to each unattended construction site,
+/// then sends idle Harvesters to the least-worked node they can reach.
 pub(crate) fn run(
     observation: &ObservationData,
     map: &MapModel,
@@ -77,9 +77,10 @@ pub(crate) fn run(
     foundries: &[Producer<'_>],
     staffing: &Staffing,
     ledger: &mut Ledger,
+    train: bool,
 ) {
     let mut count = staffing.harvesters + ledger.queued(UnitKind::Harvester);
-    for foundry in foundries {
+    for foundry in foundries.iter().filter(|_| train) {
         if count >= staffing.wanted() {
             break;
         }

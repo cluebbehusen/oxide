@@ -179,6 +179,7 @@ fn busy_producers_ask_for_another() {
             income,
             depletion: 0,
             pull: Vec::new(),
+            exposed: false,
         })
         .into_iter()
         .map(|candidate| candidate.investment)

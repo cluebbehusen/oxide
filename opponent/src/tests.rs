@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 mod attack;
 mod composition;
+mod defenses;
 mod expansion;
 mod lift;
 mod missions;
@@ -38,6 +39,17 @@ const ARENA: [&str; 12] = [
 
 fn config() -> BotConfig {
     BotConfig::opponent(BotDifficulty::Standard, BotStance::Balanced, 11)
+}
+
+/// A seat that seldom builds static defense before it sees a threat, for
+/// stagings about its economy.
+fn thrifty() -> BotConfig {
+    BotConfig::opponent(BotDifficulty::Standard, BotStance::Aggressive, 38)
+}
+
+/// A seat that fortifies readily.
+fn fortified() -> BotConfig {
+    BotConfig::opponent(BotDifficulty::Standard, BotStance::Turtle, 35)
 }
 
 fn map(scenario: &Scenario) -> Arc<MapModel> {
@@ -346,6 +358,22 @@ fn mirror(state: &State, commands: Vec<PlayerCommand>) -> Vec<PlayerCommand> {
                     at: rotate(at),
                     queue,
                 },
+                Command::Build {
+                    units: sent,
+                    kind,
+                    anchor,
+                    queue,
+                    defer,
+                } => {
+                    let (w, h) = kind.base_stats().size;
+                    Command::Build {
+                        units: units(sent),
+                        kind,
+                        anchor: TilePos::new(width - w - anchor.x, height - h - anchor.y),
+                        queue,
+                        defer,
+                    }
+                }
                 Command::Train { building, kind } => {
                     let west = foundries(state, PlayerId(0));
                     let index = west.iter().position(|id| *id == building).unwrap();

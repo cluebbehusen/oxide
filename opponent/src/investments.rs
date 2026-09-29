@@ -1,6 +1,7 @@
 //! What the seat could invest in, how much it wants each, and the next
 //! purchase toward it. The list is recomputed every decision.
 
+use crate::defenses;
 use crate::expansion;
 use crate::frame::{HomeFrame, footprint_centre};
 use crate::map::MapModel;
@@ -26,8 +27,20 @@ pub enum Investment {
     Capacity(BuildingKind),
     /// Another Reclaimer.
     Reclaimer,
-    /// Upgrading this Reclaimer to a Refinery.
-    Refinery(BuildingId),
+    /// Upgrading this building to this tier.
+    Upgrade {
+        /// The building.
+        building: BuildingId,
+        /// The tier it reaches.
+        tier: u8,
+    },
+    /// A defense of this kind at this anchor.
+    Defense {
+        /// What it is.
+        kind: BuildingKind,
+        /// Its footprint anchor.
+        anchor: TilePos,
+    },
     /// A Foundry at this expansion site of the map model.
     Expansion(u16),
     /// An Extractor on this frame.
@@ -65,6 +78,8 @@ pub(crate) struct Situation<'a> {
     pub(crate) depletion: u32,
     /// What unmet army needs add to buildings the seat lacks.
     pub(crate) pull: Vec<(BuildingKind, u32)>,
+    /// Whether the seat's army is under the stance's minimum.
+    pub(crate) exposed: bool,
 }
 
 /// Every investment the seat wants at all, most wanted first.
@@ -131,9 +146,21 @@ pub(crate) fn candidates(situation: &Situation<'_>) -> Vec<Candidate> {
             building.kind == BuildingKind::Reclaimer && building.built && building.tier == 0
         });
         if let Some(reclaimer) = unupgraded {
-            list.push((Investment::Refinery(reclaimer.id), base * 7 / 5));
+            let refinery = Investment::Upgrade {
+                building: reclaimer.id,
+                tier: 1,
+            };
+            list.push((refinery, base * 7 / 5));
         }
     }
+    list.extend(defenses::investments(
+        observation,
+        situation.map,
+        situation.memory,
+        traits,
+        saturated || observation.tick >= defenses::SETTLE_TICKS,
+        situation.exposed,
+    ));
     let mut list: Vec<Candidate> = list
         .into_iter()
         .filter(|(_, score)| *score > 0)
@@ -166,10 +193,11 @@ fn location(map: &MapModel, me: PlayerId, investment: Investment) -> Option<(i64
             .get(usize::from(site))
             .and_then(|site| expansion::anchors(map, me, site).first().copied())
             .map(|anchor| footprint_centre(BuildingKind::Foundry, anchor)),
+        Investment::Defense { kind, anchor } => Some(footprint_centre(kind, anchor)),
         Investment::Tech(_)
         | Investment::Capacity(_)
         | Investment::Reclaimer
-        | Investment::Refinery(_) => None,
+        | Investment::Upgrade { .. } => None,
     }
 }
 
@@ -181,17 +209,18 @@ pub(crate) fn step(observation: &ObservationData, investment: Investment) -> Opt
         Investment::Reclaimer => build_step(observation, BuildingKind::Reclaimer, 3),
         Investment::Expansion(_) => build_step(observation, BuildingKind::Foundry, 3),
         Investment::Extractor(_) => build_step(observation, BuildingKind::Extractor, 3),
-        Investment::Refinery(id) => {
-            let reclaimer = observation.my_buildings.iter().find(|building| {
-                building.id == id && building.kind == BuildingKind::Reclaimer && building.built
+        Investment::Defense { kind, .. } => build_step(observation, kind, 3),
+        Investment::Upgrade { building, tier } => {
+            let building = observation.my_buildings.iter().find(|own| {
+                own.id == building && own.built && own.tier.checked_add(1) == Some(tier)
             })?;
-            let upgrade = reclaimer.kind.upgrade_from(reclaimer.tier)?;
+            let upgrade = building.kind.upgrade_from(building.tier)?;
             match upgrade
                 .requires
                 .iter()
                 .find(|required| !built(observation, **required))
             {
-                None => Some((Step::Upgrade(id), upgrade.cost)),
+                None => Some((Step::Upgrade(building.id), upgrade.cost)),
                 Some(missing) => requirement_step(observation, *missing, 2),
             }
         }
@@ -203,7 +232,8 @@ pub(crate) fn completes(investment: Investment, step: Step) -> bool {
     match (investment, step) {
         (Investment::Tech(kind) | Investment::Capacity(kind), Step::Build(built)) => kind == built,
         (Investment::Reclaimer, Step::Build(built)) => built == BuildingKind::Reclaimer,
-        (Investment::Refinery(id), Step::Upgrade(upgraded)) => id == upgraded,
+        (Investment::Upgrade { building, .. }, Step::Upgrade(upgraded)) => building == upgraded,
+        (Investment::Defense { kind, .. }, Step::Build(built)) => kind == built,
         (Investment::Expansion(_), Step::Build(built)) => built == BuildingKind::Foundry,
         (Investment::Extractor(_), Step::Build(built)) => built == BuildingKind::Extractor,
         _ => false,
@@ -212,7 +242,8 @@ pub(crate) fn completes(investment: Investment, step: Step) -> bool {
 
 /// Where a building step toward `investment` may go: the expansion site's
 /// anchors on the seat's home ground for its Foundry, the frame for an
-/// Extractor, and otherwise the seat's home spots.
+/// Extractor, the chosen spot for a defense, and otherwise the seat's home
+/// spots.
 pub(crate) fn anchors(
     map: &MapModel,
     observation: &ObservationData,
@@ -227,6 +258,13 @@ pub(crate) fn anchors(
                 expansion::anchors(map, observation.me, site)
             }),
         (Investment::Extractor(frame), BuildingKind::Extractor) => vec![frame],
+        (
+            Investment::Defense {
+                kind: defense,
+                anchor,
+            },
+            kind,
+        ) if defense == kind => vec![anchor],
         _ => map.spots(observation.me).to_vec(),
     }
 }

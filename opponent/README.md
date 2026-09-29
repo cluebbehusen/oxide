@@ -40,8 +40,42 @@ recovers, lending its units to any other threatened Foundry, and after 120 quiet
 ticks it lets them go where they stand.
 
 A defense that cannot recruit enough makes the decision an emergency: it skips
-the saving purchase and lets production spend protected scrap. Missions own only
-units that exist; production never works for a mission.
+the saving purchase, trains no Harvesters beyond the one a seat without any
+needs, and lets production spend protected scrap. Missions own only units that
+exist; production never works for a mission.
+
+## Static defense
+
+The seat guards its most valuable buildings (Foundries first, then tech and
+production buildings, Extractors and Reclaimers) with Turrets, Bastions and Flak
+Turrets a short gap from the building, on the side its threat comes from:
+enemies in sight, else enemies it remembers, else known enemy buildings or the
+nearest hostile start. Ground threats count only where ground connects them to
+the building, except that a seat under the stance's minimum army also puts up a
+Turret against enemy buildings and starts across a chasm, whose units could
+land. Flak Turrets answer seen or remembered enemy aircraft or a known enemy
+Airworks. Each site is an investment worth the approach it covers that no other
+own weapon covers yet, by the building's value, by how sure the seat is of the
+threat, and by personality: fortification for Turrets and Bastions,
+fortification and support for Flak Turrets. A Bastion counts only ground the
+seat's or an ally's buildings see. When the threat is only a guess from public
+facts, equal sites go to the one nearest the building; otherwise to the one
+nearest the threat. Sites go only on ground where one of the seat's Harvesters
+stands to build them, and a site the simulation refused is skipped for a while.
+
+Once the opening economy is up, a seat whose army is still under the stance's
+minimum weighs a hostile start nearly like seen enemies, so most seats put up an
+early Turret and fortified ones follow with a Bastion; otherwise public facts
+alone move only very fortified seats. A defense that cannot recruit enough also
+buys an emergency Turret, or Flak Turret against aircraft, beside a building
+whose approach nothing covers when attackers stand near it, one unfinished at a
+time.
+
+Defenses upgrade like Reclaimers do (Heavy Turret, Bulwark, Burst Flak) once the
+next tier's prerequisite stands, worth the approach they cover by how sure the
+seat is of its threat and weighted by fortification and greed, and never while
+an enemy in sight could hit it, from its own reach or the defense's, while it is
+down at a fifth of its health.
 
 ## Attack
 
@@ -72,20 +106,22 @@ a focus, and a member out of reach leaves the mission's fire unfocused.
 ## Lift
 
 When the seat knows of enemy buildings or hostile starts and ground reaches none
-of them, it needs lift. The Airworks then scores higher while the seat has none,
-and production keeps enough Skyhooks, alive and queued, to carry the stance's
-minimum army, from one to four. While an idle Airworks waits for the scrap to
-train one, other production waits too, unless a defense is short.
+of them, and the seat has at least the stance's minimum army to carry, it needs
+lift. The Airworks then scores higher while the seat has none, and production
+keeps enough Skyhooks, alive and queued, to carry the stance's minimum army,
+from one to four. While an idle Airworks waits for the scrap to train one, other
+production waits too, unless a defense is short.
 
 A lift forms only from carriers and passengers that exist: free carriers that
-are idle, empty and over open home ground, and free line and siege units at half
-health or better on home ground, packed into them most value per transport slot
-first. It needs those that can hit ground to be worth the stance's minimum and
-to outweigh the target's known defense by the attack margin. The target is the
-most valuable known enemy building, or hostile start not seen cleared, for its
-distance that no ground route reaches and that has a landing: explored open
-ground on the target's island, set back from it and clear of known fire, where
-every tile unloading could set a rider on belongs to that island.
+are idle, empty and over open home ground, no more of them than one decision's
+orders can send off together, and free line and siege units at half health or
+better on home ground, packed into them most value per transport slot first. It
+needs those that can hit ground to be worth the stance's minimum and to outweigh
+the target's known defense by the attack margin. The target is the most valuable
+known enemy building, or hostile start not seen cleared, for its distance that
+no ground route reaches and that has a landing: explored open ground on the
+target's island, set back from it and clear of known fire, where every tile
+unloading could set a rider on belongs to that island.
 
 A free carrier hovering where no rider could reach it, such as over the Airworks
 that trained it, first moves to open ground. Riders walk to their carriers and
@@ -152,9 +188,9 @@ Each decision scores its investments: a first Fabricator, Airworks and Crucible,
 another Fabricator or Airworks when all of that kind are busy and income could
 keep one more working, an expansion Foundry at a scrap field away from every
 start, an Extractor on a free frame on its home ground, more Reclaimers (worth
-more with no expansion left), and Refinery upgrades. Saturated harvesting, time,
-income, home depletion, army needs, a needed lift and personality set the
-scores.
+more with no expansion left), static defenses, and upgrades. Saturated
+harvesting, time, income, home depletion, army needs, a needed lift and
+personality set the scores.
 
 An expansion site's value weighs the scrap it still holds and its free frames,
 up with greed, against its ground distance from home, how much nearer a hostile
