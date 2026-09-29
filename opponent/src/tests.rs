@@ -16,6 +16,7 @@ mod expansion;
 mod lift;
 mod missions;
 mod placement;
+mod raid;
 mod saving;
 mod scouting;
 mod strike;

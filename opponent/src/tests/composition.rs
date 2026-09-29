@@ -123,11 +123,11 @@ fn a_seen_enemy_airworks_raises_anti_air_before_any_flyer() {
 }
 
 #[test]
-fn known_defenses_bring_siege() {
+fn known_defenses_bring_siege_or_sappers() {
     let siege = |kinds: &[UnitKind]| {
-        kinds
-            .iter()
-            .any(|kind| composition::role(*kind) == Some(composition::Role::Siege))
+        kinds.iter().any(|kind| {
+            *kind == UnitKind::Sapper || composition::role(*kind) == Some(composition::Role::Siege)
+        })
     };
     assert!(siege(&fabricator_trains(&armed(
         &[],

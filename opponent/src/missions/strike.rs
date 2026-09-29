@@ -78,14 +78,14 @@ impl Missions {
             .position(|mission| matches!(mission.task, Task::Strike { .. }))
         {
             None => {
-                self.raid(&raid, ledger);
+                self.form_strike(&raid, ledger);
                 None
             }
             Some(index) => self.advance_strike(index, &raid, ledger),
         }
     }
 
-    fn raid(&mut self, raid: &Raid<'_>, ledger: &mut Ledger) {
+    fn form_strike(&mut self, raid: &Raid<'_>, ledger: &mut Ledger) {
         let observation = raid.observation;
         if self.list.len() >= MISSION_CAP {
             return;

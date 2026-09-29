@@ -3,7 +3,7 @@
 //! Missions own only units that exist; production never works for one.
 //!
 //! Missions take units in a fixed order each decision: defense first, then
-//! lift, then attacks and strikes, then scouting. Each takes from what
+//! lift, then attacks, strikes and raids, then scouting. Each takes from what
 //! [`Missions::available`] leaves free when it runs.
 
 use crate::frame::{HomeFrame, doubled, ring};
@@ -19,12 +19,13 @@ mod attack;
 mod defense;
 mod focus;
 mod lift;
+mod raid;
 mod scouting;
 mod strike;
 mod support;
 
 pub(crate) use air::{Hazard, hazards};
-pub(crate) use attack::minimum;
+pub(crate) use attack::{SAPPERS, minimum};
 pub(crate) use lift::{carrier, needed as lift_needed, payload};
 pub(crate) use scouting::points;
 
@@ -82,6 +83,18 @@ enum Task {
         target: Objective,
         phase: StrikePhase,
     },
+    Raid {
+        target: Objective,
+        phase: RaidPhase,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+enum RaidPhase {
+    Travel,
+    Strike,
+    Withdraw,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,6 +181,16 @@ pub enum MissionKind {
         /// Its footprint anchor.
         anchor: TilePos,
     },
+    /// Sends a few raiders at an enemy harvest line or a lightly defended
+    /// building, and back.
+    Raid {
+        /// The building's owner.
+        owner: PlayerId,
+        /// What it is.
+        building: BuildingKind,
+        /// Its footprint anchor.
+        anchor: TilePos,
+    },
 }
 
 /// Where a mission stands, as reports see it.
@@ -222,6 +245,7 @@ impl MissionKind {
             Self::Scout { .. } => "scout",
             Self::Lift { .. } => "lift",
             Self::Strike { .. } => "strike",
+            Self::Raid { .. } => "raid",
         }
     }
 }
@@ -262,6 +286,11 @@ impl Task {
                 building: target.building,
                 anchor: target.anchor,
             },
+            Self::Raid { target, .. } => MissionKind::Raid {
+                owner: target.owner,
+                building: target.building,
+                anchor: target.anchor,
+            },
         }
     }
 
@@ -290,6 +319,11 @@ impl Task {
                 StrikePhase::Engage { .. } => Phase::Engage,
                 StrikePhase::Withdraw => Phase::Withdraw,
             },
+            Self::Raid { phase, .. } => match phase {
+                RaidPhase::Travel => Phase::Travel,
+                RaidPhase::Strike => Phase::Engage,
+                RaidPhase::Withdraw => Phase::Withdraw,
+            },
         }
     }
 
@@ -301,6 +335,7 @@ impl Task {
             Self::Scout { .. } => scouting::TRAVEL_TICKS,
             Self::Lift { phase, .. } => lift::timeout(phase),
             Self::Strike { phase, .. } => strike::timeout(phase),
+            Self::Raid { phase, .. } => raid::timeout(phase),
         }
     }
 
@@ -333,7 +368,8 @@ impl Mission {
     /// recovering defense, and an attack only once it is fighting. A
     /// travelling attack may have met the enemy since the last decision. A
     /// scout keeps its scout, a lift its units once it has left the ground,
-    /// and a strike its aircraft once they have set out.
+    /// and a strike or raid its units once they have set out and until they
+    /// turn back.
     fn holds(&self, observation: &ObservationData) -> bool {
         match self.task {
             Task::Defend { phase, .. } => phase != DefendPhase::Recover,
@@ -354,10 +390,12 @@ impl Mission {
             Task::Strike { phase, .. } => {
                 matches!(phase, StrikePhase::Travel | StrikePhase::Engage { .. })
             }
+            Task::Raid { phase, .. } => phase != RaidPhase::Withdraw,
         }
     }
 
-    /// The target of an attack, lift or strike lost while committed to it.
+    /// The target of an attack, lift, strike or raid lost while committed to
+    /// it.
     fn lost_target(&self) -> Option<(BuildingKind, TilePos)> {
         match self.task {
             Task::Attack {
@@ -371,6 +409,10 @@ impl Mission {
             | Task::Strike {
                 target,
                 phase: StrikePhase::Travel | StrikePhase::Engage { .. },
+            }
+            | Task::Raid {
+                target,
+                phase: RaidPhase::Travel | RaidPhase::Strike,
             } => Some((target.building, target.anchor)),
             _ => None,
         }
@@ -432,7 +474,8 @@ impl Missions {
                     Task::Attack { .. }
                     | Task::Scout { .. }
                     | Task::Lift { .. }
-                    | Task::Strike { .. } => true,
+                    | Task::Strike { .. }
+                    | Task::Raid { .. } => true,
                 }
         });
         lost
@@ -502,7 +545,12 @@ impl Missions {
         let attacks = count(|task| matches!(task, Task::Attack { .. }));
         let lifts = count(|task| matches!(task, Task::Lift { .. }));
         let strikes = count(|task| matches!(task, Task::Strike { .. }));
-        if attacks > 1 || lifts > 1 || strikes > 1 || self.waiting.is_some_and(|since| since > now)
+        let raids = count(|task| matches!(task, Task::Raid { .. }));
+        if attacks > 1
+            || lifts > 1
+            || strikes > 1
+            || raids > 1
+            || self.waiting.is_some_and(|since| since > now)
         {
             return Err("checkpoint mission could not have been recorded".into());
         }
@@ -515,7 +563,8 @@ impl Missions {
             let target_on_map = match mission.task {
                 Task::Attack { target, .. }
                 | Task::Lift { target, .. }
-                | Task::Strike { target, .. } => on_map(target.anchor),
+                | Task::Strike { target, .. }
+                | Task::Raid { target, .. } => on_map(target.anchor),
                 Task::Scout { point } => usize::from(point) < points,
                 Task::Defend { .. } => true,
             };
