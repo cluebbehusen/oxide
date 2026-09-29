@@ -39,18 +39,19 @@ fn wanted(
     memory: &Memory,
     fortification: u8,
 ) -> Vec<(Investment, u32)> {
-    wanted_when(true, scenario, state, memory, fortification)
+    wanted_by(0, true, scenario, state, memory, fortification)
 }
 
-/// West's defense and defense-upgrade investments in `state`.
-fn wanted_when(
+/// A seat's defense and defense-upgrade investments in `state`.
+fn wanted_by(
+    player: u8,
     exposed: bool,
     scenario: &Scenario,
     state: &State,
     memory: &Memory,
     fortification: u8,
 ) -> Vec<(Investment, u32)> {
-    let observation = ObservationData::fog_honest(state, PlayerId(0));
+    let observation = ObservationData::fog_honest(state, PlayerId(player));
     let model = map(scenario);
     defenses::investments(
         &observation,
@@ -60,6 +61,19 @@ fn wanted_when(
         true,
         exposed,
     )
+}
+
+/// Where a defense of `kind` is wanted, and its score.
+fn offer(wanted: &[(Investment, u32)], kind: BuildingKind) -> Option<(TilePos, u32)> {
+    wanted
+        .iter()
+        .find_map(|(investment, score)| match investment {
+            Investment::Defense {
+                kind: offered,
+                anchor,
+            } if *offered == kind => Some((*anchor, *score)),
+            _ => None,
+        })
 }
 
 fn builds(commands: &[PlayerCommand]) -> Vec<(BuildingKind, TilePos)> {
@@ -167,7 +181,7 @@ fn flak_waits_for_air_evidence() {
 fn ground_defenses_face_only_enemies_that_can_walk_in() {
     let ground_when = |exposed: bool, scenario: &Scenario| {
         let state = scenario.build().unwrap();
-        wanted_when(exposed, scenario, &state, &Memory::default(), 85)
+        wanted_by(0, exposed, scenario, &state, &Memory::default(), 85)
             .iter()
             .any(|(investment, _)| {
                 matches!(
@@ -208,7 +222,7 @@ fn ground_defenses_face_only_enemies_that_can_walk_in() {
 fn a_building_is_guarded_only_where_a_harvester_can_build() {
     let far_side = |scenario: &Scenario| {
         let state = scenario.build().unwrap();
-        wanted_when(false, scenario, &state, &Memory::default(), 85)
+        wanted_by(0, false, scenario, &state, &Memory::default(), 85)
             .iter()
             .any(|(investment, _)| {
                 matches!(investment, Investment::Defense { anchor, .. } if anchor.x > 12)
@@ -357,5 +371,228 @@ fn checkpoints_reject_a_defense_off_the_map() {
     assert_eq!(
         restore(defense(99)).err().unwrap(),
         "checkpoint saving target is off the map"
+    );
+}
+
+#[test]
+fn an_array_watches_the_way_in_and_lets_a_bastion_fire_further() {
+    let mut scenario = settled(0);
+    let state = scenario.build().unwrap();
+    let bare = wanted(&scenario, &state, &Memory::default(), 85);
+    let (array, _) = offer(&bare, BuildingKind::Array).expect("an Array is wanted");
+    let bastion = offer(&bare, BuildingKind::Bastion).map_or(0, |(_, score)| score);
+
+    scenario
+        .buildings
+        .push(building(0, BuildingKind::Array, array.x, array.y));
+    let state = scenario.build().unwrap();
+    let watched = wanted(&scenario, &state, &Memory::default(), 85);
+    assert!(
+        offer(&watched, BuildingKind::Array).is_none(),
+        "a second Array would watch nothing new: {watched:?}"
+    );
+    assert!(
+        offer(&watched, BuildingKind::Bastion).is_some_and(|(_, score)| score > bastion),
+        "radar spots for the Bastion: {bare:?} then {watched:?}"
+    );
+}
+
+#[test]
+fn an_array_deepens_once_a_crucible_stands() {
+    let staged = |crucible: bool| {
+        let mut scenario = settled(0);
+        scenario
+            .buildings
+            .push(building(0, BuildingKind::Array, 7, 5));
+        if crucible {
+            scenario
+                .buildings
+                .push(building(0, BuildingKind::Crucible, 3, 1));
+        }
+        let state = scenario.build().unwrap();
+        let array = state
+            .buildings()
+            .iter()
+            .find(|building| building.kind == BuildingKind::Array)
+            .unwrap()
+            .id;
+        wanted(&scenario, &state, &Memory::default(), 60)
+            .iter()
+            .any(|(investment, _)| {
+                *investment
+                    == Investment::Upgrade {
+                        building: array,
+                        tier: 1,
+                    }
+            })
+    };
+    assert!(staged(true));
+    assert!(!staged(false), "a Deep Array needs a Crucible");
+}
+
+#[test]
+fn a_barricade_fronts_a_turret_toward_the_enemy() {
+    let turret = TilePos::new(7, 5);
+    let mut scenario = settled(0);
+    scenario
+        .buildings
+        .push(building(0, BuildingKind::Turret, turret.x, turret.y));
+    let state = scenario.build().unwrap();
+    let wanted_now = wanted(&scenario, &state, &Memory::default(), 85);
+    let (barricade, _) =
+        offer(&wanted_now, BuildingKind::Barricade).expect("a Barricade is wanted");
+    assert_eq!(
+        crate::frame::gap(turret, (1, 1), barricade, (1, 1)),
+        1,
+        "{barricade:?}"
+    );
+    assert!(barricade.x > turret.x, "{barricade:?}");
+
+    scenario.buildings.push(building(
+        0,
+        BuildingKind::Barricade,
+        barricade.x,
+        barricade.y,
+    ));
+    let state = scenario.build().unwrap();
+    let fronted = wanted(&scenario, &state, &Memory::default(), 85);
+    assert!(
+        offer(&fronted, BuildingKind::Barricade).is_none(),
+        "{fronted:?}"
+    );
+}
+
+#[test]
+fn scuttle_charges_mine_the_way_in_apart_from_each_other() {
+    let charge = |scenario: &Scenario| {
+        let state = scenario.build().unwrap();
+        offer(
+            &wanted(scenario, &state, &Memory::default(), 85),
+            BuildingKind::ScuttleCharge,
+        )
+        .map(|(anchor, _)| anchor)
+    };
+    let mut scenario = settled(0);
+    assert_eq!(charge(&scenario), None, "a charge needs a Fabricator");
+
+    scenario
+        .buildings
+        .push(building(0, BuildingKind::Fabricator, 3, 1));
+    let first = charge(&scenario).expect("a charge is wanted");
+    let gap = crate::frame::gap(FOUNDRY, (2, 2), first, (1, 1));
+    assert!(
+        first.x > FOUNDRY.x + 1 && (2..=5).contains(&gap),
+        "{first:?}"
+    );
+
+    scenario
+        .buildings
+        .push(building(0, BuildingKind::ScuttleCharge, first.x, first.y));
+    let second = charge(&scenario).expect("a second charge is wanted");
+    assert!(second.chebyshev(first) >= 3, "{first:?} {second:?}");
+}
+
+#[test]
+fn mirrored_seats_watch_bar_and_mine_mirrored_spots() {
+    let mut scenario = settled(0);
+    scenario.buildings.extend([
+        building(0, BuildingKind::Turret, 7, 5),
+        building(1, BuildingKind::Turret, 16, 6),
+        building(0, BuildingKind::Fabricator, 3, 1),
+        building(1, BuildingKind::Fabricator, 19, 9),
+    ]);
+    let state = scenario.build().unwrap();
+    let (width, height) = (state.map().width(), state.map().height());
+    let defenses = |player: u8| -> Vec<(BuildingKind, TilePos, u32)> {
+        wanted_by(player, true, &scenario, &state, &Memory::default(), 85)
+            .into_iter()
+            .filter_map(|(investment, score)| match investment {
+                Investment::Defense { kind, anchor } => Some((kind, anchor, score)),
+                _ => None,
+            })
+            .collect()
+    };
+    let west = defenses(0);
+    for kind in [
+        BuildingKind::Array,
+        BuildingKind::Barricade,
+        BuildingKind::ScuttleCharge,
+    ] {
+        assert!(
+            west.iter().any(|(wanted, _, _)| *wanted == kind),
+            "premise: {kind:?} in {west:?}"
+        );
+    }
+    let mirrored: Vec<_> = west
+        .into_iter()
+        .map(|(kind, anchor, score)| {
+            let (w, h) = kind.base_stats().size;
+            let anchor = TilePos::new(width - w - anchor.x, height - h - anchor.y);
+            (kind, anchor, score)
+        })
+        .collect();
+    assert_eq!(mirrored, defenses(1));
+}
+
+/// West's start in a pocket whose only way out is (6, 6), with a second at
+/// (6, 9) when `second_exit`, and a Turret guarding the first.
+fn pocket(second_exit: bool) -> Scenario {
+    let mut scenario = arena(400);
+    scenario.map = [
+        "########################",
+        "#.....#................#",
+        "#.1...#................#",
+        "#.....#................#",
+        "#.....#................#",
+        "#.....#............2...#",
+        "#......................#",
+        "#.....#................#",
+        "#.....#........s.......#",
+        if second_exit {
+            "#......................#"
+        } else {
+            "#.....#................#"
+        },
+        "#.....#........s.......#",
+        "########################",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    scenario.players[0].bot_config = Some(fortified());
+    scenario.units = vec![harvester(0, 3, 5), harvester(1, 18, 8)];
+    scenario
+        .buildings
+        .push(building(0, BuildingKind::Turret, 4, 6));
+    scenario
+}
+
+#[test]
+fn a_seat_does_not_wall_itself_in() {
+    let exit = TilePos::new(6, 6);
+    let barricades = |second_exit: bool| {
+        let scenario = pocket(second_exit);
+        let state = scenario.build().unwrap();
+        let mut json =
+            serde_json::to_value(seat_with(&scenario, 0, fortified()).checkpoint()).unwrap();
+        json["saving"] = serde_json::json!({
+            "protected": 0,
+            "target": {
+                "investment": {"defense": {"kind": "barricade", "anchor": {"x": exit.x, "y": exit.y}}},
+                "attempt": null,
+            },
+        });
+        let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
+        let mut opponent =
+            Opponent::restore(&checkpoint, &scenario, &state, map(&scenario)).unwrap();
+        builds(&opponent.act(&state, &mut OwnEvents::default()))
+            .contains(&(BuildingKind::Barricade, exit))
+    };
+    assert!(
+        barricades(true),
+        "premise: with a second way out the Barricade is bought"
+    );
+    assert!(
+        !barricades(false),
+        "the Barricade would close the only way out"
     );
 }
