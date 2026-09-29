@@ -558,7 +558,23 @@ fn mirrored_seats_rank_equal_extractor_frames_alike() {
 
 #[test]
 fn a_target_with_nowhere_to_stand_protects_nothing() {
-    let mut scenario = saturated(130);
+    for bank in [130, 100] {
+        let (commands, trace, foundry) = nowhere_to_stand(bank);
+        assert!(trace.target.is_some(), "premise: a target is adopted");
+        assert!(builds(&commands).is_empty(), "premise: no spot can take it");
+        assert_eq!(trace.protected, 0, "bank {bank}");
+        assert_eq!(
+            trains(&commands),
+            [(foundry, UnitKind::Sentinel)],
+            "bank {bank}"
+        );
+    }
+}
+
+/// The first decision of a saturated seat with `bank` scrap whose every home
+/// spot is taken.
+fn nowhere_to_stand(bank: u32) -> (Vec<PlayerCommand>, Trace, BuildingId) {
+    let mut scenario = saturated(bank);
     let model = map(&scenario);
     let occupied: Vec<TilePos> = scenario
         .units
@@ -578,11 +594,7 @@ fn a_target_with_nowhere_to_stand_protects_nothing() {
     }
     let state = scenario.build().unwrap();
     let (commands, trace) = seat(&scenario, 0).act_traced(&state, &mut OwnEvents::default());
-    let trace = trace.unwrap();
-    assert!(trace.target.is_some(), "premise: a target is adopted");
-    assert!(builds(&commands).is_empty(), "premise: no spot can take it");
-    let foundry = foundries(&state, PlayerId(0))[0];
-    assert_eq!(trains(&commands), [(foundry, UnitKind::Sentinel)]);
+    (commands, trace.unwrap(), foundries(&state, PlayerId(0))[0])
 }
 
 #[test]

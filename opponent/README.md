@@ -79,13 +79,13 @@ train one, other production waits too, unless a defense is short.
 
 A lift forms only from carriers and passengers that exist: free carriers that
 are idle, empty and over open home ground, and free line and siege units at half
-health or better on home ground, packed into them. It needs those that can hit
-ground to be worth the stance's minimum and to outweigh the target's known
-defense by the attack margin. The target is the most valuable known enemy
-building or hostile start for its distance that no ground route reaches and that
-has a landing: explored open ground on the target's island, set back from it and
-clear of known fire, where every tile unloading could set a rider on belongs to
-that island.
+health or better on home ground, packed into them most value per transport slot
+first. It needs those that can hit ground to be worth the stance's minimum and
+to outweigh the target's known defense by the attack margin. The target is the
+most valuable known enemy building, or hostile start not seen cleared, for its
+distance that no ground route reaches and that has a landing: explored open
+ground on the target's island, set back from it and clear of known fire, where
+every tile unloading could set a rider on belongs to that island.
 
 A free carrier hovering where no rider could reach it, such as over the Airworks
 that trained it, first moves to open ground. Riders walk to their carriers and
