@@ -8,16 +8,16 @@ working rules.
 
 Each decision spends through one running total in a fixed precedence: defense
 and other emergencies, then an affordable saving target, then workers, then
-attacks, focus fire and scouting, then production. Missions only give orders;
-what they need, such as a scout, production buys. A seat with no Harvester alive
-or queued queues one even behind other work, from protected scrap if it must.
-Each built Foundry works the four nearest live known scrap nodes its ground can
-reach within twelve tiles, none shared with another Foundry, and idle Foundries
-train Harvesters until there are two per worked node. Paid sites nobody is
-building get the nearest free Harvester, and idle Harvesters go to the reachable
-worked node with the fewest Harvesters. Every idle producer then trains toward
-the army's needs. Difficulty caps the unit orders one decision issues; purchases
-do not count against that allowance.
+lifts, attacks, focus fire and scouting, then production. Missions only give
+orders; what they need, such as a scout or carriers, production buys. A seat
+with no Harvester alive or queued queues one even behind other work, from
+protected scrap if it must. Each built Foundry works the four nearest live known
+scrap nodes its ground can reach within twelve tiles, none shared with another
+Foundry, and idle Foundries train Harvesters until there are two per worked
+node. Paid sites nobody is building get the nearest free Harvester, and idle
+Harvesters go to the reachable worked node with the fewest Harvesters. Every
+idle producer then trains toward the army's needs. Difficulty caps the unit
+orders one decision issues; purchases do not count against that allowance.
 
 ## Defense
 
@@ -56,8 +56,8 @@ army gathers at a rally near home toward the target's owner, travels, and
 fights. It withdraws to the rally when the enemies it knows of around it,
 remembered or seen, outweigh what it has left, and recovers there to go again or
 disband. Having taken its target it pushes on to the next only while strong
-enough for it. A target it withdrew from, could not reach, or stood idle beside
-is skipped for a while.
+enough for it. A target it withdrew from, could not reach, lost its army to, or
+stood idle beside is skipped for a while.
 
 Members under 35 percent health leave between fights and run to the rally, and a
 defense may take the attack's units in any phase but a fight. While an army that
@@ -68,6 +68,38 @@ At Veteran and Prime, an engaged mission focuses its fire: when every member
 that can hit an enemy near it already reaches that enemy, they shoot the weakest
 such enemy together, and keep that focus while it stays in reach. Nobody chases
 a focus, and a member out of reach leaves the mission's fire unfocused.
+
+## Lift
+
+When the seat knows of enemy buildings or hostile starts and ground reaches none
+of them, it needs lift. The Airworks then scores higher while the seat has none,
+and production keeps enough Skyhooks, alive and queued, to carry the stance's
+minimum army, from one to four. While an idle Airworks waits for the scrap to
+train one, other production waits too, unless a defense is short.
+
+A lift forms only from carriers and passengers that exist: free carriers that
+are idle, empty and over open home ground, and free line and siege units at half
+health or better on home ground, packed into them most value per transport slot
+first. It needs those that can hit ground to be worth the stance's minimum and
+to outweigh the target's known defense by the attack margin. The target is the
+most valuable known enemy building, or hostile start not seen cleared, for its
+distance that no ground route reaches and that has a landing: explored open
+ground on the target's island, set back from it and clear of known fire, where
+every tile unloading could set a rider on belongs to that island.
+
+A free carrier hovering where no rider could reach it, such as over the Airworks
+that trained it, first moves to open ground. Riders walk to their carriers and
+board. Once none is still walking, or after a while, the loaded carriers leave
+together if everyone boarded or at least half the need is aboard; a rider that
+stopped short is not sent again. Carriers fly straight to the landing, or around
+known anti-air through a via-point when the straight line crosses it, and then
+home the same way. Riders still walking are stopped and let go; with less than
+half aboard the lift sets everyone down and disbands. Landed riders hunt the
+target and, once no one is aboard, fight on to the next target on the same
+island. Nothing brings them home. A carrier that comes home still loaded sets
+its riders down and lets them go. A target the lift lost its units to, or stood
+idle beside, is skipped for a while. One lift runs at a time, and a defense may
+take its units only while they board.
 
 ## Scouting
 
@@ -94,9 +126,10 @@ Each idle producer trains for the most wanted role it can serve, or line units
 when nothing is wanted, choosing the unit it can afford now by coarse
 suitability: reach against the enemy's usual reach, durability for the price,
 covering both enemy domains, splash against clustered enemies, affordability at
-the seat's income, and personality. Raiders, support units, scouts and
-transports are left to later behavior. A role it needs but cannot train at all
-adds to the investment score of the cheapest building that would let it.
+the seat's income, and personality. Raiders and support units are left to later
+behavior; scouts and carriers are bought only for scouting and lift. A role it
+needs but cannot train at all adds to the investment score of the cheapest
+building that would let it.
 
 ## Investments and saving
 
@@ -105,7 +138,8 @@ another Fabricator or Airworks when all of that kind are busy and income could
 keep one more working, an expansion Foundry at a scrap field away from every
 start, an Extractor on a free frame on its home ground, more Reclaimers (worth
 more with no expansion left), and Refinery upgrades. Saturated harvesting, time,
-income, home depletion, army needs and personality set the scores.
+income, home depletion, army needs, a needed lift and personality set the
+scores.
 
 An expansion site's value weighs the scrap it still holds and its free frames,
 up with greed, against its ground distance from home, how much nearer a hostile
@@ -174,14 +208,15 @@ headless, saved and recovered sessions build it from the same scenario data.
 
 `Checkpoint` holds the seat and what carries between its decisions: remembered
 enemy units, footprints it recently failed to claim, enemy buildings it recently
-gave up attacking, its income sample, and its saving target with the protected
-amount and any purchase awaiting confirmation, its missions with their phases,
-members, goals and focus, since when it has gone without attacking, and when it
-last saw each scouting point. The host saves the seat's `OwnEvents` beside it.
-Restoring it checks that the seat is a configured `oxide-opponent` bot in the
-bound scenario and world and that nothing it remembers is from a later tick or
-off the map, rebuilds the profile and decision interval from the scenario, and
-takes the map model built from it. A saved buffer over the cap does not load.
+gave up attacking or lifting to, its income sample, and its saving target with
+the protected amount and any purchase awaiting confirmation, its missions with
+their phases, members, goals and focus, since when it has gone without
+attacking, and when it last saw each scouting point. The host saves the seat's
+`OwnEvents` beside it. Restoring it checks that the seat is a configured
+`oxide-opponent` bot in the bound scenario and world and that nothing it
+remembers is from a later tick or off the map, rebuilds the profile and decision
+interval from the scenario, and takes the map model built from it. A saved
+buffer over the cap does not load.
 
 `Opponent::act_traced` returns a `Trace` of the decision's tick, seat, bank,
 received own events, committed spending, purchases, unit-order count, allowance,

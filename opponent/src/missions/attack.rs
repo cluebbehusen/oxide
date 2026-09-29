@@ -5,7 +5,7 @@
 
 use super::{
     AttackPhase, MISSION_CAP, Mission, Missions, Objective, Task, UNIT_CAP, approach, hits, hunt,
-    insert, mine, run, value,
+    insert, mine, run, standing, value,
 };
 use crate::composition::{self, Role};
 use crate::decision::Ledger;
@@ -42,7 +42,7 @@ const MARGIN_FLOOR: u64 = 1_000;
 /// Health, per mille, under which a member leaves between fights, and at or
 /// over which a unit joins.
 const WOUNDED: u32 = 350;
-const FIT: u32 = 500;
+pub(super) const FIT: u32 = 500;
 
 const GATHER_TICKS: u64 = 1_200;
 const TRAVEL_TICKS: u64 = 3_600;
@@ -367,7 +367,7 @@ impl Missions {
                 if !all_idle && age < ENGAGE_TICKS {
                     return None;
                 }
-                let standing = plan.standing(target);
+                let standing = standing(observation, target.objective());
                 let next = plan.best(Some(target)).filter(|next| {
                     !standing
                         && members.iter().map(|unit| striking(unit)).sum::<u64>()
@@ -459,54 +459,11 @@ impl Plan<'_> {
         })
     }
 
-    /// Whether `target` may still stand: it is known, or its ground is out of
-    /// sight.
-    fn standing(&self, target: Target) -> bool {
-        let known = self.observation.enemy_buildings.iter().any(|building| {
-            (building.player, building.kind, building.anchor)
-                == (target.owner, target.building, target.anchor)
-        });
-        let (width, height) = target.building.base_stats().size;
-        let seen = (0..height)
-            .any(|dy| (0..width).any(|dx| self.observation.visible(target.anchor.offset(dx, dy))));
-        known || !seen
-    }
-
     /// Army value the attack on `target` needs: its known local defense
     /// times the margin, and never under the stance minimum.
     fn need(&self, target: Target) -> u64 {
-        let now = self.observation.tick;
-        let units: u64 = self
-            .memory
-            .units()
-            .iter()
-            .filter(|unit| !unit.kind.stats().weapons.is_empty())
-            .filter(|unit| unit.tile.chebyshev(target.approach) <= DEFENSE_TILES)
-            .map(|unit| unit.value(now))
-            .sum();
-        let buildings: u64 = self
-            .observation
-            .enemy_buildings
-            .iter()
-            .filter(|building| {
-                building
-                    .kind
-                    .base_stats()
-                    .weapons
-                    .iter()
-                    .any(|weapon| weapon.targets.ground)
-            })
-            .filter(|building| {
-                gap(
-                    building.anchor,
-                    building.kind.base_stats().size,
-                    target.approach,
-                    (1, 1),
-                ) < DEFENSE_TILES
-            })
-            .map(building_value)
-            .sum();
-        ((units + buildings) * self.margin / 1_000).max(self.minimum)
+        (defense(self.observation, self.memory, target.approach) * self.margin / 1_000)
+            .max(self.minimum)
     }
 
     /// Value of the armed enemies the seat knows of within contact of the
@@ -574,6 +531,41 @@ impl Plan<'_> {
     }
 }
 
+/// The known ground defense around `tile`: remembered armed enemy units by
+/// confidence, and known enemy buildings that fire on ground by health.
+pub(super) fn defense(observation: &ObservationData, memory: &Memory, tile: TilePos) -> u64 {
+    let now = observation.tick;
+    let units: u64 = memory
+        .units()
+        .iter()
+        .filter(|unit| !unit.kind.stats().weapons.is_empty())
+        .filter(|unit| unit.tile.chebyshev(tile) <= DEFENSE_TILES)
+        .map(|unit| unit.value(now))
+        .sum();
+    let buildings: u64 = observation
+        .enemy_buildings
+        .iter()
+        .filter(|building| {
+            building
+                .kind
+                .base_stats()
+                .weapons
+                .iter()
+                .any(|weapon| weapon.targets.ground)
+        })
+        .filter(|building| {
+            gap(
+                building.anchor,
+                building.kind.base_stats().size,
+                tile,
+                (1, 1),
+            ) < DEFENSE_TILES
+        })
+        .map(building_value)
+        .sum();
+    units + buildings
+}
+
 /// Whether any visible armed enemy or seen enemy building is within contact
 /// of a member.
 pub(super) fn contact(observation: &ObservationData, members: &[&UnitObs]) -> bool {
@@ -600,7 +592,7 @@ pub(super) fn contact(observation: &ObservationData, members: &[&UnitObs]) -> bo
 }
 
 /// A known building's price, discounted by its missing health.
-fn building_value(building: &BuildingObs) -> u64 {
+pub(super) fn building_value(building: &BuildingObs) -> u64 {
     let stats = building.kind.base_stats();
     let cost = stats
         .construction
@@ -635,7 +627,7 @@ fn recruit(
 
 /// What `unit` adds against a building: its value if it can hit ground.
 /// Anti-air escorts go along but cannot take the target.
-fn striking(unit: &UnitObs) -> u64 {
+pub(super) fn striking(unit: &UnitObs) -> u64 {
     if hits(unit, Domain::Ground) {
         value(unit)
     } else {
@@ -651,7 +643,7 @@ fn eligible(unit: &UnitObs, health: u32) -> bool {
     ) && healthy(unit, health)
 }
 
-fn healthy(unit: &UnitObs, health: u32) -> bool {
+pub(super) fn healthy(unit: &UnitObs, health: u32) -> bool {
     u64::from(unit.hp) * 1_000 >= u64::from(unit.kind.stats().max_hp) * u64::from(health)
 }
 
@@ -661,7 +653,7 @@ fn reaches(map: &MapModel, unit: &UnitObs, component: Option<u32>) -> bool {
 }
 
 /// Army value under which the seat does not attack.
-fn minimum(stance: BotStance) -> u64 {
+pub(crate) fn minimum(stance: BotStance) -> u64 {
     match stance {
         BotStance::Turtle => 800,
         BotStance::Balanced => 600,
@@ -670,7 +662,7 @@ fn minimum(stance: BotStance) -> u64 {
 }
 
 /// Per mille of a target's known defense the army must bring.
-fn margin(difficulty: BotDifficulty) -> u64 {
+pub(super) fn margin(difficulty: BotDifficulty) -> u64 {
     match difficulty {
         BotDifficulty::Scrapheap => 2_500,
         BotDifficulty::Standard => 2_000,
