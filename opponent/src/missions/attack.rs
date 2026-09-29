@@ -2,8 +2,10 @@
 //! beatable now by the free army, above a stance-bounded minimum, the army
 //! gathers near home, travels, fights, withdraws from a losing fight, and
 //! recovers to go again or disband. A free Tender joins while it regroups,
-//! welds its wounded, and follows it.
+//! welds its wounded, and follows it; against known defenses free Sappers
+//! join too, and each blows up the nearest defense once the fight begins.
 
+use super::raid::{aim, blast};
 use super::support::{patient, weld};
 use super::{
     AttackPhase, MISSION_CAP, Mission, Missions, Objective, Task, UNIT_CAP, approach, hits, hunt,
@@ -11,7 +13,7 @@ use super::{
 };
 use crate::composition::{self, Role};
 use crate::decision::Ledger;
-use crate::frame::{HomeFrame, doubled, gap};
+use crate::frame::{HomeFrame, doubled, footprint_centre, gap, ring};
 use crate::map::MapModel;
 use crate::memory::Memory;
 use crate::profile::ResolvedProfile;
@@ -26,6 +28,9 @@ const CONTACT_TILES: i32 = 8;
 
 /// Tiles around a target inside which known enemies defend it.
 const DEFENSE_TILES: i32 = 10;
+
+/// Sappers an attack takes along, at most.
+pub(crate) const SAPPERS: usize = 3;
 
 /// Ground distance from the seat's start, in tenths of a tile, inside which
 /// the army gathers.
@@ -93,6 +98,8 @@ struct Plan<'a> {
     margin: u64,
     /// Idle free Tenders.
     tenders: Vec<&'a UnitObs>,
+    /// Idle free Sappers.
+    sappers: Vec<&'a UnitObs>,
 }
 
 impl Mission {
@@ -140,11 +147,14 @@ impl Missions {
             .copied()
             .filter(|unit| eligible(unit, FIT))
             .collect();
-        let tenders: Vec<&UnitObs> = free
-            .iter()
-            .copied()
-            .filter(|unit| unit.kind == UnitKind::Tender && unit.idle)
-            .collect();
+        let spare = |kind: UnitKind| -> Vec<&UnitObs> {
+            free.iter()
+                .copied()
+                .filter(|unit| unit.kind == kind && unit.idle)
+                .collect()
+        };
+        let tenders = spare(UnitKind::Tender);
+        let sappers = spare(UnitKind::Sapper);
         let index = self
             .list
             .iter()
@@ -176,6 +186,7 @@ impl Missions {
             minimum,
             margin,
             tenders,
+            sappers,
         };
         match index {
             None => self.launch(&plan, &fit, ledger),
@@ -315,7 +326,7 @@ impl Missions {
             .collect();
         let all_idle = members
             .iter()
-            .filter(|unit| unit.kind != UnitKind::Tender)
+            .filter(|unit| !matches!(unit.kind, UnitKind::Tender | UnitKind::Sapper))
             .all(|unit| unit.idle);
         let strength: u64 = members
             .iter()
@@ -353,6 +364,19 @@ impl Missions {
                     && ledger.order(run(vec![tender], rally))
                 {
                     insert(&mut mission.units, tender);
+                }
+                let sapping = members
+                    .iter()
+                    .filter(|unit| unit.kind == UnitKind::Sapper)
+                    .count();
+                let room = SAPPERS
+                    .saturating_sub(sapping)
+                    .min(UNIT_CAP.saturating_sub(mission.units.len()));
+                let sappers = plan.sappers(target, rally, component, room);
+                if !sappers.is_empty() && ledger.order(run(sappers.clone(), rally)) {
+                    for sapper in sappers {
+                        insert(&mut mission.units, sapper);
+                    }
                 }
                 let ready = striking_strength >= need;
                 if !recruited && (all_idle || age >= timeout(phase)) && ready {
@@ -395,8 +419,27 @@ impl Missions {
                 None
             }
             AttackPhase::Engage { .. } => {
+                // Sappers sent at a defense keep that order whatever the rest
+                // of the army is told next.
+                let mut blasting = Vec::new();
+                for sapper in members
+                    .iter()
+                    .filter(|unit| unit.kind == UnitKind::Sapper && unit.idle)
+                {
+                    if let Some(defense) = plan.nearest_defense(target, sapper)
+                        && ledger.order(blast(vec![sapper.id], aim(defense)))
+                    {
+                        blasting.push(sapper.id);
+                    }
+                }
+                let army: Vec<UnitId> = mission
+                    .units
+                    .iter()
+                    .copied()
+                    .filter(|id| !blasting.contains(id))
+                    .collect();
                 if strength < plan.opposition(&members) {
-                    if ledger.order(run(mission.units.clone(), rally)) {
+                    if ledger.order(run(army.clone(), rally)) {
                         mission.attack_phase(target, AttackPhase::Withdraw, now, Some(rally));
                         return Some((target.building, target.anchor));
                     }
@@ -412,12 +455,12 @@ impl Missions {
                             >= plan.need(*next)
                 });
                 if let Some(next) = next {
-                    if ledger.order(hunt(mission.units.clone(), next.approach)) {
+                    if ledger.order(hunt(army, next.approach)) {
                         mission.attack_phase(next, AttackPhase::Travel, now, Some(next.approach));
                     }
                     return None;
                 }
-                if ledger.order(run(mission.units.clone(), rally)) {
+                if ledger.order(run(army, rally)) {
                     mission.attack_phase(target, AttackPhase::Recover, now, Some(rally));
                     if standing {
                         return Some((target.building, target.anchor));
@@ -435,7 +478,79 @@ impl Missions {
     }
 }
 
-impl Plan<'_> {
+impl<'a> Plan<'a> {
+    /// Idle free Sappers nearest `rally`, at most `room`, that can get to a
+    /// target whose approach lies in `component`, when known enemy defenses
+    /// that can hit ground stand around `target`.
+    fn sappers(
+        &self,
+        target: Target,
+        rally: TilePos,
+        component: Option<u32>,
+        room: usize,
+    ) -> Vec<UnitId> {
+        if self.defenses(target).next().is_none() {
+            return Vec::new();
+        }
+        let mut sappers: Vec<&UnitObs> = self
+            .sappers
+            .iter()
+            .copied()
+            .filter(|unit| reaches(self.map, unit, component))
+            .collect();
+        sappers.sort_by_key(|unit| (self.frame.rank(doubled(rally), doubled(unit.tile)), unit.id));
+        let mut ids: Vec<UnitId> = sappers.iter().take(room).map(|unit| unit.id).collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    /// Known enemy buildings around `target` that can hit ground.
+    fn defenses(&self, target: Target) -> impl Iterator<Item = &'a BuildingObs> {
+        let size = target.building.base_stats().size;
+        self.observation
+            .enemy_buildings
+            .iter()
+            .filter(move |building| {
+                building
+                    .kind
+                    .base_stats()
+                    .weapons
+                    .iter()
+                    .any(|weapon| weapon.targets.ground)
+                    && gap(
+                        target.anchor,
+                        size,
+                        building.anchor,
+                        building.kind.base_stats().size,
+                    ) < DEFENSE_TILES
+            })
+    }
+
+    /// The known defense around `target` on `sapper`'s ground nearest it,
+    /// else the target itself while the seat knows it.
+    fn nearest_defense(&self, target: Target, sapper: &UnitObs) -> Option<&'a BuildingObs> {
+        let from = doubled(sapper.tile);
+        let ground = self.map.component(sapper.tile);
+        self.defenses(target)
+            .filter(|building| {
+                ring(building.anchor, building.kind.base_stats().size)
+                    .any(|tile| ground.is_some() && self.map.component(tile) == ground)
+            })
+            .min_by_key(|building| {
+                (
+                    self.frame
+                        .rank(from, footprint_centre(building.kind, building.anchor)),
+                    building.id,
+                )
+            })
+            .or_else(|| {
+                self.observation.enemy_buildings.iter().find(|building| {
+                    (building.player, building.kind, building.anchor)
+                        == (target.owner, target.building, target.anchor)
+                })
+            })
+    }
+
     /// The idle free Tender nearest `rally` that can get to a target whose
     /// approach lies in `component`.
     fn tender(&self, rally: TilePos, component: Option<u32>) -> Option<UnitId> {

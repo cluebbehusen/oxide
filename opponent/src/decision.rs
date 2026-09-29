@@ -343,6 +343,16 @@ pub(crate) fn decide(
     ) {
         persistent.memory.abandon(kind, anchor, tick);
     }
+    if let Some((kind, anchor)) = persistent.missions.raid(
+        observation,
+        map,
+        frame,
+        profile,
+        &persistent.memory,
+        &mut ledger,
+    ) {
+        persistent.memory.raid(kind, anchor, tick);
+    }
     persistent
         .missions
         .focus(observation, frame, profile.difficulty, &mut ledger);
@@ -361,6 +371,7 @@ pub(crate) fn decide(
         }
         if !short {
             train_tenders(observation, profile, &producers, &mut ledger);
+            train_raiders(observation, profile, income, &producers, &mut ledger);
         }
         produce(observation, &producers, &mut needs, &mut ledger);
     }
@@ -623,6 +634,63 @@ fn train_tenders(
     }
 }
 
+/// Keeps two Scuttlers, alive or queued, for raiding once income reaches a
+/// level that falls with guile, and a Sapper for each known enemy defense
+/// that can hit ground, up to an attack's worth, once the seat has scrap to
+/// spare, less the more it leans on siege. Each trains at an idle producer
+/// that can.
+fn train_raiders(
+    observation: &ObservationData,
+    profile: &ResolvedProfile,
+    income: u32,
+    producers: &[Producer<'_>],
+    ledger: &mut Ledger,
+) {
+    let scuttlers = if income.saturating_add(4 * u32::from(profile.traits.guile)) >= RAID_INCOME {
+        SCUTTLERS
+    } else {
+        0
+    };
+    let defenses = observation
+        .enemy_buildings
+        .iter()
+        .filter(|building| {
+            building
+                .kind
+                .base_stats()
+                .weapons
+                .iter()
+                .any(|weapon| weapon.targets.ground)
+        })
+        .count();
+    let sappers = defenses.min(crate::missions::SAPPERS);
+    let spare = 2 * (100 - u32::from(profile.traits.siege.min(100)));
+    for (kind, wanted, spare) in [
+        (UnitKind::Scuttler, scuttlers, 0),
+        (UnitKind::Sapper, sappers, spare),
+    ] {
+        let have = observation
+            .my_units
+            .iter()
+            .map(|unit| unit.kind)
+            .chain(observation.my_queues.iter().flatten().copied())
+            .filter(|owned| *owned == kind)
+            .count()
+            + ledger.queued(kind);
+        if have >= wanted || ledger.spendable() < kind.stats().cost + spare {
+            continue;
+        }
+        let producer = producers.iter().find(|producer| {
+            producer.idle
+                && !ledger.queued_at(producer.building.id)
+                && producer.building.kind.base_stats().produces.contains(&kind)
+        });
+        if let Some(producer) = producer {
+            ledger.train(producer.building.id, kind);
+        }
+    }
+}
+
 /// Built producers, nearest home first.
 fn producers(observation: &ObservationData, frame: HomeFrame) -> Vec<Producer<'_>> {
     let mut producers: Vec<Producer<'_>> = observation
@@ -744,6 +812,13 @@ const WOUNDS_PER_TENDER: u64 = 500;
 
 /// Tenders a seat keeps, at most.
 const TENDERS: u64 = 2;
+
+/// Scuttlers a seat keeps for raiding.
+const SCUTTLERS: usize = 2;
+
+/// Income per minute, less four for each point of guile, at which the seat
+/// starts keeping Scuttlers for raiding.
+const RAID_INCOME: u32 = 900;
 
 /// The value per transport slot assumed with no line or siege unit at home.
 const EMPTY_SLOT_VALUE: u64 = 90;

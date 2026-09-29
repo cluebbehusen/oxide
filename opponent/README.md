@@ -175,6 +175,27 @@ outweighs them. A target a strike withdrew from, lost its aircraft to, or stood
 idle beside is skipped for a while. One strike runs at a time, and a defense may
 take its aircraft while they gather or withdraw.
 
+## Raids
+
+While no defense is under way, two or more free raiders of one kind at half
+health or better set out on a raid. Scuttlers, up to four, and ground-attack
+aircraft too few for a strike go after the enemy Extractor or Foundry whose
+known defense they outweigh, least defended and then nearest first, the aircraft
+flying around known anti-air. Sappers, up to four, go after the most valuable
+known enemy building for its distance with little known defense and blow it up.
+Scuttlers and aircraft turn back once one is lost or badly hurt, once the known
+fire reaching them outweighs them, or once they have been at the target a while;
+Sappers turn back only when outweighed on the way. Raids skip a raided target
+for a while, which spaces them out, while attacks, lifts and strikes may still
+go after it; one raid runs at a time.
+
+The seat keeps two Scuttlers, alive or queued, once its income reaches a level
+that falls with guile, and a Sapper for each known enemy defense that can hit
+ground, up to three, once it has scrap to spare, less the more it leans on
+siege. An attack on a target with such defenses takes free Sappers along while
+it gathers or recovers, and once it fights sends each at the nearest such
+defense on its ground, leaving them to it when the rest of the army moves on.
+
 ## Scouting
 
 The seat keeps its hostile starts and expansion sites as scouting points and
@@ -209,10 +230,10 @@ Each idle producer trains for the most wanted role it can serve, or line units
 when nothing is wanted, choosing the unit it can afford now by coarse
 suitability: reach against the enemy's usual reach, durability for the price,
 covering both enemy domains, splash against clustered enemies, affordability at
-the seat's income, and personality. Raiders are left to later behavior; scouts,
-carriers and Tenders are bought only for scouting, lift and support. A role it
-needs but cannot train at all adds to the investment score of the cheapest
-building that would let it.
+the seat's income, and personality. Scouts, carriers, Tenders, Scuttlers and
+Sappers are bought only for scouting, lift, support and raids. A role it needs
+but cannot train at all adds to the investment score of the cheapest building
+that would let it.
 
 ## Investments and saving
 

@@ -1,8 +1,9 @@
 //! What the seat remembers between decisions: enemy units it has seen, with
 //! confidence that fades until they are seen again; building footprints it
 //! failed to claim, so it tries somewhere else for a while; enemy buildings
-//! it gave up attacking, so it attacks something else for a while; and when
-//! it last saw each of its scouting points. Enemy buildings need no other
+//! it gave up attacking, so it attacks something else for a while; enemy
+//! buildings it raided, so the next raid goes elsewhere; and when it last saw
+//! each of its scouting points. Enemy buildings need no other
 //! memory here: the observation keeps their ghosts.
 
 use chassis::grid::TilePos;
@@ -30,6 +31,10 @@ pub(crate) struct Memory {
     failures: Vec<Failure>,
     /// Attack targets given up on, oldest first.
     abandoned: Vec<Failure>,
+    /// Raid targets raided, oldest first. Kept apart from abandoned targets
+    /// so a raid leaves the target to larger missions.
+    #[serde(default)]
+    raided: Vec<Failure>,
     /// Tick each scouting point was last in sight, by point; empty before
     /// the first decision.
     scouted: Vec<u64>,
@@ -112,6 +117,16 @@ impl Memory {
         recent(&self.abandoned, kind, anchor, now)
     }
 
+    /// Remembers a raid on `kind` at `anchor`.
+    pub(crate) fn raid(&mut self, kind: BuildingKind, anchor: TilePos, now: u64) {
+        record(&mut self.raided, kind, anchor, now);
+    }
+
+    /// Whether `kind` at `anchor` was recently raided.
+    pub(crate) fn raided(&self, kind: BuildingKind, anchor: TilePos, now: u64) -> bool {
+        recent(&self.raided, kind, anchor, now)
+    }
+
     /// When each scouting point was last in sight, sized to `points` on first
     /// use.
     pub(crate) fn scouted(&mut self, points: usize) -> &mut [u64] {
@@ -134,6 +149,8 @@ impl Memory {
             .retain(|failure| now < failure.at + FAILURE_TICKS);
         self.abandoned
             .retain(|failure| now < failure.at + FAILURE_TICKS);
+        self.raided
+            .retain(|failure| now < failure.at + FAILURE_TICKS);
     }
 
     /// Rejects a restored memory that could not have been recorded by `now`
@@ -154,7 +171,11 @@ impl Memory {
             return Err("checkpoint scouting memory does not fit the map".into());
         }
         let full = |list: &[Failure]| list.len() > FAILURE_CAP;
-        if full(&self.failures) || full(&self.abandoned) || self.units.len() > UNIT_CAP {
+        if full(&self.failures)
+            || full(&self.abandoned)
+            || full(&self.raided)
+            || self.units.len() > UNIT_CAP
+        {
             return Err("checkpoint remembers too much".into());
         }
         let by_id = self.units.windows(2).all(|pair| pair[0].id < pair[1].id);
@@ -165,7 +186,7 @@ impl Memory {
             list.windows(2).all(|pair| pair[0].at <= pair[1].at)
                 && list.iter().all(|failure| failure.at <= now)
         };
-        if !ordered(&self.failures) || !ordered(&self.abandoned) {
+        if !ordered(&self.failures) || !ordered(&self.abandoned) || !ordered(&self.raided) {
             return Err("checkpoint failures are out of order".into());
         }
         Ok(())
@@ -228,5 +249,30 @@ mod tests {
         assert!(!memory.failed(BuildingKind::Fabricator, TilePos::new(0, 0), 200));
         assert_eq!(memory.validate(200, 8, 8, 0), Ok(()));
         assert!(memory.validate(199, 8, 8, 0).is_err());
+    }
+
+    #[test]
+    fn raids_are_remembered_apart_from_given_up_targets() {
+        let mut memory = Memory::default();
+        let anchor = TilePos::new(4, 4);
+        memory.raid(BuildingKind::Foundry, anchor, 100);
+        assert!(memory.raided(BuildingKind::Foundry, anchor, 100));
+        assert!(!memory.abandoned(BuildingKind::Foundry, anchor, 100));
+        assert_eq!(memory.validate(100, 8, 8, 0), Ok(()));
+        assert!(
+            memory.validate(99, 8, 8, 0).is_err(),
+            "a raid after the checkpoint was taken"
+        );
+        memory.forget(100 + FAILURE_TICKS);
+        assert!(!memory.raided(BuildingKind::Foundry, anchor, 100 + FAILURE_TICKS));
+
+        let older: Memory = serde_json::from_value(serde_json::json!({
+            "units": [],
+            "failures": [],
+            "abandoned": [],
+            "scouted": [],
+        }))
+        .unwrap();
+        assert_eq!(older, Memory::default(), "a checkpoint from before raids");
     }
 }
