@@ -179,12 +179,12 @@ fn every_building_and_upgrade_is_bought_somewhere() {
 fn every_unit_outside_the_army_is_trained_somewhere() {
     let mut rows: Vec<(UnitKind, bool)> = Vec::new();
 
-    rows.push((
-        UnitKind::Harvester,
-        trained(&arena(200), 0, UnitKind::Harvester),
-    ));
+    let mut armed = arena(200);
+    armed.units.extend(standing_army(0));
+    rows.push((UnitKind::Harvester, trained(&armed, 0, UnitKind::Harvester)));
 
     let mut excavating = arena(1_000);
+    excavating.units.extend(standing_army(0));
     excavating
         .buildings
         .push(building(0, BuildingKind::Fabricator, 3, 1));

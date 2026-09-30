@@ -78,6 +78,7 @@ fn squad(scrap: u32) -> (Scenario, impl Fn(&State) -> Vec<UnitId>) {
 fn a_fabricator_turns_two_open_harvester_slots_into_an_excavator() {
     let trained = |fabricator: bool| {
         let mut scenario = arena(1_000);
+        scenario.units.extend(standing_army(0));
         if fabricator {
             scenario
                 .buildings

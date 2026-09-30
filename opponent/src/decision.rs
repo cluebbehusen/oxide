@@ -227,7 +227,7 @@ pub(crate) fn decide(
         .copied()
         .filter(|producer| producer.building.kind == BuildingKind::Foundry)
         .collect();
-    let staffing = workers::staffing(observation, map, frame, &foundries);
+    let staffing = workers::staffing(observation, map, frame, profile, &foundries);
     let earned = persistent.income.observe(tick, observation.scrap, rejected);
     persistent.memory.forget(tick);
     persistent.memory.observe(observation);
@@ -321,8 +321,11 @@ pub(crate) fn decide(
         buy(observation, map, frame, persistent, &mut ledger);
     }
     // A short defense leaves scrap to the army: only the recovery Harvester
-    // above is trained while it lasts.
-    if !short {
+    // above is trained while it lasts. Until the army reaches the stance
+    // minimum, workers that would cost more than it take only what the army
+    // leaves, after production.
+    let paced = !exposed || workforce(observation) <= army(observation);
+    if !short && paced {
         workers::train(
             observation,
             &foundries,
@@ -413,6 +416,15 @@ pub(crate) fn decide(
             train_raiders(observation, profile, income, &producers, &mut ledger);
         }
         produce(observation, &producers, &mut needs, &mut ledger);
+    }
+    if !short && !paced {
+        workers::train(
+            observation,
+            &foundries,
+            &staffing,
+            profile.traits.greed,
+            &mut ledger,
+        );
     }
 
     persistent.saving.keep_at_most(ledger.available());
@@ -860,6 +872,18 @@ fn share(observation: &ObservationData, profile: &ResolvedProfile) -> u32 {
 }
 
 /// What the seat's armed units cost.
+/// Price of the seat's workers, alive or queued.
+fn workforce(observation: &ObservationData) -> u64 {
+    observation
+        .my_units
+        .iter()
+        .map(|unit| unit.kind)
+        .chain(observation.my_queues.iter().flatten().copied())
+        .filter(|kind| workers::worker(*kind))
+        .map(|kind| u64::from(kind.stats().cost))
+        .sum()
+}
+
 fn army(observation: &ObservationData) -> u64 {
     observation
         .my_units

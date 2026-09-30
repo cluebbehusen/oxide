@@ -282,7 +282,7 @@ fn the_most_wanted_role_takes_the_scrap_before_a_nearer_producer() {
         x: 3,
         y: 8,
     });
-    scenario.units.extend((1..=2).map(|x| harvester(0, x, 10)));
+    scenario.units.extend(workforce(0));
     for player in &mut scenario.players {
         player.scrap = 200;
     }

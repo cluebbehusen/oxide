@@ -966,6 +966,13 @@ fn a_severed_seat_without_an_airworks_saves_for_one_instead_of_line_units() {
     scenario
         .buildings
         .retain(|building| building.kind != BuildingKind::Airworks);
+    // A Turret already guards home, so the seat saves for tech.
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Turret,
+        x: 6,
+        y: 14,
+    });
     let decide = |scenario: &Scenario| {
         let state = scenario.build().unwrap();
         let (commands, trace) = seat(scenario, 0).act_traced(&state, &mut OwnEvents::default());

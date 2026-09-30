@@ -23,6 +23,7 @@ mod scouting;
 mod strike;
 mod support;
 mod teams;
+mod workers;
 
 /// A half-turn-symmetric arena. Each seat's Harvesters stand equally far from
 /// their two nearby scrap nodes, so the split depends on the tie-break.
@@ -107,6 +108,36 @@ fn second_foundry(scrap: u32) -> Scenario {
         y: 8,
     });
     scenario
+}
+
+/// Harvesters for `player` along its edge of the arena, enough to fill every
+/// node it works there however full its stance and greed make it.
+fn workforce(player: u8) -> Vec<UnitSpec> {
+    (1..=10)
+        .flat_map(|y| [1, 2].map(|x| (x, y)))
+        .map(|(x, y)| {
+            if player == 0 {
+                harvester(0, x, y)
+            } else {
+                harvester(1, 23 - x, 11 - y)
+            }
+        })
+        .collect()
+}
+
+/// Sentinels for `player` along its edge of the arena, worth the Balanced
+/// stance's minimum army, so the seat is not exposed: it neither puts a
+/// Turret before tech nor holds Harvesters back for its army.
+fn standing_army(player: u8) -> Vec<UnitSpec> {
+    (3..=9)
+        .map(|x| {
+            if player == 0 {
+                unit(0, UnitKind::Sentinel, x, 10)
+            } else {
+                unit(1, UnitKind::Sentinel, 23 - x, 1)
+            }
+        })
+        .collect()
 }
 
 fn harvester(player: u8, x: i32, y: i32) -> UnitSpec {
@@ -412,7 +443,7 @@ fn advance_to(state: &mut State, tick: u64, commands: &[PlayerCommand]) {
 }
 
 #[test]
-fn a_staged_foundry_spreads_its_harvesters_and_trains_toward_saturation() {
+fn a_staged_foundry_spreads_its_harvesters_and_trains_its_army_first() {
     let scenario = arena(200);
     let mut state = scenario.build().unwrap();
     let mut opponent = seat(&scenario, 0);
@@ -420,7 +451,12 @@ fn a_staged_foundry_spreads_its_harvesters_and_trains_toward_saturation() {
     assert_eq!(opponent.profile(), &ResolvedProfile::resolve(config()));
 
     let (commands, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
-    let mut harvesters = seat_units(&state, PlayerId(0));
+    let mut harvesters: Vec<UnitId> = state
+        .units()
+        .iter()
+        .filter(|unit| unit.player == PlayerId(0) && unit.kind == UnitKind::Harvester)
+        .map(|unit| unit.id)
+        .collect();
     harvesters.sort_unstable();
     let foundry = foundries(&state, PlayerId(0))[0];
     let mut worked = harvests(&commands);
@@ -438,8 +474,8 @@ fn a_staged_foundry_spreads_its_harvesters_and_trains_toward_saturation() {
     assert_eq!(sent, harvesters);
     assert_eq!(
         trains(&commands),
-        [(foundry, UnitKind::Harvester)],
-        "two worked nodes want four Harvesters"
+        [(foundry, UnitKind::Sentinel)],
+        "with no army, Harvesters that would cost more than it wait for it"
     );
     assert_eq!(
         trace,
@@ -448,10 +484,10 @@ fn a_staged_foundry_spreads_its_harvesters_and_trains_toward_saturation() {
             player: PlayerId(0),
             bank: 200,
             events: Vec::new(),
-            spent: UnitKind::Harvester.stats().cost,
+            spent: UnitKind::Sentinel.stats().cost,
             purchases: vec![Purchase::Train {
                 building: foundry,
-                unit: UnitKind::Harvester,
+                unit: UnitKind::Sentinel,
             }],
             unit_orders: 2,
             allowance: 6,
@@ -505,8 +541,9 @@ fn the_running_total_pays_for_one_unit_across_two_foundries() {
 }
 
 #[test]
-fn idle_foundries_train_harvesters_until_two_per_worked_node() {
-    let scenario = second_foundry(1_000);
+fn ready_foundries_train_harvesters_while_their_nodes_want_more() {
+    let mut scenario = second_foundry(1_000);
+    scenario.units.extend(standing_army(0));
     let state = scenario.build().unwrap();
     let homes = foundries(&state, PlayerId(0));
     let commands = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
@@ -522,7 +559,7 @@ fn idle_foundries_train_harvesters_until_two_per_worked_node() {
 #[test]
 fn saturated_harvesting_leaves_idle_foundries_to_production() {
     let mut scenario = second_foundry(1_000);
-    scenario.units.extend((1..=2).map(|x| harvester(0, x, 10)));
+    scenario.units.extend(workforce(0));
     let state = scenario.build().unwrap();
     let homes = foundries(&state, PlayerId(0));
     let commands = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
@@ -869,7 +906,7 @@ fn checkpoints_round_trip_and_restore_only_opponent_seats() {
 #[test]
 fn a_producer_about_to_finish_queues_its_next_unit_now() {
     let mut scenario = second_foundry(1_000);
-    scenario.units.extend((1..=2).map(|x| harvester(0, x, 10)));
+    scenario.units.extend(workforce(0));
     let mut state = scenario.build().unwrap();
     let homes = foundries(&state, PlayerId(0));
     let busy: Vec<PlayerCommand> = homes
@@ -897,5 +934,49 @@ fn a_producer_about_to_finish_queues_its_next_unit_now() {
             (homes[1], UnitKind::Sentinel)
         ],
         "each queues its next unit before it would stand empty"
+    );
+}
+
+#[test]
+fn harvesters_that_outprice_the_army_take_only_what_it_leaves() {
+    // Scrap for a Harvester but not a Sentinel: the Foundry the army could
+    // not use still trains a Harvester.
+    let scenario = arena(60);
+    let state = scenario.build().unwrap();
+    let foundry = foundries(&state, PlayerId(0))[0];
+    let commands = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
+    assert_eq!(trains(&commands), [(foundry, UnitKind::Harvester)]);
+}
+
+#[test]
+fn a_seat_without_an_army_puts_up_a_turret_before_tech() {
+    let target = |scenario: &Scenario| {
+        let state = scenario.build().unwrap();
+        seat_with(scenario, 0, thrifty())
+            .act_traced(&state, &mut OwnEvents::default())
+            .1
+            .unwrap()
+            .target
+            .map(|target| target.investment)
+    };
+    let mut exposed = arena(0);
+    exposed.units.extend(workforce(0));
+    assert!(
+        matches!(
+            target(&exposed),
+            Some(Investment::Defense {
+                kind: BuildingKind::Turret,
+                ..
+            })
+        ),
+        "{:?}",
+        target(&exposed)
+    );
+    let mut armed = exposed.clone();
+    armed.units.extend(standing_army(0));
+    assert!(
+        matches!(target(&armed), Some(Investment::Tech(_))),
+        "an army to speak of saves for tech: {:?}",
+        target(&armed)
     );
 }

@@ -6,21 +6,15 @@ use crate::decision::{Ledger, Producer};
 use crate::frame::{HomeFrame, doubled, footprint_centre, gap, ring};
 use crate::map::MapModel;
 use crate::missions::Hazard;
+use crate::profile::ResolvedProfile;
+use chassis::fx::Fx;
 use chassis::grid::TilePos;
+use oxide_sim::TICKS_PER_SECOND;
 use oxide_sim::observation::{BuildingObs, ObservationData};
+use oxide_sim::scenario::BotStance;
 use oxide_sim::stats::FOUNDRY_REPAIR_PRICE;
 use oxide_sim::{BuildingKind, Command, UnitId, UnitKind};
 use std::cmp::Reverse;
-
-/// Scrap nodes each Foundry's Harvesters work, nearest first.
-const NODES_PER_FOUNDRY: usize = 4;
-
-/// Harvesters wanted on each worked node.
-const HARVESTERS_PER_NODE: usize = 2;
-
-/// Farthest a worked node may sit from its Foundry's centre, in tenths of a
-/// tile of octile distance.
-const HAUL_REACH: i64 = 120;
 
 /// Workers welding buildings at once, at most.
 const WELDERS: usize = 2;
@@ -39,15 +33,22 @@ const WELD_CLEARANCE: i32 = 12;
 /// Empty tiles from an own Foundry inside which a worker counts as home.
 const HOME_TILES: i32 = 8;
 
-/// The nodes the seat's Foundries work and the worker slots it fills.
+/// The nodes the seat's Foundries work, each with the Harvesters it wants
+/// there, and the worker slots it fills.
 pub(crate) struct Staffing {
-    worked: Vec<TilePos>,
+    worked: Vec<(TilePos, usize)>,
     crew: usize,
 }
 
 impl Staffing {
+    /// The worked nodes with the Harvesters each wants.
+    #[cfg(test)]
+    pub(crate) fn crews(&self) -> &[(TilePos, usize)] {
+        &self.worked
+    }
+
     fn wanted(&self) -> usize {
-        self.worked.len() * HARVESTERS_PER_NODE
+        self.worked.iter().map(|(_, crew)| crew).sum()
     }
 
     /// Filled worker slots as a per-mille share of those wanted.
@@ -75,16 +76,17 @@ fn slots(kind: UnitKind) -> usize {
     }
 }
 
-/// Counts the worked nodes and the worker slots filled by workers alive,
-/// carried or queued.
+/// Counts the worked nodes with their crews and the worker slots filled by
+/// workers alive, carried or queued.
 pub(crate) fn staffing(
     observation: &ObservationData,
     map: &MapModel,
     frame: HomeFrame,
+    profile: &ResolvedProfile,
     foundries: &[Producer<'_>],
 ) -> Staffing {
     Staffing {
-        worked: worked_nodes(observation, map, frame, foundries),
+        worked: worked_nodes(observation, map, frame, profile, foundries),
         crew: crew(observation),
     }
 }
@@ -359,45 +361,140 @@ fn crew(observation: &ObservationData) -> usize {
         .sum()
 }
 
-/// The live known nodes each Foundry works: the nearest few its ground can
-/// reach within haul range, none counted for two Foundries.
+/// The live known nodes the seat works, each with its crew. A node belongs
+/// to the nearest built Foundry whose ground reaches it, unless an enemy
+/// building or hostile start is as near, and is worked when a Harvester
+/// hauling from there repays its price within the seat's horizon.
+/// Its crew fills the free tiles around it that its remaining scrap repays,
+/// as full as stance and greed make it.
 fn worked_nodes(
     observation: &ObservationData,
     map: &MapModel,
     frame: HomeFrame,
+    profile: &ResolvedProfile,
     foundries: &[Producer<'_>],
-) -> Vec<TilePos> {
-    let mut worked: Vec<TilePos> = Vec::new();
-    for foundry in foundries {
-        let Some(component) = map.component(foundry.building.anchor) else {
-            continue;
-        };
-        let centre = footprint_centre(BuildingKind::Foundry, foundry.building.anchor);
-        let mut near: Vec<TilePos> = observation
-            .known_scrap
+) -> Vec<(TilePos, usize)> {
+    let harvester = UnitKind::Harvester.stats();
+    let Some(harvest) = harvester.harvest else {
+        return Vec::new();
+    };
+    let horizon = horizon(profile);
+    let fill = fill(profile);
+    let price = u64::from(harvester.cost.max(1));
+    let payback = price.div_ceil(u64::from(harvest.capacity.max(1)));
+    let homes: Vec<(u32, (i64, i64), &BuildingObs)> = foundries
+        .iter()
+        .filter_map(|foundry| {
+            let component = map.component(foundry.building.anchor)?;
+            let centre = footprint_centre(BuildingKind::Foundry, foundry.building.anchor);
+            Some((component, centre, foundry.building))
+        })
+        .collect();
+    // Hostile Foundries known or presumed, and every other known enemy
+    // building: a node nearer one of them than any own Foundry is theirs.
+    let hostile: Vec<(i64, i64)> = observation
+        .enemy_buildings
+        .iter()
+        .map(|building| footprint_centre(building.kind, building.anchor))
+        .chain(
+            map.hostiles(observation.me)
+                .filter_map(|owner| map.start(owner))
+                .map(|start| footprint_centre(BuildingKind::Foundry, start)),
+        )
+        .collect();
+    observation
+        .known_scrap
+        .iter()
+        .filter(|(_, amount)| *amount > 0)
+        .filter_map(|(node, amount)| {
+            let (component, reach) = homes
+                .iter()
+                .filter(|(component, _, _)| map.touches(*node, *component))
+                .map(|(component, centre, building)| {
+                    let reach = octile_tenths(*centre, doubled(*node));
+                    (
+                        (reach, frame.rank(doubled(*node), *centre), building.id),
+                        *component,
+                    )
+                })
+                .min()
+                .map(|((reach, _, _), component)| (component, reach))?;
+            if hostile
+                .iter()
+                .any(|centre| octile_tenths(*centre, doubled(*node)) <= reach)
+            {
+                return None;
+            }
+            // Ticks for one load: standing at the node, then there and back.
+            let trip = Fx::from_num(2 * reach) / (Fx::from_num(10) * harvester.speed);
+            let cycle =
+                u64::from(harvest.capacity * harvest.ticks_per_scrap) + trip.ceil().to_num::<u64>();
+            if payback * cycle > horizon {
+                return None;
+            }
+            let room = room(observation, map, *node, component) as u64;
+            let repaid = u64::from(*amount) / price;
+            let places = room.min(repaid);
+            (places > 0).then(|| (*node, (places * fill).div_ceil(1_000).max(1) as usize))
+        })
+        .collect()
+}
+
+/// Ticks within which a Harvester must repay its price for its node to be
+/// worked: longer the more a stance invests at home, stretched by greed.
+fn horizon(profile: &ResolvedProfile) -> u64 {
+    let minutes_tenths: u64 = match profile.stance {
+        BotStance::Turtle => 30,
+        BotStance::Balanced => 20,
+        BotStance::Aggressive => 15,
+    };
+    let per_minute = u64::from(TICKS_PER_SECOND) * 60;
+    minutes_tenths * per_minute * (200 + u64::from(profile.traits.greed)) / 2_000
+}
+
+/// Per mille of a node's places the seat fills: all of them for an economic
+/// stance, about half for an aggressive one, more the greedier it is.
+pub(crate) fn fill(profile: &ResolvedProfile) -> u64 {
+    let base: i64 = match profile.stance {
+        BotStance::Turtle => 1_000,
+        BotStance::Balanced => 750,
+        BotStance::Aggressive => 500,
+    };
+    (base + (i64::from(profile.traits.greed) - 50) * 5).clamp(250, 1_000) as u64
+}
+
+/// Free tiles a worker could stand on to work `node`: its neighbours on
+/// `component` that no known building or other node covers.
+fn room(observation: &ObservationData, map: &MapModel, node: TilePos, component: u32) -> usize {
+    let covered = |tile: TilePos| {
+        observation
+            .my_buildings
             .iter()
-            .filter(|(node, amount)| {
-                *amount > 0
-                    && !worked.contains(node)
-                    && octile_tenths(centre, doubled(*node)) <= HAUL_REACH
-                    && map.touches(*node, component)
+            .chain(&observation.enemy_buildings)
+            .any(|building| {
+                let (width, height) = building.kind.base_stats().size;
+                (building.anchor.x..building.anchor.x + width).contains(&tile.x)
+                    && (building.anchor.y..building.anchor.y + height).contains(&tile.y)
             })
-            .map(|(node, _)| *node)
-            .collect();
-        near.sort_by_key(|node| frame.rank(centre, doubled(*node)));
-        worked.extend(near.into_iter().take(NODES_PER_FOUNDRY));
-    }
-    worked
+            || observation
+                .known_scrap
+                .binary_search_by_key(&(tile.y, tile.x), |(other, _)| (other.y, other.x))
+                .is_ok()
+    };
+    ring(node, (1, 1))
+        .filter(|tile| map.component(*tile) == Some(component) && !covered(*tile))
+        .count()
 }
 
 /// Sends each idle worker, nearest home first, to the reachable worked
-/// node with the fewest workers, or to its nearest reachable known node when
-/// none is worked, never to a node inside known danger. One order per node.
+/// node with the most places open, or to its nearest reachable known node
+/// when none is worked, never to a node inside known danger. One order per
+/// node.
 fn assign_idle(
     observation: &ObservationData,
     map: &MapModel,
     frame: HomeFrame,
-    worked: &[TilePos],
+    worked: &[(TilePos, usize)],
     hazards: &[Hazard],
     ledger: &mut Ledger,
 ) {
@@ -405,16 +502,16 @@ fn assign_idle(
         let point = doubled(*node);
         !hazards.iter().any(|hazard| hazard.covers(point))
     };
-    let mut miners: Vec<(TilePos, usize)> = worked
+    let mut miners: Vec<(TilePos, i64)> = worked
         .iter()
-        .filter(|node| safe(node))
-        .map(|node| {
+        .filter(|(node, _)| safe(node))
+        .map(|(node, crew)| {
             let working = observation
                 .my_units
                 .iter()
                 .filter(|unit| unit.harvesting == Some(*node))
                 .count();
-            (*node, working)
+            (*node, *crew as i64 - working as i64)
         })
         .collect();
     let mut idle: Vec<_> = observation
@@ -429,13 +526,13 @@ fn assign_idle(
             continue;
         };
         let from = doubled(unit.tile);
-        let least_worked = miners
+        let most_open = miners
             .iter_mut()
             .filter(|(node, _)| map.touches(*node, component))
-            .min_by_key(|(node, working)| (*working, frame.rank(from, doubled(*node))));
-        let node = match least_worked {
-            Some((node, working)) => {
-                *working += 1;
+            .min_by_key(|(node, open)| (Reverse(*open), frame.rank(from, doubled(*node))));
+        let node = match most_open {
+            Some((node, open)) => {
+                *open -= 1;
                 *node
             }
             None => {

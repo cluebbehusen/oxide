@@ -169,6 +169,29 @@ pub(crate) fn candidates(situation: &Situation<'_>) -> Vec<Candidate> {
         saturated || observation.tick >= defenses::SETTLE_TICKS,
         situation.exposed,
     ));
+    // A seat without an army to speak of puts up a Turret before any tech:
+    // one gun holds an early rush that a tech building still going up would
+    // not. It leads the best tech by the margin that switches a saving target.
+    if situation.exposed && owned(BuildingKind::Turret) == 0 {
+        let tech = list
+            .iter()
+            .filter(|(investment, _)| matches!(investment, Investment::Tech(_)))
+            .map(|(_, score)| *score)
+            .max()
+            .unwrap_or(0);
+        let lead = (tech + (tech / 4).max(150) + 1).max(ADOPT);
+        for (investment, score) in &mut list {
+            if matches!(
+                investment,
+                Investment::Defense {
+                    kind: BuildingKind::Turret,
+                    ..
+                }
+            ) {
+                *score = (*score).max(lead);
+            }
+        }
+    }
     let mut list: Vec<Candidate> = list
         .into_iter()
         .filter(|(_, score)| *score > 0)

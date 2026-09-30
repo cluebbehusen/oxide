@@ -20,8 +20,10 @@ const FAILURE_CAP: usize = 16;
 /// Ticks an enemy unit is remembered after it was last seen.
 const UNIT_TICKS: u64 = 600;
 
-/// Enemy units remembered at once; the stalest is forgotten first.
-const UNIT_CAP: usize = 128;
+/// Enemy units remembered at once, the stalest forgotten first: a computation
+/// bound that normal play stays under, since units seen more than
+/// `UNIT_TICKS` ago are forgotten anyway.
+const UNIT_CAP: usize = 4_096;
 
 /// The seat's memory: enemy units by id, failures oldest first.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -186,8 +186,10 @@ Income compares scrap earned in the minute before ticks 6,000, 12,000 and 24,000
 (deliveries plus Reclaimer, Extractor and Foundry credits) with a saturation
 estimate: two Harvesters on each of the four nearest scrap nodes that still hold
 scrap for every completed Foundry, at their straight-line round trip, plus those
-credits. No node counts for two Foundries. A seat stops sampling once it is
-eliminated, so a seat that is out while its team plays on adds no empty samples.
+credits. No node counts for two Foundries. The estimate is a fixed yardstick for
+comparing runs, not the bot's own staffing, so income can exceed it. A seat
+stops sampling once it is eliminated, so a seat that is out while its team plays
+on adds no empty samples.
 
 ## Pressure scenarios
 

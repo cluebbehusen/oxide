@@ -122,6 +122,8 @@ impl Enemy {
                 );
             }
         }
+        // The most recently seen units stand in for the rest: a computation
+        // bound on a pairwise check, not a limit on what the seat knows.
         let mut recent: Vec<_> = memory.units().iter().collect();
         recent.sort_by_key(|unit| (Reverse(unit.seen), unit.id));
         recent.truncate(32);
