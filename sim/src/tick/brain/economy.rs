@@ -2,15 +2,17 @@
 //! harvesting, wreck stripping, and delivery. Hp gains buffer like
 //! damage and resolve after it — fire wins ties.
 
-use super::super::{rect_adjacent_tiles, rect_approach_key, route_for, tile_adjacent_to_rect};
+use super::super::{route_for, tile_adjacent_to_rect};
 use super::PendingHpGain;
+use super::contact;
 use super::locomotion::approach_rect;
 use crate::event::{Event, StallReason};
 use crate::ids::{BuildingId, PlayerId, UnitId};
 use crate::state::{Order, PathFollow, State};
-use crate::stats::{HARVEST_ZONE_RADIUS, WORK_TILE_CLAIM_REACH};
+use crate::stats::HARVEST_ZONE_RADIUS;
+use crate::tick::crowding;
 use crate::vision::GroundSalvageDanger;
-use chassis::fx::Fx;
+use chassis::fx::{Fx, Vec2Fx};
 use chassis::grid::TilePos;
 use std::cmp::Reverse;
 
@@ -99,8 +101,8 @@ pub(super) fn build(
         .construction
         .expect("sites only exist for buildable kinds")
         .build_ticks;
-    let tile = state.unit(id).expect("caller checked").tile();
-    if !b.provisional && tile_adjacent_to_rect(tile, anchor, size) {
+    let unit = state.unit(id).expect("caller checked");
+    if !b.provisional && unit.work_stopped() && state.in_building_work_reach(unit, site) {
         let start_hp = stats.max_hp / 5;
         let ramp = stats.max_hp - start_hp;
         // An Excavator's crew-tick counts double: same ramp, half the
@@ -141,7 +143,7 @@ pub(super) fn build(
             });
         }
         state.unit_mut(id).expect("caller checked").path = None;
-    } else if !approach_rect(state, id, anchor, size) {
+    } else if !contact::approach_worker(state, id, site) {
         let unit = state.unit_mut(id).expect("caller checked");
         let (player, pos) = (unit.player, unit.pos);
         unit.drop_active_order();
@@ -218,11 +220,10 @@ pub(super) fn repair(
         state.unit_mut(id).expect("caller checked").advance_queue();
         return;
     };
-    let (anchor, kind, tier) = (b.anchor, b.kind, b.tier);
+    let (kind, tier) = (b.kind, b.tier);
     // The active tier's row: a Bulwark's weld ramp, ceiling, and billing
     // basis are the Bulwark's, not the base Turret's.
     let stats = kind.tier_stats(tier);
-    let size = stats.size;
     // The welding rate is the construction ramp — except the Foundry,
     // which keeps its authored ramp and billing basis: repairing the
     // victory token stays the tuned defensive lever it always was, even
@@ -242,8 +243,8 @@ pub(super) fn repair(
             |c| (c.build_ticks, c.cost),
         )
     };
-    let tile = state.unit(id).expect("caller checked").tile();
-    if tile_adjacent_to_rect(tile, anchor, size) {
+    let unit = state.unit(id).expect("caller checked");
+    if unit.work_stopped() && state.in_building_work_reach(unit, building) {
         // Billing derives entirely from the welder's own tick meter:
         // cumulative welded hp telescopes to ramp * p / ramp_ticks, and
         // scrap owed is the ceiling of its milli-scrap price — so the
@@ -291,7 +292,7 @@ pub(super) fn repair(
                 repair_bay: None,
             });
         }
-    } else if !approach_rect(state, id, anchor, size) {
+    } else if !contact::approach_worker(state, id, building) {
         let unit = state.unit_mut(id).expect("caller checked");
         let (player, pos) = (unit.player, unit.pos);
         unit.drop_active_order();
@@ -309,7 +310,7 @@ pub(super) fn repair(
 /// [`crate::stats::REPAIR_COST_PERMILLE`] of proportional cost through
 /// the same prepaid milli-scrap meter buildings use. The torch holds
 /// only while both bodies stand still inside
-/// [`crate::stats::REPAIR_REACH`]: a walking patient is chased, not
+/// body-aware tool reach: a walking patient is chased, not
 /// welded — field sustain never rides along with a retreat. Heals
 /// buffer like every hp gain and resolve after damage (fire wins
 /// ties); several welders stack, each billing its own torch time.
@@ -336,11 +337,8 @@ pub(super) fn repair_unit(
         state.unit_mut(id).expect("caller checked").advance_queue();
         return;
     };
-    let (t_pos, t_tile) = (t.pos, t.tile());
-    let reach = crate::stats::REPAIR_REACH;
     let unit = state.unit(id).expect("caller checked");
-    let in_reach = unit.pos.dist_sq(t_pos) <= reach * reach;
-    if in_reach {
+    if unit.work_stopped() && unit.in_repair_reach(t) {
         // Do not bill or advance the torch yet. The patient's own brain
         // may run later in this parity-alternating phase and create the
         // path movement consumes this tick. Commit after all brains have
@@ -351,7 +349,7 @@ pub(super) fn repair_unit(
             patient,
         });
     } else {
-        chase_patient(state, id, t_tile, events);
+        chase_patient(state, id, patient, events);
     }
 }
 
@@ -388,7 +386,6 @@ pub(super) fn commit_unit_welds(
                 continue;
             };
             let me = unit.player;
-            let unit_pos = unit.pos;
             if unit.drive_speed != Fx::ZERO || footprint_eviction_pending(state, weld.welder) {
                 // Phase 5, after weld resolution, will make this welder
                 // walk off newly claimed ground. It cannot light the
@@ -405,18 +402,16 @@ pub(super) fn commit_unit_welds(
                 stationary[slot] = false;
                 continue;
             };
-            let reach = crate::stats::REPAIR_REACH;
             if t.path.is_none()
                 && t.drive_speed == Fx::ZERO
                 && !matches!(t.order, Order::Found { .. })
                 && !footprint_eviction_pending(state, weld.patient)
-                && unit_pos.dist_sq(t.pos) <= reach * reach
+                && unit.in_repair_reach(t)
             {
                 continue;
             }
-            let patient_tile = t.tile();
             stationary[slot] = false;
-            chase_patient(state, weld.welder, patient_tile, events);
+            chase_patient(state, weld.welder, weld.patient, events);
             changed = true;
         }
         if !changed {
@@ -434,7 +429,7 @@ pub(super) fn commit_unit_welds(
         else {
             continue;
         };
-        let (me, unit_pos, p) = (unit.player, unit.pos, metered(unit.progress));
+        let (me, p) = (unit.player, metered(unit.progress));
         let Some(t) = state
             .unit(weld.patient)
             .filter(|t| t.player == me && t.hp > 0 && t.hp < t.kind.stats().max_hp)
@@ -444,9 +439,7 @@ pub(super) fn commit_unit_welds(
         debug_assert!(t.path.is_none());
         debug_assert!(!footprint_eviction_pending(state, weld.welder));
         debug_assert!(!footprint_eviction_pending(state, weld.patient));
-        debug_assert!(
-            unit_pos.dist_sq(t.pos) <= crate::stats::REPAIR_REACH * crate::stats::REPAIR_REACH
-        );
+        debug_assert!(unit.in_repair_reach(t));
         let t_kind = t.kind;
 
         // The billing meter is the Harvester welder's, with the patient's
@@ -495,42 +488,61 @@ fn footprint_eviction_pending(state: &State, id: UnitId) -> bool {
     super::super::movement::claimed_ground_escape(state, id).is_some()
 }
 
-/// Re-aims the torch carrier at the patient's current tile. The meter
-/// survives the walk; only committed torch time bills.
-fn chase_patient(state: &mut State, id: UnitId, patient_tile: TilePos, events: &mut Vec<Event>) {
-    // Cheap pursuit without per-tick A*: keep a path whose goal has
-    // drifted no more than one tile from the patient.
+/// Reuses the current approach side as a patient moves, replanning only
+/// when its precise endpoint leaves the final tile.
+fn chase_patient(state: &mut State, id: UnitId, patient: UnitId, events: &mut Vec<Event>) {
     let unit = state.unit(id).expect("caller checked");
-    let kind = unit.kind;
-    let tile = unit.tile();
-    let keep = unit
+    let target = state.unit(patient).expect("caller checked");
+    let gap =
+        unit.kind.stats().radius + target.kind.stats().radius + crate::stats::WORK_APPROACH_GAP;
+    let toward = unit
         .path
         .as_ref()
-        .is_some_and(|pf| pf.goal.chebyshev(patient_tile) <= 1);
-    if keep {
-        return;
-    }
-    match route_for(state, kind, tile, patient_tile) {
-        Some(waypoints) => {
-            let unit = state.unit_mut(id).expect("caller checked");
-            unit.path = Some(PathFollow {
-                goal: patient_tile,
-                waypoints,
-                next: 0,
-            });
+        .and_then(|p| p.final_point)
+        .unwrap_or(unit.pos)
+        - target.pos;
+    let bearing = if toward == Vec2Fx::ZERO {
+        unit.heading.wrapping_add(128)
+    } else {
+        chassis::compass::heading_of(toward)
+    };
+    let kind = unit.kind;
+    let from = unit.tile();
+    // Search in the patient's query-relative frame, so mirrored scenes
+    // choose mirrored sides without using absolute entity ids.
+    for offset in [0_i16, 32, -32, 64, -64, 96, -96, 128] {
+        let point =
+            target.pos + chassis::compass::dir(bearing.wrapping_add_signed(offset as i8)) * gap;
+        let goal = TilePos::containing(point);
+        if !state.passable_for(kind.stats().domain, goal) {
+            continue;
         }
-        None => {
-            let unit = state.unit_mut(id).expect("caller checked");
-            let (player, pos) = (unit.player, unit.pos);
-            unit.drop_active_order();
-            events.push(Event::OrderStalled {
-                unit: id,
-                player,
-                pos,
-                reason: StallReason::NoRoute,
-            });
+        if unit.path.as_ref().is_some_and(|p| p.goal == goal) {
+            state
+                .unit_mut(id)
+                .expect("caller checked")
+                .path
+                .as_mut()
+                .expect("checked")
+                .final_point = Some(point);
+            return;
+        }
+        if let Some(waypoints) = route_for(state, kind, from, goal) {
+            let mut path = work_position_path(goal, waypoints);
+            path.final_point = Some(point);
+            state.unit_mut(id).expect("caller checked").path = Some(path);
+            return;
         }
     }
+    let unit = state.unit_mut(id).expect("caller checked");
+    let (player, pos) = (unit.player, unit.pos);
+    unit.drop_active_order();
+    events.push(Event::OrderStalled {
+        unit: id,
+        player,
+        pos,
+        reason: StallReason::NoRoute,
+    });
 }
 
 /// Strip an own built building for scrap: walk adjacent, then drain hp
@@ -554,17 +566,16 @@ pub(super) fn salvage(
         state.unit_mut(id).expect("caller checked").advance_queue();
         return;
     };
-    let (anchor, kind, tier) = (b.anchor, b.kind, b.tier);
+    let (kind, tier) = (b.kind, b.tier);
     // Strip on the active tier's construction clock: dismantling a
     // Refinery is undoing the Refinery's build, not the Reclaimer's.
     let stats = kind.tier_stats(tier);
-    let size = stats.size;
     let ramp_ticks = stats
         .construction
         .expect("non-Foundry salvage targets are buildable")
         .build_ticks;
-    let tile = state.unit(id).expect("caller checked").tile();
-    if tile_adjacent_to_rect(tile, anchor, size) {
+    let unit = state.unit(id).expect("caller checked");
+    if unit.work_stopped() && state.in_building_work_reach(unit, building) {
         let start_hp = stats.max_hp / 5;
         let ramp = stats.max_hp - start_hp;
         let unit = state.unit_mut(id).expect("caller checked");
@@ -575,7 +586,7 @@ pub(super) fn salvage(
         if step > 0 {
             drains.push(super::PendingHpDrain { building, step });
         }
-    } else if !approach_rect(state, id, anchor, size) {
+    } else if !contact::approach_worker(state, id, building) {
         let unit = state.unit_mut(id).expect("caller checked");
         let (player, pos) = (unit.player, unit.pos);
         unit.drop_active_order();
@@ -589,9 +600,8 @@ pub(super) fn salvage(
 }
 
 /// The harvest loop: work one safe remembered source inside a fixed local
-/// zone, haul to a Foundry, and return to that same zone. Nodes are worked
-/// from an adjacent tile (they block ground); wrecks are worked standing
-/// *on* the tile — they are junk on open ground.
+/// zone, haul to a Foundry, and return to that same zone. Both nodes and
+/// wrecks are worked from a position beside the source.
 pub(super) fn harvest(
     state: &mut State,
     danger: &GroundSalvageDanger,
@@ -608,6 +618,10 @@ pub(super) fn harvest(
         return;
     };
     let anchor = anchor.unwrap_or(node);
+    if unit.unloading.is_some() {
+        deliver(state, danger, id, events, retiring);
+        return;
+    }
     if retiring {
         retire(state, danger, id, events);
         return;
@@ -641,28 +655,29 @@ pub(super) fn harvest(
     }
 
     let current = current.expect("the dry branch returned");
-    match current.kind {
-        SourceKind::Scrap => {
-            let authoritative = node == anchor;
-            let safe_footing = authoritative || !danger.contains(tile);
-            if state
-                .unit(id)
-                .expect("caller checked")
-                .in_harvest_reach(node, (1, 1))
-                && safe_footing
-            {
-                extract(state, id, node, hstats.ticks_per_scrap, events);
-            } else if !approach_source(state, danger, id, current, authoritative) {
-                source_route_failed(state, danger, id, node, anchor, events);
-            }
+    if state
+        .unit(id)
+        .expect("caller checked")
+        .in_work_reach(node, (1, 1))
+    {
+        let worker = state.unit_mut(id).expect("caller checked");
+        worker.path = None;
+        if !worker.work_stopped() {
+            return;
         }
-        SourceKind::Wreck => {
-            if tile == node {
-                extract_wreck(state, id, node, hstats.ticks_per_scrap);
-            } else if !approach_source(state, danger, id, current, node == anchor) {
-                source_route_failed(state, danger, id, node, anchor, events);
-            }
+    }
+    let authoritative = node == anchor;
+    let worker = state.unit(id).expect("caller checked");
+    if worker.in_work_reach(node, (1, 1))
+        && worker.work_stopped()
+        && (authoritative || !danger.contains(tile))
+    {
+        match current.kind {
+            SourceKind::Scrap => extract(state, id, node, hstats.ticks_per_scrap, events),
+            SourceKind::Wreck => extract_wreck(state, id, node, hstats.ticks_per_scrap),
         }
+    } else if !approach_source(state, danger, id, current, authoritative) {
+        source_route_failed(state, danger, id, node, anchor, events);
     }
 }
 
@@ -858,7 +873,26 @@ fn source_route_len(
     id: UnitId,
     source: KnownSource,
 ) -> Option<usize> {
-    safe_source_route(state, danger, id, source).map(|(_, route)| route.len())
+    safe_source_route(state, danger, id, source).map(|path| path.waypoints.len())
+}
+
+fn approach_work_rect(state: &mut State, id: UnitId, anchor: TilePos, size: (i32, i32)) -> bool {
+    if !approach_rect(state, id, anchor, size) {
+        return false;
+    }
+    let unit = state.unit_mut(id).expect("caller checked");
+    if let Some(path) = &mut unit.path {
+        path.final_point = Some(crate::geometry::work_approach_point(
+            path.goal,
+            anchor,
+            size,
+            unit.kind.stats().radius,
+        ));
+        if path.waypoints.is_empty() {
+            path.waypoints.push(path.goal);
+        }
+    }
+    true
 }
 
 fn work_position_path(goal: TilePos, mut waypoints: Vec<TilePos>) -> PathFollow {
@@ -868,6 +902,7 @@ fn work_position_path(goal: TilePos, mut waypoints: Vec<TilePos>) -> PathFollow 
         waypoints.push(goal);
     }
     PathFollow {
+        final_point: None,
         goal,
         waypoints,
         next: 0,
@@ -889,13 +924,14 @@ fn approach_source(
         return approach_authoritative_source(state, danger, id, source);
     }
     let unit = state.unit(id).expect("caller checked");
-    let goal_matches = |goal: TilePos| match source.kind {
-        SourceKind::Wreck => goal == source.pos,
-        SourceKind::Scrap => tile_adjacent_to_rect(goal, source.pos, (1, 1)),
-    };
+    let goal_matches = |goal: TilePos| tile_adjacent_to_rect(goal, source.pos, (1, 1));
     let from = unit.tile();
     let keep = unit.path.as_ref().is_some_and(|path| {
         goal_matches(path.goal)
+            && (from.chebyshev(path.goal) > 1
+                || path
+                    .final_point
+                    .is_none_or(|point| !crowding::claimed(state, id, point, true)))
             && keep_flagged_route(state, id, path, |waypoint| {
                 danger.route_safe_from(from, waypoint)
             })
@@ -904,11 +940,11 @@ fn approach_source(
         return true;
     }
 
-    let Some((goal, waypoints)) = safe_source_route(state, danger, id, source) else {
+    let Some(path) = safe_source_route(state, danger, id, source) else {
         state.unit_mut(id).expect("caller checked").path = None;
         return false;
     };
-    state.unit_mut(id).expect("caller checked").path = Some(work_position_path(goal, waypoints));
+    state.unit_mut(id).expect("caller checked").path = Some(path);
     true
 }
 
@@ -926,49 +962,34 @@ fn approach_authoritative_source(
     let unit = state.unit(id).expect("caller checked");
     let player = unit.player;
     let from = unit.tile();
-    let goal_matches = |goal: TilePos| match source.kind {
-        SourceKind::Wreck => goal == source.pos,
-        SourceKind::Scrap => tile_adjacent_to_rect(goal, source.pos, (1, 1)),
-    };
+    let goal_matches = |goal: TilePos| tile_adjacent_to_rect(goal, source.pos, (1, 1));
     if let Some(path) = unit.path.as_ref().filter(|path| goal_matches(path.goal)) {
         let near_route_is_clear = keep_flagged_route(state, id, path, |waypoint| {
             known_ground_passable(state, danger, player, waypoint)
                 && danger.route_safe_from(from, waypoint)
         });
-        if near_route_is_clear {
+        if near_route_is_clear
+            && (from.chebyshev(path.goal) > 1
+                || path
+                    .final_point
+                    .is_none_or(|point| !crowding::claimed(state, id, point, true)))
+        {
             return true;
         }
-        if let Some((goal, waypoints)) = authoritative_source_route(state, danger, id, source) {
-            state.unit_mut(id).expect("caller checked").path =
-                Some(work_position_path(goal, waypoints));
+        if let Some(path) = authoritative_source_route(state, danger, id, source) {
+            state.unit_mut(id).expect("caller checked").path = Some(path);
         }
         // No safe detour means the explicitly ordered route remains in
         // force. This is the only path allowed to cross known danger.
         return true;
     }
 
-    if let Some((goal, waypoints)) = authoritative_source_route(state, danger, id, source) {
-        state.unit_mut(id).expect("caller checked").path =
-            Some(work_position_path(goal, waypoints));
+    if let Some(path) = authoritative_source_route(state, danger, id, source) {
+        state.unit_mut(id).expect("caller checked").path = Some(path);
         return true;
     }
 
-    match source.kind {
-        SourceKind::Scrap => approach_rect(state, id, source.pos, (1, 1)),
-        SourceKind::Wreck => {
-            let unit = state.unit(id).expect("caller checked");
-            let Some(waypoints) = route_for(state, unit.kind, unit.tile(), source.pos) else {
-                state.unit_mut(id).expect("caller checked").path = None;
-                return false;
-            };
-            state.unit_mut(id).expect("caller checked").path = Some(PathFollow {
-                goal: source.pos,
-                waypoints,
-                next: 0,
-            });
-            true
-        }
-    }
+    approach_work_rect(state, id, source.pos, (1, 1))
 }
 
 /// The deterministic best route to one source when danger tiles are
@@ -981,7 +1002,7 @@ fn safe_source_route(
     danger: &GroundSalvageDanger,
     id: UnitId,
     source: KnownSource,
-) -> Option<(TilePos, Vec<TilePos>)> {
+) -> Option<PathFollow> {
     source_route_avoiding_danger(state, danger, id, source, false)
 }
 
@@ -993,7 +1014,7 @@ fn authoritative_source_route(
     danger: &GroundSalvageDanger,
     id: UnitId,
     source: KnownSource,
-) -> Option<(TilePos, Vec<TilePos>)> {
+) -> Option<PathFollow> {
     safe_source_route(state, danger, id, source)
         .or_else(|| source_route_avoiding_danger(state, danger, id, source, true))
 }
@@ -1004,7 +1025,7 @@ fn source_route_avoiding_danger(
     id: UnitId,
     source: KnownSource,
     allow_dangerous_goal: bool,
-) -> Option<(TilePos, Vec<TilePos>)> {
+) -> Option<PathFollow> {
     let unit = state.unit(id).expect("caller checked");
     let from = unit.tile();
     let player = unit.player;
@@ -1014,122 +1035,69 @@ fn source_route_avoiding_danger(
                 && ((allow_dangerous_goal && tile == goal) || danger.route_safe_from(from, tile))
         })
     };
-    match source.kind {
-        SourceKind::Wreck => safe_route(source.pos).map(|route| (source.pos, route)),
-        SourceKind::Scrap => {
-            let candidates: Vec<TilePos> = rect_adjacent_tiles(source.pos, (1, 1))
-                .filter(|tile| known_ground_passable(state, danger, player, *tile))
-                .filter(|tile| allow_dangerous_goal || !danger.contains(*tile))
-                .collect();
-            // Work tiles other workers hold are last resorts: the free
-            // tiles are tried first, and the whole ring only when none of
-            // them routes, so a claimed tile beside a sealed free one still
-            // keeps the worker on its source.
-            let claimed = claimed_work_tiles(state, player, id);
-            let free: Vec<TilePos> = candidates
-                .iter()
-                .copied()
-                .filter(|tile| !claimed.contains(tile))
-                .collect();
-            let rank = crate::ids::owner_local_unit_rank(
-                id,
-                player,
-                state.units.iter().map(|unit| (unit.id, unit.player)),
-            );
-            let route_ring = |mut ring: Vec<TilePos>| -> Option<(TilePos, Vec<TilePos>)> {
-                ring.sort_by_key(|tile| rect_approach_key(from, source.pos, (1, 1), *tile));
-                let near = ring.len().min(4);
-                if near > 1 {
-                    ring[..near].rotate_left(rank % near);
-                }
-                let mut reachability = None;
-                best_candidate_route(&ring, from, |rank, goal| {
-                    if reachability
-                        .as_ref()
-                        .is_some_and(|reachable: &Vec<bool>| !reachable[rank])
-                    {
-                        return None;
-                    }
-                    let route = safe_route(goal);
-                    if route.is_none() && reachability.is_none() {
-                        reachability = danger.last_route_reachability(&ring, allow_dangerous_goal);
-                    }
-                    route
-                })
-            };
-            if !free.is_empty()
-                && free.len() < candidates.len()
-                && let Some(found) = route_ring(free)
-            {
-                return Some(found);
-            }
-            route_ring(candidates)
-        }
-    }
+    let frame = crate::tick::rect_approach_origin(state, player, from, source.pos, (1, 1));
+    let mut candidates: Vec<_> = contact::positions(
+        source.pos,
+        (1, 1),
+        crate::geometry::work_approach_distance(unit.kind.stats().radius) + Fx::lit("0.06"),
+        unit.kind.stats().radius * crowding::compression(),
+    )
+    .into_iter()
+    .map(|point| crowding::Position {
+        goal: TilePos::containing(point),
+        point,
+    })
+    .filter(|candidate| known_ground_passable(state, danger, player, candidate.goal))
+    .filter(|candidate| allow_dangerous_goal || !danger.contains(candidate.goal))
+    .filter(|candidate| {
+        crate::geometry::circle_clear(candidate.point, unit.kind.stats().radius, |tile| {
+            (tile == source.pos
+                && state
+                    .map()
+                    .tile(tile)
+                    .is_some_and(|cell| cell.terrain == crate::map::Terrain::Ground))
+                || known_ground_passable(state, danger, player, tile)
+        })
+    })
+    .collect();
+    candidates.sort_by_key(|candidate| {
+        (
+            unit.pos.dist_sq(candidate.point),
+            crate::geometry::rect_approach_key_from(
+                from,
+                frame,
+                source.pos,
+                (1, 1),
+                candidate.goal,
+            ),
+            (candidate.point.x - unit.pos.x) * (frame.center().y - unit.pos.y)
+                - (candidate.point.y - unit.pos.y) * (frame.center().x - unit.pos.x),
+        )
+    });
+    crowding::choose(
+        state,
+        id,
+        candidates,
+        source.pos.center(),
+        |tile| {
+            known_ground_passable(state, danger, player, tile)
+                && (allow_dangerous_goal || !danger.contains(tile))
+        },
+        safe_route,
+    )
 }
 
-/// Work tiles that other friendly workers already hold or are heading for.
-/// A parked worker also claims every tile whose center its hull covers
-/// within [`WORK_TILE_CLAIM_REACH`], so a second worker never steers for a
-/// center it cannot reach and shoves the first one instead.
-fn claimed_work_tiles(state: &State, player: PlayerId, id: UnitId) -> Vec<TilePos> {
-    let reach_sq = WORK_TILE_CLAIM_REACH * WORK_TILE_CLAIM_REACH;
-    let mut claimed = Vec::new();
-    for worker in state.units.iter().filter(|worker| {
-        worker.id != id
-            && worker.hp > 0
-            && !state.hostile(player, worker.player)
-            && worker.kind.stats().harvest.is_some()
-            && matches!(worker.order, Order::Harvest { .. })
-    }) {
-        match &worker.path {
-            Some(path) => claimed.push(path.goal),
-            None => {
-                let tile = worker.tile();
-                for dy in -1..=1 {
-                    for dx in -1..=1 {
-                        let near = tile.offset(dx, dy);
-                        if near.center().dist_sq(worker.pos) < reach_sq {
-                            claimed.push(near);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    claimed.sort_unstable_by_key(|tile| (tile.y, tile.x));
-    claimed.dedup();
-    claimed
-}
-
-/// Finds the route-minimal doorstep without running A* after every remaining
-/// candidate's geometric lower bound can no longer beat the current winner.
-type RankedRoute = ((usize, i32, usize), TilePos, Vec<TilePos>);
-
-fn best_candidate_route(
-    candidates: &[TilePos],
-    from: TilePos,
-    mut route_to: impl FnMut(usize, TilePos) -> Option<Vec<TilePos>>,
-) -> Option<(TilePos, Vec<TilePos>)> {
-    let mut best: Option<RankedRoute> = None;
-    for (rank, &goal) in candidates.iter().enumerate() {
-        if let Some(route) = route_to(rank, goal) {
-            let key = (route.len(), goal.chebyshev(from), rank);
-            if best.as_ref().is_none_or(|(old, _, _)| key < *old) {
-                best = Some((key, goal, route));
-            }
-        }
-        let remaining_lower_bound = candidates[rank + 1..]
-            .iter()
-            .map(|goal| goal.chebyshev(from) as usize)
-            .min();
-        if let (Some((key, _, _)), Some(lower_bound)) = (&best, remaining_lower_bound)
-            && key.0 <= lower_bound
-        {
-            break;
-        }
-    }
-    best.map(|(_, goal, route)| (goal, route))
+/// Tile centers no longer describe the clearance between adjacent work positions.
+fn work_position_claimed(
+    state: &State,
+    id: UnitId,
+    anchor: TilePos,
+    size: (i32, i32),
+    goal: TilePos,
+) -> bool {
+    let unit = state.unit(id).expect("caller checked");
+    let point = crate::geometry::work_approach_point(goal, anchor, size, unit.kind.stats().radius);
+    crowding::claimed(state, id, point, false)
 }
 
 /// Ground occupancy as the worker's team can know it. Visible tiles use
@@ -1216,6 +1184,8 @@ fn try_drop_offs(
                 .path
                 .as_ref()
                 .filter(|path| tile_adjacent_to_rect(path.goal, anchor, size))
+                && (from.chebyshev(path.goal) > 1
+                    || !work_position_claimed(state, id, anchor, size, path.goal))
                 && keep_flagged_route(state, id, path, |waypoint| {
                     known_ground_passable(state, danger, player, waypoint)
                         && danger.route_safe_from(from, waypoint)
@@ -1224,11 +1194,9 @@ fn try_drop_offs(
                 return true;
             }
         }
-        if let Some((goal, waypoints)) =
-            known_rect_route(state, danger, id, anchor, size, true, Some(&mut scan))
+        if let Some(path) = known_rect_route(state, danger, id, anchor, size, true, Some(&mut scan))
         {
-            state.unit_mut(id).expect("caller checked").path =
-                Some(work_position_path(goal, waypoints));
+            state.unit_mut(id).expect("caller checked").path = Some(path);
             return true;
         }
         if !path_cleared {
@@ -1270,57 +1238,83 @@ fn known_rect_route(
     size: (i32, i32),
     avoid_danger: bool,
     mut scan: Option<&mut DropOffScan>,
-) -> Option<(TilePos, Vec<TilePos>)> {
+) -> Option<PathFollow> {
     let unit = state.unit(id).expect("caller checked");
     let from = unit.tile();
     let player = unit.player;
-    let mut candidates: Vec<TilePos> = rect_adjacent_tiles(anchor, size)
-        .filter(|tile| known_ground_passable(state, danger, player, *tile))
-        .filter(|tile| !avoid_danger || !danger.contains(*tile))
-        .collect();
-    candidates.sort_by_key(|tile| rect_approach_key(from, anchor, size, *tile));
-    let near = candidates.len().min(4);
-    if near > 1 {
-        let rank = crate::ids::owner_local_unit_rank(
-            id,
-            player,
-            state.units.iter().map(|unit| (unit.id, unit.player)),
-        );
-        candidates[..near].rotate_left(rank % near);
-    }
+    let frame = crate::tick::rect_approach_origin(state, player, from, anchor, size);
+    let building = state
+        .buildings()
+        .iter()
+        .find(|b| b.anchor == anchor && b.stats().size == size && b.player == player);
+    let mut candidates: Vec<_> = contact::positions(
+        anchor,
+        size,
+        contact::clearance(unit),
+        unit.kind.stats().radius * crowding::compression(),
+    )
+    .into_iter()
+    .filter_map(|entry| {
+        let goal = TilePos::containing(entry);
+        let point = building.and_then(|b| contact::endpoint(state, id, b.id, entry))?;
+        Some(crowding::Position { goal, point })
+    })
+    .filter(|candidate| known_ground_passable(state, danger, player, candidate.goal))
+    .filter(|candidate| !avoid_danger || !danger.contains(candidate.goal))
+    .collect();
+    candidates.sort_by_key(|candidate| {
+        (
+            unit.pos.dist_sq(candidate.point),
+            crate::geometry::rect_approach_key_from(from, frame, anchor, size, candidate.goal),
+            (candidate.point.x - unit.pos.x) * (frame.center().y - unit.pos.y)
+                - (candidate.point.y - unit.pos.y) * (frame.center().x - unit.pos.x),
+        )
+    });
+    let goals: Vec<_> = candidates.iter().map(|candidate| candidate.goal).collect();
     // The passability predicate is candidate-independent, so one failed
     // search that exhausted the walkable component has already decided
     // every remaining doorstep — including a prior same-scan foundry's
     // flood, which the scratch still holds at entry. Skipping a proven
     // tile returns the identical None without re-flooding to the cap.
-    let mut reachability = None;
-    if scan.as_deref().is_some_and(|scan| scan.flood_exhausted) {
-        reachability = danger.last_route_reachability(&candidates, false);
-    }
-    for (rank, &goal) in candidates.iter().enumerate() {
-        if reachability
-            .as_ref()
-            .is_some_and(|reachable: &Vec<bool>| !reachable[rank])
-        {
-            continue;
-        }
-        let route = danger.find_route(from, goal, |tile| {
+    let mut reachability = if scan.as_deref().is_some_and(|scan| scan.flood_exhausted) {
+        danger.last_route_reachability(&goals, false)
+    } else {
+        None
+    };
+    crowding::choose(
+        state,
+        id,
+        candidates,
+        anchor.center()
+            + Vec2Fx::new(Fx::from_num(size.0 - 1), Fx::from_num(size.1 - 1)) / Fx::from_num(2),
+        |tile| {
             known_ground_passable(state, danger, player, tile)
-                && (!avoid_danger || danger.route_safe_from(from, tile))
-        });
-        if let Some(waypoints) = route {
-            return Some((goal, waypoints));
-        }
-        if reachability.is_none() {
-            reachability = danger.last_route_reachability(&candidates, false);
-            if reachability.is_some()
-                && let Some(scan) = scan.as_deref_mut()
-            {
-                scan.flood_exhausted = true;
+                && (!avoid_danger || !danger.contains(tile))
+        },
+        |goal| {
+            if reachability.as_ref().is_some_and(|reachable| {
+                goals
+                    .iter()
+                    .position(|&tile| tile == goal)
+                    .is_some_and(|index| !reachable[index])
+            }) {
+                return None;
             }
-        }
-    }
-    None
+            let route = danger.find_route(from, goal, |tile| {
+                known_ground_passable(state, danger, player, tile)
+                    && (!avoid_danger || danger.route_safe_from(from, tile))
+            });
+            if route.is_none() && reachability.is_none() {
+                reachability = danger.last_route_reachability(&goals, false);
+                if reachability.is_some()
+                    && let Some(scan) = scan.as_deref_mut()
+                {
+                    scan.flood_exhausted = true;
+                }
+            }
+            route
+        },
+    )
 }
 
 fn switch_source(state: &mut State, id: UnitId, node: TilePos, anchor: TilePos) {
@@ -1366,7 +1360,7 @@ fn source_route_failed(
     }
 }
 
-/// Stand on the wreck and strip it. Decay can beat the stripper to the
+/// Strip the wreck from beside it. Decay can beat the stripper to the
 /// last piece — the dry-source branch above handles the morning after.
 fn extract_wreck(state: &mut State, id: UnitId, node: TilePos, ticks_per_scrap: u32) {
     let unit = state.unit_mut(id).expect("caller checked");
@@ -1402,11 +1396,40 @@ fn extract(
     }
 }
 
-fn deposit_cargo(state: &mut State, id: UnitId, events: &mut Vec<Event>) {
+/// Advances only stationary, uninterrupted work; the whole load releases
+/// once, on the last tick, before the ordinary combat-resolution phase.
+fn unload_cargo(
+    state: &mut State,
+    id: UnitId,
+    foundry: BuildingId,
+    events: &mut Vec<Event>,
+) -> bool {
+    let unit = state.unit_mut(id).expect("caller checked");
+    unit.path = None;
+    let release = unit.unloading.get_or_insert(crate::state::Unloading {
+        foundry,
+        elapsed: 0,
+    });
+    if release.foundry != foundry {
+        *release = crate::state::Unloading {
+            foundry,
+            elapsed: 0,
+        };
+    }
+    release.elapsed += 1;
+    if release.elapsed < crate::stats::UNLOAD_TICKS {
+        return false;
+    }
+    deposit_cargo(state, id, foundry, events);
+    true
+}
+
+fn deposit_cargo(state: &mut State, id: UnitId, foundry: BuildingId, events: &mut Vec<Event>) {
     let unit = state.unit(id).expect("caller checked");
     let (me, carrying) = (unit.player, unit.carrying);
     let unit = state.unit_mut(id).expect("caller checked");
     unit.carrying = 0;
+    unit.unloading = None;
     unit.progress = 0;
     unit.path = None;
     // Saturating: a hostile scenario can start a bank near u32::MAX.
@@ -1421,9 +1444,31 @@ fn deposit_cargo(state: &mut State, id: UnitId, events: &mut Vec<Event>) {
         seat.recovery_ready = true;
     }
     events.push(Event::ScrapDeposited {
+        unit: id,
+        foundry,
         player: me,
         amount: credited,
     });
+}
+
+fn finish_delivery(state: &mut State, id: UnitId, foundry: BuildingId) {
+    state.unit_mut(id).expect("caller checked").advance_queue();
+    let unit = state.unit(id).expect("caller checked");
+    if unit.order != Order::Idle {
+        return;
+    }
+    let building = state.building(foundry).expect("live drop-off");
+    let center = unit.tile().center();
+    let edge = crate::geometry::footprint_contact(center, building.anchor, building.stats().size);
+    let outward = center - edge;
+    let goal = unit
+        .tile()
+        .offset(outward.x.signum().to_num(), outward.y.signum().to_num());
+    // A finished crew parks outside the contact ring so the remaining loads can dock.
+    if let Some(waypoints) = route_for(state, unit.kind, unit.tile(), goal) {
+        state.unit_mut(id).expect("caller checked").path =
+            Some(work_position_path(goal, waypoints));
+    }
 }
 
 pub(in crate::tick) fn return_cargo_destination(
@@ -1440,10 +1485,7 @@ pub(in crate::tick) fn return_cargo_destination(
                 return false;
             }
             let foundry = state.building(*foundry_id).expect("live drop-off");
-            state
-                .unit(id)
-                .expect("validated worker")
-                .in_harvest_reach(foundry.anchor, foundry.stats().size)
+            state.in_building_work_reach(state.unit(id).expect("validated worker"), *foundry_id)
                 || known_rect_route(
                     state,
                     danger,
@@ -1470,23 +1512,36 @@ pub(super) fn return_cargo(
     events: &mut Vec<Event>,
 ) {
     let unit = state.unit(id).expect("caller checked");
+    if unit.carrying == 0 {
+        state.unit_mut(id).expect("caller checked").advance_queue();
+        return;
+    }
     if let Some(building) = state.building(foundry).filter(|building| {
         building.player == unit.player
             && building.hp > 0
             && building.built
             && building.kind.is_drop_off()
     }) {
-        if unit.in_harvest_reach(building.anchor, building.stats().size) {
+        if state.in_building_work_reach(unit, foundry) {
             let needs_repair = repair && building.hp < building.stats().max_hp;
-            deposit_cargo(state, id, events);
+            let unit = state.unit_mut(id).expect("caller checked");
+            unit.path = None;
+            if !unit.work_stopped() {
+                unit.unloading = None;
+                return;
+            }
+            if !unload_cargo(state, id, foundry, events) {
+                return;
+            }
             let unit = state.unit_mut(id).expect("caller checked");
             if needs_repair {
                 unit.order = Order::Repair { building: foundry };
             } else {
-                unit.advance_queue();
+                finish_delivery(state, id, foundry);
             }
             return;
         }
+        state.unit_mut(id).expect("caller checked").unloading = None;
         if try_drop_offs(state, danger, id, &[foundry], events) {
             return;
         }
@@ -1514,18 +1569,31 @@ fn deliver(
 ) {
     let unit = state.unit(id).expect("caller checked");
     let drop_offs = drop_offs_by_distance(state, id);
-    let at_drop_off = drop_offs.iter().any(|foundry_id| {
-        state
-            .building(*foundry_id)
-            .is_some_and(|foundry| unit.in_harvest_reach(foundry.anchor, foundry.stats().size))
+    let active = unit
+        .unloading
+        .map(|release| release.foundry)
+        .filter(|foundry| drop_offs.contains(foundry));
+    let at_drop_off = active.or_else(|| {
+        drop_offs
+            .iter()
+            .copied()
+            .find(|foundry_id| state.in_building_work_reach(unit, *foundry_id))
     });
-    if at_drop_off {
-        deposit_cargo(state, id, events);
-        if retiring {
-            state.unit_mut(id).expect("caller checked").advance_queue();
+    if let Some(foundry) = at_drop_off
+        && state.in_building_work_reach(unit, foundry)
+    {
+        let unit = state.unit_mut(id).expect("caller checked");
+        unit.path = None;
+        if !unit.work_stopped() {
+            unit.unloading = None;
+            return;
+        }
+        if unload_cargo(state, id, foundry, events) && retiring {
+            finish_delivery(state, id, foundry);
         }
         return;
     }
+    state.unit_mut(id).expect("caller checked").unloading = None;
 
     if try_drop_offs(state, danger, id, &drop_offs, events) {
         return;
@@ -1554,13 +1622,13 @@ fn retire(state: &mut State, danger: &GroundSalvageDanger, id: UnitId, events: &
     }
     let tile = state.unit(id).expect("caller checked").tile();
     let drop_offs = drop_offs_by_distance(state, id);
-    if drop_offs.iter().any(|foundry_id| {
+    if let Some(foundry) = drop_offs.iter().copied().find(|foundry_id| {
         let foundry = state
             .building(*foundry_id)
             .expect("collected live drop-off");
         tile_adjacent_to_rect(tile, foundry.anchor, foundry.stats().size)
     }) {
-        state.unit_mut(id).expect("caller checked").advance_queue();
+        finish_delivery(state, id, foundry);
         return;
     }
     if try_drop_offs(state, danger, id, &drop_offs, events) {
@@ -1788,115 +1856,6 @@ mod harvest_zone_tests {
     }
 
     #[test]
-    fn doorstep_search_stops_only_after_remaining_routes_cannot_win() {
-        use std::cell::Cell;
-
-        let from = TilePos::new(0, 0);
-        let candidates = [TilePos::new(4, 0), TilePos::new(3, 0), TilePos::new(5, 0)];
-        let route_len = |goal: TilePos| match goal.x {
-            3 => 3,
-            4 => 5,
-            5 => 5,
-            _ => unreachable!(),
-        };
-        let exhaustive = candidates
-            .iter()
-            .enumerate()
-            .map(|(rank, &goal)| ((route_len(goal), goal.chebyshev(from), rank), goal))
-            .min_by_key(|(key, _)| *key)
-            .map(|(_, goal)| goal);
-        let calls = Cell::new(0);
-        let chosen = best_candidate_route(&candidates, from, |_, goal| {
-            calls.set(calls.get() + 1);
-            Some(vec![goal; route_len(goal)])
-        })
-        .map(|(goal, _)| goal);
-
-        assert_eq!(chosen, exhaustive);
-        assert_eq!(calls.get(), 2, "the dominated final A* is skipped");
-    }
-
-    #[test]
-    fn doorstep_pruning_matches_exhaustive_selection_across_ties_and_failures() {
-        use std::cell::Cell;
-
-        struct Case {
-            name: &'static str,
-            candidates: Vec<TilePos>,
-            route_lengths: Vec<Option<usize>>,
-            expected_calls: usize,
-        }
-        let cases = [
-            Case {
-                name: "first unreachable",
-                candidates: vec![TilePos::new(1, 0), TilePos::new(2, 0), TilePos::new(3, 0)],
-                route_lengths: vec![None, Some(2), Some(3)],
-                expected_calls: 2,
-            },
-            Case {
-                name: "later shorter geometric candidate",
-                candidates: vec![TilePos::new(4, 0), TilePos::new(2, 0), TilePos::new(5, 0)],
-                route_lengths: vec![Some(6), Some(2), Some(5)],
-                expected_calls: 2,
-            },
-            Case {
-                name: "equal length and distance keeps earlier rotated rank",
-                candidates: vec![TilePos::new(-2, 0), TilePos::new(2, 0), TilePos::new(3, 0)],
-                route_lengths: vec![Some(2), Some(2), Some(3)],
-                expected_calls: 1,
-            },
-            Case {
-                name: "equal length keeps smaller distance",
-                candidates: vec![TilePos::new(2, 0), TilePos::new(3, 0)],
-                route_lengths: vec![Some(3), Some(3)],
-                expected_calls: 1,
-            },
-            Case {
-                name: "rotated nearest four",
-                candidates: vec![
-                    TilePos::new(4, 0),
-                    TilePos::new(2, 0),
-                    TilePos::new(1, 0),
-                    TilePos::new(3, 0),
-                    TilePos::new(5, 0),
-                ],
-                route_lengths: vec![Some(4), Some(2), Some(1), Some(3), Some(5)],
-                expected_calls: 3,
-            },
-        ];
-        let from = TilePos::new(0, 0);
-        for case in cases {
-            for (goal, route_len) in case.candidates.iter().zip(&case.route_lengths) {
-                if let Some(route_len) = route_len {
-                    assert!(
-                        *route_len >= goal.chebyshev(from) as usize,
-                        "{} violates the geometric lower bound",
-                        case.name
-                    );
-                }
-            }
-            let exhaustive = case
-                .candidates
-                .iter()
-                .copied()
-                .enumerate()
-                .filter_map(|(rank, goal)| {
-                    case.route_lengths[rank].map(|len| ((len, goal.chebyshev(from), rank), goal))
-                })
-                .min_by_key(|(key, _)| *key)
-                .map(|(_, goal)| goal);
-            let calls = Cell::new(0);
-            let optimized = best_candidate_route(&case.candidates, from, |rank, goal| {
-                calls.set(calls.get() + 1);
-                case.route_lengths[rank].map(|len| vec![goal; len])
-            })
-            .map(|(goal, _)| goal);
-            assert_eq!(optimized, exhaustive, "{}", case.name);
-            assert_eq!(calls.get(), case.expected_calls, "{}", case.name);
-        }
-    }
-
-    #[test]
     fn replacement_preserves_worker_affinity_before_route_efficiency() {
         let state = Scenario {
             mode: Default::default(),
@@ -1967,6 +1926,7 @@ mod harvest_zone_tests {
         use std::cell::Cell;
 
         let path = PathFollow {
+            final_point: None,
             goal: TilePos::new(127, 1),
             waypoints: (1..=127).map(|x| TilePos::new(x, 1)).collect(),
             next: 3,

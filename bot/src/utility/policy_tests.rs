@@ -720,10 +720,25 @@ fn assert_current_emergency_defense_preserves_opening_escrow(
         .expect("Skirmish has one opposing Sentinel");
     intruder.kind = threat_kind;
     (intruder.x, intruder.y) = (intruder_tile.x, intruder_tile.y);
+    if threat_kind.stats().domain == oxide_sim::stats::Domain::Air {
+        // Keep the current-threat prerequisite visible while the builders approach.
+        scenario.buildings.push(BuildingSpec {
+            player: seat,
+            kind: BuildingKind::Array,
+            x: intruder_tile.x + 1,
+            y: intruder_tile.y + 2,
+        });
+    }
 
     let briefing =
         Arc::new(PublicMapBriefing::from_scenario(&scenario).expect("the briefing builds"));
     let mut state = scenario.build().expect("the threatened opening builds");
+    let guards: Vec<_> = state
+        .units()
+        .iter()
+        .filter(|u| u.kind.stats().can_fight())
+        .map(|u| (u.id, u.player, u.tile()))
+        .collect();
     let me = PlayerId(seat);
     let mut brain = Brain::scripted(
         me,
@@ -809,7 +824,7 @@ fn assert_current_emergency_defense_preserves_opening_escrow(
     let mut extractor_advanced = false;
 
     for _ in 0..4_000 {
-        let commands = if crate::difficulty::strategic_admission_tick(state.current_tick()) {
+        let mut commands = if crate::difficulty::strategic_admission_tick(state.current_tick()) {
             let observation = Observation::fog_honest(&state, me);
             if extractor_site.is_none() {
                 assert!(
@@ -842,6 +857,19 @@ fn assert_current_emergency_defense_preserves_opening_escrow(
                 *promised = Some(anchor);
             }
         }
+        // Keep the current-threat premise independent of a changing skirmish.
+        commands.extend(
+            guards
+                .iter()
+                .map(|&(id, player, goal)| oxide_sim::PlayerCommand {
+                    player,
+                    command: Command::Run {
+                        units: vec![id],
+                        goal,
+                        queue: false,
+                    },
+                }),
+        );
         let report = state.tick(&commands);
         assert!(report.events.iter().all(|event| !matches!(
             event,

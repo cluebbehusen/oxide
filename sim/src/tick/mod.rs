@@ -41,7 +41,7 @@
 //! timelines stay aligned) but nothing moves and commands are ignored.
 
 pub(crate) use crate::geometry::{
-    group_spread_scan_reversed, rect_adjacent_tiles, rect_approach_key, rect_approach_key_from,
+    group_spread_scan_reversed, rect_adjacent_tiles, rect_approach_key_from,
     rect_approach_origin_for_map, spawn_doorstep_key,
 };
 mod aircraft_crashes;
@@ -49,6 +49,7 @@ mod brain;
 mod charges;
 mod commands;
 pub(crate) mod construction;
+pub(crate) mod crowding;
 mod damage;
 pub(crate) mod flight;
 mod goals;
@@ -1247,20 +1248,15 @@ mod tests {
     }
 
     #[test]
-    fn calibration_open_mirrored_opening_stays_symmetric_through_harvest_cycles() {
+    fn fixed_facing_opening_replays_identically_through_harvest_cycles() {
         use crate::{Command, PlayerId, UnitId};
 
         let mut state = calibration_open_cupric()
             .build()
             .expect("the calibration scenario builds");
         let commands = calibration_open_tick_zero_commands();
-        let mut unit_pairs = Vec::from(
-            [(0, 4), (1, 5), (2, 6), (3, 7)]
-                .map(|(left, right)| (crate::UnitId(left), crate::UnitId(right))),
-        );
-
-        assert_calibration_open_symmetry("initial", &state, &unit_pairs);
-        run_calibration_open_tick(&mut state, &commands, &mut unit_pairs);
+        let mut replay = state.clone();
+        assert_eq!(state.tick(&commands), replay.tick(&commands));
         for _ in 1..=600 {
             let commands = if state.tick == 102 {
                 vec![
@@ -1284,7 +1280,9 @@ mod tests {
             } else {
                 Vec::new()
             };
-            run_calibration_open_tick(&mut state, &commands, &mut unit_pairs);
+            assert_eq!(state.tick(&commands), replay.tick(&commands));
+            assert_eq!(state.hash(), replay.hash());
+            state.validate_invariants().unwrap();
         }
     }
 
@@ -1366,6 +1364,7 @@ mod tests {
                 retiring: false,
             };
             unit.path = Some(PathFollow {
+                final_point: None,
                 goal,
                 waypoints,
                 next: 0,
@@ -1436,7 +1435,7 @@ mod tests {
     }
 
     #[test]
-    fn centered_mirrored_builders_leave_new_footprints_through_mirrored_doorsteps() {
+    fn centered_builders_leave_new_footprints_through_legal_doorsteps() {
         use crate::scenario::{BuildingSpec, UnitSpec};
         use crate::{BuildingKind, Command, PlayerId, UnitId, UnitKind};
         use chassis::fx::{Fx, Vec2Fx};
@@ -1529,16 +1528,11 @@ mod tests {
             right_anchor,
             BuildingKind::ScuttleCharge.base_stats().size,
         ));
-        assert_eq!(mirror_tile(&state, left_path.goal), right_path.goal);
-        assert_eq!(left_path.next, right_path.next);
-        assert_eq!(
-            left_path
-                .waypoints
-                .iter()
-                .map(|tile| mirror_tile(&state, *tile))
-                .collect::<Vec<_>>(),
-            right_path.waypoints
-        );
+        for path in [left_path, right_path] {
+            assert!(path.final_point.is_some());
+            assert!(!path.waypoints.is_empty());
+        }
+        state.validate_invariants().unwrap();
     }
 
     #[test]

@@ -151,3 +151,49 @@ pub fn rect_approach_origin_for_map(
         if flip_y { map_size.1 - 1 } else { 0 },
     )
 }
+
+/// Nearest point on the closed rectangle occupied by a footprint.
+pub fn footprint_contact(
+    pos: chassis::fx::Vec2Fx,
+    anchor: TilePos,
+    size: (i32, i32),
+) -> chassis::fx::Vec2Fx {
+    use chassis::fx::{Fx, HALF, Vec2Fx};
+    let min = anchor.center() - Vec2Fx::new(HALF, HALF);
+    let max = min + Vec2Fx::new(Fx::from_num(size.0), Fx::from_num(size.1));
+    Vec2Fx::new(pos.x.clamp(min.x, max.x), pos.y.clamp(min.y, max.y))
+}
+
+/// Center clearance at a work position; the chassis nose may overhang the tile margin.
+pub fn work_approach_distance(radius: chassis::fx::Fx) -> chassis::fx::Fx {
+    (radius - crate::stats::WORK_FOOTPRINT_OVERHANG).max(chassis::fx::Fx::ZERO)
+        + crate::stats::WORK_FOOTPRINT_GAP
+}
+
+/// Work position on the chosen doorstep, preserving its approach side.
+pub fn work_approach_point(
+    goal: TilePos,
+    anchor: TilePos,
+    size: (i32, i32),
+    radius: chassis::fx::Fx,
+) -> chassis::fx::Vec2Fx {
+    let contact = footprint_contact(goal.center(), anchor, size);
+    let outward = goal.center() - contact;
+    contact + outward * (work_approach_distance(radius) / outward.length())
+}
+
+/// Whether a chassis circle fits the adjacent passable tiles.
+pub(crate) fn circle_clear(
+    point: chassis::fx::Vec2Fx,
+    radius: chassis::fx::Fx,
+    open: impl Fn(TilePos) -> bool,
+) -> bool {
+    let tile = TilePos::containing(point);
+    let reach = radius.ceil().to_num::<i32>();
+    (-reach..=reach).all(|dy| {
+        (-reach..=reach).all(|dx| {
+            let at = tile.offset(dx, dy);
+            open(at) || point.dist_sq(footprint_contact(point, at, (1, 1))) >= radius * radius
+        })
+    })
+}

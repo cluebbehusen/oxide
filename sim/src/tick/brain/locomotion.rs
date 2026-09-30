@@ -240,6 +240,7 @@ pub(super) fn land(
     match route {
         Some(waypoints) => {
             unit.path = Some(PathFollow {
+                final_point: None,
                 goal,
                 waypoints,
                 next: 0,
@@ -486,6 +487,7 @@ pub(super) fn steer(
     match route_for_position(state, kind, from, endpoint) {
         Some(waypoints) => {
             state.unit_mut(id).expect("caller checked").path = Some(PathFollow {
+                final_point: None,
                 goal: endpoint,
                 waypoints,
                 next: 0,
@@ -623,6 +625,7 @@ pub(super) fn approach_rect(
         if let Some(waypoints) = route_for(state, kind, tile, goal) {
             let unit = state.unit_mut(id).expect("caller checked");
             unit.path = Some(PathFollow {
+                final_point: None,
                 goal,
                 waypoints,
                 next: 0,
@@ -734,6 +737,7 @@ mod tests {
             unit.kind = crate::UnitKind::Sentinel;
             unit.order = Order::Run { goal: goal.into() };
             unit.path = Some(PathFollow {
+                final_point: None,
                 goal,
                 waypoints: vec![goal],
                 next: 0,

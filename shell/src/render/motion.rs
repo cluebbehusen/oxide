@@ -113,6 +113,7 @@ pub(crate) fn unit_frame(kind: UnitKind, state: UnitAnimationState) -> UnitFrame
             | UnitWorkState::Constructing { cycle, .. }
             | UnitWorkState::Repairing { cycle, .. }
             | UnitWorkState::Salvaging { cycle, .. } => harvester_work_frame(cycle),
+            UnitWorkState::Unloading { .. } => HarvesterPose::Idle,
             UnitWorkState::Idle => match state.locomotion {
                 LocomotionState::Moving { cycle } => match tread_phase(cycle) {
                     0 => HarvesterPose::Idle,
@@ -131,6 +132,7 @@ pub(crate) fn unit_frame(kind: UnitKind, state: UnitAnimationState) -> UnitFrame
             | UnitWorkState::Constructing { cycle, .. }
             | UnitWorkState::Repairing { cycle, .. }
             | UnitWorkState::Salvaging { cycle, .. } => excavator_work_frame(cycle),
+            UnitWorkState::Unloading { .. } => ExcavatorPose::Idle,
             UnitWorkState::Idle => match state.locomotion {
                 LocomotionState::Moving { cycle } => match tread_phase(cycle) {
                     0 => ExcavatorPose::Idle,

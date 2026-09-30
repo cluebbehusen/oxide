@@ -850,6 +850,12 @@ mod tests {
             anchor: None,
             retiring: false,
         };
+        state.units[1].pos = crate::geometry::work_approach_point(
+            node.offset(1, 0),
+            node,
+            (1, 1),
+            UnitKind::Harvester.stats().radius,
+        );
         state.units[1].progress = ticks_per_scrap - 1;
         state.units[2].order = Order::Run {
             goal: pocket.into(),

@@ -3819,6 +3819,17 @@ fn an_allied_site_under_fog_refuses_selection() {
             .any(|b| b.kind == oxide_sim::BuildingKind::Turret),
         "test premise: the claim landed instantly"
     );
+    for _ in 0..100 {
+        if game
+            .state
+            .buildings()
+            .iter()
+            .any(|b| b.kind == oxide_sim::BuildingKind::Turret && b.progress > 0)
+        {
+            break;
+        }
+        game.state.tick(&[]);
+    }
     game.state.tick(&[oxide_sim::PlayerCommand {
         player: oxide_sim::PlayerId(1),
         command: Command::Run {
@@ -7130,7 +7141,10 @@ fn selecting_an_unfinished_mine_does_not_reveal_its_condition_after_concealment(
     let point = game.presentation.camera.to_screen(vec2(12.5, 4.5));
     apply_events(&mut game, &mut input, &click(point.x, point.y));
     assert_eq!(game.presentation.selection.buildings, vec![mine]);
-    for _ in 0..60 {
+    for _ in 0..200 {
+        if game.state.building(mine).unwrap().built {
+            break;
+        }
         game.do_tick();
     }
     assert!(game.state.building(mine).unwrap().built);

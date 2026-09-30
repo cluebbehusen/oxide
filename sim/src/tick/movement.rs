@@ -21,8 +21,8 @@ use chassis::fx::{Fx, Vec2Fx, sqrt};
 use chassis::grid::TilePos;
 
 use crate::stats::{
-    ANCHORED_PUSH_SHARE, COLLISION_ITERATIONS, COLLISION_MAX_STEP, SLIDE_LATERAL_SHARE,
-    SLIDE_RADIAL_SHARE, WAYPOINT_ACCEPT,
+    COLLISION_ITERATIONS, COLLISION_MAX_STEP, SLIDE_LATERAL_SHARE, SLIDE_RADIAL_SHARE,
+    WAYPOINT_ACCEPT,
 };
 
 pub(super) fn steer_ground_heading(unit: &mut crate::state::Unit, direction: Vec2Fx) -> bool {
@@ -94,12 +94,22 @@ fn work_aim(state: &State, unit: &crate::state::Unit) -> Option<Vec2Fx> {
     if unit.path.is_some() || unit.kind.ground_turn_rate() == 0 {
         return None;
     }
+    if let Some(release) = unit.unloading {
+        return state
+            .building(release.foundry)
+            .map(|b| state.contact_surface(b).closest(unit.pos));
+    }
     match unit.order {
+        Order::ReturnCargo { foundry, .. } => state
+            .building(foundry)
+            .map(|b| state.contact_surface(b).closest(unit.pos)),
         Order::Harvest { node, .. } => Some(node.center()),
-        Order::Build { site } => state.building(site).map(|b| b.closest_point_to(unit.pos)),
+        Order::Build { site } => state
+            .building(site)
+            .map(|b| state.contact_surface(b).closest(unit.pos)),
         Order::Repair { building } | Order::Salvage { building } => state
             .building(building)
-            .map(|b| b.closest_point_to(unit.pos)),
+            .map(|b| state.contact_surface(b).closest(unit.pos)),
         Order::RepairUnit { unit: patient } => state.unit(patient).map(|u| u.pos),
         _ => None,
     }
@@ -167,6 +177,7 @@ pub(super) fn escape_route(
                 }
                 if let Some(waypoints) = super::route_for(state, kind, from, goal) {
                     return Some(PathFollow {
+                        final_point: None,
                         goal,
                         waypoints,
                         next: 0,
@@ -192,6 +203,23 @@ pub(super) fn claimed_ground_escape(state: &State, id: crate::ids::UnitId) -> Op
             .buildings_at(unit.tile())
             .all(|b| b.kind.is_stealthy() || b.provisional)
     {
+        return None;
+    }
+    if super::brain::contact::surface_for(state, unit).is_some_and(|s| {
+        s.clear(
+            unit.pos,
+            unit.pos,
+            super::brain::contact::collision_radius(unit),
+        )
+    }) && matches!(
+        unit.order,
+        Order::Attack { .. }
+            | Order::Build { .. }
+            | Order::Repair { .. }
+            | Order::Salvage { .. }
+            | Order::ReturnCargo { .. }
+            | Order::Harvest { .. }
+    ) {
         return None;
     }
     escape_route(state, unit.kind, unit.tile(), unit.heading)
@@ -235,10 +263,14 @@ pub(super) fn note_stalls(state: &mut State, travel: &[Vec2Fx], driven: &[Vec2Fx
             && unit
                 .path
                 .as_ref()
-                .and_then(|path| path.waypoints.get(path.next as usize))
-                .is_some_and(|waypoint| {
+                .and_then(|path| {
+                    path.waypoints
+                        .get(path.next as usize)
+                        .map(|_| ground::path_point(path, path.next as usize))
+                })
+                .is_some_and(|point| {
                     let before = driven[slot] - travel[slot];
-                    let toward = waypoint.center() - before;
+                    let toward = point - before;
                     let net = unit.pos - before;
                     let wanted = travel[slot].x * toward.x + travel[slot].y * toward.y;
                     let made = net.x * toward.x + net.y * toward.y;
@@ -276,6 +308,11 @@ pub(super) fn forget_stalls_without_routes(state: &mut State) {
 /// carried the body across the onward plane, so a unit does not turn back
 /// toward a center it already passed. Final waypoints are landed exactly.
 pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
+    let contacts: Vec<_> = state
+        .units
+        .iter()
+        .map(|unit| super::brain::contact::surface_for(state, unit))
+        .collect();
     let work_aims: Vec<_> = state
         .units
         .iter()
@@ -315,7 +352,11 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
             continue;
         }
         if stats.domain == crate::stats::Domain::Ground {
-            ground::advance(unit, &terrain, &parked[unit.player.0 as usize]);
+            ground::advance(
+                unit,
+                &terrain.with_contact(contacts[slot]),
+                &parked[unit.player.0 as usize],
+            );
             if unit.drive_speed == Fx::ZERO
                 && let Some(aim) = work_aims[slot]
             {
@@ -325,23 +366,35 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
             continue;
         }
         let mut budget = stats.speed;
+        let sky_open = |tile| map.tile(tile).is_some_and(|t| !t.terrain.blocks_air());
         while budget > Fx::ZERO {
             let Some(path) = &mut unit.path else { break };
             let Some(&waypoint) = path.waypoints.get(path.next as usize) else {
                 unit.path = None;
                 break;
             };
-            let center = waypoint.center();
+            let center = ground::path_point(path, path.next as usize);
             let dist = unit.pos.dist(center);
-            if let Some(&next_wp) = path.waypoints.get(path.next as usize + 1)
-                && (dist <= WAYPOINT_ACCEPT
+            if let Some(&next_wp) = path.waypoints.get(path.next as usize + 1) {
+                let next_point = ground::path_point(path, path.next as usize + 1);
+                if (dist <= WAYPOINT_ACCEPT
                     || passed_intermediate_waypoint(unit.pos, waypoint, next_wp, stats.radius))
-            {
-                path.next += 1;
-                continue;
+                    && sky_open(TilePos::containing(next_point))
+                    && !chassis::path::line_blocked(unit.pos, next_point, sky_open)
+                {
+                    path.next += 1;
+                    continue;
+                }
             }
+            let next = unit.pos.move_toward(center, budget);
+            if !sky_open(TilePos::containing(next))
+                || chassis::path::line_blocked(unit.pos, next, sky_open)
+            {
+                unit.path = None;
+                break;
+            }
+            unit.pos = next;
             if dist <= budget {
-                unit.pos = center;
                 budget -= dist;
                 path.next += 1;
                 if path.next as usize >= path.waypoints.len() {
@@ -349,7 +402,6 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
                     break;
                 }
             } else {
-                unit.pos = unit.pos.move_toward(center, budget);
                 break;
             }
         }
@@ -561,6 +613,17 @@ fn envelope_bound(state: &State, domain: crate::stats::Domain, to: Vec2Fx) -> Ve
     }
 }
 
+fn contact_push_open(state: &State, slot: usize, to: Vec2Fx) -> bool {
+    let unit = &state.units[slot];
+    if let Some(surface) = super::brain::contact::surface_for(state, unit) {
+        return state
+            .ground_terrain()
+            .with_contact(Some(surface))
+            .contact_clear(unit.pos, to, super::brain::contact::collision_radius(unit));
+    }
+    collision_position_open(state, unit.domain(), to)
+}
+
 fn collision_position_open(state: &State, domain: crate::stats::Domain, pos: Vec2Fx) -> bool {
     let tile = TilePos::containing(pos);
     // An exact edge touches both cells (a corner touches four). Testing only
@@ -579,7 +642,13 @@ fn is_anchored(unit: &crate::state::Unit) -> bool {
             && unit.drive_speed == Fx::ZERO
             && matches!(
                 unit.order,
-                Order::Harvest { .. } | Order::Attack { .. } | Order::Repair { .. }
+                Order::Harvest { .. }
+                    | Order::Attack { .. }
+                    | Order::Repair { .. }
+                    | Order::Build { .. }
+                    | Order::Salvage { .. }
+                    | Order::RepairUnit { .. }
+                    | Order::ReturnCargo { .. }
             )
 }
 
@@ -885,9 +954,19 @@ fn relaxation_pass(
         if dom_i != dom_j {
             continue;
         }
-        let min_dist = radius_i + radius_j;
         let delta = pos_j - pos_i;
         let dist_sq = delta.length_sq();
+        let full_spacing = radius_i + radius_j;
+        if dist_sq >= full_spacing * full_spacing {
+            continue;
+        }
+        let productive_i = super::crowding::productive(state, &state.units[i]);
+        let productive_j = super::crowding::productive(state, &state.units[j]);
+        let min_dist = if productive_i || productive_j {
+            super::crowding::spacing(&state.units[i], &state.units[j])
+        } else {
+            full_spacing
+        };
         if dist_sq >= min_dist * min_dist {
             continue;
         }
@@ -912,9 +991,12 @@ fn relaxation_pass(
             (true, true) => (Fx::ZERO, Fx::ZERO),
             (true, false) => (Fx::ZERO, Fx::ONE),
             (false, true) => (Fx::ONE, Fx::ZERO),
-            (false, false) => match (is_anchored(&state.units[i]), is_anchored(&state.units[j])) {
-                (true, false) => (ANCHORED_PUSH_SHARE, Fx::ONE - ANCHORED_PUSH_SHARE),
-                (false, true) => (Fx::ONE - ANCHORED_PUSH_SHARE, ANCHORED_PUSH_SHARE),
+            (false, false) => match (
+                is_anchored(&state.units[i]) && productive_i,
+                is_anchored(&state.units[j]) && productive_j,
+            ) {
+                (true, false) => (Fx::ZERO, Fx::ONE),
+                (false, true) => (Fx::ONE, Fx::ZERO),
                 // Footprint area stands in for mass, so a heavy hull gives
                 // less ground than the light one shoving it. Equal radii
                 // still split exactly in half. The division rounds, so it is
@@ -950,7 +1032,7 @@ fn relaxation_pass(
         if step_j > Fx::ZERO {
             for cand in dirs_j.into_iter().flatten() {
                 let to = envelope_bound(state, dom_j, pos_j + cand * step_j);
-                if collision_position_open(state, dom_j, to) {
+                if contact_push_open(state, j, to) {
                     state.units[j].pos = to;
                     spent[j] += step_j;
                     break;
@@ -961,7 +1043,7 @@ fn relaxation_pass(
         if step_i > Fx::ZERO {
             for cand in dirs_i.into_iter().flatten() {
                 let to = envelope_bound(state, dom_i, pos_i + cand * step_i);
-                if collision_position_open(state, dom_i, to) {
+                if contact_push_open(state, i, to) {
                     state.units[i].pos = to;
                     spent[i] += step_i;
                     break;
@@ -982,53 +1064,60 @@ mod tests {
 
     #[test]
     fn contact_that_cancels_progress_drops_the_route_after_the_stall_bound() {
-        let mut state = Scenario::skirmish().build().unwrap();
-        let waypoint = TilePos::new(20, 12);
-        let slot = 0;
-        state.units[slot].path = Some(PathFollow {
-            goal: waypoint,
-            waypoints: vec![waypoint],
-            next: 0,
-        });
-        state.units[slot].pos = TilePos::new(10, 12).center();
-        let travel: Vec<Vec2Fx> = (0..state.units.len())
-            .map(|i| {
-                if i == slot {
-                    Vec2Fx::new(Fx::lit("0.1"), Fx::ZERO)
-                } else {
-                    Vec2Fx::ZERO
-                }
-            })
-            .collect();
-        // Propulsion carried the body east; contact shoved it back to where
-        // it started, cancelling the whole step.
-        let driven: Vec<Vec2Fx> = state
-            .units
-            .iter()
-            .zip(&travel)
-            .map(|(unit, &step)| unit.pos + step)
-            .collect();
-        for tick in 1..crate::stats::STALL_REPLAN_TICKS {
+        for precise in [false, true] {
+            let mut state = Scenario::skirmish().build().unwrap();
+            let waypoint = TilePos::new(20, 12);
+            let slot = 0;
+            state.units[slot].path = Some(PathFollow {
+                final_point: precise.then(|| Vec2Fx::new(Fx::lit("20.8"), Fx::lit("12.5"))),
+                goal: waypoint,
+                waypoints: vec![waypoint],
+                next: 0,
+            });
+            state.units[slot].pos = if precise {
+                Vec2Fx::new(Fx::lit("20.7"), Fx::lit("12.5"))
+            } else {
+                TilePos::new(10, 12).center()
+            };
+            let travel: Vec<Vec2Fx> = (0..state.units.len())
+                .map(|i| {
+                    if i == slot {
+                        Vec2Fx::new(Fx::lit("0.1"), Fx::ZERO)
+                    } else {
+                        Vec2Fx::ZERO
+                    }
+                })
+                .collect();
+            // Propulsion carried the body east; contact shoved it back to where
+            // it started, cancelling the whole step.
+            let driven: Vec<Vec2Fx> = state
+                .units
+                .iter()
+                .zip(&travel)
+                .map(|(unit, &step)| unit.pos + step)
+                .collect();
+            for tick in 1..crate::stats::STALL_REPLAN_TICKS {
+                note_stalls(&mut state, &travel, &driven);
+                assert_eq!(state.units[slot].stall_ticks, tick);
+                assert!(state.units[slot].path.is_some());
+            }
+            // One tick of real progress clears the count.
+            state.units[slot].pos += travel[slot];
             note_stalls(&mut state, &travel, &driven);
-            assert_eq!(state.units[slot].stall_ticks, tick);
+            assert_eq!(state.units[slot].stall_ticks, 0);
             assert!(state.units[slot].path.is_some());
-        }
-        // One tick of real progress clears the count.
-        state.units[slot].pos += travel[slot];
-        note_stalls(&mut state, &travel, &driven);
-        assert_eq!(state.units[slot].stall_ticks, 0);
-        assert!(state.units[slot].path.is_some());
-        state.units[slot].pos -= travel[slot];
-        for _ in 1..crate::stats::STALL_REPLAN_TICKS {
+            state.units[slot].pos -= travel[slot];
+            for _ in 1..crate::stats::STALL_REPLAN_TICKS {
+                note_stalls(&mut state, &travel, &driven);
+            }
+            assert!(state.units[slot].path.is_some());
             note_stalls(&mut state, &travel, &driven);
+            assert!(
+                state.units[slot].path.is_none(),
+                "the stalled route was kept"
+            );
+            assert_eq!(state.units[slot].stall_ticks, 0);
         }
-        assert!(state.units[slot].path.is_some());
-        note_stalls(&mut state, &travel, &driven);
-        assert!(
-            state.units[slot].path.is_none(),
-            "the stalled route was kept"
-        );
-        assert_eq!(state.units[slot].stall_ticks, 0);
     }
 
     #[test]
@@ -1037,6 +1126,7 @@ mod tests {
         let waypoint = TilePos::new(20, 12);
         let slot = 0;
         state.units[slot].path = Some(PathFollow {
+            final_point: None,
             goal: waypoint,
             waypoints: vec![waypoint],
             next: 0,
@@ -1398,11 +1488,13 @@ mod tests {
         let mirrored_pos = Vec2Fx::new(Fx::from_num(width) - pos.x, Fx::from_num(height) - pos.y);
         let paths = [
             PathFollow {
+                final_point: None,
                 goal: next,
                 waypoints: vec![waypoint, next],
                 next: 0,
             },
             PathFollow {
+                final_point: None,
                 goal: mirror_tile(next),
                 waypoints: vec![mirror_tile(waypoint), mirror_tile(next)],
                 next: 0,
@@ -1505,11 +1597,13 @@ mod tests {
         let waypoints = tiles(&[(8, 8), (9, 7), (10, 6), (10, 5), (10, 4), (10, 3)]);
         let paths = [
             PathFollow {
+                final_point: None,
                 goal: *waypoints.last().unwrap(),
                 waypoints: waypoints.clone(),
                 next,
             },
             PathFollow {
+                final_point: None,
                 goal: mirror_tile(*waypoints.last().unwrap()),
                 waypoints: waypoints.iter().copied().map(mirror_tile).collect(),
                 next,
@@ -1702,6 +1796,7 @@ mod tests {
         ];
         let paths = [
             PathFollow {
+                final_point: None,
                 goal: TilePos::new(22, 13),
                 waypoints: vec![
                     TilePos::new(24, 15),
@@ -1711,6 +1806,7 @@ mod tests {
                 next: 1,
             },
             PathFollow {
+                final_point: None,
                 goal: TilePos::new(25, 16),
                 waypoints: vec![
                     TilePos::new(23, 14),
@@ -1720,11 +1816,13 @@ mod tests {
                 next: 1,
             },
             PathFollow {
+                final_point: None,
                 goal: TilePos::new(23, 14),
                 waypoints: vec![TilePos::new(23, 15), TilePos::new(23, 14)],
                 next: 1,
             },
             PathFollow {
+                final_point: None,
                 goal: TilePos::new(24, 15),
                 waypoints: vec![TilePos::new(24, 14), TilePos::new(24, 15)],
                 next: 1,
@@ -2121,6 +2219,7 @@ mod tests {
             goal: TilePos::new(6, 2).into(),
         };
         unit.path = Some(PathFollow {
+            final_point: None,
             goal: TilePos::new(6, 2),
             waypoints: vec![TilePos::new(5, 2), TilePos::new(6, 2)],
             next: 0,
@@ -2169,6 +2268,7 @@ mod tests {
         let shared = TilePos::new(5, 3);
         let paths = [
             PathFollow {
+                final_point: None,
                 goal: TilePos::new(2, 1),
                 waypoints: vec![
                     shared,
@@ -2179,6 +2279,7 @@ mod tests {
                 next: 0,
             },
             PathFollow {
+                final_point: None,
                 goal: TilePos::new(9, 6),
                 waypoints: vec![
                     shared,

@@ -227,7 +227,7 @@ fn sample(state: &State, stats: &mut [PlayerStats], ticks: &mut Vec<u64>) {
 fn accumulate_events(stats: &mut [PlayerStats], events: &[Event]) {
     for event in events {
         match event {
-            Event::ScrapDeposited { player, amount } => {
+            Event::ScrapDeposited { player, amount, .. } => {
                 stats[player.0 as usize].scrap_collected = stats[player.0 as usize]
                     .scrap_collected
                     .saturating_add(*amount);

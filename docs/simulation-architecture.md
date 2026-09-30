@@ -250,6 +250,20 @@ non-stealthy building footprint. A buried Scuttle Charge deliberately blocks
 nothing. Air movement ignores rocks, scrap, and buildings, but Peaks own their
 air column and remain impassable.
 
+Workers and units with a contact weapon route to ordinary perimeter tiles, then
+make a short, collision-checked final approach to an authored building surface.
+These coarse fixed polygons capture major corners and recesses. They do not
+change tile passability or open travel passages between buildings. Work and
+contact weapons share perimeter candidate generation. Work, melee, and ranged
+building attacks share a crowd-aware position chooser: productive occupants win
+space, nearby arrivals carry soft claims, and distant routes do not reserve
+frontage. When productive units fill the legal positions, overflow approaches
+wait outside the interaction area. Ranged candidates retain their weapon's
+minimum and maximum range, line of fire, and movement layer. Fixed-wing aircraft
+retain run-in attacks. Building artwork and its approximate contact outline
+retain their authored facing; asymmetric contact can differ under a map
+half-turn. Rectangular placement, travel, and ranged reach remain unchanged.
+
 Talon, Darter, Shrike, Sylph, Kestrel, and Gnat cruise heading-first but can
 hover at rest. Their travel and fixed-gun traverse rates are independent of
 bomber flight; per-kind rates live in `UnitKind::cruise_turn_rate` in
@@ -398,20 +412,42 @@ however, and deterministic relaxation passes separate overlapping units after
 path movement. Ground collides only with ground and air only with air, and
 turn-limited aircraft take part in no collision at all: a committed arc that
 steering has already checked against the world cannot be shoved off it. Moving
-bodies slide around contacts, while anchored harvesting, firing, and
-building-repair stances resist displacement. Terrain wins over a proposed push,
-and a per-tick budget prevents dense groups from exploding outward. Iteration
-direction alternates with tick parity to avoid a permanent id-order advantage.
-When bodies are perfectly stacked and geometry provides no separating vector,
-the deterministic owner-local-rank direction is rotated into the stack's
-map-relative half-turn frame.
+bodies slide around contacts. A productive stationary unit holds its position
+against an approaching unit; other stationary bodies receive ordinary
+separation. Friendly contacts around productive work allow 65 percent of summed
+body radii, while moving and waiting crowds use full body spacing. Terrain wins
+over a proposed push, and a per-tick budget prevents dense groups from exploding
+outward. Iteration direction alternates with tick parity to avoid a permanent
+id-order advantage. When bodies are perfectly stacked and geometry provides no
+separating vector, the deterministic owner-local-rank direction is rotated into
+the stack's map-relative half-turn frame.
 
 ## Economy, construction, salvage, and repair
 
 Scrap nodes block ground until exhausted. Harvesters work a bounded zone, carry
-a finite load, and deposit at a Foundry. Gathering and unloading require the
-worker's center to be within 0.75 tiles of the footprint edge, including
-diagonal doorsteps; merely entering a neighboring tile does not start work.
+a finite load, and deposit at a Foundry. Resource work retains its precise
+position in the selected doorstep tile and chassis-overhang allowance.
+Construction, building repair, salvage, and unloading instead approach the
+coarse building surface with chassis clearance. Work starts only after the motor
+has stopped and its path has ended; the shell uses the same building-work reach
+predicate. Field welds use the two bodies' combined radii plus 0.10 tiles for
+approach and 0.15 tiles for work, and still settle both bodies' departures
+before billing. Wreck gathering retains its bounded resource approach and also
+waits for the motor to stop.
+
+Unloading takes ten uninterrupted work ticks. The worker retains its cargo and
+Foundry identity until the final tick clears the load and credits the bank once.
+The deposit event identifies both entities and reports the actual saturating
+credit. Displacement outside reach restarts the release; replacing the order,
+boarding, or losing the destination cancels it without losing cargo. Reissuing
+the same delivery preserves progress. Automatic deliveries can choose another
+Foundry after target loss; explicit deliveries retain their usual failure
+policy. A delivery route ends at any point already within unloading reach, then
+brakes before releasing cargo. Workers without a following order leave the
+contact ring after their final delivery so a retired crew cannot block the last
+loaded workers. Queued work takes precedence over this short departure.
+Reservations and blocked-dock replanning use physical approach points and hull
+clearance instead of tile centers. The following job begins on the next tick.
 
 `ReturnCargo` replaces loaded workers' active and queued work with a delivery.
 The command selects an owned, living, completed Foundry before replacing each
