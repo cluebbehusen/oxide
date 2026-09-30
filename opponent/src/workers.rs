@@ -104,7 +104,7 @@ pub(crate) fn recover(
     }
 }
 
-/// Trains workers at idle Foundries up to two Harvesters' worth per worked
+/// Trains workers at ready Foundries up to two Harvesters' worth per worked
 /// node.
 pub(crate) fn train(
     observation: &ObservationData,
@@ -120,7 +120,7 @@ pub(crate) fn train(
         if count >= staffing.wanted() {
             break;
         }
-        if !foundry.idle || ledger.queued_at(foundry.building.id) {
+        if !foundry.ready || ledger.queued_at(foundry.building.id) {
             continue;
         }
         let kind = if excavate(observation, staffing.wanted() - count, greed, ledger) {

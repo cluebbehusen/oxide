@@ -13,18 +13,20 @@ only give orders; what they need, such as a scout or carriers, production buys.
 A seat with no worker alive or queued queues a Harvester even behind other work,
 from protected scrap if it must. Each built Foundry works the four nearest live
 known scrap nodes its ground can reach within twelve tiles, none shared with
-another Foundry, and idle Foundries train workers until there are two
-Harvesters' worth per worked node. Once a Fabricator stands, an Excavator, worth
-two Harvesters, fills two open places when the seat can pay for it with scrap to
-spare, less the greedier it is. A harvesting or idle worker away from home runs
-back beside the nearest Foundry once known enemy fire reaches it. Paid sites
-nobody is building get the nearest free worker. While no armed enemy in sight
-stands near it and the seat has scrap to pay, the damaged building missing the
-most value gets a free worker to weld it, two at most at once. Idle workers go
-to the reachable worked node with the fewest workers, never one inside the reach
-of known enemy weapons. Every idle producer then trains toward the army's needs.
-Difficulty caps the unit orders one decision issues; purchases do not count
-against that allowance.
+another Foundry, and ready Foundries train workers until there are two
+Harvesters' worth per worked node. A producer is ready when its queue would run
+out before the next decision, so it queues its next unit as the last one
+finishes rather than after it stands empty. Once a Fabricator stands, an
+Excavator, worth two Harvesters, fills two open places when the seat can pay for
+it with scrap to spare, less the greedier it is. A harvesting or idle worker
+away from home runs back beside the nearest Foundry once known enemy fire
+reaches it. Paid sites nobody is building get the nearest free worker. While no
+armed enemy in sight stands near it and the seat has scrap to pay, the damaged
+building missing the most value gets a free worker to weld it, two at most at
+once. Idle workers go to the reachable worked node with the fewest workers,
+never one inside the reach of known enemy weapons. Every ready producer then
+trains toward the army's needs. Difficulty caps the unit orders one decision
+issues; purchases do not count against that allowance.
 
 ## Defense
 
@@ -173,7 +175,7 @@ of them, and the seat has at least the stance's minimum army to carry beyond the
 home reserve, it needs lift. The Airworks then scores higher while the seat has
 none, and production keeps enough Skyhooks, alive and queued, to carry what the
 best landing needs, or the stance's minimum while none is known, but no more
-than the riders at home fill. While an idle Airworks waits for the scrap to
+than the riders at home fill. While a ready Airworks waits for the scrap to
 train one and those riders already fill every carrier, other production waits
 too, unless a defense is short.
 
@@ -272,8 +274,8 @@ Airworks counts as air), and air strikes by preference once it has an Airworks.
 Ground units count only while they can reach an enemy, by ground or by lift once
 an Airworks stands. While ground reaches no enemy, air strikes are wanted with
 or without an Airworks, at least what a strike needs against the easiest known
-target. The most wanted role goes first to the nearest idle producer that can
-afford a unit for it, then the next; idle producers left with nothing wanted
+target. The most wanted role goes first to the nearest ready producer that can
+afford a unit for it, then the next; ready producers left with nothing wanted
 train line units while ground units can reach an enemy. Each chooses the unit it
 can afford now by coarse suitability: reach against the enemy's usual reach,
 durability for the price, covering both enemy domains, splash against clustered
@@ -286,12 +288,13 @@ adds to the investment score of the cheapest building that would let it.
 ## Investments and saving
 
 Each decision scores its investments: a first Fabricator, Airworks and Crucible,
-another Fabricator or Airworks when all of that kind are busy and income could
-keep one more working, an expansion Foundry at a scrap field away from every
-start, an Extractor on a free frame on its home ground, more Reclaimers (worth
-more with no expansion left), static defenses, Repair Bays, and upgrades.
-Saturated harvesting, time, income, home depletion, army needs, a needed lift
-and personality set the scores.
+another Fabricator, Airworks, Crucible or home Foundry when every one of that
+kind is working, a role it trains is still wanted, and the income the working
+producers leave unspent could keep one more as busy, an expansion Foundry at a
+scrap field away from every start, an Extractor on a free frame on its home
+ground, more Reclaimers (worth more with no expansion left), static defenses,
+Repair Bays, and upgrades. Saturated harvesting, time, income, home depletion,
+army needs, a needed lift and personality set the scores.
 
 An expansion site's value weighs the scrap it still holds and its free frames,
 up with greed, against its ground distance from home, how much nearer a hostile

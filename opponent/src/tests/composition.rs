@@ -148,7 +148,7 @@ fn raiders_are_never_line_units() {
 }
 
 #[test]
-fn busy_producers_ask_for_another() {
+fn working_producers_ask_for_another_while_unspent_income_and_need_last() {
     let scenario = armed(&[], &[]);
     let mut state = scenario.build().unwrap();
     let model = map(&scenario);
@@ -162,7 +162,7 @@ fn busy_producers_ask_for_another() {
     };
     state.tick(&[busy]);
     let observation = ObservationData::fog_honest(&state, PlayerId(0));
-    let wants = |income: u32| {
+    let wants = |income: u32, wanted: Vec<composition::Role>| {
         investments::candidates(&Situation {
             observation: &observation,
             map: &model,
@@ -180,16 +180,32 @@ fn busy_producers_ask_for_another() {
             depletion: 0,
             pull: Vec::new(),
             exposed: false,
+            wanted,
         })
         .into_iter()
         .map(|candidate| candidate.investment)
         .collect::<Vec<_>>()
     };
+    // What the working Fabricator spends a minute on its Warden.
+    let stats = UnitKind::Warden.stats();
+    let spends = stats.cost * 20 * 60 / stats.train_ticks;
     let another = Investment::Capacity(BuildingKind::Fabricator);
-    assert!(wants(600).contains(&another));
+    let line = || vec![composition::Role::Line];
     assert!(
-        !wants(599).contains(&another),
-        "income for one more is too low"
+        wants(2 * spends, line()).contains(&another),
+        "income left over keeps a second Fabricator as busy"
+    );
+    assert!(
+        !wants(2 * spends - 1, line()).contains(&another),
+        "but not just short of it"
+    );
+    assert!(
+        !wants(4 * spends, Vec::new()).contains(&another),
+        "and not while nothing it trains is wanted"
+    );
+    assert!(
+        !wants(4 * spends, line()).contains(&Investment::Capacity(BuildingKind::Foundry)),
+        "an idle Foundry is no reason for another"
     );
 }
 
@@ -296,4 +312,74 @@ fn the_most_wanted_role_takes_the_scrap_before_a_nearer_producer() {
         "the Foundries nearer home do not spend the scrap on line units first"
     );
     assert!(anti_air(&[kind]), "{kind:?}");
+}
+
+#[test]
+fn a_working_foundry_or_crucible_asks_for_another_at_home() {
+    let mut scenario = armed(&[], &[]);
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Crucible,
+        x: 12,
+        y: 8,
+    });
+    let mut state = scenario.build().unwrap();
+    let model = map(&scenario);
+    let memory = Memory::default();
+    let at = |kind: BuildingKind| {
+        state
+            .buildings()
+            .iter()
+            .find(|building| building.player == PlayerId(0) && building.kind == kind)
+            .unwrap()
+            .id
+    };
+    let train = |building, kind| PlayerCommand {
+        player: PlayerId(0),
+        command: Command::Train { building, kind },
+    };
+    let orders = [
+        train(at(BuildingKind::Foundry), UnitKind::Sentinel),
+        train(at(BuildingKind::Crucible), UnitKind::Breaker),
+    ];
+    state.tick(&orders);
+    let observation = ObservationData::fog_honest(&state, PlayerId(0));
+    let wants = |wanted: Vec<composition::Role>| {
+        investments::candidates(&Situation {
+            observation: &observation,
+            map: &model,
+            memory: &memory,
+            traits: PersonalityTraits {
+                air: 50,
+                siege: 50,
+                support: 50,
+                fortification: 50,
+                greed: 50,
+                guile: 50,
+            },
+            saturation: 1_000,
+            income: 100_000,
+            depletion: 0,
+            pull: Vec::new(),
+            exposed: false,
+            wanted,
+        })
+        .into_iter()
+        .map(|candidate| candidate.investment)
+        .collect::<Vec<_>>()
+    };
+    let offered = wants(vec![composition::Role::Line]);
+    for kind in [BuildingKind::Foundry, BuildingKind::Crucible] {
+        assert!(
+            offered.contains(&Investment::Capacity(kind)),
+            "{kind:?}: {offered:?}"
+        );
+    }
+    let offered = wants(Vec::new());
+    assert!(
+        offered
+            .iter()
+            .all(|investment| !matches!(investment, Investment::Capacity(_))),
+        "with nothing wanted, income alone buys no producer: {offered:?}"
+    );
 }
