@@ -29,34 +29,41 @@ exact-allocation, forecasting or planning-progress requirements.
    production; only the allowed computation. A new checkpoint field needs a
    design review. A change that adds reservations, proofs or planning state
    across decisions needs Connor's approval; stop and ask rather than adding
-   one.
-4. **Planning never spans decisions.** Missions and their phases may. Background
+   one. Missions read each other only for unit membership, held targets, whether
+   a mission holds its units, and the current rival.
+4. **Counts come from need.** What the bot owns, trains, builds or sends comes
+   from a need it can state from what it knows: threat, known defenses,
+   deliverability, wounds, stale points, harvestable scrap, spare producer time.
+   A constant may bound computation or model a difficulty, stance or personality
+   limit, and its doc comment says which; it never sets what the bot owns or
+   sends. A computation bound must not bind in normal play.
+5. **Planning never spans decisions.** Missions and their phases may. Background
    decision execution stays as it is.
-5. **Measure performance** for every PR: average and p99 time per decision and
+6. **Measure performance** for every PR: average and p99 time per decision and
    total CPU on the defined workloads. The bots-to-simulation ratio is a
    diagnostic, not a gate.
-6. **Behavior may change.** Simplifying code or improving play justifies a
+7. **Behavior may change.** Simplifying code or improving play justifies a
    behavior change. Fixtures driven by this bot live in their own file, separate
    from simulation-only hashes. Rebless them yourself after checking the
    smoke-matrix comparison. Simulation rule changes still need Connor's
    approval.
-7. **Tests check what the bot does.** Every reactive behavior gets a
+8. **Tests check what the bot does.** Every reactive behavior gets a
    command-level acceptance test in a staged scenario. Focused tests of memory,
    ranking, geometry, symmetry and bookkeeping are welcome. Do not pin tuning
    constants, incidental ordering or intermediate plans. Fairness, determinism
    and save-resume are always tested.
-8. **Size is reported, not gated.** Measure every PR's net production and test
+9. **Size is reported, not gated.** Measure every PR's net production and test
    line change, including code this bot adds anywhere (kit, simulation, driver).
    Growth past about 15,000 production lines triggers a design review, not a
    failure.
-9. **Guards need evidence:** a failure seen in evaluation, a replay, a playtest
-   or prior evaluation evidence, or one directly demonstrable. All work is
-   bounded: finite inputs and a bounded number of visits or expansions.
-10. **Parallelism only where measured.** Seats already run in parallel.
-11. **Plain Rust.** Plain functions and data over traits and generic frameworks;
+10. **Guards need evidence:** a failure seen in evaluation, a replay, a playtest
+    or prior evaluation evidence, or one directly demonstrable. All work is
+    bounded: finite inputs and a bounded number of visits or expansions.
+11. **Parallelism only where measured.** Seats already run in parallel.
+12. **Plain Rust.** Plain functions and data over traits and generic frameworks;
     enums for mutually exclusive states; no abstraction without two real
     callers.
-12. **Docs describe behavior and boundaries, not algorithms.**
+13. **Docs describe behavior and boundaries, not algorithms.**
 
 ## Run it
 
@@ -91,7 +98,9 @@ them out of the PR description.
   per decision and total CPU per seat and controller, with the observation build
   beside them. Run it on the branch and on its base, on one machine with no
   competing builds or benchmarks. `--controller scripted` gives `oxide-bot`'s
-  figures for reference; `--json` gives the same report as data.
+  figures for reference; `--json` gives the same report as data. The budget:
+  `skyhook` at most 250 µs average and 1 ms p99 per decision; `duel` and
+  `mature-armies` no worse than the base beyond noise.
 
 Run the smoke matrix locally before handoff; CI does not run it:
 
@@ -107,7 +116,13 @@ digest of the `bot/`, `sim/` and `chassis/` sources, the `kit` code that hosts
 `oxide-bot`, and `Cargo.lock` (`--baseline-cache` moves the cache), so they
 rerun only when those inputs, a map, a seed or the tick limit change.
 `bot-matrix-report <rows.jsonl>...` re-reads published rows; `--json` prints the
-same report as JSON.
+same report as JSON. `--replay-dir <dir>` saves a replay of every evaluated leg
+with their compact rows in `legs.jsonl`; cached mirror legs have none.
+
+A PR that touches a map family or mode also runs the matching subset:
+`severed.json` (Severance and The Scattering at Scrapheap, Standard and Prime),
+`free-for-all-smoke.json` (Salvage Triangle and Scramble Basin at Standard) and
+`teams-smoke.json` (Open Quarry at Standard), each a few minutes to about ten.
 
 Stage checkpoints also run `driver/evaluation/duels.json`, the full two-seat
 matrix, `teams.json` and `free-for-all.json`. A team map adds a mixed pair to
@@ -131,7 +146,12 @@ Read the report by match mode, overall and by difficulty, stance and map family:
   each bot's seats in mixed legs. It is a diagnostic: surviving longer can be
   passive play, so review replays before reading it as strength.
 - **Failure incidents** and **income**, per controller with seat-legs for scale.
-  `oxide-bot` numbers are the reference, not a target.
+  `oxide-bot` numbers are the reference, not a target. Rows recorded before a
+  detector existed do not count toward it, and the report shows how many
+  seat-legs did; mirror rows cached before then stay unmeasured until the
+  baseline cache is cleared.
+- **Deliveries**, shown when any seat trained armed ground units on severed
+  ground: their scrap delivered, lost and left at home.
 
 ## Failure detectors
 
@@ -152,6 +172,15 @@ controlled seat. They never reach a controller.
 - **Stuck missions:** one of this bot's missions stays in one phase for 1,200
   ticks past the timeout the bot gives that phase. The detector reads the
   missions the controller reports and never changes them.
+- **Idle army:** for 1,200 ticks while a hostile player still plays, armed units
+  worth at least half the seat's army, and at least 1,500 scrap, have each
+  rested within 12 tiles of an own building for 2,400 ticks: within 2 tiles of
+  where they settled, with no enemy inside their weapon range plus 4 tiles.
+
+Rows also report **deliveries** as a diagnostic: the scrap of armed ground units
+a seat trained while its ground touched no standing hostile building, split into
+those that reached other ground, those that died, and those still at home 6,000
+ticks after training.
 
 Income compares scrap earned in the minute before ticks 6,000, 12,000 and 24,000
 (deliveries plus Reclaimer, Extractor and Foundry credits) with a saturation

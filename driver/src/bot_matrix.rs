@@ -46,6 +46,9 @@ pub const BASELINE_CACHE_VERSION: u32 = 1;
 /// File a matrix run publishes in its output directory.
 pub const ROWS_FILE: &str = "rows.jsonl";
 
+/// Compact rows of the evaluated legs, published beside their replays.
+pub const REPLAY_INDEX_FILE: &str = "legs.jsonl";
+
 /// Map shape, reported separately because it decides which capabilities a
 /// match needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -124,6 +127,17 @@ pub enum Pairing {
     Mixed,
     /// `oxide-bot` against itself.
     Baseline,
+}
+
+impl Pairing {
+    /// Stable lowercase name.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::HeadToHead => "head_to_head",
+            Self::Mixed => "mixed",
+            Self::Baseline => "baseline",
+        }
+    }
 }
 
 /// A matrix definition.
@@ -542,6 +556,9 @@ pub struct MatrixOptions<'a> {
     pub jobs: NonZeroUsize,
     /// Baseline cache root.
     pub baseline_cache: &'a Path,
+    /// Directory for a replay of every evaluated leg; cached baseline legs
+    /// have none.
+    pub replay_dir: Option<&'a Path>,
 }
 
 /// One published row with its matrix position.
@@ -587,8 +604,24 @@ pub fn run_matrix(
     }
     let plans: Vec<(EvaluationPlan, Option<PathBuf>)> = pending
         .iter()
-        .map(|&index| (legs[index].plan.clone(), None))
+        .map(|&index| {
+            let leg = &legs[index];
+            let replay = options.replay_dir.map(|dir| {
+                let label = &leg.label;
+                dir.join(format!(
+                    "{index:04}-{}-{}-{}-run{}-{}-{}.json",
+                    label.map,
+                    label.difficulty,
+                    label.stance,
+                    label.run,
+                    label.pairing.as_str(),
+                    leg.plan.leg.name()
+                ))
+            });
+            (leg.plan.clone(), replay)
+        })
         .collect();
+    let index = options.replay_dir.map(|dir| dir.join(REPLAY_INDEX_FILE));
     let evaluated = evaluate_batch(
         &plans,
         &EvaluationBatchOptions {
@@ -596,7 +629,7 @@ pub fn run_matrix(
             stall_loop_limit: stall,
             candidate: options.candidate,
             jobs: options.jobs,
-            output: None,
+            output: index.as_deref(),
             trace_output: None,
         },
     )?
@@ -1004,6 +1037,9 @@ mod tests {
             ("duels.json", MatchMode::Duel, 3),
             ("teams.json", MatchMode::Teams, 5),
             ("free-for-all.json", MatchMode::FreeForAll, 3),
+            ("severed.json", MatchMode::Duel, 3),
+            ("free-for-all-smoke.json", MatchMode::FreeForAll, 3),
+            ("teams-smoke.json", MatchMode::Teams, 5),
         ] {
             let manifest = MatrixManifest::load(&directory.join(name)).unwrap();
             let scenarios = manifest.scenarios(&directory).unwrap();
@@ -1035,6 +1071,7 @@ mod tests {
             candidate: "unit",
             jobs: NonZeroUsize::new(2).unwrap(),
             baseline_cache: &root,
+            replay_dir: None,
         };
         let first = run_matrix(&legs, 30, &options).unwrap();
         assert_eq!((first.evaluated, first.reused), (3, 0));
@@ -1082,6 +1119,7 @@ mod tests {
                 candidate: "unit",
                 jobs: NonZeroUsize::new(1).unwrap(),
                 baseline_cache: &root.join("cache"),
+                replay_dir: None,
             },
         )
         .unwrap();

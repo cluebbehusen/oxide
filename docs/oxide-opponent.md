@@ -84,6 +84,10 @@ the running total and mission state.
 
 - Global production buys toward composition needs and the funded investment. No
   mission owns a future production contract.
+- Counts come from need. What the bot owns, trains, builds or sends follows a
+  need it can state from what it knows; a constant may bound computation or
+  model a difficulty, stance or personality limit, never what the bot owns or
+  sends.
 - Missions recruit from available units in a fixed order (defend, lift, attack,
   raid), and each takes only the roles it uses: attack takes line, siege and
   anti-air units, with a Tender and Sappers in support; raid takes Scuttlers,

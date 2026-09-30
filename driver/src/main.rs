@@ -197,6 +197,10 @@ enum Cmd {
         /// checkout.
         #[arg(long)]
         baseline_cache: Option<PathBuf>,
+        /// Directory for a replay of every evaluated leg, with their compact
+        /// rows in legs.jsonl; cached baseline legs have none.
+        #[arg(long)]
+        replay_dir: Option<PathBuf>,
         /// Print the report as JSON.
         #[arg(long)]
         json: bool,
@@ -865,6 +869,7 @@ fn main() -> Result<()> {
             jobs,
             candidate,
             baseline_cache,
+            replay_dir,
             json,
         } => {
             use oxide_driver::bot_matrix;
@@ -898,6 +903,7 @@ fn main() -> Result<()> {
                     candidate: &candidate,
                     jobs,
                     baseline_cache: &baseline_cache,
+                    replay_dir: replay_dir.as_deref(),
                 },
             )?;
             bot_matrix::publish_rows(&run.rows, &rows_path)?;
@@ -1570,6 +1576,7 @@ mod tests {
             jobs,
             candidate,
             baseline_cache,
+            replay_dir,
             json,
         } = cli.cmd
         else {
@@ -1580,7 +1587,10 @@ mod tests {
             (PathBuf::from("smoke.json"), PathBuf::from("matrix"))
         );
         assert_eq!(jobs.get(), 4);
-        assert_eq!((candidate, baseline_cache, json), (None, None, false));
+        assert_eq!(
+            (candidate, baseline_cache, replay_dir, json),
+            (None, None, None, false)
+        );
         assert!(Cli::try_parse_from(["oxide-driver", "bot-matrix-report"]).is_err());
     }
 

@@ -248,6 +248,62 @@ fn team_and_free_for_all_maps_seat_every_chair_and_report_placement() {
 }
 
 #[test]
+fn a_matrix_saves_replays_of_the_legs_it_evaluates_and_records_diagnostics() {
+    let dir = scratch("replays");
+    let manifest = manifest(
+        &dir,
+        serde_json::json!([{"path": "skirmish", "family": "open"}]),
+    );
+    let cache = dir.join("cache");
+    let run = |name: &str| {
+        driver(&[
+            "bot-matrix".as_ref(),
+            manifest.as_os_str(),
+            "--out".as_ref(),
+            dir.join(name).as_os_str(),
+            "--baseline-cache".as_ref(),
+            cache.as_os_str(),
+            "--replay-dir".as_ref(),
+            dir.join(format!("{name}-replays")).as_os_str(),
+        ])
+    };
+    let replays = |name: &str| {
+        let mut files: Vec<String> = std::fs::read_dir(dir.join(format!("{name}-replays")))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        files.sort();
+        files
+    };
+
+    succeeded(&run("first"));
+    let first = replays("first");
+    assert_eq!(first.len(), 4, "three replays and their index: {first:?}");
+    assert!(first.contains(&"legs.jsonl".to_owned()), "{first:?}");
+    assert!(
+        first
+            .iter()
+            .any(|file| file.contains("skirmish-prime-balanced-run0-baseline-single")),
+        "{first:?}"
+    );
+    assert_eq!(rows(&dir.join("first-replays/legs.jsonl")).len(), 3);
+    let row = &rows(&dir.join("first/rows.jsonl"))[0];
+    for seat in [0, 1] {
+        let evidence = &row["evidence"][seat];
+        assert!(evidence["failures"]["idle_army"].is_object(), "{evidence}");
+        assert!(evidence["deliveries"].is_object(), "{evidence}");
+    }
+
+    succeeded(&run("second"));
+    assert_eq!(
+        replays("second").len(),
+        3,
+        "the cached baseline leg has no replay"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn the_report_refuses_rows_from_bot_eval() {
     let dir = scratch("not-matrix");
     let rows = dir.join("rows.jsonl");
