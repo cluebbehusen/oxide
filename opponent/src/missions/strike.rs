@@ -49,6 +49,8 @@ struct Raid<'a> {
     /// Known fire against aircraft.
     air: &'a [Hazard],
     objectives: &'a [Objective],
+    /// What offense leaves at home.
+    reserve: [u64; 2],
     /// The enemy to go after first, when there are several.
     rival: Option<oxide_sim::PlayerId>,
 }
@@ -76,6 +78,7 @@ impl Missions {
             margin: margin(profile.difficulty),
             air: &scratch.air,
             objectives: &scratch.objectives,
+            reserve: scratch.reserve,
             rival: self.rival(scratch, observation, map, profile.traits),
         };
         match self
@@ -102,6 +105,9 @@ impl Missions {
             .filter_map(|id| mine(observation, id))
             .filter(|unit| bomber(unit.kind) && healthy(unit, FIT))
             .collect();
+        let fit = self
+            .spare(observation, raid.map, raid.reserve)
+            .outermost(raid.map, raid.frame, fit);
         let strength: u64 = fit.iter().map(|unit| striking(unit)).sum();
         if strength < raid.minimum {
             return;

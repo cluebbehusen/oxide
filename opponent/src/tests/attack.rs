@@ -12,10 +12,11 @@ const WEST: [(i32, i32); 8] = [
     (9, 10),
 ];
 
-/// The field with `west` West Sentinels and the given East units.
+/// The field with West's garrison, `west` West Sentinels and the given East
+/// units.
 fn armed(west: usize, east: &[(UnitKind, i32, i32)]) -> Scenario {
     let mut scenario = field();
-    for (x, y) in &WEST[..west] {
+    for (x, y) in GARRISON.iter().chain(&WEST[..west]) {
         scenario.units.push(unit(0, UnitKind::Sentinel, *x, *y));
     }
     for (kind, x, y) in east {
@@ -201,16 +202,22 @@ fn a_stalled_attack_gives_up_its_target_for_a_while() {
 
 #[test]
 fn missions_live_their_lifecycle() {
+    // Scuttlers in sight that take more defenders than the reserve keeps, and
+    // raiders out of sight that outweigh the army left home once it attacks.
+    let first: Vec<(i32, i32)> = (10..=13).flat_map(|y| [(10, y), (11, y)]).collect();
+    let second = [(3, 22), (4, 22)];
     let mut scenario = armed(8, &[]);
-    scenario.units.extend([
-        unit(1, UnitKind::Scuttler, 10, 11),
-        unit(1, UnitKind::Scuttler, 10, 12),
-        unit(1, UnitKind::Sentinel, 3, 22),
-        unit(1, UnitKind::Sentinel, 4, 22),
-    ]);
+    for (x, y) in &first {
+        scenario.units.push(unit(1, UnitKind::Scuttler, *x, *y));
+    }
+    for (x, y) in &second {
+        scenario.units.push(unit(1, UnitKind::Warden, *x, *y));
+    }
     let mut state = scenario.build().unwrap();
-    let scuttlers = vec![at(&state, 10, 11), at(&state, 10, 12)];
-    let raiders = vec![at(&state, 3, 22), at(&state, 4, 22)];
+    let ids = |spots: &[(i32, i32)]| -> Vec<UnitId> {
+        spots.iter().map(|(x, y)| at(&state, *x, *y)).collect()
+    };
+    let (scuttlers, raiders) = (ids(&first), ids(&second));
     let mut opponent = seat(&scenario, 0);
     let mut traces: Vec<Trace> = Vec::new();
     let mut raided = None;
@@ -276,7 +283,7 @@ fn missions_live_their_lifecycle() {
 fn mirrored_seats_attack_alike() {
     let mut scenario = armed(8, &[]);
     let (width, height) = (48, 24);
-    for (x, y) in WEST {
+    for (x, y) in GARRISON.into_iter().chain(WEST) {
         scenario
             .units
             .push(unit(1, UnitKind::Sentinel, width - 1 - x, height - 1 - y));
@@ -513,5 +520,90 @@ fn reinforcements_gather_before_the_attack_sets_out() {
     assert_eq!(
         attack(&trace.unwrap().missions).unwrap().phase,
         Phase::Gather
+    );
+}
+
+/// `scenario`'s West seat, under the scenario's config, remembering `count`
+/// East Sentinels seen now in the middle of the field, free to walk to West's
+/// home.
+fn remembering(scenario: &Scenario, state: &State, count: i32) -> Opponent {
+    let config = scenario.players[0].bot_config.unwrap();
+    let mut json = serde_json::to_value(seat_with(scenario, 0, config).checkpoint()).unwrap();
+    json["memory"]["units"] = (0..count)
+        .map(|index| {
+            serde_json::json!({
+                "id": 1_000 + index,
+                "kind": "sentinel",
+                "tile": {"x": 24 + index % 4, "y": 8 + index / 4},
+                "seen": state.current_tick(),
+            })
+        })
+        .collect();
+    let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
+    Opponent::restore(&checkpoint, scenario, state, map(scenario)).unwrap()
+}
+
+#[test]
+fn an_enemy_army_that_could_walk_home_holds_an_attack_the_seat_could_launch() {
+    let scenario = armed(8, &[]);
+    let state = scenario.build().unwrap();
+    let launches = |count| {
+        let trace = remembering(&scenario, &state, count)
+            .act_traced(&state, &mut OwnEvents::default())
+            .1;
+        attack(&trace.unwrap().missions).is_some()
+    };
+    assert!(launches(0), "premise: the army can attack");
+    assert!(
+        !launches(12),
+        "an army as large as its own could come while it is away"
+    );
+}
+
+#[test]
+fn a_turtle_keeps_more_at_home_than_an_aggressive_seat() {
+    let sent = |stance: BotStance| -> usize {
+        let mut scenario = armed(8, &[]);
+        scenario.players[0].bot_config =
+            Some(BotConfig::opponent(BotDifficulty::Standard, stance, 11));
+        let state = scenario.build().unwrap();
+        let commands = remembering(&scenario, &state, 4).act(&state, &mut OwnEvents::default());
+        hunts(&commands).iter().map(|(units, _)| units.len()).sum()
+    };
+    assert!(sent(BotStance::Turtle) < sent(BotStance::Aggressive));
+}
+
+#[test]
+fn defenders_out_count_toward_the_reserve_and_defense_takes_it_too() {
+    let mut scenario = armed(8, &[]);
+    for (x, y) in [(6, 8), (7, 8)] {
+        scenario.units.push(unit(0, UnitKind::Sentinel, x, y));
+    }
+    for y in 10..=13 {
+        for x in [10, 11] {
+            scenario.units.push(unit(1, UnitKind::Scuttler, x, y));
+        }
+    }
+    let state = scenario.build().unwrap();
+    let (commands, trace) = seat(&scenario, 0).act_traced(&state, &mut OwnEvents::default());
+    let missions = trace.unwrap().missions;
+    let defense = missions
+        .iter()
+        .find(|mission| matches!(mission.kind, MissionKind::Defend { .. }))
+        .unwrap_or_else(|| panic!("{missions:?}"));
+    let defenders = hunts(&commands)
+        .into_iter()
+        .find(|(_, goal)| *goal == defense.goal)
+        .unwrap()
+        .0;
+    assert!(
+        GARRISON
+            .iter()
+            .all(|(x, y)| defenders.contains(&at(&state, *x, *y))),
+        "the units the reserve keeps home defend it"
+    );
+    assert!(
+        attack(&missions).is_some(),
+        "the defenders out keep the reserve, so the rest may attack: {missions:?}"
     );
 }

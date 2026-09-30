@@ -30,18 +30,19 @@ against that allowance.
 
 A visible enemy that can hit ground threatens the seat when it stands within
 eight tiles of one of the seat's buildings, or within its weapon's reach if that
-is longer. Threats group by the built Foundry each is nearest, and each group
-gets one defend mission, the home Foundry's first. Only threats on or beside
-that Foundry's ground count: one across water or a chasm is left to production,
-since chasing it would stall every defender. The mission recruits free units
-that can hit one of its threats, ground units only from that Foundry's ground,
-nearest the Foundry first, until against ground and air attackers alike they are
-worth half again what those attackers are. It sends them in one Hunt at the
-grounded threat nearest the Foundry; against flyers alone they wait beside the
-building nearest the raid, where anti-air reaches them, since the ground under a
-flyer may be none they can stand on. It sends them again only when its goal
-moves more than three tiles on the Foundry's ground or the mission re-engages,
-and a defense that stops fighting while focused sends its units back to its goal
+is longer, or when its shells could land where hostile shells are landing near
+them. Threats group by the built Foundry each is nearest, and each group gets
+one defend mission, the home Foundry's first. Only threats on or beside that
+Foundry's ground count: one across water or a chasm is left to production, since
+chasing it would stall every defender. The mission recruits free units that can
+hit one of its threats, ground units only from that Foundry's ground, nearest
+the Foundry first, until against ground and air attackers alike they are worth
+half again what those attackers are. It sends them in one Hunt at the grounded
+threat nearest the Foundry; against flyers alone they wait beside the building
+nearest the raid, where anti-air reaches them, since the ground under a flyer
+may be none they can stand on. It sends them again only when its goal moves more
+than three tiles on the Foundry's ground or the mission re-engages, and a
+defense that stops fighting while focused sends its units back to its goal
 rather than after the retreating enemy. With no threat left the mission
 recovers, lending its units to any other threatened Foundry, and after 120 quiet
 ticks it lets them go where they stand. Once its own Foundries are answered, an
@@ -49,10 +50,33 @@ ally's Foundry under ground attack gets a defend mission of its own from the
 units left free, which lends them back whenever the seat's own Foundries need
 them; an ally's shortfall is never the seat's emergency.
 
+A hostile shell landing near the seat's buildings that no enemy it knows of
+could have fired comes from a gun out of sight. The built Foundry nearest the
+impact then gets a defend mission that sends units that can hit ground, worth
+half again one of the cheapest guns, toward where the gun probably stands: from
+the impact toward the nearest hostile start, as far as artillery reaches, on the
+Foundry's ground. Once the gun is in sight the ordinary defense takes over.
+
 A defense that cannot recruit enough makes the decision an emergency: it skips
 the saving purchase, trains no Harvesters beyond the one a seat without any
-needs, and lets production spend protected scrap. Missions own only units that
-exist; production never works for a mission.
+needs, and lets production spend protected scrap. A defense against a gun out of
+sight never does, since static defenses cannot reach it. Missions own only units
+that exist; production never works for a mission.
+
+## Home reserve
+
+Attacks, strikes, raids and lifts leave a reserve at home: units there, meaning
+aircraft and units on the start's ground, worth enough against ground and
+against aircraft for what could come. Against each, the reserve is nothing while
+no enemy could reach home that way. Otherwise it is the stance's floor or its
+share of the known enemy army that could, whichever is more, less the built
+static defenses that cover it and the units already out defending. Turtle keeps
+at least its minimum army and half again the known threat, Balanced half its
+minimum and the threat, and Aggressive half the threat. Ground reaches home from
+a hostile start connected by ground, or once an enemy carrier or Airworks is
+seen; aircraft once enemy armed aircraft or an Airworks is seen. Offense takes
+only units beyond the reserve, leaving those nearest home; a lift leaves its
+weakest riders. Defense takes every unit regardless.
 
 ## Static defense
 
@@ -105,19 +129,19 @@ health.
 ## Attack
 
 An attack forms from the free line, siege and anti-air units at half health or
-better when those that can hit ground are worth at least the stance's minimum
-army and outweigh a reachable target's known local defense by a margin set by
-difficulty; anti-air units recruited along the way escort the army but do not
-count toward that. The target is the most valuable known enemy building for its
-distance by ground, or a hostile start when none is known; a better one replaces
-it only while the army gathers or recovers, and only when clearly better. The
-army gathers at a rally near home toward the target's owner, travels, and
-fights. It withdraws to the rally when the enemies it knows of around it,
-remembered or seen, outweigh what it has left, and recovers there to go again or
-disband. Having taken its target it pushes on to the next only while strong
-enough for it. A target it withdrew from, could not reach, lost its army to, or
-stood idle beside is skipped for a while. With several enemies, attacks and
-strikes go after one rival's buildings first: the enemy pressing the seat
+better beyond the home reserve when those that can hit ground are worth at least
+the stance's minimum army and outweigh a reachable target's known local defense
+by a margin set by difficulty; anti-air units recruited along the way escort the
+army but do not count toward that. The target is the most valuable known enemy
+building for its distance by ground, or a hostile start when none is known; a
+better one replaces it only while the army gathers or recovers, and only when
+clearly better. The army gathers at a rally near home toward the target's owner,
+travels, and fights. It withdraws to the rally when the enemies it knows of
+around it, remembered or seen, outweigh what it has left, and recovers there to
+go again or disband. Having taken its target it pushes on to the next only while
+strong enough for it. A target it withdrew from, could not reach, lost its army
+to, or stood idle beside is skipped for a while. With several enemies, attacks
+and strikes go after one rival's buildings first: the enemy pressing the seat
 hardest, then the nearest, less the army it shows, with guile favoring a small
 economy and a bonus for the owner of the current target so the seat does not
 flip between enemies.
@@ -138,25 +162,26 @@ a focus, and a member out of reach leaves the mission's fire unfocused.
 ## Lift
 
 When the seat knows of enemy buildings or hostile starts and ground reaches none
-of them, and the seat has at least the stance's minimum army to carry, it needs
-lift. The Airworks then scores higher while the seat has none, and production
-keeps enough Skyhooks, alive and queued, to carry what the best landing needs,
-or the stance's minimum while none is known, but no more than the riders at home
-fill. While an idle Airworks waits for the scrap to train one and those riders
-already fill every carrier, other production waits too, unless a defense is
-short.
+of them, and the seat has at least the stance's minimum army to carry beyond the
+home reserve, it needs lift. The Airworks then scores higher while the seat has
+none, and production keeps enough Skyhooks, alive and queued, to carry what the
+best landing needs, or the stance's minimum while none is known, but no more
+than the riders at home fill. While an idle Airworks waits for the scrap to
+train one and those riders already fill every carrier, other production waits
+too, unless a defense is short.
 
 A lift forms only from carriers and passengers that exist: free carriers that
 are idle, empty and over open home ground, and free line and siege units at half
-health or better on home ground, packed into them most value per transport slot
-first. It needs those that can hit ground to be worth the stance's minimum and
-to outweigh the target's known defense by the attack margin. Carriers are loaded
-as the decision's orders allow until the loads sent reach that need, and more
-are loaded on later decisions while those aboard or walking fall short. The
-target is the most valuable known enemy building, or hostile start not seen
-cleared, for its distance that no ground route reaches and that has a landing:
-explored open ground on the target's island, set back from it and clear of known
-fire, where every tile unloading could set a rider on belongs to that island.
+health or better on home ground beyond the home reserve, packed into them most
+value per transport slot first. It needs those that can hit ground to be worth
+the stance's minimum and to outweigh the target's known defense by the attack
+margin. Carriers are loaded as the decision's orders allow until the loads sent
+reach that need, and more are loaded on later decisions while those aboard or
+walking fall short. The target is the most valuable known enemy building, or
+hostile start not seen cleared, for its distance that no ground route reaches
+and that has a landing: explored open ground on the target's island, set back
+from it and clear of known fire, where every tile unloading could set a rider on
+belongs to that island.
 
 A free carrier hovering where no rider could reach it, such as over the Airworks
 that trained it, first moves to open ground. Riders walk to their carriers and
@@ -176,30 +201,31 @@ while they board.
 
 ## Strikes
 
-Free Buzzards, Darters, Condors and Moths at half health or better strike the
-most valuable known enemy building or hostile start for its distance, whether or
-not ground reaches it, when those that can hit ground are worth the stance's
-minimum and outweigh the known anti-air reaching over the target by the attack
-margin. They gather beside home on the side facing the target, fly at it around
-known anti-air, and fight; having taken it they go on to the next target they
-can, and otherwise fly home. They withdraw once the known anti-air reaching them
-outweighs them. A target a strike withdrew from, lost its aircraft to, or stood
-idle beside is skipped for a while. One strike runs at a time, and a defense may
-take its aircraft while they gather or withdraw.
+Free Buzzards, Darters, Condors and Moths at half health or better, beyond the
+home reserve, strike the most valuable known enemy building or hostile start for
+its distance, whether or not ground reaches it, when those that can hit ground
+are worth the stance's minimum and outweigh the known anti-air reaching over the
+target by the attack margin. They gather beside home on the side facing the
+target, fly at it around known anti-air, and fight; having taken it they go on
+to the next target they can, and otherwise fly home. They withdraw once the
+known anti-air reaching them outweighs them. A target a strike withdrew from,
+lost its aircraft to, or stood idle beside is skipped for a while. One strike
+runs at a time, and a defense may take its aircraft while they gather or
+withdraw.
 
 ## Raids
 
 While no defense is under way, two or more free raiders of one kind at half
-health or better set out on a raid. Scuttlers, up to four, and ground-attack
-aircraft too few for a strike go after the enemy Extractor or Foundry whose
-known defense they outweigh, least defended and then nearest first, the aircraft
-flying around known anti-air. Sappers, up to four, go after the most valuable
-known enemy building for its distance with little known defense and blow it up.
-Scuttlers and aircraft turn back once one is lost or badly hurt, once the known
-fire reaching them outweighs them, or once they have been at the target a while;
-Sappers turn back only when outweighed on the way. Raids skip a raided target
-for a while, which spaces them out, while attacks, lifts and strikes may still
-go after it; one raid runs at a time.
+health or better beyond the home reserve set out on a raid. Scuttlers, up to
+four, and ground-attack aircraft too few for a strike go after the enemy
+Extractor or Foundry whose known defense they outweigh, least defended and then
+nearest first, the aircraft flying around known anti-air. Sappers, up to four,
+go after the most valuable known enemy building for its distance with little
+known defense and blow it up. Scuttlers and aircraft turn back once one is lost
+or badly hurt, once the known fire reaching them outweighs them, or once they
+have been at the target a while; Sappers turn back only when outweighed on the
+way. Raids skip a raided target for a while, which spaces them out, while
+attacks, lifts and strikes may still go after it; one raid runs at a time.
 
 The seat keeps two Scuttlers, alive or queued, once its income reaches a level
 that falls with guile, and a Sapper for each known enemy defense that can hit

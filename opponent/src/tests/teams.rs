@@ -117,7 +117,14 @@ fn traits(guile: u8) -> PersonalityTraits {
 /// The decision scratch a seat builds for `observation`.
 fn scratch(observation: &ObservationData, model: &MapModel) -> Scratch {
     let frame = HomeFrame::of(observation, model).unwrap();
-    Scratch::new(observation, model, frame, &Memory::default())
+    Scratch::new(
+        observation,
+        model,
+        frame,
+        &Memory::default(),
+        BotStance::Balanced,
+        &Missions::default(),
+    )
 }
 
 #[test]

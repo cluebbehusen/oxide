@@ -188,7 +188,8 @@ kind, reaches every upgrade tier, and trains every unit its faction fields.
   bounded by stance and a fixed trait budget. Its traits weight every score and
   never grant or remove a capability.
 - **Stance** bounds posture: minimum home defense, minimum attack size, and how
-  early and how large attacks get.
+  early and how large attacks get. Offensive missions leave the home defense
+  behind while an enemy could reach home; defense takes every unit.
 - **Difficulty** sets cognitive and execution limits: reaction delay,
   hesitation, unit orders per decision, memory decay, deterministic noise in
   estimates, and decision interval. Lower rungs make understandable mistakes,

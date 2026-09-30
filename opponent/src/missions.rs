@@ -11,6 +11,7 @@ use crate::map::{MapModel, UNREACHABLE};
 use crate::memory::Memory;
 use chassis::grid::TilePos;
 use oxide_sim::observation::{ObservationData, UnitObs};
+use oxide_sim::scenario::BotStance;
 use oxide_sim::stats::Domain;
 use oxide_sim::{BuildingId, BuildingKind, Command, PlayerId, UnitId};
 use serde::{Deserialize, Serialize};
@@ -21,6 +22,7 @@ mod defense;
 mod focus;
 mod lift;
 mod raid;
+mod reserve;
 mod rival;
 mod scouting;
 mod strike;
@@ -642,8 +644,9 @@ fn approach(
 }
 
 /// What one decision works out once for every mission that asks: known fire,
-/// the targets there are, whether ground reaches any of them, and the army at
-/// home a lift could take. It lives only as long as that decision.
+/// the targets there are, whether ground reaches any of them, what offense
+/// leaves at home, and the army at home a lift could take. It lives only as
+/// long as that decision.
 pub(crate) struct Scratch {
     /// The seat's frame.
     pub(crate) frame: HomeFrame,
@@ -655,8 +658,11 @@ pub(crate) struct Scratch {
     objectives: Vec<Objective>,
     /// Whether the seat knows of targets and ground reaches none of them.
     pub(crate) severed: bool,
+    /// Value against ground and against aircraft that offense leaves home,
+    /// before the units out defending count.
+    pub(crate) reserve: [u64; 2],
     /// Value against ground and transport slots of the units at home a lift
-    /// could take.
+    /// could take without cutting into the reserve.
     pub(crate) payload: (u64, u64),
 }
 
@@ -667,7 +673,10 @@ impl Scratch {
         map: &MapModel,
         frame: HomeFrame,
         memory: &Memory,
+        stance: BotStance,
+        missions: &Missions,
     ) -> Self {
+        let reserve = reserve::reserve(observation, map, memory, stance);
         let objectives = objectives(observation, map);
         let severed = !objectives.is_empty()
             && objectives.iter().all(|objective| {
@@ -686,7 +695,8 @@ impl Scratch {
             ground: hazards(observation, memory, Domain::Ground),
             objectives,
             severed,
-            payload: payload(observation, map),
+            reserve,
+            payload: missions.liftable(observation, map, reserve, payload(observation, map)),
         }
     }
 }

@@ -151,6 +151,9 @@ impl Missions {
             .copied()
             .filter(|unit| eligible(unit, FIT))
             .collect();
+        let fit = self
+            .spare(observation, map, scratch.reserve)
+            .outermost(map, frame, fit);
         let spare = |kind: UnitKind| -> Vec<&UnitObs> {
             free.iter()
                 .copied()

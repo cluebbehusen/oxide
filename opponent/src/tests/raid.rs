@@ -7,9 +7,11 @@ const OUTPOST: TilePos = TilePos::new(22, 10);
 /// West raider spots near the outpost.
 const RAIDERS: [(i32, i32); 2] = [(18, 10), (18, 12)];
 
-/// The field with West raiders of `kind` near an East building of `outpost`.
+/// The field with West's garrison and West raiders of `kind` near an East
+/// building of `outpost`.
 fn outpost(kind: UnitKind, outpost: BuildingKind) -> Scenario {
     let mut scenario = field();
+    garrison(&mut scenario);
     for (x, y) in RAIDERS {
         scenario.units.push(unit(0, kind, x, y));
     }
@@ -321,6 +323,11 @@ fn checkpoints_reject_impossible_raids() {
 #[test]
 fn mirrored_seats_raid_alike() {
     let mut scenario = outpost(UnitKind::Scuttler, BuildingKind::Foundry);
+    for (x, y) in GARRISON {
+        scenario
+            .units
+            .push(unit(1, UnitKind::Sentinel, 48 - 1 - x, 24 - 1 - y));
+    }
     for (x, y) in RAIDERS {
         scenario
             .units

@@ -5,9 +5,10 @@ const WING: [(i32, i32); 6] = [(6, 18), (7, 18), (8, 18), (9, 18), (10, 18), (11
 
 const EAST_START: TilePos = TilePos::new(43, 11);
 
-/// The field with six West Buzzards.
+/// The field with West's garrison and six West Buzzards.
 fn winged() -> Scenario {
     let mut scenario = field();
+    garrison(&mut scenario);
     for (x, y) in WING {
         scenario.units.push(unit(0, UnitKind::Buzzard, x, y));
     }
@@ -136,6 +137,11 @@ fn a_strike_outweighed_by_anti_air_withdraws_and_gives_up_its_target() {
 fn mirrored_strikes_issue_mirrored_commands() {
     let mut scenario = winged();
     scenario.players[1].faction = Faction::Ferrous;
+    for (x, y) in GARRISON {
+        scenario
+            .units
+            .push(unit(1, UnitKind::Sentinel, 47 - x, 23 - y));
+    }
     for (x, y) in WING {
         scenario
             .units

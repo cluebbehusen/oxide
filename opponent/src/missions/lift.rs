@@ -86,6 +86,8 @@ struct Lifting<'a> {
     ground: &'a [Hazard],
     objectives: &'a [Objective],
     severed: bool,
+    /// What offense leaves at home.
+    reserve: [u64; 2],
 }
 
 impl Missions {
@@ -116,6 +118,7 @@ impl Missions {
             ground: &scratch.ground,
             objectives: &scratch.objectives,
             severed: scratch.severed,
+            reserve: scratch.reserve,
         };
         match self
             .list
@@ -208,6 +211,10 @@ impl Missions {
                 rank(unit),
             )
         });
+        // The weakest riders stay to keep the reserve, so strong ones fly.
+        let riders = self
+            .spare(observation, map, lifting.reserve)
+            .trim(map, riders);
         let rooms: Vec<(UnitId, u8)> = carriers
             .iter()
             .map(|unit| (unit.id, unit.kind.stats().transport_capacity))

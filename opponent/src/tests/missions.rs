@@ -458,3 +458,181 @@ fn an_exhausted_mission_counter_is_rejected_at_any_tick() {
         "checkpoint mission ids are out of order"
     );
 }
+
+/// Where a seat's picket stands east of its Foundry, where the enemy Bombard
+/// shelling it stands, beyond the seat's sight but in range, and where the
+/// enemy Kestrel spotting for it hovers, clear of the seat's guns; West's
+/// spots, turned half about the field for East.
+const PICKET: (i32, i32) = (8, 12);
+const GUN: (i32, i32) = (17, 12);
+const SPOTTER: (i32, i32) = (12, 5);
+
+fn turned(player: u8, (x, y): (i32, i32)) -> (i32, i32) {
+    if player == 0 {
+        (x, y)
+    } else {
+        (47 - x, 23 - y)
+    }
+}
+
+/// Orders each enemy Bombard of `shelled` at that seat's picket.
+fn open_fire(state: &mut State, shelled: &[u8]) {
+    let orders: Vec<PlayerCommand> = shelled
+        .iter()
+        .map(|&player| {
+            let at = |spot| {
+                let (x, y) = turned(player, spot);
+                at(state, x, y)
+            };
+            PlayerCommand {
+                player: PlayerId(1 - player),
+                command: Command::Attack {
+                    units: vec![at(GUN)],
+                    target: AttackTarget::Unit(at(PICKET)),
+                    queue: false,
+                },
+            }
+        })
+        .collect();
+    state.tick(&orders);
+}
+
+/// Plays `state` to a decision tick on which every seat of `shelled` sees a
+/// shell coming.
+fn until_shells_come(scenario: &Scenario, state: &mut State, shelled: &[u8]) {
+    let seat = seat(scenario, 0);
+    let coming = |state: &State, player: u8| {
+        !ObservationData::fog_honest(state, PlayerId(player))
+            .incoming_shells
+            .is_empty()
+    };
+    while !seat.decision_due(state) || !shelled.iter().all(|player| coming(state, *player)) {
+        assert!(state.current_tick() < 600, "premise: the Bombards fire");
+        state.tick(&[]);
+    }
+}
+
+/// The field with each of `shelled` holding its garrison and picket, and the
+/// other seat a Bombard and a Kestrel for that picket.
+fn shelling(shelled: &[u8]) -> Scenario {
+    let mut scenario = field();
+    for &player in shelled {
+        for spot in GARRISON.into_iter().chain([PICKET]) {
+            let (x, y) = turned(player, spot);
+            scenario.units.push(unit(player, UnitKind::Sentinel, x, y));
+        }
+    }
+    for &player in shelled {
+        for (kind, spot) in [(UnitKind::Bombard, GUN), (UnitKind::Kestrel, SPOTTER)] {
+            let (x, y) = turned(player, spot);
+            scenario.units.push(unit(1 - player, kind, x, y));
+        }
+    }
+    scenario
+}
+
+/// `shelling(shelled)` played until the shells come.
+fn shelled(shelled: &[u8]) -> (Scenario, State) {
+    let scenario = shelling(shelled);
+    let mut state = scenario.build().unwrap();
+    open_fire(&mut state, shelled);
+    until_shells_come(&scenario, &mut state, shelled);
+    (scenario, state)
+}
+
+#[test]
+fn shells_from_a_gun_out_of_sight_send_fighters_toward_it() {
+    let (scenario, state) = shelled(&[0]);
+    let observation = ObservationData::fog_honest(&state, PlayerId(0));
+    assert!(
+        observation
+            .enemy_units
+            .iter()
+            .all(|enemy| enemy.kind != UnitKind::Bombard),
+        "premise: the gun is out of sight"
+    );
+    let (commands, trace) = seat(&scenario, 0).act_traced(&state, &mut OwnEvents::default());
+    let [(units, goal)] = &hunts(&commands)[..] else {
+        panic!("{commands:?}");
+    };
+    assert!(!units.is_empty());
+    let (picket, gun) = (TilePos::new(PICKET.0, PICKET.1), TilePos::new(GUN.0, GUN.1));
+    assert!(
+        goal.x > picket.x && goal.chebyshev(picket) >= goal.chebyshev(gun),
+        "toward the gun, not the shelled picket: {goal:?}"
+    );
+    let reach = UnitKind::ALL
+        .iter()
+        .flat_map(|kind| kind.stats().weapons.iter())
+        .filter(|weapon| weapon.indirect)
+        .map(|weapon| weapon.range.ceil().to_num::<i32>())
+        .max()
+        .unwrap();
+    assert!(
+        goal.chebyshev(picket) <= reach,
+        "within artillery reach: {goal:?}"
+    );
+    assert!(
+        trace
+            .unwrap()
+            .missions
+            .iter()
+            .any(|mission| matches!(mission.kind, MissionKind::Defend { .. })
+                && mission.phase == Phase::Engage),
+        "a defense answers it"
+    );
+}
+
+#[test]
+fn a_gun_in_sight_shelling_the_base_is_defended_against_where_it_stands() {
+    let mut scenario = shelling(&[0]);
+    // A West Scuttler beside the gun reveals it. The gun stands beyond the
+    // reach that makes a unit a threat to buildings, but its shells land in
+    // the base.
+    scenario
+        .units
+        .push(unit(0, UnitKind::Scuttler, GUN.0 + 4, GUN.1));
+    let mut state = scenario.build().unwrap();
+    open_fire(&mut state, &[0]);
+    until_shells_come(&scenario, &mut state, &[0]);
+    let gun = at(&state, GUN.0, GUN.1);
+    let observation = ObservationData::fog_honest(&state, PlayerId(0));
+    let seen = observation
+        .enemy_units
+        .iter()
+        .find(|enemy| enemy.id == gun)
+        .expect("premise: the gun is in sight");
+    let commands = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
+    assert!(
+        hunts(&commands).iter().any(|(_, goal)| *goal == seen.tile),
+        "{commands:?}"
+    );
+}
+
+#[test]
+fn mirrored_seats_under_mirrored_shelling_answer_alike() {
+    let (scenario, state) = shelled(&[0, 1]);
+    let west = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
+    let east = seat(&scenario, 1).act(&state, &mut OwnEvents::default());
+    assert!(!hunts(&west).is_empty(), "premise: {west:?}");
+    assert_eq!(mirror(&state, west), east);
+}
+
+#[test]
+fn a_checkpoint_while_answering_unseen_shelling_resumes_identically() {
+    let (scenario, mut state) = shelled(&[0]);
+    let mut opponent = seat(&scenario, 0);
+    let commands = opponent.act(&state, &mut OwnEvents::default());
+    assert!(!hunts(&commands).is_empty(), "premise: {commands:?}");
+    state.tick(&commands);
+    let json = serde_json::to_string(&opponent.checkpoint()).unwrap();
+    let checkpoint: Checkpoint = serde_json::from_str(&json).unwrap();
+    let mut restored = Opponent::restore(&checkpoint, &scenario, &state, map(&scenario)).unwrap();
+    let until = state.current_tick() + 360;
+    while state.current_tick() < until {
+        let commands = opponent.act(&state, &mut OwnEvents::default());
+        assert_eq!(restored.act(&state, &mut OwnEvents::default()), commands);
+        assert_eq!(restored.checkpoint(), opponent.checkpoint());
+        state.tick(&commands);
+    }
+}

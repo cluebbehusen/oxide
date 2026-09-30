@@ -225,7 +225,14 @@ pub(crate) fn decide(
     let earned = persistent.income.observe(tick, observation.scrap, rejected);
     persistent.memory.forget(tick);
     persistent.memory.observe(observation);
-    let scratch = Scratch::new(observation, map, frame, &persistent.memory);
+    let scratch = Scratch::new(
+        observation,
+        map,
+        frame,
+        &persistent.memory,
+        profile.stance,
+        &persistent.missions,
+    );
     let air_strikes = observation
         .my_buildings
         .iter()
