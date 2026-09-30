@@ -75,10 +75,12 @@ impl IncomeTracker {
         let checkpoint = INCOME_CHECKPOINTS.contains(&now);
         let collected = (window_start || checkpoint).then(|| self.stats.snapshot(state));
         for seat in 0..self.watched.len() {
-            if !self.watched[seat] {
+            let player = PlayerId(seat as u8);
+            // A seat that is out while its team plays on would add samples
+            // of an empty economy.
+            if !self.watched[seat] || state.player(player).eliminated_at.is_some() {
                 continue;
             }
-            let player = PlayerId(seat as u8);
             self.passive[seat] += u64::from(passive_per_minute(state, player)) * period;
             let Some(collected) = &collected else {
                 continue;
@@ -195,7 +197,8 @@ mod tests {
     use super::*;
     use oxide_sim::Scenario;
     use oxide_sim::scenario::{BuildingSpec, PlayerSpec};
-    use oxide_sim::{Faction, stats::HarvestStats};
+    use oxide_sim::{Command, Faction, PlayerCommand, stats::HarvestStats};
+    use std::path::Path;
 
     fn scenario(map: Vec<String>, buildings: Vec<BuildingSpec>) -> Scenario {
         Scenario {
@@ -380,5 +383,25 @@ mod tests {
             sample.actual_per_minute >= drip,
             "an idle seat still earns its drip: {sample:?}"
         );
+    }
+
+    #[test]
+    fn a_seat_out_of_a_team_match_stops_sampling() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scenarios/open-quarry.json");
+        let mut state = Scenario::load(&path).unwrap().build().unwrap();
+        let mut tracker = IncomeTracker::new(&state, vec![true; 4]);
+        let surrender = PlayerCommand {
+            player: PlayerId(1),
+            command: Command::Surrender,
+        };
+        let report = state.tick(&[surrender]);
+        tracker.observe(&state, &report.events, 12);
+        while state.current_tick() < INCOME_CHECKPOINTS[0] {
+            let report = state.tick(&[]);
+            tracker.observe(&state, &report.events, 12);
+        }
+        assert!(state.result().is_none(), "seat one's ally plays on");
+        let samples: Vec<usize> = tracker.finish().iter().map(Vec::len).collect();
+        assert_eq!(samples, [1, 0, 1, 1]);
     }
 }

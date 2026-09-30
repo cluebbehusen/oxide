@@ -1,0 +1,15 @@
+{
+  "name": "free-for-all",
+  "tick_limit": 60000,
+  "runs": 2,
+  "scenario_seed_base": 7000,
+  "personality_seed_base": 9000,
+  "difficulties": ["standard", "prime"],
+  "stances": ["balanced", "aggressive"],
+  "maps": [
+    { "path": "../../scenarios/salvage-triangle.json", "family": "open" },
+    { "path": "../../scenarios/pentangle-claim.json", "family": "open" },
+    { "path": "../../scenarios/scramble-basin.json", "family": "open" },
+    { "path": "../../scenarios/skyhook-anchorage.json", "family": "severed" }
+  ]
+}

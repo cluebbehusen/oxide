@@ -174,8 +174,9 @@ enum Cmd {
         )]
         decision_trace_out: Option<Box<PathBuf>>,
     },
-    /// Run a manifest's head-to-head matrix of oxide-opponent against the
-    /// frozen oxide-bot, publish its rows and print the report. Baseline legs
+    /// Run a manifest's matrix of oxide-opponent against the frozen oxide-bot
+    /// on duel, team and free-for-all maps, publish its rows and print the
+    /// report. Baseline legs
     /// (oxide-bot against itself) are reused from a cache while the reference
     /// digest is unchanged: the `bot/`, `sim/` and `chassis/` sources, the
     /// `kit` code that hosts oxide-bot, and `Cargo.lock`.
