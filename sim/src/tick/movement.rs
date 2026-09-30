@@ -1454,6 +1454,159 @@ mod tests {
         }
     }
 
+    /// A Harvester south of its own Fabricator's south-east corner with a
+    /// route to (10, 3) that first rounds that corner, and the half-turned
+    /// copy for the other seat. Offsets from the corner come from a match
+    /// where the body pinned itself against the corner of a Foundry.
+    fn corner_hugging_pair(offset: Vec2Fx, heading: u8, next: u32) -> State {
+        let width = 32;
+        let height = 14;
+        let mirror_tile = |tile: TilePos| TilePos::new(width - 1 - tile.x, height - 1 - tile.y);
+        let mut map = vec![".".repeat(width as usize); height as usize];
+        map[1].replace_range(1..2, "1");
+        map[height as usize - 3].replace_range(width as usize - 3..width as usize - 2, "2");
+        let anchor = TilePos::new(6, 6);
+        let mirrored_anchor = TilePos::new(width - 2 - anchor.x, height - 2 - anchor.y);
+        let mut state = Scenario {
+            mode: Default::default(),
+            name: "corner-hugging-pair".into(),
+            seed: 7_002,
+            map,
+            players: vec![
+                seat("West", Faction::Ferrous),
+                seat("East", Faction::Cupric),
+            ],
+            units: [(0, anchor), (1, mirrored_anchor)]
+                .into_iter()
+                .map(|(player, anchor)| UnitSpec {
+                    player,
+                    kind: UnitKind::Harvester,
+                    x: anchor.x + 1,
+                    y: anchor.y + 2,
+                })
+                .collect(),
+            buildings: [(0, anchor), (1, mirrored_anchor)]
+                .into_iter()
+                .map(|(player, anchor)| crate::scenario::BuildingSpec {
+                    player,
+                    kind: crate::stats::BuildingKind::Fabricator,
+                    x: anchor.x,
+                    y: anchor.y,
+                })
+                .collect(),
+            meta: None,
+        }
+        .build()
+        .expect("corner-hugging pair builds");
+
+        let corner = Vec2Fx::new(Fx::from_num(anchor.x + 2), Fx::from_num(anchor.y + 2));
+        let pos = corner + offset;
+        let mirrored_pos = Vec2Fx::new(Fx::from_num(width) - pos.x, Fx::from_num(height) - pos.y);
+        let waypoints = tiles(&[(8, 8), (9, 7), (10, 6), (10, 5), (10, 4), (10, 3)]);
+        let paths = [
+            PathFollow {
+                goal: *waypoints.last().unwrap(),
+                waypoints: waypoints.clone(),
+                next,
+            },
+            PathFollow {
+                goal: mirror_tile(*waypoints.last().unwrap()),
+                waypoints: waypoints.iter().copied().map(mirror_tile).collect(),
+                next,
+            },
+        ];
+        let headings = [heading, heading.wrapping_add(128)];
+        for (((unit, position), path), heading) in state
+            .units
+            .iter_mut()
+            .zip([pos, mirrored_pos])
+            .zip(paths)
+            .zip(headings)
+        {
+            unit.pos = position;
+            unit.heading = heading;
+            unit.order = Order::Run {
+                goal: path.goal.into(),
+            };
+            unit.path = Some(path);
+        }
+        state
+    }
+
+    fn tiles(points: &[(i32, i32)]) -> Vec<TilePos> {
+        points.iter().map(|&(x, y)| TilePos::new(x, y)).collect()
+    }
+
+    fn assert_corner_hugging_pair_arrives(mut state: State) {
+        let width = Fx::from_num(state.map.width());
+        let height = Fx::from_num(state.map.height());
+        let goal = TilePos::new(10, 3);
+        let clearance = |state: &State| {
+            let unit = &state.units[0];
+            let fabricator = state
+                .buildings
+                .iter()
+                .find(|b| {
+                    b.player == unit.player && b.kind == crate::stats::BuildingKind::Fabricator
+                })
+                .expect("the pair has a Fabricator");
+            unit.pos.dist(fabricator.closest_point_to(unit.pos))
+        };
+        let start = clearance(&state);
+        for _ in 0..240 {
+            let report = state.tick(&[]);
+            assert!(
+                clearance(&state) >= start,
+                "the Harvester steered closer to the Fabricator: {:?}",
+                state.units[0].pos
+            );
+            assert!(
+                !report
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, crate::Event::OrderStalled { .. })),
+                "an open route must not stall"
+            );
+            assert_eq!(
+                state.units[1].pos,
+                Vec2Fx::new(width - state.units[0].pos.x, height - state.units[0].pos.y),
+                "corner recovery lost half-turn symmetry"
+            );
+            if state.units[0].order == Order::Idle {
+                break;
+            }
+        }
+        let unit = &state.units[0];
+        assert_eq!(
+            unit.tile(),
+            goal,
+            "the Harvester pinned itself on the corner at {:?}",
+            unit.pos
+        );
+        assert_eq!(unit.order, Order::Idle);
+        assert!(unit.path.is_none());
+    }
+
+    #[test]
+    fn a_body_pinned_on_a_building_corner_drives_off_it() {
+        let state = corner_hugging_pair(
+            Vec2Fx::new(Fx::lit("-0.005956769"), Fx::lit("0.0085311425")),
+            217,
+            1,
+        );
+        assert_corner_hugging_pair_arrives(state);
+    }
+
+    #[test]
+    fn a_hull_overlapping_a_corner_never_steers_a_leg_across_it() {
+        let state = corner_hugging_pair(
+            Vec2Fx::new(Fx::lit("-0.182642685"), Fx::lit("0.1853985682")),
+            240,
+            0,
+        );
+        assert_corner_hugging_pair_arrives(state);
+    }
+
     fn collision_trio() -> State {
         Scenario {
             mode: Default::default(),

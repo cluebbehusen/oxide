@@ -447,6 +447,71 @@ mod tests {
     }
 
     #[test]
+    fn no_hull_started_around_a_corner_freezes_on_its_route() {
+        // A route the motor would refuse to drive holds the body still with
+        // no contact to count as a stall, so it must never be admitted.
+        let block = [(11, 6), (12, 6), (11, 7), (12, 7)];
+        let corners = [(11, 6), (13, 6), (11, 8), (13, 8)];
+        let goals = [(15, 3), (8, 3), (15, 11), (8, 11)].map(|(x, y)| TilePos::new(x, y));
+        let kinds = [
+            UnitKind::Harvester,
+            UnitKind::Scuttler,
+            UnitKind::Warden,
+            UnitKind::Avalanche,
+            UnitKind::Breaker,
+        ];
+        for kind in kinds {
+            let state = scene_with(kind, &block);
+            let terrain = state.ground_terrain();
+            let parked = ParkedBodies::default();
+            for (cx, cy) in corners {
+                for (sx, sy) in (-4..=4).flat_map(|sx| (-4..=4).map(move |sy| (sx, sy))) {
+                    let start = Vec2Fx::new(
+                        Fx::from_num(cx) + Fx::from_num(sx) / 4,
+                        Fx::from_num(cy) + Fx::from_num(sy) / 4,
+                    );
+                    if !terrain.open(TilePos::containing(start)) {
+                        continue;
+                    }
+                    for goal in goals {
+                        let mut unit = state.units()[0].clone();
+                        unit.pos = start;
+                        unit.heading = heading_of(goal.center() - start);
+                        let mut still = 0;
+                        for _ in 0..2_000 {
+                            if unit.path.is_none() {
+                                if unit.tile() == goal {
+                                    break;
+                                }
+                                let waypoints =
+                                    crate::tick::route_for(&state, kind, unit.tile(), goal)
+                                        .expect("the arena stays connected");
+                                route(&mut unit, waypoints);
+                            }
+                            let before = unit.pos;
+                            advance(&mut unit, &terrain, &parked);
+                            still = if unit.pos == before && unit.path.is_some() {
+                                still + 1
+                            } else {
+                                0
+                            };
+                            assert!(
+                                still < 200,
+                                "{kind:?} from {start:?} toward {goal:?} froze at {:?}",
+                                unit.pos
+                            );
+                        }
+                        assert!(
+                            unit.path.is_none() && unit.tile() == goal,
+                            "{kind:?} from {start:?} never reached {goal:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn each_ground_chassis_accelerates_in_six_ticks_and_stops_in_three() {
         for kind in UnitKind::ALL {
             if kind.stats().domain != crate::stats::Domain::Ground {
