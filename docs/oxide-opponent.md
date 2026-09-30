@@ -93,6 +93,8 @@ the running total and mission state.
   anti-air units, with a Tender and Sappers in support; raid takes Scuttlers,
   Sappers, or ground-attack aircraft too few for a strike; lift takes carriers
   and a payload.
+- Several missions of a kind may run at once on distinct targets, each sized to
+  its own target's need.
 - A mission takes only the force it needs, keeps it while its purpose holds, and
   releases it when the purpose disappears or recovery finishes. At a safe
   transition it can yield suitable units to an emergency; loaded passengers are

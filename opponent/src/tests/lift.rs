@@ -767,16 +767,25 @@ fn checkpoints_reject_impossible_lifts() {
         edit(&mut json["missions"]);
         restore(&json).err().unwrap()
     };
+    let second = |units: serde_json::Value| {
+        let mut json = json.clone();
+        let missions = &mut json["missions"];
+        let mut copy = missions["list"][0].clone();
+        copy["id"] = 1.into();
+        copy["units"] = units;
+        missions["list"].as_array_mut().unwrap().push(copy);
+        missions["next"] = 2.into();
+        restore(&json)
+    };
+    assert!(
+        second(serde_json::json!([9_999])).is_ok(),
+        "lifts run side by side"
+    );
     assert_eq!(
-        with(&|missions| {
-            let mut copy = missions["list"][0].clone();
-            copy["id"] = 1.into();
-            copy["units"] = serde_json::json!([]);
-            missions["list"].as_array_mut().unwrap().push(copy);
-            missions["next"] = 2.into();
-        }),
-        "checkpoint mission could not have been recorded",
-        "one lift at a time"
+        second(json["missions"]["list"][0]["units"].clone())
+            .err()
+            .unwrap(),
+        "checkpoint missions share a unit"
     );
     assert_eq!(
         with(&|missions| {
@@ -998,4 +1007,31 @@ fn a_severed_seat_with_an_airworks_trains_air_strikes_before_it_has_an_army() {
         }),
         "{trained:?}"
     );
+}
+
+#[test]
+fn a_payload_worth_two_lifts_flies_both_to_distinct_targets() {
+    let mut scenario = crowded(&MORE_SKYHOOKS);
+    // A Kestrel over the strait shows an East outpost on the far shore.
+    scenario.units.push(unit(0, UnitKind::Kestrel, 20, 5));
+    scenario.buildings.push(BuildingSpec {
+        player: 1,
+        kind: BuildingKind::Fabricator,
+        x: 28,
+        y: 4,
+    });
+    let state = scenario.build().unwrap();
+    let trace = seat(&scenario, 0)
+        .act_traced(&state, &mut OwnEvents::default())
+        .1
+        .unwrap();
+    let lifts: Vec<MissionStatus> = trace
+        .missions
+        .into_iter()
+        .filter(|mission| matches!(mission.kind, MissionKind::Lift { .. }))
+        .collect();
+    let [first, second] = lifts[..] else {
+        panic!("{lifts:?}");
+    };
+    assert_ne!(first.kind, second.kind, "each goes after its own target");
 }

@@ -1,4 +1,4 @@
-//! With several enemies, attacks and strikes go after one of them at a time.
+//! With several enemies, attacks and strikes go after one of them first.
 
 use super::Scratch;
 use super::{Missions, Objective, Task};
@@ -27,7 +27,7 @@ impl Missions {
     /// The enemy attacks and strikes go after when the seat has several:
     /// the one pressing it hardest, then the nearest, less the army it shows,
     /// with guile favoring a small economy, and a bonus for the owner of the
-    /// current attack or strike target so the seat does not flip between
+    /// oldest attack or strike's target so the seat does not flip between
     /// enemies. Equal enemies go to the one whose nearest building ranks
     /// first in the seat's frame, so mirrored seats choose mirrored enemies.
     /// `None` with one enemy or none.

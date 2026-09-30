@@ -53,12 +53,14 @@ struct Raid<'a> {
     reserve: [u64; 2],
     /// The enemy to go after first, when there are several.
     rival: Option<oxide_sim::PlayerId>,
+    /// Targets another strike holds or this decision gave up on.
+    held: Vec<Objective>,
 }
 
 impl Missions {
-    /// Sends free ground-attack aircraft at a target whose known anti-air
-    /// they outweigh, or advances the strike under way. Returns a target the
-    /// strike gave up on.
+    /// Advances every strike under way, then sends more free ground-attack
+    /// aircraft beyond the home reserve at a target no strike holds whose
+    /// known anti-air they outweigh. Returns the targets given up on.
     pub(crate) fn strike(
         &mut self,
         observation: &ObservationData,
@@ -67,9 +69,10 @@ impl Missions {
         memory: &Memory,
         scratch: &Scratch,
         ledger: &mut Ledger,
-    ) -> Option<(BuildingKind, TilePos)> {
+    ) -> Vec<(BuildingKind, TilePos)> {
         let frame = scratch.frame;
-        let raid = Raid {
+        let striking_kind: fn(&Task) -> bool = |task| matches!(task, Task::Strike { .. });
+        let mut raid = Raid {
             observation,
             map,
             frame,
@@ -79,25 +82,37 @@ impl Missions {
             air: &scratch.air,
             objectives: &scratch.objectives,
             reserve: scratch.reserve,
-            rival: self.rival(scratch, observation, map, profile.traits),
+            rival: scratch.rival,
+            held: Vec::new(),
         };
-        match self
-            .list
-            .iter()
-            .position(|mission| matches!(mission.task, Task::Strike { .. }))
-        {
-            None => {
-                self.form_strike(&raid, ledger);
-                None
+        let mut given_up: Vec<Objective> = Vec::new();
+        for id in self.ids(striking_kind) {
+            let Some(index) = self.index_of(id) else {
+                continue;
+            };
+            raid.held = self.held(striking_kind, Some(id), &given_up);
+            if let Some(target) = self.advance_strike(index, &raid, ledger) {
+                given_up.push(target);
             }
-            Some(index) => self.advance_strike(index, &raid, ledger),
         }
+        loop {
+            raid.held = self.held(striking_kind, None, &given_up);
+            if !self.form_strike(&raid, ledger) {
+                break;
+            }
+        }
+        given_up
+            .into_iter()
+            .map(|target| (target.building, target.anchor))
+            .collect()
     }
 
-    fn form_strike(&mut self, raid: &Raid<'_>, ledger: &mut Ledger) {
+    /// Sends the free aircraft beyond the reserve that the best target no
+    /// strike holds needs. Returns whether a strike formed.
+    fn form_strike(&mut self, raid: &Raid<'_>, ledger: &mut Ledger) -> bool {
         let observation = raid.observation;
         if self.list.len() >= MISSION_CAP {
-            return;
+            return false;
         }
         let fit: Vec<&UnitObs> = self
             .available(observation, false)
@@ -110,29 +125,31 @@ impl Missions {
             .outermost(raid.map, raid.frame, fit);
         let strength: u64 = fit.iter().map(|unit| striking(unit)).sum();
         if strength < raid.minimum {
-            return;
+            return false;
         }
         let Some(target) = raid.best(strength, None) else {
-            return;
+            return false;
         };
         let centre = footprint_centre(target.building, target.anchor);
         let Some(rally) = air::pad(observation, raid.map, raid.frame, centre) else {
-            return;
+            return false;
         };
         let recruits = recruit(raid.frame, &fit, rally, raid.need(target), UNIT_CAP);
-        if ledger.order(run(recruits.clone(), rally)) {
-            self.list.push(Mission {
-                id: self.next,
-                since: observation.tick,
-                units: recruits,
-                goal: rally,
-                task: Task::Strike {
-                    target,
-                    phase: StrikePhase::Gather,
-                },
-            });
-            self.next += 1;
+        if recruits.is_empty() || !ledger.order(run(recruits.clone(), rally)) {
+            return false;
         }
+        self.list.push(Mission {
+            id: self.next,
+            since: observation.tick,
+            units: recruits,
+            goal: rally,
+            task: Task::Strike {
+                target,
+                phase: StrikePhase::Gather,
+            },
+        });
+        self.next += 1;
+        true
     }
 
     /// Moves the strike at `index` through its phases. Returns its target
@@ -142,7 +159,7 @@ impl Missions {
         index: usize,
         raid: &Raid<'_>,
         ledger: &mut Ledger,
-    ) -> Option<(BuildingKind, TilePos)> {
+    ) -> Option<Objective> {
         let observation = raid.observation;
         let now = observation.tick;
         let mission = &self.list[index];
@@ -161,7 +178,7 @@ impl Missions {
         let rally = air::pad(observation, raid.map, raid.frame, centre)?;
         let goal = mission.goal;
         let units = mission.units.clone();
-        let lost = (target.building, target.anchor);
+        let lost = target;
         // Gives the target up only once the strike has turned back, so a
         // decision out of orders does not keep refreshing the give-up.
         let withdraw = |missions: &mut Self, ledger: &mut Ledger| {
@@ -296,7 +313,7 @@ impl Raid<'_> {
             .iter()
             .copied()
             .filter(|target| eligible(target))
-            .filter(|target| Some(*target) != skip)
+            .filter(|target| Some(*target) != skip && !self.held.contains(target))
             .filter(|target| {
                 !self
                     .memory

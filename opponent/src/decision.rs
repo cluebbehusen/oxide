@@ -225,7 +225,7 @@ pub(crate) fn decide(
     let earned = persistent.income.observe(tick, observation.scrap, rejected);
     persistent.memory.forget(tick);
     persistent.memory.observe(observation);
-    let scratch = Scratch::new(
+    let mut scratch = Scratch::new(
         observation,
         map,
         frame,
@@ -303,6 +303,9 @@ pub(crate) fn decide(
     let short = persistent
         .missions
         .defend(observation, map, frame, &mut ledger);
+    scratch.rival = persistent
+        .missions
+        .rival(&scratch, observation, map, profile.traits);
     workers::recover(observation, &foundries, &mut ledger);
     if short {
         ledger.protected = 0;
@@ -329,7 +332,7 @@ pub(crate) fn decide(
         &staffing,
         &mut ledger,
     );
-    if let Some((kind, anchor)) = persistent.missions.lift(
+    for (kind, anchor) in persistent.missions.lift(
         observation,
         map,
         profile,
@@ -339,15 +342,7 @@ pub(crate) fn decide(
     ) {
         persistent.memory.abandon(kind, anchor, tick);
     }
-    persistent.missions.attack(
-        observation,
-        map,
-        profile,
-        &mut persistent.memory,
-        &scratch,
-        &mut ledger,
-    );
-    if let Some((kind, anchor)) = persistent.missions.strike(
+    for (kind, anchor) in persistent.missions.attack(
         observation,
         map,
         profile,
@@ -357,7 +352,17 @@ pub(crate) fn decide(
     ) {
         persistent.memory.abandon(kind, anchor, tick);
     }
-    if let Some((kind, anchor)) = persistent.missions.raid(
+    for (kind, anchor) in persistent.missions.strike(
+        observation,
+        map,
+        profile,
+        &persistent.memory,
+        &scratch,
+        &mut ledger,
+    ) {
+        persistent.memory.abandon(kind, anchor, tick);
+    }
+    for (kind, anchor) in persistent.missions.raid(
         observation,
         map,
         profile,
