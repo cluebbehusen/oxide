@@ -28,7 +28,7 @@ mod support;
 
 pub(crate) use air::{Hazard, hazards};
 pub(crate) use attack::{SAPPERS, minimum};
-pub(crate) use lift::{carrier, needed as lift_needed, payload};
+pub(crate) use lift::{carrier, carriers_wanted, needed as lift_needed, payload};
 pub(crate) use scouting::points;
 
 /// Missions the seat runs at once.
