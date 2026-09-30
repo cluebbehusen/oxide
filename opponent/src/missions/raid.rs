@@ -5,6 +5,7 @@
 //! Harvesters haul to. Sappers blow up a valuable building. A raided target
 //! is skipped for a while, which spaces the raids out.
 
+use super::Scratch;
 use super::air::{self, Hazard};
 use super::attack::{FIT, defense, healthy, minimum, striking};
 use super::{
@@ -20,7 +21,6 @@ use crate::profile::ResolvedProfile;
 use chassis::grid::TilePos;
 
 use oxide_sim::observation::{BuildingObs, ObservationData, UnitObs};
-use oxide_sim::stats::Domain;
 use oxide_sim::{AttackTarget, BuildingKind, Command, RememberedBuilding, UnitId, UnitKind};
 use std::cmp::Reverse;
 
@@ -77,8 +77,8 @@ struct Foray<'a> {
     frame: HomeFrame,
     memory: &'a Memory,
     /// Known fire against ground units, and against aircraft.
-    ground: Vec<Hazard>,
-    air: Vec<Hazard>,
+    ground: &'a [Hazard],
+    air: &'a [Hazard],
 }
 
 impl Missions {
@@ -90,11 +90,12 @@ impl Missions {
         &mut self,
         observation: &ObservationData,
         map: &MapModel,
-        frame: HomeFrame,
         profile: &ResolvedProfile,
         memory: &Memory,
+        scratch: &Scratch,
         ledger: &mut Ledger,
     ) -> Option<(BuildingKind, TilePos)> {
+        let frame = scratch.frame;
         let raiding = self
             .list
             .iter()
@@ -117,8 +118,8 @@ impl Missions {
             map,
             frame,
             memory,
-            ground: air::hazards(observation, memory, Domain::Ground),
-            air: air::hazards(observation, memory, Domain::Air),
+            ground: &scratch.ground,
+            air: &scratch.air,
         };
         match self
             .list
@@ -389,7 +390,7 @@ impl Foray<'_> {
         let Some(pad) = air::pad(self.observation, self.map, self.frame, doubled(goal)) else {
             return false;
         };
-        let Some(via) = air::route(self.observation, self.frame, &self.air, pad, goal) else {
+        let Some(via) = air::route(self.observation, self.frame, self.air, pad, goal) else {
             return ledger.order(hunt(units, goal));
         };
         if ledger.room() < 2 {

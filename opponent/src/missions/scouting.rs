@@ -2,6 +2,7 @@
 //! has not seen for a while, hostile starts first. With no scout it asks
 //! production for one.
 
+use super::Scratch;
 use super::air::{self, Hazard};
 use super::{MISSION_CAP, Mission, Missions, Task, approach, mine, run};
 use crate::decision::Ledger;
@@ -64,11 +65,12 @@ impl Missions {
         map: &MapModel,
         frame: HomeFrame,
         memory: &mut Memory,
+        scratch: &Scratch,
         ledger: &mut Ledger,
     ) -> bool {
         let now = observation.tick;
         let points = points(map, observation.me);
-        let hazards = air::hazards(observation, memory, Domain::Air);
+        let hazards = &scratch.air;
         let scouted = memory.scouted(points.len());
         for (point, seen) in points.iter().zip(scouted.iter_mut()) {
             let (width, height) = BuildingKind::Foundry.base_stats().size;
@@ -100,7 +102,7 @@ impl Missions {
             };
             match best(observation, map, frame, &points, scouted, scout) {
                 Some((next, goal)) => {
-                    if send(observation, frame, &hazards, scout, goal, ledger) {
+                    if send(observation, frame, hazards, scout, goal, ledger) {
                         let mission = &mut self.list[index];
                         mission.task = Task::Scout { point: next };
                         mission.since = now;
@@ -141,7 +143,7 @@ impl Missions {
             best(observation, map, frame, &points, scouted, scout).map(|best| (scout, best))
         });
         if let Some((scout, (point, goal))) = chosen {
-            if send(observation, frame, &hazards, scout, goal, ledger) {
+            if send(observation, frame, hazards, scout, goal, ledger) {
                 self.list.push(Mission {
                     id: self.next,
                     since: now,

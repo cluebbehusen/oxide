@@ -4,11 +4,11 @@
 //! carriers and passengers. Production keeps a stock of carriers, and nothing
 //! waits on a carrier that is not built.
 
+use super::Scratch;
 use super::air::{self, Hazard};
 use super::attack::{FIT, defense, healthy, margin, minimum, striking};
 use super::{
-    LiftPhase, MISSION_CAP, Mission, Missions, Objective, Task, approach, hunt, mine, objectives,
-    run, standing,
+    LiftPhase, MISSION_CAP, Mission, Missions, Objective, Task, approach, hunt, mine, run, standing,
 };
 use crate::composition::{self, Role};
 use crate::decision::Ledger;
@@ -50,23 +50,6 @@ pub(super) fn timeout(phase: LiftPhase) -> u64 {
     }
 }
 
-/// Whether the seat needs lift: it knows of enemy buildings or starts, and
-/// ground reaches none of them.
-pub(crate) fn needed(observation: &ObservationData, map: &MapModel, frame: HomeFrame) -> bool {
-    let objectives = objectives(observation, map);
-    !objectives.is_empty()
-        && objectives.iter().all(|objective| {
-            approach(
-                map,
-                observation.me,
-                frame,
-                objective.building,
-                objective.anchor,
-            )
-            .is_none()
-        })
-}
-
 /// A place to fly a payload to.
 #[derive(Clone, Copy)]
 struct Drop {
@@ -98,9 +81,11 @@ struct Lifting<'a> {
     profile: &'a ResolvedProfile,
     home: u32,
     /// Known fire against aircraft, which carriers must avoid.
-    air: Vec<Hazard>,
+    air: &'a [Hazard],
     /// Known fire against ground, which a landing avoids.
-    ground: Vec<Hazard>,
+    ground: &'a [Hazard],
+    objectives: &'a [Objective],
+    severed: bool,
 }
 
 impl Missions {
@@ -111,11 +96,12 @@ impl Missions {
         &mut self,
         observation: &ObservationData,
         map: &MapModel,
-        frame: HomeFrame,
         profile: &ResolvedProfile,
         memory: &Memory,
+        scratch: &Scratch,
         ledger: &mut Ledger,
     ) -> Option<(BuildingKind, TilePos)> {
+        let frame = scratch.frame;
         let home = map
             .start(observation.me)
             .and_then(|start| map.component(start))?;
@@ -126,8 +112,10 @@ impl Missions {
             memory,
             profile,
             home,
-            air: air::hazards(observation, memory, Domain::Air),
-            ground: air::hazards(observation, memory, Domain::Ground),
+            air: &scratch.air,
+            ground: &scratch.ground,
+            objectives: &scratch.objectives,
+            severed: scratch.severed,
         };
         match self
             .list
@@ -147,8 +135,7 @@ impl Missions {
     /// orders allow; the rest board on later decisions.
     fn form(&mut self, lifting: &Lifting<'_>, ledger: &mut Ledger) {
         let observation = lifting.observation;
-        let (map, frame) = (lifting.map, lifting.frame);
-        if self.list.len() >= MISSION_CAP || !needed(observation, map, frame) {
+        if self.list.len() >= MISSION_CAP || !lifting.severed {
             return;
         }
         let loads = self.loads(lifting, ledger);
@@ -479,8 +466,10 @@ impl Missions {
         let (map, observation, frame) = (lifting.map, lifting.observation, lifting.frame);
         let island = map.component(target.anchor);
         let from = flight.landing;
-        let next = objectives(observation, map)
-            .into_iter()
+        let next = lifting
+            .objectives
+            .iter()
+            .copied()
             .filter(|objective| *objective != target)
             .filter(|objective| island.is_some() && map.component(objective.anchor) == island)
             .filter(|objective| {
@@ -524,14 +513,20 @@ impl Lifting<'_> {
     /// The best target no ground route reaches that has a landing, by value
     /// for its distance from home.
     fn best_drop(&self) -> Option<Drop> {
-        targets(self.observation, self.map, self.frame, self.memory)
-            .into_iter()
-            .find_map(|target| {
-                Some(Drop {
-                    target,
-                    landing: self.landing(target)?,
-                })
+        targets(
+            self.objectives,
+            self.observation,
+            self.map,
+            self.frame,
+            self.memory,
+        )
+        .into_iter()
+        .find_map(|target| {
+            Some(Drop {
+                target,
+                landing: self.landing(target)?,
             })
+        })
     }
 
     /// Army value a lift to `landing` needs: its known ground defense times
@@ -569,7 +564,7 @@ impl Lifting<'_> {
                 let exposure: u64 = self
                     .air
                     .iter()
-                    .chain(&self.ground)
+                    .chain(self.ground)
                     .filter(|hazard| hazard.covers(point))
                     .map(|hazard| hazard.value)
                     .sum();
@@ -637,7 +632,7 @@ impl Lifting<'_> {
     }
 
     fn route(&self, from: TilePos, to: TilePos) -> Option<TilePos> {
-        air::route(self.observation, self.frame, &self.air, from, to)
+        air::route(self.observation, self.frame, self.air, from, to)
     }
 
     /// The tile beside `target` on its island nearest `from`.
@@ -711,11 +706,12 @@ fn fly_to(carriers: Vec<UnitId>, via: Option<TilePos>, goal: TilePos, ledger: &m
 pub(crate) fn carriers_wanted(
     observation: &ObservationData,
     map: &MapModel,
-    frame: HomeFrame,
     profile: &ResolvedProfile,
     memory: &Memory,
+    scratch: &Scratch,
 ) -> u64 {
-    let (value, slots) = payload(observation, map);
+    let frame = scratch.frame;
+    let (value, slots) = scratch.payload;
     let line = UnitKind::Sentinel.stats();
     let per_slot = value
         .checked_div(slots)
@@ -723,7 +719,7 @@ pub(crate) fn carriers_wanted(
         .max(1);
     // The landing lies a few tiles from its target, so the defense around the
     // target stands in for it without searching for one.
-    let need = targets(observation, map, frame, memory)
+    let need = targets(&scratch.objectives, observation, map, frame, memory)
         .first()
         .map_or(0, |target| {
             defense(observation, memory, target.anchor) * margin(profile.difficulty) / 1_000
@@ -739,6 +735,7 @@ pub(crate) fn carriers_wanted(
 /// The targets no ground route reaches and not given up on, most valuable for
 /// their distance from home first.
 fn targets(
+    objectives: &[Objective],
     observation: &ObservationData,
     map: &MapModel,
     frame: HomeFrame,
@@ -747,8 +744,9 @@ fn targets(
     let Some(start) = map.start(observation.me) else {
         return Vec::new();
     };
-    let mut ranked = objectives(observation, map)
-        .into_iter()
+    let mut ranked = objectives
+        .iter()
+        .copied()
         .filter(|objective| {
             approach(
                 map,

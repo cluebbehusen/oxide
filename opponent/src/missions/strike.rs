@@ -3,11 +3,12 @@
 //! flying around known anti-air, and withdrawing when it outweighs them.
 //! Ground need not reach the target.
 
+use super::Scratch;
 use super::air::{self, Hazard};
 use super::attack::{FIT, healthy, margin, minimum, recruit, striking};
 use super::{
-    MISSION_CAP, Mission, Missions, Objective, StrikePhase, Task, UNIT_CAP, hunt, mine, objectives,
-    run, standing,
+    MISSION_CAP, Mission, Missions, Objective, StrikePhase, Task, UNIT_CAP, hunt, mine, run,
+    standing,
 };
 use crate::composition::{self, Role};
 use crate::decision::Ledger;
@@ -17,7 +18,6 @@ use crate::memory::Memory;
 use crate::profile::ResolvedProfile;
 use chassis::grid::TilePos;
 use oxide_sim::observation::{ObservationData, UnitObs};
-use oxide_sim::stats::Domain;
 use oxide_sim::{BuildingKind, UnitKind};
 
 /// Tiles between a member and the target at which the fight begins.
@@ -47,7 +47,8 @@ struct Raid<'a> {
     minimum: u64,
     margin: u64,
     /// Known fire against aircraft.
-    air: Vec<Hazard>,
+    air: &'a [Hazard],
+    objectives: &'a [Objective],
     /// The enemy to go after first, when there are several.
     rival: Option<oxide_sim::PlayerId>,
 }
@@ -60,11 +61,12 @@ impl Missions {
         &mut self,
         observation: &ObservationData,
         map: &MapModel,
-        frame: HomeFrame,
         profile: &ResolvedProfile,
         memory: &Memory,
+        scratch: &Scratch,
         ledger: &mut Ledger,
     ) -> Option<(BuildingKind, TilePos)> {
+        let frame = scratch.frame;
         let raid = Raid {
             observation,
             map,
@@ -72,8 +74,9 @@ impl Missions {
             memory,
             minimum: minimum(profile.stance),
             margin: margin(profile.difficulty),
-            air: air::hazards(observation, memory, Domain::Air),
-            rival: self.rival(observation, map, profile.traits),
+            air: &scratch.air,
+            objectives: &scratch.objectives,
+            rival: self.rival(scratch, observation, map, profile.traits),
         };
         match self
             .list
@@ -240,7 +243,7 @@ impl Missions {
                 raid.frame.rank(raid.frame.home, doubled(*tile)),
             )
         })?;
-        let Some(via) = air::route(raid.observation, raid.frame, &raid.air, from, aim) else {
+        let Some(via) = air::route(raid.observation, raid.frame, raid.air, from, aim) else {
             return ledger.order(hunt(units, aim)).then_some(aim);
         };
         if ledger.room() < 2 {
@@ -283,11 +286,11 @@ impl Raid<'_> {
     ) -> Option<Objective> {
         let observation = self.observation;
         let start = self.map.start(observation.me)?;
-        objectives(observation, self.map)
-            .into_iter()
+        self.objectives
+            .iter()
+            .copied()
             .filter(|target| eligible(target))
             .filter(|target| Some(*target) != skip)
-            .filter(|target| standing(observation, *target))
             .filter(|target| {
                 !self
                     .memory

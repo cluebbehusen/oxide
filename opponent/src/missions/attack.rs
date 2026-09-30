@@ -5,6 +5,7 @@
 //! welds its wounded, and follows it; against known defenses free Sappers
 //! join too, and each blows up the nearest defense once the fight begins.
 
+use super::Scratch;
 use super::raid::{aim, blast};
 use super::support::{patient, weld};
 use super::{
@@ -132,11 +133,12 @@ impl Missions {
         &mut self,
         observation: &ObservationData,
         map: &MapModel,
-        frame: HomeFrame,
         profile: &ResolvedProfile,
         memory: &mut Memory,
+        scratch: &Scratch,
         ledger: &mut Ledger,
     ) {
+        let frame = scratch.frame;
         let now = observation.tick;
         let minimum = minimum(profile.stance);
         let free: Vec<&UnitObs> = self
@@ -157,7 +159,7 @@ impl Missions {
         };
         let tenders = spare(UnitKind::Tender);
         let sappers = spare(UnitKind::Sapper);
-        let rival = self.rival(observation, map, profile.traits);
+        let rival = self.rival(scratch, observation, map, profile.traits);
         let index = self
             .list
             .iter()

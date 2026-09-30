@@ -8,7 +8,7 @@ use crate::income::Income;
 use crate::investments::{self, Situation, Step};
 use crate::map::MapModel;
 use crate::memory::Memory;
-use crate::missions::Missions;
+use crate::missions::{Missions, Scratch};
 use crate::placement;
 use crate::profile::ResolvedProfile;
 use crate::saving::Saving;
@@ -225,6 +225,7 @@ pub(crate) fn decide(
     let earned = persistent.income.observe(tick, observation.scrap, rejected);
     persistent.memory.forget(tick);
     persistent.memory.observe(observation);
+    let scratch = Scratch::new(observation, map, frame, &persistent.memory);
     let air_strikes = observation
         .my_buildings
         .iter()
@@ -242,8 +243,8 @@ pub(crate) fn decide(
     // production for carriers: an army and home defense come first.
     let minimum = crate::missions::minimum(profile.stance);
     let exposed = army(observation) < minimum;
-    let carryable = crate::missions::payload(observation, map).0 >= minimum;
-    let lift = carryable && crate::missions::lift_needed(observation, map, frame);
+    let carryable = scratch.payload.0 >= minimum;
+    let lift = carryable && scratch.severed;
     let mut pull = needs.pull(observation);
     if lift {
         pull.push((BuildingKind::Airworks, LIFT_PULL));
@@ -306,16 +307,16 @@ pub(crate) fn decide(
         observation,
         map,
         frame,
-        &persistent.memory,
+        &scratch.ground,
         &staffing,
         &mut ledger,
     );
     if let Some((kind, anchor)) = persistent.missions.lift(
         observation,
         map,
-        frame,
         profile,
         &persistent.memory,
+        &scratch,
         &mut ledger,
     ) {
         persistent.memory.abandon(kind, anchor, tick);
@@ -323,17 +324,17 @@ pub(crate) fn decide(
     persistent.missions.attack(
         observation,
         map,
-        frame,
         profile,
         &mut persistent.memory,
+        &scratch,
         &mut ledger,
     );
     if let Some((kind, anchor)) = persistent.missions.strike(
         observation,
         map,
-        frame,
         profile,
         &persistent.memory,
+        &scratch,
         &mut ledger,
     ) {
         persistent.memory.abandon(kind, anchor, tick);
@@ -341,9 +342,9 @@ pub(crate) fn decide(
     if let Some((kind, anchor)) = persistent.missions.raid(
         observation,
         map,
-        frame,
         profile,
         &persistent.memory,
+        &scratch,
         &mut ledger,
     ) {
         persistent.memory.raid(kind, anchor, tick);
@@ -354,18 +355,22 @@ pub(crate) fn decide(
     persistent
         .missions
         .tend(observation, map, frame, &mut ledger);
-    let scout =
-        persistent
-            .missions
-            .scout(observation, map, frame, &mut persistent.memory, &mut ledger);
+    let scout = persistent.missions.scout(
+        observation,
+        map,
+        frame,
+        &mut persistent.memory,
+        &scratch,
+        &mut ledger,
+    );
     let carrying = lift
         && !short
         && train_carriers(
             observation,
             map,
-            frame,
             profile,
             &persistent.memory,
+            &scratch,
             &producers,
             &mut ledger,
         );
@@ -517,9 +522,9 @@ fn explore(
 fn train_carriers(
     observation: &ObservationData,
     map: &MapModel,
-    frame: HomeFrame,
     profile: &ResolvedProfile,
     memory: &Memory,
+    scratch: &Scratch,
     producers: &[Producer<'_>],
     ledger: &mut Ledger,
 ) -> bool {
@@ -532,11 +537,11 @@ fn train_carriers(
         .count()
         + ledger.queued(UnitKind::Skyhook)) as u64;
     let capacity = u64::from(UnitKind::Skyhook.stats().transport_capacity).max(1);
-    let (_, slots) = crate::missions::payload(observation, map);
+    let (_, slots) = scratch.payload;
     // The riders at home bound the stock, so carriers that already hold them
     // all need no landing search.
     if carriers >= slots.max(capacity).div_ceil(capacity)
-        || carriers >= crate::missions::carriers_wanted(observation, map, frame, profile, memory)
+        || carriers >= crate::missions::carriers_wanted(observation, map, profile, memory, scratch)
     {
         return false;
     }
