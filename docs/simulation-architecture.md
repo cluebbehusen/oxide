@@ -541,10 +541,13 @@ looks ahead a bounded number of waypoints and steers for the furthest one its
 hull can reach on a straight leg, tested as a swept line of its body radius
 against terrain, building occupancy and friendly bodies at rest, so a staircase
 is driven as one line and a corner is rounded only once the far side is actually
-clear. A waypoint reached that way is revalidated each tick with the same swept
-terrain test, so ground claimed beside the leg drops it for a fresh route; an
-adjacent waypoint keeps the tile rules the route was planned under, so a wide
-hull beside a wall never loses a leg it could always walk.
+clear. The sweep starts from the hull the body already occupies: a hull that
+overlaps blocked ground beside its own tile admits no leg along or past it and
+follows its planned tiles until it is clear, so it never grinds into the corner
+it is rounding. A waypoint reached that way is revalidated each tick with the
+same swept terrain test, so ground claimed beside the leg drops it for a fresh
+route; an adjacent waypoint keeps the tile rules the route was planned under, so
+a wide hull beside a wall never loses a leg it could always walk.
 
 A pathless ground unit can still be braking. Group arrival propagation and
 anchored collision priority require its motor speed to be zero.

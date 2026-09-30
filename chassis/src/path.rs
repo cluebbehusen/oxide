@@ -120,8 +120,11 @@ pub fn line_blocked(a: Vec2Fx, b: Vec2Fx, mut passable: impl FnMut(TilePos) -> b
 
 /// Whether a body of `radius` sweeping the segment from `a` to `b` crosses a
 /// tile that fails `passable`: the center line plus the two parallel edge
-/// lines offset by `radius`. Endpoint tiles are never tested, like
-/// [`line_blocked`], so the caller checks the destination tile itself. A
+/// lines offset by `radius`. The center line's endpoint tiles are never
+/// tested, like [`line_blocked`]: the body may be leaving ground it could not
+/// enter, and the caller checks the destination tile itself. An edge line's
+/// start tile is tested when it lies outside the body's own tile, so a hull
+/// that already overlaps a blocked tile cannot sweep along or past it. A
 /// zero-length segment is never blocked.
 ///
 /// The offset pair is exactly sign-symmetric, so the verdict keeps
@@ -144,8 +147,11 @@ pub fn swept_line_blocked(
         return false;
     }
     let side = Vec2Fx::new(-delta.y, delta.x) * (radius / length);
-    line_blocked(a + side, b + side, &mut passable)
-        || line_blocked(a - side, b - side, &mut passable)
+    let own = TilePos::containing(a);
+    [side, -side].into_iter().any(|side| {
+        let start = TilePos::containing(a + side);
+        (start != own && !passable(start)) || line_blocked(a + side, b + side, &mut passable)
+    })
 }
 
 const STRAIGHT_COST: u32 = 10;
@@ -1531,6 +1537,25 @@ mod tests {
         let (a, b) = (center(0, 1), center(5, 1));
         assert!(line_blocked(a, b, open));
         assert!(swept_line_blocked(a, b, Fx::lit("0.6"), open));
+    }
+
+    #[test]
+    fn swept_line_catches_a_blocked_tile_its_hull_already_overlaps() {
+        let (grid, _, _) = arena(&["......", ".##...", ".##...", "......", "......"]);
+        let open = |p: TilePos| grid.get(p).copied().unwrap_or(false);
+        // Just south of the block's south-east corner, heading past it: the
+        // center line clears the corner, but the hull starts over the block.
+        let a = Vec2Fx::new(Fx::lit("2.817357315"), Fx::lit("3.1853985682"));
+        let b = center(5, 0);
+        assert!(!line_blocked(a, b, open));
+        assert!(swept_line_blocked(a, b, Fx::lit("0.3"), open));
+        // A body leaving blocked ground is not held by its own tile.
+        assert!(!swept_line_blocked(
+            center(1, 1),
+            center(0, 1),
+            Fx::lit("0.3"),
+            open
+        ));
     }
 
     #[test]
