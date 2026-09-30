@@ -1,7 +1,8 @@
-//! Scores matrix rows: head-to-head pairs, decided rates, failure incidents
-//! and income, overall and by difficulty, stance and map family.
+//! Scores matrix rows by match mode: head-to-head and mixed pairs, decided
+//! rates, placement, failure incidents and income, overall and by difficulty,
+//! stance and map family.
 
-use super::{MapFamily, MatrixLabel, Pairing};
+use super::{MapFamily, MatchMode, MatrixLabel, Pairing};
 use crate::bot_eval::{
     EvaluationControllerKind, EvaluationLeg, INCOME_CHECKPOINTS, IncomeSample, SeatFailures,
     Termination,
@@ -11,6 +12,7 @@ use oxide_kit::recovery::BuildIdentity;
 use oxide_sim::GameResult;
 use oxide_sim::scenario::{BotDifficulty, BotStance};
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -34,26 +36,32 @@ pub struct ScoredRow {
     pub result: Option<GameResult>,
     /// Seats on the winning team.
     pub winner_seats: Vec<u8>,
+    /// Ticks the leg ran.
+    pub duration_ticks: u64,
     /// Controller by seat.
     pub seats: Vec<ScoredSeat>,
     /// QA evidence by seat.
     pub evidence: Vec<ScoredEvidence>,
 }
 
-/// A seat's controller.
+/// A seat's team and controller.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ScoredSeat {
     /// Player seat.
     pub seat: u8,
+    /// Team the seat played on.
+    pub team: u8,
     /// Controller family.
     pub controller: EvaluationControllerKind,
 }
 
-/// A seat's failure and income evidence.
+/// A seat's elimination, failure and income evidence.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ScoredEvidence {
     /// Player seat.
     pub seat: u8,
+    /// Tick the seat resigned or lost its last Foundry; absent while it stood.
+    pub eliminated_at: Option<u64>,
     /// Detected failure episodes.
     pub failures: SeatFailures,
     /// Income checkpoints reached.
@@ -90,7 +98,7 @@ pub fn load_rows(paths: &[PathBuf]) -> Result<Vec<ScoredRow>> {
     Ok(rows)
 }
 
-/// Head-to-head pairs by result.
+/// Pairs of one pairing by result.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct PairTally {
     /// The new bot won both legs.
@@ -99,7 +107,7 @@ pub struct PairTally {
     pub split: u32,
     /// `oxide-bot` won both legs.
     pub old_wins_both: u32,
-    /// At least one leg ended without a winner.
+    /// At least one leg had no winner: undecided, or level on placement.
     pub undecided: u32,
 }
 
@@ -114,7 +122,7 @@ pub struct LegTally {
     pub stall_loops: u32,
 }
 
-/// The new bot's share of head-to-head legs with a winner.
+/// The new bot's share of legs with a winner.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NewShare {
     /// Legs the new bot won.
@@ -125,6 +133,17 @@ pub struct NewShare {
     pub share: f64,
     /// 95% Wilson interval of the share.
     pub wilson: [f64; 2],
+}
+
+/// Pairs, legs and the new bot's share for one pairing.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct PairingReport {
+    /// Pairs by result.
+    pub pairs: PairTally,
+    /// Legs by termination.
+    pub legs: LegTally,
+    /// The new bot's share of won legs; absent when no leg had a winner.
+    pub new_share: Option<NewShare>,
 }
 
 /// Median income at one checkpoint.
@@ -142,8 +161,20 @@ pub struct IncomeMedian {
     pub percent_of_saturation: Option<u32>,
 }
 
-/// Failure incidents and income for one controller.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// Where one controller's seats finished in mixed legs.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Placement {
+    /// Seats this controller played in mixed legs.
+    pub seat_legs: u32,
+    /// Mean place, 1 being the last seat standing; tied seats share the mean
+    /// of their places.
+    pub mean_place: f64,
+    /// Median tick a seat was eliminated, or its leg's end for a survivor.
+    pub median_survival_ticks: u64,
+}
+
+/// Failure incidents, income and placement for one controller.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ControllerTally {
     /// Controller family.
     pub controller: EvaluationControllerKind,
@@ -159,22 +190,24 @@ pub struct ControllerTally {
     pub stuck_missions: u64,
     /// Income medians by checkpoint.
     pub income: Vec<IncomeMedian>,
+    /// Placement in mixed legs; absent without any.
+    pub placement: Option<Placement>,
 }
 
 /// One slice of the matrix.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct GroupReport {
+    /// Match mode of the rows it covers.
+    pub mode: MatchMode,
     /// `overall`, or the difficulty, stance or family it covers.
     pub group: String,
-    /// Head-to-head pairs.
-    pub pairs: PairTally,
-    /// Head-to-head legs.
-    pub head_to_head: LegTally,
-    /// The new bot's share of won legs; absent when no leg had a winner.
-    pub new_share: Option<NewShare>,
+    /// Head-to-head pairs and legs.
+    pub head_to_head: PairingReport,
+    /// Mixed pairs and legs.
+    pub mixed: PairingReport,
     /// Baseline legs.
     pub baseline: LegTally,
-    /// Per-controller incidents and income, new bot first.
+    /// Per-controller incidents, income and placement, new bot first.
     pub controllers: Vec<ControllerTally>,
 }
 
@@ -192,6 +225,8 @@ pub struct Provenance {
 pub struct MatrixReport {
     /// Head-to-head legs.
     pub head_to_head_legs: u32,
+    /// Mixed legs.
+    pub mixed_legs: u32,
     /// Baseline legs.
     pub baseline_legs: u32,
     /// Reference digests: the frozen `oxide-bot` and simulation sources.
@@ -200,7 +235,7 @@ pub struct MatrixReport {
     pub builds: Vec<Provenance>,
     /// Candidates.
     pub candidates: Vec<Provenance>,
-    /// Overall, then by difficulty, stance and map family.
+    /// By match mode: overall, then by difficulty, stance and map family.
     pub groups: Vec<GroupReport>,
 }
 
@@ -249,27 +284,63 @@ struct ControllerBuilder {
     starved_production: u64,
     stuck_missions: u64,
     income: BTreeMap<u64, Vec<(u32, u32)>>,
+    doubled_places: Vec<u64>,
+    survival: Vec<u64>,
+}
+
+#[derive(Default)]
+struct PairingBuilder {
+    pairs: PairTally,
+    legs: LegTally,
+    new_wins: u32,
+    old_wins: u32,
+}
+
+impl PairingBuilder {
+    fn finish(self) -> PairingReport {
+        let won = self.new_wins + self.old_wins;
+        PairingReport {
+            pairs: self.pairs,
+            legs: self.legs,
+            new_share: (won > 0).then(|| NewShare {
+                new_wins: self.new_wins,
+                old_wins: self.old_wins,
+                share: f64::from(self.new_wins) / f64::from(won),
+                wilson: crate::sweep::wilson(self.new_wins, won),
+            }),
+        }
+    }
 }
 
 #[derive(Default)]
 struct GroupBuilder {
-    pairs: PairTally,
-    head_to_head: LegTally,
-    new_wins: u32,
-    old_wins: u32,
+    head_to_head: PairingBuilder,
+    mixed: PairingBuilder,
     baseline: LegTally,
     controllers: BTreeMap<EvaluationControllerKind, ControllerBuilder>,
 }
 
-type PairKey = (String, String, u8, u8, u64);
+impl GroupBuilder {
+    fn compared(&mut self, pairing: Pairing) -> &mut PairingBuilder {
+        if pairing == Pairing::Mixed {
+            &mut self.mixed
+        } else {
+            &mut self.head_to_head
+        }
+    }
+}
 
-/// Scores rows. Every head-to-head pair must be complete, and no matrix leg
-/// may appear twice.
+type PairKey = (String, String, u8, u8, u64, Pairing);
+
+type Pair<'a> = (&'a MatrixLabel, MatchMode, [Option<LegOutcome>; 2]);
+
+/// Scores rows. Every compared pair must be complete, and no matrix leg may
+/// appear twice.
 pub fn build_report(rows: &[ScoredRow]) -> Result<MatrixReport> {
-    let mut groups: BTreeMap<GroupKey, GroupBuilder> = BTreeMap::new();
-    let mut pairs: BTreeMap<PairKey, (&MatrixLabel, [Option<LegOutcome>; 2])> = BTreeMap::new();
+    let mut groups: BTreeMap<(MatchMode, GroupKey), GroupBuilder> = BTreeMap::new();
+    let mut pairs: BTreeMap<PairKey, Pair<'_>> = BTreeMap::new();
     let mut baselines: BTreeSet<PairKey> = BTreeSet::new();
-    let (mut head_to_head_legs, mut baseline_legs) = (0, 0);
+    let (mut head_to_head_legs, mut mixed_legs, mut baseline_legs) = (0, 0, 0);
     for row in rows {
         let label = &row.matrix;
         let key = (
@@ -278,23 +349,37 @@ pub fn build_report(rows: &[ScoredRow]) -> Result<MatrixReport> {
             label.difficulty as u8,
             label.stance as u8,
             label.run,
+            label.pairing,
         );
         let describe = || {
             format!(
-                "{} {} {} {} run {} {:?}",
-                label.manifest, label.map, label.difficulty, label.stance, label.run, row.leg
+                "{} {} {} {} run {} {:?} {:?}",
+                label.manifest,
+                label.map,
+                label.difficulty,
+                label.stance,
+                label.run,
+                label.pairing,
+                row.leg
             )
         };
+        let teams: Vec<u8> = row.seats.iter().map(|seat| seat.team).collect();
+        let mode = MatchMode::of(&teams).with_context(describe)?;
+        let places = doubled_places(row);
         let leg_outcome = match label.pairing {
-            Pairing::HeadToHead => {
-                head_to_head_legs += 1;
+            Pairing::HeadToHead | Pairing::Mixed => {
+                if label.pairing == Pairing::Mixed {
+                    mixed_legs += 1;
+                } else {
+                    head_to_head_legs += 1;
+                }
                 let slot = match row.leg {
                     EvaluationLeg::Forward => 0,
                     EvaluationLeg::Swapped => 1,
-                    EvaluationLeg::Single => bail!("head-to-head leg {} is unpaired", describe()),
+                    EvaluationLeg::Single => bail!("compared leg {} is unpaired", describe()),
                 };
-                let outcome = outcome(row).with_context(describe)?;
-                let (_, pair) = pairs.entry(key).or_insert((label, [None, None]));
+                let outcome = outcome(row, &places).with_context(describe)?;
+                let (_, _, pair) = pairs.entry(key).or_insert((label, mode, [None, None]));
                 ensure!(pair[slot].is_none(), "matrix leg {} repeats", describe());
                 pair[slot] = Some(outcome);
                 Some(outcome)
@@ -306,20 +391,22 @@ pub fn build_report(rows: &[ScoredRow]) -> Result<MatrixReport> {
             }
         };
         for group in GroupKey::of(label) {
-            let builder = groups.entry(group).or_default();
+            let builder = groups.entry((mode, group)).or_default();
             let legs = match label.pairing {
-                Pairing::HeadToHead => &mut builder.head_to_head,
+                Pairing::HeadToHead => &mut builder.head_to_head.legs,
+                Pairing::Mixed => &mut builder.mixed.legs,
                 Pairing::Baseline => &mut builder.baseline,
             };
             legs.legs += 1;
             legs.decided += u32::from(row.termination == Termination::Decided);
             legs.stall_loops += u32::from(row.termination == Termination::StallLoop);
+            let compared = builder.compared(label.pairing);
             match leg_outcome {
-                Some(LegOutcome::NewWin) => builder.new_wins += 1,
-                Some(LegOutcome::OldWin) => builder.old_wins += 1,
+                Some(LegOutcome::NewWin) => compared.new_wins += 1,
+                Some(LegOutcome::OldWin) => compared.old_wins += 1,
                 Some(LegOutcome::NoWinner) | None => {}
             }
-            for (seat, evidence) in row.seats.iter().zip(&row.evidence) {
+            for ((seat, evidence), &place) in row.seats.iter().zip(&row.evidence).zip(&places) {
                 if seat.controller == EvaluationControllerKind::None {
                     continue;
                 }
@@ -336,13 +423,20 @@ pub fn build_report(rows: &[ScoredRow]) -> Result<MatrixReport> {
                         .or_default()
                         .push((sample.actual_per_minute, sample.saturation_per_minute));
                 }
+                if label.pairing == Pairing::Mixed {
+                    controller.doubled_places.push(place);
+                    controller
+                        .survival
+                        .push(evidence.eliminated_at.unwrap_or(row.duration_ticks));
+                }
             }
         }
     }
-    for (label, legs) in pairs.values() {
+    for (label, mode, legs) in pairs.values() {
         let [Some(forward), Some(swapped)] = *legs else {
             bail!(
-                "head-to-head pair {} {} {} {} run {} is incomplete",
+                "{:?} pair {} {} {} {} run {} is incomplete",
+                label.pairing,
                 label.manifest,
                 label.map,
                 label.difficulty,
@@ -352,7 +446,8 @@ pub fn build_report(rows: &[ScoredRow]) -> Result<MatrixReport> {
         };
         let wins = |side| u32::from(forward == side) + u32::from(swapped == side);
         for group in GroupKey::of(label) {
-            let tally = &mut groups.get_mut(&group).expect("rows opened groups").pairs;
+            let builder = groups.get_mut(&(*mode, group)).expect("rows opened groups");
+            let tally = &mut builder.compared(label.pairing).pairs;
             match (wins(LegOutcome::NewWin), wins(LegOutcome::OldWin)) {
                 (2, _) => tally.new_wins_both += 1,
                 (_, 2) => tally.old_wins_both += 1,
@@ -363,6 +458,7 @@ pub fn build_report(rows: &[ScoredRow]) -> Result<MatrixReport> {
     }
     Ok(MatrixReport {
         head_to_head_legs,
+        mixed_legs,
         baseline_legs,
         references: provenance(rows, |row| row.reference_digest.clone()),
         builds: provenance(rows, |row| {
@@ -380,26 +476,84 @@ pub fn build_report(rows: &[ScoredRow]) -> Result<MatrixReport> {
     })
 }
 
-fn outcome(row: &ScoredRow) -> Result<LegOutcome> {
-    let seat_of = |controller| {
+/// Each seat's place doubled, so 2 is the last seat standing: a seat is
+/// placed behind every seat that outlasted it, and tied seats share the mean
+/// of their places. Survivors tie ahead of every eliminated seat.
+fn doubled_places(row: &ScoredRow) -> Vec<u64> {
+    let lasted: Vec<u64> = row
+        .evidence
+        .iter()
+        .map(|evidence| evidence.eliminated_at.unwrap_or(u64::MAX))
+        .collect();
+    lasted
+        .iter()
+        .map(|&mine| {
+            let ahead = lasted.iter().filter(|&&other| other > mine).count() as u64;
+            let tied = lasted.iter().filter(|&&other| other == mine).count() as u64;
+            2 * ahead + tied + 1
+        })
+        .collect()
+}
+
+/// Which bot won a compared leg. A head-to-head leg goes to the winning side.
+/// A mixed leg goes to the bot whose seats have the better mean place, which
+/// is the bot whose seats outlast the other's more often; a leg stopped by a
+/// stall loop is level.
+fn outcome(row: &ScoredRow, doubled_places: &[u64]) -> Result<LegOutcome> {
+    let side = |controller| {
         row.seats
             .iter()
             .filter(|seat| seat.controller == controller)
-            .map(|seat| seat.seat)
             .collect::<Vec<_>>()
     };
     let (new, old) = (
-        seat_of(EvaluationControllerKind::Opponent),
-        seat_of(EvaluationControllerKind::Scripted),
+        side(EvaluationControllerKind::Opponent),
+        side(EvaluationControllerKind::Scripted),
     );
-    let ([new], [old]) = (new.as_slice(), old.as_slice()) else {
-        bail!("a head-to-head leg needs one oxide-opponent and one oxide-bot seat");
+    ensure!(
+        !new.is_empty() && !old.is_empty() && new.len() + old.len() == row.seats.len(),
+        "a compared leg needs oxide-opponent and oxide-bot and no empty seat"
+    );
+    if row.matrix.pairing == Pairing::HeadToHead {
+        let team = |seats: &[&ScoredSeat]| {
+            seats
+                .iter()
+                .all(|seat| seat.team == seats[0].team)
+                .then_some(seats[0].team)
+        };
+        ensure!(
+            matches!((team(&new), team(&old)), (Some(new), Some(old)) if new != old),
+            "a head-to-head leg needs oxide-opponent on one team and oxide-bot on the other"
+        );
+        let won = |seats: &[&ScoredSeat]| {
+            matches!(row.result, Some(GameResult::Victory { .. }))
+                && row.winner_seats.contains(&seats[0].seat)
+        };
+        return Ok(if won(&new) {
+            LegOutcome::NewWin
+        } else if won(&old) {
+            LegOutcome::OldWin
+        } else {
+            LegOutcome::NoWinner
+        });
+    }
+    if row.termination == Termination::StallLoop {
+        return Ok(LegOutcome::NoWinner);
+    }
+    let sum = |seats: &[&ScoredSeat]| -> u64 {
+        seats
+            .iter()
+            .map(|seat| doubled_places[usize::from(seat.seat)])
+            .sum()
     };
-    Ok(match row.result {
-        Some(GameResult::Victory { .. }) if row.winner_seats.contains(new) => LegOutcome::NewWin,
-        Some(GameResult::Victory { .. }) if row.winner_seats.contains(old) => LegOutcome::OldWin,
-        _ => LegOutcome::NoWinner,
-    })
+    let (new_seats, old_seats) = (new.len() as u64, old.len() as u64);
+    Ok(
+        match (sum(&new) * old_seats).cmp(&(sum(&old) * new_seats)) {
+            Ordering::Less => LegOutcome::NewWin,
+            Ordering::Greater => LegOutcome::OldWin,
+            Ordering::Equal => LegOutcome::NoWinner,
+        },
+    )
 }
 
 fn provenance(rows: &[ScoredRow], value: impl Fn(&ScoredRow) -> String) -> Vec<Provenance> {
@@ -418,8 +572,7 @@ fn median(mut values: Vec<u64>) -> Option<u64> {
     crate::sweep::quantile(&values, 1, 2)
 }
 
-fn finish(key: GroupKey, builder: GroupBuilder) -> GroupReport {
-    let decided = builder.new_wins + builder.old_wins;
+fn finish((mode, key): (MatchMode, GroupKey), builder: GroupBuilder) -> GroupReport {
     let mut controllers: Vec<ControllerTally> = builder
         .controllers
         .into_iter()
@@ -462,19 +615,20 @@ fn finish(key: GroupKey, builder: GroupBuilder) -> GroupReport {
                     .map(|percent| percent as u32),
                 })
                 .collect(),
+            placement: (!tally.doubled_places.is_empty()).then(|| Placement {
+                seat_legs: tally.doubled_places.len() as u32,
+                mean_place: tally.doubled_places.iter().sum::<u64>() as f64
+                    / (2 * tally.doubled_places.len()) as f64,
+                median_survival_ticks: median(tally.survival).unwrap_or(0),
+            }),
         })
         .collect();
     controllers.sort_by_key(|tally| std::cmp::Reverse(tally.controller));
     GroupReport {
+        mode,
         group: key.name(),
-        pairs: builder.pairs,
-        head_to_head: builder.head_to_head,
-        new_share: (decided > 0).then(|| NewShare {
-            new_wins: builder.new_wins,
-            old_wins: builder.old_wins,
-            share: f64::from(builder.new_wins) / f64::from(decided),
-            wilson: crate::sweep::wilson(builder.new_wins, decided),
-        }),
+        head_to_head: builder.head_to_head.finish(),
+        mixed: builder.mixed.finish(),
         baseline: builder.baseline,
         controllers,
     }
@@ -486,8 +640,8 @@ impl MatrixReport {
         let mut out = String::new();
         let _ = writeln!(
             out,
-            "bot-matrix: {} head-to-head legs, {} baseline legs",
-            self.head_to_head_legs, self.baseline_legs
+            "bot-matrix: {} head-to-head legs, {} mixed legs, {} baseline legs",
+            self.head_to_head_legs, self.mixed_legs, self.baseline_legs
         );
         for (label, values) in [
             ("reference", &self.references),
@@ -498,49 +652,51 @@ impl MatrixReport {
                 let _ = writeln!(out, "{label:<10} {} ({} legs)", value.value, value.legs);
             }
         }
-        let _ = writeln!(
-            out,
-            "\nhead to head: pairs new-both/split/old-both/undecided; new share of won legs; decided legs"
-        );
-        let _ = writeln!(
-            out,
-            "{:<22} {:<13} {:<30} {:<18} {:<18} stall loops",
-            "group", "pairs", "new share (95% Wilson)", "decided new-old", "decided old-old"
-        );
-        for group in &self.groups {
-            let pairs = &group.pairs;
-            let share = group.new_share.as_ref().map_or_else(
-                || "no winners".to_string(),
-                |share| {
-                    format!(
-                        "{}/{} {:.0}% [{:.0}-{:.0}%]",
-                        share.new_wins,
-                        share.new_wins + share.old_wins,
-                        100.0 * share.share,
-                        100.0 * share.wilson[0],
-                        100.0 * share.wilson[1]
-                    )
-                },
+        if self.head_to_head_legs > 0 {
+            self.render_pairing(
+                &mut out,
+                "head to head: pairs new-both/split/old-both/undecided; new share of won legs; decided legs",
+                |group| &group.head_to_head,
+            );
+        }
+        if self.mixed_legs > 0 {
+            self.render_pairing(
+                &mut out,
+                "mixed: pairs new-both/split/old-both/level; new share of legs whose seats outlasted the other bot's; decided legs",
+                |group| &group.mixed,
             );
             let _ = writeln!(
                 out,
-                "{:<22} {:<13} {:<30} {:<18} {:<18} {}/{}",
-                group.group,
-                format!(
-                    "{}/{}/{}/{}",
-                    pairs.new_wins_both, pairs.split, pairs.old_wins_both, pairs.undecided
-                ),
-                share,
-                decided(&group.head_to_head),
-                decided(&group.baseline),
-                group.head_to_head.stall_loops,
-                group.baseline.stall_loops,
+                "\nplacement in mixed legs: mean place (1 is last standing); median survival ticks"
             );
+            let _ = writeln!(
+                out,
+                "{:<13} {:<22} {:<10} {:>9} {:>10} {:>15}",
+                "mode", "group", "controller", "seat-legs", "mean place", "median survival"
+            );
+            for group in &self.groups {
+                for tally in &group.controllers {
+                    let Some(placement) = &tally.placement else {
+                        continue;
+                    };
+                    let _ = writeln!(
+                        out,
+                        "{:<13} {:<22} {:<10} {:>9} {:>10.2} {:>15}",
+                        group.mode.as_str(),
+                        group.group,
+                        controller_name(tally.controller),
+                        placement.seat_legs,
+                        placement.mean_place,
+                        placement.median_survival_ticks
+                    );
+                }
+            }
         }
         let _ = writeln!(out, "\nfailure incidents");
         let _ = writeln!(
             out,
-            "{:<22} {:<10} {:>9} {:>16} {:>16} {:>18} {:>15}",
+            "{:<13} {:<22} {:<10} {:>9} {:>16} {:>16} {:>18} {:>15}",
+            "mode",
             "group",
             "controller",
             "seat-legs",
@@ -553,7 +709,8 @@ impl MatrixReport {
             for tally in &group.controllers {
                 let _ = writeln!(
                     out,
-                    "{:<22} {:<10} {:>9} {:>16} {:>16} {:>18} {:>15}",
+                    "{:<13} {:<22} {:<10} {:>9} {:>16} {:>16} {:>18} {:>15}",
+                    group.mode.as_str(),
                     group.group,
                     controller_name(tally.controller),
                     tally.seat_legs,
@@ -568,7 +725,7 @@ impl MatrixReport {
             out,
             "\nincome per minute: median percent of saturation (actual/saturation, samples)"
         );
-        let _ = write!(out, "{:<22} {:<10}", "group", "controller");
+        let _ = write!(out, "{:<13} {:<22} {:<10}", "mode", "group", "controller");
         for tick in INCOME_CHECKPOINTS {
             let _ = write!(out, " {:<22}", format!("tick {tick}"));
         }
@@ -577,7 +734,8 @@ impl MatrixReport {
             for tally in &group.controllers {
                 let _ = write!(
                     out,
-                    "{:<22} {:<10}",
+                    "{:<13} {:<22} {:<10}",
+                    group.mode.as_str(),
                     group.group,
                     controller_name(tally.controller)
                 );
@@ -606,6 +764,60 @@ impl MatrixReport {
             }
         }
         out
+    }
+
+    fn render_pairing(
+        &self,
+        out: &mut String,
+        title: &str,
+        pairing: fn(&GroupReport) -> &PairingReport,
+    ) {
+        let _ = writeln!(out, "\n{title}");
+        let _ = writeln!(
+            out,
+            "{:<13} {:<22} {:<13} {:<30} {:<18} {:<18} stall loops",
+            "mode",
+            "group",
+            "pairs",
+            "new share (95% Wilson)",
+            "decided new-old",
+            "decided old-old"
+        );
+        for group in &self.groups {
+            let report = pairing(group);
+            if report.legs.legs == 0 {
+                continue;
+            }
+            let pairs = &report.pairs;
+            let share = report.new_share.as_ref().map_or_else(
+                || "no winners".to_string(),
+                |share| {
+                    format!(
+                        "{}/{} {:.0}% [{:.0}-{:.0}%]",
+                        share.new_wins,
+                        share.new_wins + share.old_wins,
+                        100.0 * share.share,
+                        100.0 * share.wilson[0],
+                        100.0 * share.wilson[1]
+                    )
+                },
+            );
+            let _ = writeln!(
+                out,
+                "{:<13} {:<22} {:<13} {:<30} {:<18} {:<18} {}/{}",
+                group.mode.as_str(),
+                group.group,
+                format!(
+                    "{}/{}/{}/{}",
+                    pairs.new_wins_both, pairs.split, pairs.old_wins_both, pairs.undecided
+                ),
+                share,
+                decided(&report.legs),
+                decided(&group.baseline),
+                report.legs.stall_loops,
+                group.baseline.stall_loops,
+            );
+        }
     }
 }
 
@@ -653,6 +865,7 @@ mod tests {
     fn evidence(seat: u8, starved: u64, income: Vec<IncomeSample>) -> ScoredEvidence {
         ScoredEvidence {
             seat,
+            eliminated_at: None,
             failures: SeatFailures {
                 starved_production: FailureTally {
                     incidents: starved,
@@ -668,28 +881,17 @@ mod tests {
         }
     }
 
-    /// A head-to-head leg; `winner` is the winning controller, if any.
-    fn duel(
+    const N: EvaluationControllerKind = EvaluationControllerKind::Opponent;
+    const O: EvaluationControllerKind = EvaluationControllerKind::Scripted;
+
+    /// A leg of 1,000 ticks: each seat's controller, team and elimination
+    /// tick, and the winning team, which decides the leg.
+    fn leg(
         label: MatrixLabel,
         leg: EvaluationLeg,
-        winner: Option<EvaluationControllerKind>,
+        seats: &[(EvaluationControllerKind, u8, Option<u64>)],
+        winner: Option<u8>,
     ) -> ScoredRow {
-        let controllers = match leg {
-            EvaluationLeg::Swapped => [
-                EvaluationControllerKind::Scripted,
-                EvaluationControllerKind::Opponent,
-            ],
-            _ => [
-                EvaluationControllerKind::Opponent,
-                EvaluationControllerKind::Scripted,
-            ],
-        };
-        let winner_seat = winner.map(|winner| {
-            controllers
-                .iter()
-                .position(|controller| *controller == winner)
-                .unwrap() as u8
-        });
         ScoredRow {
             matrix: label,
             candidate: "unit".into(),
@@ -701,29 +903,69 @@ mod tests {
             } else {
                 Termination::TickLimit
             },
-            result: winner_seat.map(|team| GameResult::Victory { team }),
-            winner_seats: winner_seat.into_iter().collect(),
-            seats: controllers
+            result: winner.map(|team| GameResult::Victory { team }),
+            winner_seats: (0..seats.len() as u8)
+                .filter(|&seat| Some(seats[usize::from(seat)].1) == winner)
+                .collect(),
+            duration_ticks: 1_000,
+            seats: seats
                 .iter()
                 .enumerate()
-                .map(|(seat, controller)| ScoredSeat {
+                .map(|(seat, &(controller, team, _))| ScoredSeat {
                     seat: seat as u8,
-                    controller: *controller,
+                    team,
+                    controller,
                 })
                 .collect(),
-            evidence: vec![
-                evidence(
-                    0,
-                    1,
-                    vec![IncomeSample {
-                        tick: 6_000,
-                        actual_per_minute: 300,
-                        saturation_per_minute: 600,
-                    }],
-                ),
-                evidence(1, 2, Vec::new()),
-            ],
+            evidence: seats
+                .iter()
+                .enumerate()
+                .map(|(seat, &(_, _, eliminated_at))| ScoredEvidence {
+                    eliminated_at,
+                    ..evidence(seat as u8, 0, Vec::new())
+                })
+                .collect(),
         }
+    }
+
+    /// A head-to-head leg; `winner` is the winning controller, if any.
+    fn duel(
+        label: MatrixLabel,
+        leg_kind: EvaluationLeg,
+        winner: Option<EvaluationControllerKind>,
+    ) -> ScoredRow {
+        let controllers = match leg_kind {
+            EvaluationLeg::Swapped => [O, N],
+            _ => [N, O],
+        };
+        let lost = |seat: usize| {
+            winner
+                .is_some_and(|winner| controllers[seat] != winner)
+                .then_some(999)
+        };
+        let mut row = leg(
+            label,
+            leg_kind,
+            &[(controllers[0], 0, lost(0)), (controllers[1], 1, lost(1))],
+            winner.map(|winner| u8::from(controllers[1] == winner)),
+        );
+        row.evidence[0] = ScoredEvidence {
+            eliminated_at: lost(0),
+            ..evidence(
+                0,
+                1,
+                vec![IncomeSample {
+                    tick: 6_000,
+                    actual_per_minute: 300,
+                    saturation_per_minute: 600,
+                }],
+            )
+        };
+        row.evidence[1] = ScoredEvidence {
+            eliminated_at: lost(1),
+            ..evidence(1, 2, Vec::new())
+        };
+        row
     }
 
     fn baseline(label: MatrixLabel, decided: bool) -> ScoredRow {
@@ -777,7 +1019,14 @@ mod tests {
         ));
         let report = build_report(&rows).unwrap();
 
-        assert_eq!((report.head_to_head_legs, report.baseline_legs), (8, 2));
+        assert_eq!(
+            (
+                report.head_to_head_legs,
+                report.mixed_legs,
+                report.baseline_legs
+            ),
+            (8, 0, 2)
+        );
         let names: Vec<&str> = report
             .groups
             .iter()
@@ -794,8 +1043,14 @@ mod tests {
             ]
         );
         let overall = &report.groups[0];
+        assert!(
+            report
+                .groups
+                .iter()
+                .all(|group| group.mode == MatchMode::Duel)
+        );
         assert_eq!(
-            overall.pairs,
+            overall.head_to_head.pairs,
             PairTally {
                 new_wins_both: 1,
                 split: 1,
@@ -803,11 +1058,11 @@ mod tests {
                 undecided: 1,
             }
         );
-        let share = overall.new_share.as_ref().unwrap();
+        let share = overall.head_to_head.new_share.as_ref().unwrap();
         assert_eq!((share.new_wins, share.old_wins), (4, 3));
         assert_eq!(share.wilson, crate::sweep::wilson(4, 7));
         assert_eq!(
-            overall.head_to_head,
+            overall.head_to_head.legs,
             LegTally {
                 legs: 8,
                 decided: 7,
@@ -823,8 +1078,9 @@ mod tests {
             }
         );
         let severed = &report.groups[4];
-        assert_eq!(severed.pairs.old_wins_both, 1);
-        assert_eq!(severed.pairs.undecided, 1);
+        assert_eq!(severed.head_to_head.pairs.old_wins_both, 1);
+        assert_eq!(severed.head_to_head.pairs.undecided, 1);
+        assert_eq!(overall.mixed, PairingReport::default());
 
         let [new, old] = overall.controllers.as_slice() else {
             panic!("two controllers: {:?}", overall.controllers);
@@ -844,11 +1100,234 @@ mod tests {
                 percent_of_saturation: Some(50),
             }]
         );
+        assert!(new.placement.is_none(), "duels have no mixed legs");
         assert_eq!(report.references[0].legs, 10);
         let text = report.render();
         assert!(text.contains("4/7 57%"), "{text}");
         assert!(text.contains("family severed"), "{text}");
         assert!(text.contains("50% (300/600, 4)"), "{text}");
+        assert!(!text.contains("placement"), "{text}");
+    }
+
+    fn team_label(pairing: Pairing) -> MatrixLabel {
+        label("quarry", MapFamily::Open, 0, pairing)
+    }
+
+    #[test]
+    fn team_maps_score_pure_legs_by_side_and_mixed_legs_by_placement() {
+        let rows = vec![
+            leg(
+                team_label(Pairing::HeadToHead),
+                EvaluationLeg::Forward,
+                &[
+                    (N, 0, None),
+                    (N, 0, None),
+                    (O, 1, Some(900)),
+                    (O, 1, Some(950)),
+                ],
+                Some(0),
+            ),
+            leg(
+                team_label(Pairing::HeadToHead),
+                EvaluationLeg::Swapped,
+                &[
+                    (O, 0, None),
+                    (O, 0, Some(400)),
+                    (N, 1, Some(800)),
+                    (N, 1, Some(990)),
+                ],
+                Some(0),
+            ),
+            // Team zero wins with both bots on it, so the order in which
+            // seats fell decides.
+            leg(
+                team_label(Pairing::Mixed),
+                EvaluationLeg::Forward,
+                &[
+                    (N, 0, None),
+                    (O, 0, Some(200)),
+                    (O, 1, Some(800)),
+                    (N, 1, Some(300)),
+                ],
+                Some(0),
+            ),
+            leg(
+                team_label(Pairing::Mixed),
+                EvaluationLeg::Swapped,
+                &[
+                    (O, 0, Some(100)),
+                    (N, 0, None),
+                    (N, 1, Some(400)),
+                    (O, 1, Some(900)),
+                ],
+                Some(0),
+            ),
+            leg(
+                team_label(Pairing::Baseline),
+                EvaluationLeg::Single,
+                &[(O, 0, None), (O, 0, None), (O, 1, None), (O, 1, None)],
+                None,
+            ),
+        ];
+        let report = build_report(&rows).unwrap();
+
+        assert_eq!(
+            (
+                report.head_to_head_legs,
+                report.mixed_legs,
+                report.baseline_legs
+            ),
+            (2, 2, 1)
+        );
+        let overall = &report.groups[0];
+        assert_eq!(
+            (overall.mode, overall.group.as_str()),
+            (MatchMode::Teams, "overall")
+        );
+        assert_eq!(overall.head_to_head.pairs.split, 1);
+        assert_eq!(overall.mixed.pairs.new_wins_both, 1);
+        let share = overall.mixed.new_share.as_ref().unwrap();
+        assert_eq!((share.new_wins, share.old_wins), (2, 0));
+        assert_eq!(overall.mixed.legs.decided, 2);
+        assert_eq!(overall.baseline.decided, 0);
+
+        let [new, old] = overall.controllers.as_slice() else {
+            panic!("two controllers: {:?}", overall.controllers);
+        };
+        assert_eq!(
+            new.placement,
+            Some(Placement {
+                seat_legs: 4,
+                mean_place: 2.0,
+                median_survival_ticks: 1_000,
+            })
+        );
+        let old = old.placement.as_ref().unwrap();
+        assert_eq!((old.mean_place, old.median_survival_ticks), (3.0, 800));
+        let text = report.render();
+        assert!(text.contains("mixed: pairs"), "{text}");
+        assert!(text.contains("placement in mixed legs"), "{text}");
+    }
+
+    fn ffa_label(map: &str, run: u64) -> MatrixLabel {
+        label(map, MapFamily::Open, run, Pairing::Mixed)
+    }
+
+    #[test]
+    fn free_for_all_legs_go_to_the_bot_whose_seats_outlast_the_other() {
+        let rows = vec![
+            // Survivors tie for first and the fallen tie behind them.
+            leg(
+                ffa_label("four", 0),
+                EvaluationLeg::Forward,
+                &[
+                    (N, 0, None),
+                    (O, 1, None),
+                    (N, 2, Some(100)),
+                    (O, 3, Some(100)),
+                ],
+                None,
+            ),
+            // The old bot's tied seats sit between the new bot's first and
+            // last: each bot's seats outlast the other's equally often.
+            leg(
+                ffa_label("four", 0),
+                EvaluationLeg::Swapped,
+                &[
+                    (N, 0, None),
+                    (N, 1, Some(100)),
+                    (O, 2, Some(150)),
+                    (O, 3, Some(150)),
+                ],
+                None,
+            ),
+            // Unequal sides: one old seat outlasting two new ones wins.
+            leg(
+                ffa_label("three", 0),
+                EvaluationLeg::Forward,
+                &[(N, 0, Some(200)), (O, 1, None), (N, 2, Some(100))],
+                Some(1),
+            ),
+            leg(
+                ffa_label("three", 0),
+                EvaluationLeg::Swapped,
+                &[(O, 0, None), (N, 1, Some(50)), (O, 2, Some(60))],
+                None,
+            ),
+        ];
+        let mut stalled = leg(
+            ffa_label("three", 1),
+            EvaluationLeg::Forward,
+            &[(N, 0, None), (O, 1, Some(10)), (N, 2, None)],
+            None,
+        );
+        stalled.termination = Termination::StallLoop;
+        let rows = [
+            rows,
+            vec![
+                stalled,
+                leg(
+                    ffa_label("three", 1),
+                    EvaluationLeg::Swapped,
+                    &[(O, 0, Some(10)), (N, 1, None), (O, 2, Some(10))],
+                    Some(1),
+                ),
+            ],
+        ]
+        .concat();
+        let report = build_report(&rows).unwrap();
+
+        let overall = &report.groups[0];
+        assert_eq!(overall.mode, MatchMode::FreeForAll);
+        assert_eq!(
+            overall.mixed.pairs,
+            PairTally {
+                new_wins_both: 0,
+                split: 0,
+                old_wins_both: 1,
+                undecided: 2,
+            }
+        );
+        let share = overall.mixed.new_share.as_ref().unwrap();
+        assert_eq!((share.new_wins, share.old_wins), (1, 2));
+        assert_eq!(overall.mixed.legs.stall_loops, 1);
+    }
+
+    #[test]
+    fn malformed_compared_legs_are_refused() {
+        let four = |pairing, seats: [(EvaluationControllerKind, u8); 4]| {
+            let seats = seats.map(|(controller, team)| (controller, team, None));
+            [EvaluationLeg::Forward, EvaluationLeg::Swapped]
+                .map(|leg_kind| leg(team_label(pairing), leg_kind, &seats, None))
+                .to_vec()
+        };
+        let cases = [
+            (
+                "one team and oxide-bot on the other",
+                four(Pairing::HeadToHead, [(N, 0), (O, 0), (N, 1), (O, 1)]),
+            ),
+            (
+                "needs oxide-opponent and oxide-bot",
+                four(Pairing::Mixed, [(O, 0), (O, 0), (O, 1), (O, 1)]),
+            ),
+            (
+                "neither a duel",
+                four(Pairing::Mixed, [(N, 0), (O, 0), (N, 0), (O, 1)]),
+            ),
+        ];
+        for (expected, rows) in cases {
+            let error = format!("{:#}", build_report(&rows).unwrap_err());
+            assert!(error.contains(expected), "{expected}: {error}");
+        }
+
+        let mut rows = four(Pairing::Mixed, [(N, 0), (O, 0), (O, 1), (N, 1)]);
+        rows.pop();
+        let error = build_report(&rows).unwrap_err().to_string();
+        assert!(error.contains("incomplete"), "{error}");
+        let mut rows = four(Pairing::Mixed, [(N, 0), (O, 0), (O, 1), (N, 1)]);
+        rows.push(rows[1].clone());
+        let error = build_report(&rows).unwrap_err().to_string();
+        assert!(error.contains("repeats"), "{error}");
     }
 
     #[test]

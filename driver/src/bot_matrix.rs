@@ -1,30 +1,41 @@
-//! Head-to-head evaluation matrices of `oxide-opponent` against the frozen
-//! `oxide-bot` reference.
+//! Evaluation matrices of `oxide-opponent` against the frozen `oxide-bot`
+//! reference on duel, team and free-for-all maps.
 //!
 //! A manifest names maps with a family plus difficulties, stances, runs, seed
-//! bases and a tick limit. Every map, difficulty, stance and run becomes a
-//! head-to-head pair, the new bot in seat zero and then in seat one, with both
-//! sides sharing one personality seed. Each pair has one baseline leg with
-//! `oxide-bot` in both seats; exchanging two identical seats would repeat that
-//! match exactly. Baseline rows are cached under the reference digest of the
-//! `bot/`, `sim/` and `chassis/` sources, the `kit` code that hosts `oxide-bot`,
-//! and `Cargo.lock`, so a change that leaves those untouched reuses them.
+//! bases and a tick limit. Every map, difficulty, stance and run becomes one
+//! cell. Each compared pairing of a cell is two legs, the second with every
+//! seat's controller exchanged, and every seat shares one personality seed:
+//!
+//! - a duel is a head-to-head pair, the new bot in seat zero and then in seat
+//!   one;
+//! - a team map has a head-to-head pair, one team of each bot and then the
+//!   sides swapped, and a mixed pair, the bots alternating along each team's
+//!   front so that neighbouring enemies run different bots;
+//! - a free-for-all is a mixed pair, the bots on alternating seats.
+//!
+//! Every seat is controlled, including a map's authored human chair. Each cell
+//! has one baseline leg with `oxide-bot` in every seat; exchanging identical
+//! seats would repeat that match exactly. Baseline rows are cached under the
+//! reference digest of the `bot/`, `sim/` and `chassis/` sources, the `kit`
+//! code that hosts `oxide-bot`, and `Cargo.lock`, so a change that leaves those
+//! untouched reuses them.
 
 mod report;
 pub use report::{
     ControllerTally, GroupReport, IncomeMedian, LegTally, MatrixReport, NewShare, PairTally,
-    Provenance, ScoredRow, build_report, load_rows,
+    PairingReport, Placement, Provenance, ScoredRow, build_report, load_rows,
 };
 
 use crate::bot_eval::{
-    DEFAULT_STALL_LOOP_LIMIT, EvaluationBatchOptions, EvaluationFactionCell, EvaluationGeometry,
-    EvaluationPlan, EvidenceBatch, ProfileMatchup, REFERENCE_DIGEST, configured_matchup_plans,
+    DEFAULT_STALL_LOOP_LIMIT, EvaluationBatchOptions, EvaluationController, EvaluationFactionCell,
+    EvaluationGeometry, EvaluationLeg, EvaluationPlan, EvidenceBatch, REFERENCE_DIGEST,
     ensure_unique_execution_plans, evaluate_batch, execution_fingerprint, preflight_destinations,
 };
-use anyhow::{Context, Result, ensure};
-use oxide_sim::scenario::{BotController, BotDifficulty, BotStance};
+use anyhow::{Context, Result, bail, ensure};
+use oxide_sim::scenario::{BotConfig, BotController, BotDifficulty, BotStance};
 use oxide_sim::{SIM_VERSION, Scenario};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
@@ -59,12 +70,58 @@ impl MapFamily {
     }
 }
 
+/// How a map divides its seats.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MatchMode {
+    /// Two seats on opposing teams.
+    Duel,
+    /// Two teams of equal size.
+    Teams,
+    /// More than two seats, each its own team.
+    FreeForAll,
+}
+
+impl MatchMode {
+    /// Stable lowercase name.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Duel => "duel",
+            Self::Teams => "teams",
+            Self::FreeForAll => "free-for-all",
+        }
+    }
+
+    /// Classifies seats by their teams; any other division is refused.
+    pub fn of(teams: &[u8]) -> Result<Self> {
+        let mut sizes: BTreeMap<u8, usize> = BTreeMap::new();
+        for &team in teams {
+            *sizes.entry(team).or_default() += 1;
+        }
+        let equal = sizes
+            .values()
+            .all(|&size| Some(&size) == sizes.values().next());
+        Ok(match (teams.len(), sizes.len()) {
+            (2, 2) => Self::Duel,
+            (seats, count) if seats > 2 && count == seats => Self::FreeForAll,
+            (_, 2) if equal => Self::Teams,
+            _ => bail!(
+                "seats on teams {teams:?} are neither a duel, two equal teams nor a free-for-all"
+            ),
+        })
+    }
+}
+
 /// Which comparison a matrix leg belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Pairing {
-    /// `oxide-opponent` against `oxide-bot`.
+    /// `oxide-opponent` on one side against `oxide-bot` on the other, scored
+    /// by which side wins.
     HeadToHead,
+    /// Both bots on every side, scored by which bot's seats outlast the
+    /// other's.
+    Mixed,
     /// `oxide-bot` against itself.
     Baseline,
 }
@@ -81,13 +138,13 @@ pub struct MatrixManifest {
     pub runs: u64,
     /// Simulation seed of run zero; each run adds one.
     pub scenario_seed_base: u64,
-    /// Personality seed of run zero, shared by both seats; each run adds one.
+    /// Personality seed of run zero, shared by every seat; each run adds one.
     pub personality_seed_base: u64,
-    /// Difficulties, applied to both seats.
+    /// Difficulties, applied to every seat.
     pub difficulties: Vec<BotDifficulty>,
-    /// Stances, applied to both seats.
+    /// Stances, applied to every seat.
     pub stances: Vec<BotStance>,
-    /// Two-seat maps.
+    /// Duel, team and free-for-all maps.
     pub maps: Vec<ManifestMap>,
 }
 
@@ -185,13 +242,13 @@ pub struct MatrixLabel {
     pub map: String,
     /// Map shape.
     pub family: MapFamily,
-    /// Difficulty of both seats.
+    /// Difficulty of every seat.
     pub difficulty: BotDifficulty,
-    /// Stance of both seats.
+    /// Stance of every seat.
     pub stance: BotStance,
     /// Seed cell.
     pub run: u64,
-    /// Head-to-head or baseline.
+    /// Head-to-head, mixed or baseline.
     pub pairing: Pairing,
 }
 
@@ -205,7 +262,8 @@ pub struct MatrixLeg {
 }
 
 /// Expands a manifest into legs: for each map, difficulty, stance and run,
-/// the head-to-head pair followed by its baseline leg.
+/// each compared pairing's forward and swapped legs followed by the baseline
+/// leg.
 pub fn expand(manifest: &MatrixManifest, scenarios: &[Scenario]) -> Result<Vec<MatrixLeg>> {
     ensure!(
         scenarios.len() == manifest.maps.len(),
@@ -215,6 +273,7 @@ pub fn expand(manifest: &MatrixManifest, scenarios: &[Scenario]) -> Result<Vec<M
     );
     let mut legs = Vec::new();
     for (map, source) in manifest.maps.iter().zip(scenarios) {
+        let layouts = layouts(source).with_context(|| format!("planning {}", map.path))?;
         for &difficulty in &manifest.difficulties {
             for &stance in &manifest.stances {
                 for run in 0..manifest.runs {
@@ -227,45 +286,140 @@ pub fn expand(manifest: &MatrixManifest, scenarios: &[Scenario]) -> Result<Vec<M
                         run,
                         pairing,
                     };
-                    for (pairing, controller, opponent, paired) in [
-                        (
-                            Pairing::HeadToHead,
-                            BotController::Opponent,
-                            Some(BotController::Scripted),
-                            true,
-                        ),
-                        (Pairing::Baseline, BotController::Scripted, None, false),
-                    ] {
-                        let matchup = ProfileMatchup {
-                            controller,
-                            opponent_controller: opponent,
-                            difficulty,
-                            stance,
-                            opponent_difficulty: None,
-                            opponent_stance: None,
-                            same_personality_seed: true,
-                        };
-                        let plans = configured_matchup_plans(
-                            source,
-                            manifest.scenario_seed_base + run,
-                            matchup,
-                            manifest.personality_seed_base + run,
-                            paired,
-                            EvaluationFactionCell::Authored,
-                            EvaluationGeometry::Authored,
-                        )
-                        .with_context(|| format!("planning {}", map.path))?;
-                        legs.extend(plans.into_iter().map(|plan| MatrixLeg {
-                            label: label(pairing),
-                            plan,
-                        }));
+                    let seat = |opponent: bool| BotConfig {
+                        controller: if opponent {
+                            BotController::Opponent
+                        } else {
+                            BotController::Scripted
+                        },
+                        difficulty,
+                        stance,
+                        personality_seed: manifest.personality_seed_base + run,
+                    };
+                    let seed = manifest.scenario_seed_base + run;
+                    for (pairing, forward) in &layouts {
+                        for (leg, swapped) in [
+                            (EvaluationLeg::Forward, false),
+                            (EvaluationLeg::Swapped, true),
+                        ] {
+                            let seats = forward.iter().map(|&opponent| seat(opponent != swapped));
+                            legs.push(MatrixLeg {
+                                label: label(*pairing),
+                                plan: seated_plan(source, seed, leg, seats),
+                            });
+                        }
                     }
+                    let seats = source.players.iter().map(|_| seat(false));
+                    legs.push(MatrixLeg {
+                        label: label(Pairing::Baseline),
+                        plan: seated_plan(source, seed, EvaluationLeg::Single, seats),
+                    });
                 }
             }
         }
     }
     ensure_unique_execution_plans(legs.iter().map(|leg| &leg.plan))?;
     Ok(legs)
+}
+
+/// A map's teams by seat.
+fn seat_teams(source: &Scenario) -> Result<Vec<u8>> {
+    Ok(source
+        .build()?
+        .players()
+        .iter()
+        .map(|player| player.team)
+        .collect())
+}
+
+/// The compared pairings of a map, each with the seats that run
+/// `oxide-opponent` in its forward leg.
+fn layouts(source: &Scenario) -> Result<Vec<(Pairing, Vec<bool>)>> {
+    let teams = seat_teams(source)?;
+    let first = teams[0];
+    Ok(match MatchMode::of(&teams)? {
+        MatchMode::Duel => vec![(Pairing::HeadToHead, vec![true, false])],
+        MatchMode::Teams => vec![
+            (
+                Pairing::HeadToHead,
+                teams.iter().map(|&team| team == first).collect(),
+            ),
+            (
+                Pairing::Mixed,
+                front_places(source, &teams)?
+                    .into_iter()
+                    .zip(&teams)
+                    .map(|(place, &team)| (place + usize::from(team != first)).is_multiple_of(2))
+                    .collect(),
+            ),
+        ],
+        MatchMode::FreeForAll => vec![(
+            Pairing::Mixed,
+            (0..teams.len())
+                .map(|seat| seat.is_multiple_of(2))
+                .collect(),
+        )],
+    })
+}
+
+/// Each seat's place within its team along the front: its Foundry's position
+/// across the line between the two teams' Foundries, ties by seat.
+fn front_places(source: &Scenario, teams: &[u8]) -> Result<Vec<usize>> {
+    let (_, anchors) = source.parse_map_and_anchors()?;
+    let mut foundries = vec![None; teams.len()];
+    for (player, anchor) in anchors {
+        let foundry = &mut foundries[usize::from(player.0)];
+        ensure!(foundry.is_none(), "seat {} has two Foundries", player.0);
+        *foundry = Some((i64::from(anchor.x), i64::from(anchor.y)));
+    }
+    let foundries: Vec<(i64, i64)> = foundries
+        .into_iter()
+        .collect::<Option<_>>()
+        .context("a seat has no Foundry")?;
+    let (mut dx, mut dy) = (0, 0);
+    for (&(x, y), &team) in foundries.iter().zip(teams) {
+        let sign = if team == teams[0] { -1 } else { 1 };
+        dx += sign * x;
+        dy += sign * y;
+    }
+    let mut order: Vec<usize> = (0..teams.len()).collect();
+    order.sort_by_key(|&seat| {
+        let (x, y) = foundries[seat];
+        (teams[seat], y * dx - x * dy, seat)
+    });
+    let mut places = vec![0; teams.len()];
+    for (index, &seat) in order.iter().enumerate() {
+        let team_start = order
+            .iter()
+            .position(|&other| teams[other] == teams[seat])
+            .expect("the seat itself is in the order");
+        places[seat] = index - team_start;
+    }
+    Ok(places)
+}
+
+/// A plan with every seat controlled, the authored human chair included.
+fn seated_plan(
+    source: &Scenario,
+    scenario_seed: u64,
+    leg: EvaluationLeg,
+    seats: impl Iterator<Item = BotConfig>,
+) -> EvaluationPlan {
+    let mut scenario = source.clone();
+    scenario.seed = scenario_seed;
+    for player in &mut scenario.players {
+        player.bot = false;
+        player.bot_config = None;
+    }
+    EvaluationPlan {
+        leg,
+        scenario,
+        controllers: seats
+            .map(|config| Some(EvaluationController::configured(config)))
+            .collect(),
+        geometry: EvaluationGeometry::Authored,
+        faction_cell: EvaluationFactionCell::Authored,
+    }
 }
 
 /// Baseline rows on disk, keyed by the reference digest and each leg's exact
@@ -485,8 +639,7 @@ pub fn publish_rows(rows: &[LabelledRow], path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bot_eval::{EvaluationController, EvaluationLeg};
-    use oxide_sim::scenario::BotConfig;
+    use crate::bot_eval::{ProfileMatchup, configured_matchup_plans};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     fn scratch() -> PathBuf {
@@ -563,6 +716,248 @@ mod tests {
         }
     }
 
+    /// A one-cell manifest over shipped scenarios.
+    fn cell(maps: &[&str]) -> (MatrixManifest, Vec<Scenario>) {
+        let manifest: MatrixManifest = serde_json::from_value(serde_json::json!({
+            "name": "unit",
+            "tick_limit": 30,
+            "runs": 1,
+            "scenario_seed_base": 70,
+            "personality_seed_base": 900,
+            "difficulties": ["standard"],
+            "stances": ["aggressive"],
+            "maps": maps
+                .iter()
+                .map(|map| serde_json::json!({
+                    "path": format!("../scenarios/{map}.json"),
+                    "family": "open",
+                }))
+                .collect::<Vec<_>>(),
+        }))
+        .unwrap();
+        let scenarios = manifest
+            .scenarios(Path::new(env!("CARGO_MANIFEST_DIR")))
+            .unwrap();
+        (manifest, scenarios)
+    }
+
+    /// The cell's seats, `true` running `oxide-opponent`.
+    fn seats(opponent: &[bool]) -> Vec<Option<EvaluationController>> {
+        opponent
+            .iter()
+            .map(|&opponent| {
+                Some(EvaluationController::configured(BotConfig {
+                    controller: if opponent {
+                        BotController::Opponent
+                    } else {
+                        BotController::Scripted
+                    },
+                    difficulty: BotDifficulty::Standard,
+                    stance: BotStance::Aggressive,
+                    personality_seed: 900,
+                }))
+            })
+            .collect()
+    }
+
+    fn flipped(layout: &[bool]) -> Vec<bool> {
+        layout.iter().map(|opponent| !opponent).collect()
+    }
+
+    fn mixed_layout(source: &Scenario) -> Vec<bool> {
+        layouts(source)
+            .unwrap()
+            .into_iter()
+            .find_map(|(pairing, layout)| (pairing == Pairing::Mixed).then_some(layout))
+            .unwrap()
+    }
+
+    #[test]
+    fn team_maps_expand_into_pure_and_mixed_pairs_and_one_baseline_leg() {
+        let (manifest, scenarios) = cell(&["broad-front"]);
+        let teams = seat_teams(&scenarios[0]).unwrap();
+        assert_eq!(teams, [0, 1, 0, 1]);
+        let legs = expand(&manifest, &scenarios).unwrap();
+        let [pure, pure_back, mixed, mixed_back, baseline] = legs.as_slice() else {
+            panic!("five legs: {}", legs.len());
+        };
+        let pure_layout = [true, false, true, false];
+        assert_eq!(pure.plan.controllers, seats(&pure_layout));
+        assert_eq!(pure_back.plan.controllers, seats(&flipped(&pure_layout)));
+        let layout = mixed_layout(&scenarios[0]);
+        assert_eq!(mixed.plan.controllers, seats(&layout));
+        assert_eq!(mixed_back.plan.controllers, seats(&flipped(&layout)));
+        for team in [0, 1] {
+            let bots: Vec<bool> = (0..4)
+                .filter(|&seat| teams[seat] == team)
+                .map(|seat| layout[seat])
+                .collect();
+            assert!(bots.contains(&true) && bots.contains(&false), "{bots:?}");
+        }
+        assert_eq!(baseline.plan.controllers, seats(&[false; 4]));
+        assert_eq!(
+            legs.iter()
+                .map(|leg| (leg.label.pairing, leg.plan.leg))
+                .collect::<Vec<_>>(),
+            [
+                (Pairing::HeadToHead, EvaluationLeg::Forward),
+                (Pairing::HeadToHead, EvaluationLeg::Swapped),
+                (Pairing::Mixed, EvaluationLeg::Forward),
+                (Pairing::Mixed, EvaluationLeg::Swapped),
+                (Pairing::Baseline, EvaluationLeg::Single),
+            ]
+        );
+        for leg in &legs {
+            assert_eq!(leg.plan.scenario.seed, 70);
+            assert!(leg.plan.scenario.players.iter().all(|player| !player.bot));
+        }
+    }
+
+    #[test]
+    fn free_for_alls_seat_the_human_chair_and_alternate_the_bots() {
+        let (manifest, scenarios) = cell(&["skyhook-anchorage"]);
+        assert!(!scenarios[0].players[0].bot, "seat zero is authored human");
+        let legs = expand(&manifest, &scenarios).unwrap();
+        let [forward, swapped, baseline] = legs.as_slice() else {
+            panic!("three legs: {}", legs.len());
+        };
+        let layout: Vec<bool> = (0..8).map(|seat| seat % 2 == 0).collect();
+        assert_eq!(forward.plan.controllers, seats(&layout));
+        assert_eq!(swapped.plan.controllers, seats(&flipped(&layout)));
+        assert_eq!(baseline.plan.controllers, seats(&[false; 8]));
+        assert_eq!(
+            [forward, swapped, baseline].map(|leg| leg.label.pairing),
+            [Pairing::Mixed, Pairing::Mixed, Pairing::Baseline]
+        );
+    }
+
+    #[test]
+    fn duel_plans_are_the_configured_matchup_plans() {
+        let manifest = manifest();
+        let legs = expand(&manifest, &manifest.scenarios(Path::new(".")).unwrap()).unwrap();
+        let source = Scenario::skirmish();
+        for (pairing, controller, opponent, paired) in [
+            (
+                Pairing::HeadToHead,
+                BotController::Opponent,
+                Some(BotController::Scripted),
+                true,
+            ),
+            (Pairing::Baseline, BotController::Scripted, None, false),
+        ] {
+            let expected = configured_matchup_plans(
+                &source,
+                70,
+                ProfileMatchup {
+                    controller,
+                    opponent_controller: opponent,
+                    difficulty: BotDifficulty::Standard,
+                    stance: BotStance::Aggressive,
+                    opponent_difficulty: None,
+                    opponent_stance: None,
+                    same_personality_seed: true,
+                },
+                900,
+                paired,
+                EvaluationFactionCell::Authored,
+                EvaluationGeometry::Authored,
+            )
+            .unwrap();
+            let actual: Vec<&EvaluationPlan> = legs
+                .iter()
+                .filter(|leg| leg.label.pairing == pairing && leg.label.run == 0)
+                .filter(|leg| leg.label.difficulty == BotDifficulty::Standard)
+                .map(|leg| &leg.plan)
+                .collect();
+            assert_eq!(actual, expected.iter().collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn mixed_teams_face_the_other_bot_across_each_lane() {
+        let (_, scenarios) = cell(&[
+            "open-quarry",
+            "broad-front",
+            "causeway-verdict",
+            "compass-grand",
+        ]);
+        for source in &scenarios {
+            let teams = seat_teams(source).unwrap();
+            let layout = mixed_layout(source);
+            let (_, anchors) = source.parse_map_and_anchors().unwrap();
+            let foundry = |seat: usize| {
+                anchors
+                    .iter()
+                    .find(|(player, _)| usize::from(player.0) == seat)
+                    .map(|(_, anchor)| (i64::from(anchor.x), i64::from(anchor.y)))
+                    .unwrap()
+            };
+            for seat in 0..teams.len() {
+                let (x, y) = foundry(seat);
+                let nearest = (0..teams.len())
+                    .filter(|&enemy| teams[enemy] != teams[seat])
+                    .min_by_key(|&enemy| {
+                        let (ex, ey) = foundry(enemy);
+                        ((ex - x).pow(2) + (ey - y).pow(2), enemy)
+                    })
+                    .unwrap();
+                assert_ne!(
+                    layout[seat], layout[nearest],
+                    "{}: seat {seat} and its nearest enemy {nearest} run one bot",
+                    source.name
+                );
+            }
+            let count = |opponent| layout.iter().filter(|&&seat| seat == opponent).count();
+            assert_eq!(count(true), count(false), "{}", source.name);
+        }
+    }
+
+    #[test]
+    fn match_modes_follow_teams() {
+        let cases: [(&[u8], Option<MatchMode>); 8] = [
+            (&[0, 1], Some(MatchMode::Duel)),
+            (&[0, 1, 2], Some(MatchMode::FreeForAll)),
+            (&[0, 0, 1, 1], Some(MatchMode::Teams)),
+            (&[0, 1, 0, 1], Some(MatchMode::Teams)),
+            (&[0], None),
+            (&[0, 0], None),
+            (&[0, 0, 0, 1], None),
+            (&[0, 0, 1, 2], None),
+        ];
+        for (teams, mode) in cases {
+            assert_eq!(MatchMode::of(teams).ok(), mode, "{teams:?}");
+        }
+    }
+
+    #[test]
+    fn every_shipped_scenario_expands_by_its_mode() {
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scenarios");
+        let mut names: Vec<String> = std::fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "json")
+            })
+            .map(|path| path.file_stem().unwrap().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        for name in names {
+            let (manifest, scenarios) = cell(&[name.as_str()]);
+            let players = &scenarios[0].players;
+            let (mode, legs) = if players.len() == 2 {
+                (MatchMode::Duel, 3)
+            } else if players.iter().all(|player| player.team.is_none()) {
+                (MatchMode::FreeForAll, 3)
+            } else {
+                (MatchMode::Teams, 5)
+            };
+            let teams = seat_teams(&scenarios[0]).unwrap();
+            assert_eq!(MatchMode::of(&teams).unwrap(), mode, "{name}");
+            assert_eq!(expand(&manifest, &scenarios).unwrap().len(), legs, "{name}");
+        }
+    }
+
     type Edit = fn(&mut MatrixManifest);
 
     #[test]
@@ -602,12 +997,20 @@ mod tests {
     }
 
     #[test]
-    fn shipped_manifests_load_two_seat_maps() {
+    fn shipped_manifests_expand_their_maps_by_mode() {
         let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("evaluation");
-        for name in ["smoke.json", "duels.json"] {
+        for (name, mode, legs_per_cell) in [
+            ("smoke.json", MatchMode::Duel, 3),
+            ("duels.json", MatchMode::Duel, 3),
+            ("teams.json", MatchMode::Teams, 5),
+            ("free-for-all.json", MatchMode::FreeForAll, 3),
+        ] {
             let manifest = MatrixManifest::load(&directory.join(name)).unwrap();
             let scenarios = manifest.scenarios(&directory).unwrap();
-            assert!(scenarios.iter().all(|scenario| scenario.players.len() == 2));
+            for scenario in &scenarios {
+                let teams = seat_teams(scenario).unwrap();
+                assert_eq!(MatchMode::of(&teams).unwrap(), mode, "{name}");
+            }
             let legs = expand(&manifest, &scenarios).unwrap();
             assert_eq!(
                 legs.len(),
@@ -615,7 +1018,8 @@ mod tests {
                     * manifest.difficulties.len()
                     * manifest.stances.len()
                     * manifest.runs as usize
-                    * 3
+                    * legs_per_cell,
+                "{name}"
             );
         }
     }

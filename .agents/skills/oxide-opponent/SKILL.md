@@ -106,19 +106,30 @@ in seat zero and then seat one with one personality seed on both sides, plus one
 digest of the `bot/`, `sim/` and `chassis/` sources, the `kit` code that hosts
 `oxide-bot`, and `Cargo.lock` (`--baseline-cache` moves the cache), so they
 rerun only when those inputs, a map, a seed or the tick limit change.
-`driver/evaluation/duels.json` is the full two-seat matrix.
 `bot-matrix-report <rows.jsonl>...` re-reads published rows; `--json` prints the
 same report as JSON.
 
-Read the report overall and by difficulty, stance and map family:
+Stage checkpoints also run `driver/evaluation/duels.json`, the full two-seat
+matrix, `teams.json` and `free-for-all.json`. A team map adds a mixed pair to
+its head-to-head pair: both bots on each team, alternating along its front so
+that facing enemies run different bots, then every seat flipped. A free-for-all
+is a mixed pair on alternating seats. Every seat is controlled, including the
+authored human chair.
+
+Read the report by match mode, overall and by difficulty, stance and map family:
 
 - **Pairs**: this bot wins both legs, split, `oxide-bot` wins both, or undecided
-  (at least one leg without a winner).
-- **New share**: this bot's share of head-to-head legs that had a winner, with a
-  95% Wilson interval. Small matrices give wide intervals; compare runs, not
-  single cells.
-- **Decided new-old** against **decided old-old**: head-to-head legs should
-  decide at least as often as the mirror.
+  (at least one leg without a winner). A head-to-head leg goes to the winning
+  side. A mixed leg goes to the bot whose seats outlast the other's more often:
+  survivors tie for first and seats that fall on one tick tie; a leg where
+  neither bot does better, or that a stall loop stopped, has no winner.
+- **New share**: this bot's share of legs that had a winner, with a 95% Wilson
+  interval. Small matrices give wide intervals; compare runs, not single cells.
+- **Decided new-old** against **decided old-old**: compared legs should decide
+  at least as often as the mirror.
+- **Placement**: mean place (1 is last standing) and median survival tick of
+  each bot's seats in mixed legs. It is a diagnostic: surviving longer can be
+  passive play, so review replays before reading it as strength.
 - **Failure incidents** and **income**, per controller with seat-legs for scale.
   `oxide-bot` numbers are the reference, not a target.
 
@@ -146,7 +157,8 @@ Income compares scrap earned in the minute before ticks 6,000, 12,000 and 24,000
 (deliveries plus Reclaimer, Extractor and Foundry credits) with a saturation
 estimate: two Harvesters on each of the four nearest scrap nodes that still hold
 scrap for every completed Foundry, at their straight-line round trip, plus those
-credits. No node counts for two Foundries.
+credits. No node counts for two Foundries. A seat stops sampling once it is
+eliminated, so a seat that is out while its team plays on adds no empty samples.
 
 ## Pressure scenarios
 

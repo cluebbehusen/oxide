@@ -33,6 +33,44 @@ fn succeeded(output: &Output) -> String {
     String::from_utf8(output.stdout.clone()).unwrap()
 }
 
+/// Writes a one-cell manifest over `maps` at 24 ticks.
+fn manifest(dir: &Path, maps: Value) -> PathBuf {
+    let path = dir.join("manifest.json");
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&serde_json::json!({
+            "name": "cli",
+            "tick_limit": 24,
+            "runs": 1,
+            "scenario_seed_base": 7000,
+            "personality_seed_base": 9000,
+            "difficulties": ["prime"],
+            "stances": ["balanced"],
+            "maps": maps,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    path
+}
+
+fn matrix(manifest: &Path, out: &Path, cache: &Path) -> Output {
+    driver(&[
+        "bot-matrix".as_ref(),
+        manifest.as_os_str(),
+        "--jobs".as_ref(),
+        "2".as_ref(),
+        "--out".as_ref(),
+        out.as_os_str(),
+        "--baseline-cache".as_ref(),
+        cache.as_os_str(),
+    ])
+}
+
+fn scenario(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../scenarios/{name}.json"))
+}
+
 fn rows(path: &Path) -> Vec<Value> {
     std::fs::read_to_string(path)
         .unwrap()
@@ -44,46 +82,22 @@ fn rows(path: &Path) -> Vec<Value> {
 #[test]
 fn a_matrix_writes_rows_reuses_its_baseline_and_reports_its_own_rows() {
     let dir = scratch("two-maps");
-    let severance = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scenarios/severance.json");
-    let manifest = dir.join("manifest.json");
-    std::fs::write(
-        &manifest,
-        serde_json::to_vec(&serde_json::json!({
-            "name": "cli",
-            "tick_limit": 24,
-            "runs": 1,
-            "scenario_seed_base": 7000,
-            "personality_seed_base": 9000,
-            "difficulties": ["prime"],
-            "stances": ["balanced"],
-            "maps": [
-                {"path": "skirmish", "family": "open"},
-                {"path": severance, "family": "severed"},
-            ],
-        }))
-        .unwrap(),
-    )
-    .unwrap();
+    let manifest = manifest(
+        &dir,
+        serde_json::json!([
+            {"path": "skirmish", "family": "open"},
+            {"path": scenario("severance"), "family": "severed"},
+        ]),
+    );
     let cache = dir.join("cache");
-    let run = |out: &Path| {
-        driver(&[
-            "bot-matrix".as_ref(),
-            manifest.as_os_str(),
-            "--jobs".as_ref(),
-            "2".as_ref(),
-            "--out".as_ref(),
-            out.as_os_str(),
-            "--baseline-cache".as_ref(),
-            cache.as_os_str(),
-        ])
-    };
+    let run = |out: &Path| matrix(&manifest, out, &cache);
 
     let first = run(&dir.join("first"));
     let text = succeeded(&first);
     let stderr = String::from_utf8_lossy(&first.stderr);
     assert!(stderr.contains("evaluated 6 legs, reused 0"), "{stderr}");
     assert!(
-        text.starts_with("bot-matrix: 4 head-to-head legs, 2 baseline legs"),
+        text.starts_with("bot-matrix: 4 head-to-head legs, 0 mixed legs, 2 baseline legs"),
         "{text}"
     );
     assert!(text.contains("family severed"), "{text}");
@@ -132,6 +146,103 @@ fn a_matrix_writes_rows_reuses_its_baseline_and_reports_its_own_rows() {
     assert_eq!(
         json["groups"][0]["controllers"][0]["controller"],
         "opponent"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn team_and_free_for_all_maps_seat_every_chair_and_report_placement() {
+    let dir = scratch("teams");
+    let manifest = manifest(
+        &dir,
+        serde_json::json!([
+            {"path": scenario("open-quarry"), "family": "open"},
+            {"path": scenario("salvage-triangle"), "family": "open"},
+        ]),
+    );
+    let cache = dir.join("cache");
+    let first = matrix(&manifest, &dir.join("first"), &cache);
+    let text = succeeded(&first);
+    let stderr = String::from_utf8_lossy(&first.stderr);
+    assert!(stderr.contains("evaluated 8 legs, reused 0"), "{stderr}");
+    assert!(
+        text.starts_with("bot-matrix: 2 head-to-head legs, 4 mixed legs, 2 baseline legs"),
+        "{text}"
+    );
+    assert!(text.contains("placement in mixed legs"), "{text}");
+
+    let rows = rows(&dir.join("first/rows.jsonl"));
+    let pairings: Vec<&str> = rows
+        .iter()
+        .map(|row| row["matrix"]["pairing"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        pairings,
+        [
+            "head_to_head",
+            "head_to_head",
+            "mixed",
+            "mixed",
+            "baseline",
+            "mixed",
+            "mixed",
+            "baseline"
+        ]
+    );
+    let controllers = |row: &Value| -> Vec<String> {
+        row["seats"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|seat| seat["controller"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(
+        controllers(&rows[0]),
+        ["opponent", "opponent", "scripted", "scripted"],
+        "a team of each bot"
+    );
+    let mixed = controllers(&rows[2]);
+    assert_eq!(
+        mixed.iter().filter(|seat| *seat == "opponent").count(),
+        2,
+        "{mixed:?}"
+    );
+    assert_eq!(
+        controllers(&rows[5]),
+        ["opponent", "scripted", "opponent"],
+        "the authored human chair is seated"
+    );
+
+    let second = matrix(&manifest, &dir.join("second"), &cache);
+    succeeded(&second);
+    let stderr = String::from_utf8_lossy(&second.stderr);
+    assert!(stderr.contains("evaluated 6 legs, reused 2"), "{stderr}");
+
+    let report = driver(&[
+        "bot-matrix-report".as_ref(),
+        "--json".as_ref(),
+        dir.join("first/rows.jsonl").as_os_str(),
+    ]);
+    let json: Value = serde_json::from_str(&succeeded(&report)).unwrap();
+    assert_eq!(json["mixed_legs"], 4);
+    let overall = |mode: &str| {
+        json["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|group| group["mode"] == mode && group["group"] == "overall")
+            .unwrap()
+            .clone()
+    };
+    let teams = overall("teams");
+    assert_eq!(teams["head_to_head"]["legs"]["legs"], 2);
+    assert_eq!(teams["mixed"]["legs"]["legs"], 2);
+    let free_for_all = overall("free_for_all");
+    assert_eq!(free_for_all["mixed"]["pairs"]["undecided"], 1);
+    assert_eq!(
+        free_for_all["controllers"][0]["placement"]["mean_place"], 2.0,
+        "every seat survives, so all tie"
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
