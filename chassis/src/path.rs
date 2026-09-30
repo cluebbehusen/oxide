@@ -124,11 +124,13 @@ pub fn line_blocked(a: Vec2Fx, b: Vec2Fx, mut passable: impl FnMut(TilePos) -> b
 /// tested, like [`line_blocked`]: the body may be leaving ground it could not
 /// enter, and the caller checks the destination tile itself. An edge line's
 /// start tile is tested when it lies outside the body's own tile, so a hull
-/// that already overlaps a blocked tile cannot sweep along or past it. A
-/// zero-length segment is never blocked.
+/// that already overlaps a blocked tile cannot sweep along or past it. An
+/// edge that only touches a tile boundary does not enter the tile beyond it.
+/// A zero-length segment is never blocked.
 ///
-/// The offset pair is exactly sign-symmetric, so the verdict keeps
-/// [`line_blocked`]'s mirror fairness under a map half-turn.
+/// The offset pair is exactly sign-symmetric and touching edges are pulled
+/// inside the hull, so the verdict keeps [`line_blocked`]'s mirror fairness
+/// under a map half-turn.
 pub fn swept_line_blocked(
     a: Vec2Fx,
     b: Vec2Fx,
@@ -149,9 +151,27 @@ pub fn swept_line_blocked(
     let side = Vec2Fx::new(-delta.y, delta.x) * (radius / length);
     let own = TilePos::containing(a);
     [side, -side].into_iter().any(|side| {
-        let start = TilePos::containing(a + side);
-        (start != own && !passable(start)) || line_blocked(a + side, b + side, &mut passable)
+        let (from, to) = (inset(a + side, a), inset(b + side, b));
+        let start = TilePos::containing(from);
+        (start != own && !passable(start)) || line_blocked(from, to, &mut passable)
     })
+}
+
+/// `point` moved one ulp toward `center` on each axis where it lies exactly
+/// on a tile boundary. Flooring an exact boundary would count a touching edge
+/// as inside the tile on one side of a body and outside it on the other, so
+/// mirrored seats would sweep differently.
+fn inset(point: Vec2Fx, center: Vec2Fx) -> Vec2Fx {
+    let pull = |edge: Fx, center: Fx| {
+        if edge.frac() != Fx::ZERO || edge == center {
+            edge
+        } else if edge > center {
+            edge - Fx::DELTA
+        } else {
+            edge + Fx::DELTA
+        }
+    };
+    Vec2Fx::new(pull(point.x, center.x), pull(point.y, center.y))
 }
 
 const STRAIGHT_COST: u32 = 10;
@@ -1569,21 +1589,46 @@ mod tests {
                 .unwrap_or(false)
         };
         let rot = |v: Vec2Fx| Vec2Fx::new(Fx::from_num(w) - v.x, Fx::from_num(h) - v.y);
-        let radius = Fx::lit("0.35");
-        for ax in 0..w {
-            for ay in 0..h {
-                for bx in 0..w {
-                    for by in 0..h {
-                        let (a, b) = (center(ax, ay), center(bx, by));
-                        assert_eq!(
-                            swept_line_blocked(a, b, radius, open),
-                            swept_line_blocked(rot(a), rot(b), radius, rot_open),
-                            "mirror-unfair swept trace {ax},{ay} -> {bx},{by}"
-                        );
+        // Ground hulls from the smallest to the widest; at 0.5 a tile-centred
+        // edge lies exactly on a tile boundary.
+        for radius in ["0.26", "0.35", "0.45", "0.5", "0.55"].map(Fx::lit) {
+            for ax in 0..w {
+                for ay in 0..h {
+                    for bx in 0..w {
+                        for by in 0..h {
+                            let (a, b) = (center(ax, ay), center(bx, by));
+                            assert_eq!(
+                                swept_line_blocked(a, b, radius, open),
+                                swept_line_blocked(rot(a), rot(b), radius, rot_open),
+                                "mirror-unfair swept trace {ax},{ay} -> {bx},{by} at {radius}"
+                            );
+                        }
                     }
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_hull_touching_a_wall_sweeps_along_it_on_either_side() {
+        let (grid, _, _) = arena(&["######", "......", "######"]);
+        let open = |p: TilePos| grid.get(p).copied().unwrap_or(false);
+        // Legs of one and four tiles put a 0.5 edge exactly on the walls' faces.
+        let half = Fx::lit("0.5");
+        for (from, to) in [(1, 5), (5, 1), (2, 3), (3, 2)] {
+            assert!(!swept_line_blocked(
+                center(from, 1),
+                center(to, 1),
+                half,
+                open
+            ));
+        }
+        assert!(swept_line_blocked(
+            center(0, 1),
+            center(5, 1),
+            Fx::lit("0.55"),
+            open
+        ));
     }
 
     #[test]
