@@ -254,3 +254,46 @@ fn a_producer_trains_the_best_unit_it_can_afford() {
     );
     assert_eq!(trained, [UnitKind::Lancer]);
 }
+
+#[test]
+fn the_most_wanted_role_takes_the_scrap_before_a_nearer_producer() {
+    // Two Foundries nearer home than the Fabricator, their Harvesters enough,
+    // and a bank that leaves scrap for one unit beside the saving target.
+    let mut scenario = armed(&[], &[]);
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Foundry,
+        x: 3,
+        y: 8,
+    });
+    scenario.units.extend((1..=2).map(|x| harvester(0, x, 10)));
+    for player in &mut scenario.players {
+        player.scrap = 200;
+    }
+    let state = scenario.build().unwrap();
+    // Two Darters seen over the East base: anti-air is wanted, and nothing
+    // is in sight to defend against.
+    let mut json = serde_json::to_value(seat(&scenario, 0).checkpoint()).unwrap();
+    json["memory"]["units"] = (0..2)
+        .map(|index: u32| {
+            serde_json::json!({
+                "id": 1_000 + index,
+                "kind": "darter",
+                "tile": {"x": 20, "y": 2 + index},
+                "seen": state.current_tick(),
+            })
+        })
+        .collect();
+    let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
+    let mut opponent = Opponent::restore(&checkpoint, &scenario, &state, map(&scenario)).unwrap();
+    let trained = trains(&opponent.act(&state, &mut OwnEvents::default()));
+    let [(at, kind)] = trained[..] else {
+        panic!("{trained:?}");
+    };
+    assert_eq!(
+        at,
+        fabricator(&state),
+        "the Foundries nearer home do not spend the scrap on line units first"
+    );
+    assert!(anti_air(&[kind]), "{kind:?}");
+}

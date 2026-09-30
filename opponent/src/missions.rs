@@ -32,6 +32,7 @@ pub(crate) use air::{Hazard, hazards};
 pub(crate) use attack::{SAPPERS, minimum};
 pub(crate) use lift::{carrier, carriers_wanted, payload};
 pub(crate) use scouting::points;
+pub(crate) use strike::strike_need;
 
 /// Missions the seat runs at once.
 const MISSION_CAP: usize = 16;

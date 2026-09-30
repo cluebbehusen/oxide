@@ -927,3 +927,75 @@ fn a_short_defense_buys_its_army_before_a_carrier() {
         "premise: the emergency buys an army: {trained:?}"
     );
 }
+
+/// The strait with West's tech and a Harvester but no army, and `scrap` for
+/// both seats.
+fn bare_strait(scrap: u32) -> Scenario {
+    let mut scenario = strait();
+    scenario.units.retain(|unit| unit.player != 0);
+    scenario.units.push(harvester(0, 5, 5));
+    for player in &mut scenario.players {
+        player.scrap = scrap;
+    }
+    scenario
+}
+
+fn army(state: &State, commands: &[PlayerCommand]) -> Vec<(BuildingKind, UnitKind)> {
+    trains(commands)
+        .into_iter()
+        .filter(|(_, kind)| crate::composition::role(*kind).is_some())
+        .map(|(at, kind)| {
+            let building = state.buildings().iter().find(|b| b.id == at).unwrap();
+            (building.kind, kind)
+        })
+        .collect()
+}
+
+#[test]
+fn a_severed_seat_without_an_airworks_saves_for_one_instead_of_line_units() {
+    let mut scenario = bare_strait(300);
+    scenario
+        .buildings
+        .retain(|building| building.kind != BuildingKind::Airworks);
+    let decide = |scenario: &Scenario| {
+        let state = scenario.build().unwrap();
+        let (commands, trace) = seat(scenario, 0).act_traced(&state, &mut OwnEvents::default());
+        (army(&state, &commands), trace.unwrap())
+    };
+    let (trained, trace) = decide(&scenario);
+    assert!(
+        trained.is_empty(),
+        "no ground unit could reach anyone: {trained:?}"
+    );
+    assert_eq!(
+        trace.target.map(|target| target.investment),
+        Some(Investment::Tech(BuildingKind::Airworks))
+    );
+
+    let mut connected = scenario.clone();
+    connected.map = FIELD.map(str::to_owned).to_vec();
+    let (trained, _) = decide(&connected);
+    assert!(
+        trained.iter().any(
+            |(_, kind)| crate::composition::role(*kind) == Some(crate::composition::Role::Line)
+        ),
+        "premise: idle time becomes line units where they can walk: {trained:?}"
+    );
+}
+
+#[test]
+fn a_severed_seat_with_an_airworks_trains_air_strikes_before_it_has_an_army() {
+    let mut scenario = bare_strait(1_000);
+    // A scout already, so the Airworks is free for the army.
+    scenario.units.push(unit(0, UnitKind::Kestrel, 5, 5));
+    let state = scenario.build().unwrap();
+    let commands = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
+    let trained = army(&state, &commands);
+    assert!(
+        trained.iter().any(|(at, kind)| {
+            *at == BuildingKind::Airworks
+                && crate::composition::role(*kind) == Some(crate::composition::Role::AirStrike)
+        }),
+        "{trained:?}"
+    );
+}

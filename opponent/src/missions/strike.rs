@@ -327,14 +327,7 @@ impl Raid<'_> {
     /// Strength a strike on `target` needs: the known anti-air that reaches
     /// over it times the margin, and never under the stance minimum.
     fn need(&self, target: Objective) -> u64 {
-        let centre = footprint_centre(target.building, target.anchor);
-        let cover: u64 = self
-            .air
-            .iter()
-            .filter(|hazard| hazard.covers(centre))
-            .map(|hazard| hazard.value)
-            .sum();
-        (cover * self.margin / 1_000).max(self.minimum)
+        (cover(self.air, target) * self.margin / 1_000).max(self.minimum)
     }
 
     /// Value of the known anti-air reaching any member.
@@ -345,6 +338,35 @@ impl Raid<'_> {
             .map(|hazard| hazard.value)
             .sum()
     }
+}
+
+/// Known anti-air reaching over `target`.
+fn cover(air: &[Hazard], target: Objective) -> u64 {
+    let centre = footprint_centre(target.building, target.anchor);
+    air.iter()
+        .filter(|hazard| hazard.covers(centre))
+        .map(|hazard| hazard.value)
+        .sum()
+}
+
+/// What a strike needs against the easiest target the seat knows of and has
+/// not given up on: the known anti-air reaching over it by the attack margin,
+/// at least the stance's minimum.
+pub(crate) fn strike_need(
+    observation: &ObservationData,
+    memory: &Memory,
+    profile: &ResolvedProfile,
+    scratch: &Scratch,
+) -> u64 {
+    let margin = margin(profile.difficulty);
+    scratch
+        .objectives
+        .iter()
+        .filter(|target| !memory.abandoned(target.building, target.anchor, observation.tick))
+        .map(|target| cover(&scratch.air, *target) * margin / 1_000)
+        .min()
+        .unwrap_or(0)
+        .max(minimum(profile.stance))
 }
 
 /// Whether `kind` is a ground-attack aircraft a strike takes.
