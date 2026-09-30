@@ -4,11 +4,12 @@ mod common;
 use common::wide_open_map as open_map;
 use common::{cmd, players, unit};
 
+use chassis::fx::{Fx, Vec2Fx};
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
 use oxide_sim::scenario::UnitSpec;
 use oxide_sim::state::Order;
-use oxide_sim::{Command, Event, Faction, Scenario, Target, UnitKind};
+use oxide_sim::{Command, Event, Faction, Scenario, State, Target, UnitId, UnitKind};
 
 fn arena(map: Vec<String>, units: Vec<UnitSpec>) -> Scenario {
     Scenario {
@@ -823,4 +824,118 @@ fn a_rider_that_stalled_on_its_way_boards_dormant() {
     let carrier = state.unit(sky).unwrap();
     assert_eq!(carrier.cargo.len(), 1);
     assert_eq!(carrier.cargo[0].stall_ticks, 0);
+}
+
+#[test]
+fn mirrored_boarders_take_mirrored_tiles() {
+    // Several boarding tiles tie on route length for each rider below; the
+    // rock beside the southern sling leaves two that also tie on distance to
+    // both the rider and the carrier. The east seat is the half-turn of the
+    // west, so every choice must be the half-turn of its partner's.
+    let (width, height) = (40, 14);
+    let rocks = [TilePos::new(7, 9), TilePos::new(32, 4)];
+    let map = (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| {
+                    let border = x == 0 || y == 0 || x == width - 1 || y == height - 1;
+                    if border || rocks.contains(&TilePos::new(x, y)) {
+                        '#'
+                    } else {
+                        '.'
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    let mirror = |tile: TilePos| TilePos::new(width - 1 - tile.x, height - 1 - tile.y);
+    let mirror_pos =
+        |pos: Vec2Fx| Vec2Fx::new(Fx::from_num(width) - pos.x, Fx::from_num(height) - pos.y);
+    let west = [
+        (UnitKind::Skyhook, TilePos::new(8, 3)),
+        (UnitKind::Sentinel, TilePos::new(4, 2)),
+        (UnitKind::Sentinel, TilePos::new(4, 3)),
+        (UnitKind::Skyhook, TilePos::new(8, 9)),
+        (UnitKind::Sentinel, TilePos::new(4, 9)),
+    ];
+    let units = west
+        .iter()
+        .flat_map(|&(kind, at)| {
+            let away = mirror(at);
+            [unit(0, kind, at.x, at.y), unit(1, kind, away.x, away.y)]
+        })
+        .collect();
+    let mut scenario = arena(map, units);
+    scenario.mode = oxide_sim::scenario::ScenarioMode::Sandbox;
+    let mut state = scenario.build().unwrap();
+    let pairs: Vec<(UnitId, UnitId)> = state
+        .units()
+        .chunks(2)
+        .map(|pair| (pair[0].id, pair[1].id))
+        .collect();
+    let load = |side: fn(&(UnitId, UnitId)) -> UnitId, player: u8| {
+        [(0, vec![1, 2]), (3, vec![4])].map(|(sling, riders)| {
+            cmd(
+                player,
+                Command::Load {
+                    units: riders.iter().map(|&i| side(&pairs[i])).collect(),
+                    transport: side(&pairs[sling]),
+                    queue: false,
+                },
+            )
+        })
+    };
+    let commands: Vec<_> = load(|pair| pair.0, 0)
+        .into_iter()
+        .chain(load(|pair| pair.1, 1))
+        .collect();
+    let symmetric = |state: &State, events: &[Event], tick: usize| {
+        let boarded: Vec<UnitId> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::UnitBoarded { unit, .. } => Some(*unit),
+                _ => None,
+            })
+            .collect();
+        for &(w, e) in &pairs {
+            assert_eq!(
+                boarded.contains(&w),
+                boarded.contains(&e),
+                "tick {tick}: {w:?} and {e:?} board together"
+            );
+            match (state.unit(w), state.unit(e)) {
+                (Some(a), Some(b)) => {
+                    assert_eq!(
+                        a.path.as_ref().map(|path| mirror(path.goal)),
+                        b.path.as_ref().map(|path| path.goal),
+                        "tick {tick}: {w:?} boarding tile"
+                    );
+                    assert_eq!(mirror_pos(a.pos), b.pos, "tick {tick}: {w:?} position");
+                }
+                (None, None) => {}
+                _ => panic!("tick {tick}: only one of {w:?} and {e:?} boarded"),
+            }
+        }
+    };
+
+    let report = state.tick(&commands);
+    symmetric(&state, &report.events, 0);
+    let goals = [1, 2, 4].map(|i| state.unit(pairs[i].0).unwrap().path.as_ref().unwrap().goal);
+    assert_eq!(
+        goals,
+        [TilePos::new(7, 2), TilePos::new(7, 3), TilePos::new(7, 8)],
+        "nearest tile first; the tie beside the rock falls to one side of the approach"
+    );
+    for tick in 1..=200 {
+        if state.units().len() == 4 {
+            break;
+        }
+        let report = state.tick(&[]);
+        symmetric(&state, &report.events, tick);
+    }
+    assert_eq!(
+        state.units().len(),
+        4,
+        "only the slings remain in the world"
+    );
 }

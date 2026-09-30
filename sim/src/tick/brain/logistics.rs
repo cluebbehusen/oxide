@@ -46,9 +46,8 @@ pub(super) fn board(
     events: &mut Vec<Event>,
 ) {
     let unit = state.unit(id).expect("caller checked");
-    let (pos, tile, kind, player, my_size) = (
+    let (pos, kind, player, my_size) = (
         unit.pos,
-        unit.tile(),
         unit.kind,
         unit.player,
         unit.kind.stats().transport_size,
@@ -98,7 +97,7 @@ pub(super) fn board(
     if !stale {
         return;
     }
-    match boarding_route(state, kind, tile, carrier_pos) {
+    match boarding_route(state, kind, pos, carrier_pos) {
         Some((goal, waypoints)) => {
             let unit = state.unit_mut(id).expect("caller checked");
             unit.path = Some(PathFollow {
@@ -124,16 +123,27 @@ pub(super) fn board(
 /// Fewest-waypoint deterministic ground route to a standable tile within
 /// boarding reach. A route that stays on the rider's current tile cannot help
 /// when the exact rider and carrier positions are still too far apart, so it
-/// is not a boarding route. Waypoint count wins, then `(y, x)`; a truly sealed
-/// carrier still reports `NoRoute` through the caller.
+/// is not a boarding route.
+///
+/// Waypoint count wins, then the tile nearest the rider, then the one nearest
+/// the carrier; tiles still tied mirror each other across the rider's
+/// approach, and the side of that approach decides. Every key is relative to
+/// the rider and carrier, so half-turned boardings choose half-turned tiles.
+/// A truly sealed carrier still reports `NoRoute` through the caller.
 fn boarding_route(
     state: &State,
     kind: crate::stats::UnitKind,
-    from: TilePos,
+    rider_pos: chassis::fx::Vec2Fx,
     carrier_pos: chassis::fx::Vec2Fx,
 ) -> Option<(TilePos, Vec<TilePos>)> {
+    let from = TilePos::containing(rider_pos);
     let center = TilePos::containing(carrier_pos);
     let reach_sq = crate::stats::LOAD_REACH * crate::stats::LOAD_REACH;
+    let approach = carrier_pos - rider_pos;
+    let (approach_x, approach_y) = (
+        i128::from(approach.x.to_bits()),
+        i128::from(approach.y.to_bits()),
+    );
     (center.y - 2..=center.y + 2)
         .flat_map(|y| (center.x - 2..=center.x + 2).map(move |x| TilePos::new(x, y)))
         .filter(|goal| state.passable(*goal) && goal.center().dist_sq(carrier_pos) <= reach_sq)
@@ -141,7 +151,17 @@ fn boarding_route(
             let waypoints = route_for(state, kind, from, goal)?;
             (!waypoints.is_empty()).then_some((goal, waypoints))
         })
-        .min_by_key(|(goal, waypoints)| (waypoints.len(), goal.y, goal.x))
+        .min_by_key(|(goal, waypoints)| {
+            let offset = goal.center() - carrier_pos;
+            let side = approach_x * i128::from(offset.y.to_bits())
+                - approach_y * i128::from(offset.x.to_bits());
+            (
+                waypoints.len(),
+                goal.center().dist_sq(rider_pos),
+                goal.center().dist_sq(carrier_pos),
+                side,
+            )
+        })
 }
 
 /// Fly to the drop point; standing on it, ask to set the riders down. A drop
