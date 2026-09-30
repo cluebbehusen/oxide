@@ -95,6 +95,12 @@ impl BuildingHit {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum HitSurface {
+    Building(BuildingHit),
+    Unit(UnitBody),
+}
+
 #[derive(Default)]
 pub(super) struct PreviousEffects {
     buildings: Vec<(oxide_sim::BuildingId, Option<CollapseBody>, BuildingHit)>,
@@ -359,8 +365,10 @@ impl ShotStyle {
 /// Which report family a unit's weapon slot fires.
 fn unit_shot_style(kind: oxide_sim::UnitKind, weapon: usize) -> ShotStyle {
     use oxide_sim::UnitKind;
+    if kind.stats().contact_reach.is_some() {
+        return ShotStyle::Contact;
+    }
     match (kind, weapon) {
-        (UnitKind::Scuttler, _) => ShotStyle::Contact,
         (UnitKind::Sentinel, _) => ShotStyle::Kinetic { heavy: false },
         (UnitKind::Buzzard | UnitKind::Warden | UnitKind::Breaker, _) => {
             ShotStyle::Kinetic { heavy: true }
@@ -418,6 +426,9 @@ fn unit_muzzle_reach(kind: oxide_sim::UnitKind) -> f32 {
 }
 
 fn unit_shot_origin(kind: oxide_sim::UnitKind, from: Vec2, to: Vec2) -> Vec2 {
+    if kind.stats().contact_reach.is_some() {
+        return from;
+    }
     let mut origin = visual_shot_origin(from, to, unit_muzzle_reach(kind));
     if kind == oxide_sim::UnitKind::Buzzard {
         origin.y -= crate::render::air_presentation(kind, 1.0).2;
@@ -512,8 +523,10 @@ pub enum EffectKind {
         to: Vec2,
         /// Splash radius, if this logical hit has one.
         splash: Option<f32>,
+        /// Unit that issued this report, when applicable.
+        attacker: Option<oxide_sim::UnitId>,
         /// Visible target geometry survives a lethal hit for this report.
-        building: Option<BuildingHit>,
+        surface: Option<HitSurface>,
         /// Simulation tick immediately after the hit was reported.
         completed_tick: u64,
     },
@@ -595,8 +608,8 @@ fn push_direct_report(
     to: Vec2,
     splash: Option<f32>,
     completed_tick: u64,
-    building: Option<BuildingHit>,
-) {
+    surface: Option<HitSurface>,
+) -> &mut Effect {
     effects.push(Effect {
         kind: EffectKind::DirectShot {
             style,
@@ -604,10 +617,12 @@ fn push_direct_report(
             to,
             splash,
             completed_tick,
-            building,
+            surface,
+            attacker: None,
         },
         age: 0.0,
     });
+    effects.last_mut().expect("report was inserted")
 }
 
 fn event_target_owner(
@@ -870,8 +885,21 @@ impl Presentation {
                             });
                         }
                     } else {
-                        let building = self.building_hit(state, *target);
-                        push_direct_report(
+                        let surface = self
+                            .building_hit(state, *target)
+                            .map(HitSurface::Building)
+                            .or_else(|| {
+                                attacker_kind.stats().contact_reach?;
+                                let oxide_sim::Target::Unit(id) = (*target)? else {
+                                    return None;
+                                };
+                                self.fx_previous
+                                    .units
+                                    .iter()
+                                    .find(|(uid, _, _)| *uid == id)
+                                    .map(|(_, body, _)| HitSurface::Unit(*body))
+                            });
+                        let report = push_direct_report(
                             &mut self.fx,
                             unit_shot_style(*attacker_kind, *weapon),
                             unit_shot_origin(
@@ -882,8 +910,14 @@ impl Presentation {
                             world_vec(*target_pos),
                             splash,
                             state.current_tick(),
-                            building,
+                            surface,
                         );
+                        if let EffectKind::DirectShot {
+                            attacker: source, ..
+                        } = &mut report.kind
+                        {
+                            *source = Some(*attacker);
+                        }
                     }
                 }
                 Event::TurretFired {
@@ -937,7 +971,7 @@ impl Presentation {
                         world_vec(*target_pos),
                         splash,
                         state.current_tick(),
-                        building,
+                        building.map(HitSurface::Building),
                     );
                 }
                 Event::BuildingCompleted {
@@ -1372,6 +1406,50 @@ mod tests {
     use oxide_sim::{BuildingId, BuildingKind, Target, UnitId, UnitKind};
 
     #[test]
+    fn lethal_scuttler_bite_retains_the_visible_unit_surface() {
+        let scenario = serde_json::from_value(serde_json::json!({
+            "name": "Lethal bite", "mode": "sandbox", "seed": 1,
+            "map": vec![".............................."; 22],
+            "players": [
+                {"name": "Local", "faction": "ferrous", "scrap": 0, "bot": false},
+                {"name": "Target", "faction": "cupric", "scrap": 0, "bot": false}
+            ],
+            "units": [
+                {"player": 0, "kind": "scuttler", "x": 11, "y": 7},
+                {"player": 1, "kind": "harvester", "x": 12, "y": 7}
+            ]
+        }))
+        .unwrap();
+        let mut game = Game::with_viewport(scenario, Vec2::new(1280., 800.)).unwrap();
+        let mut wire = serde_json::to_value(&*game.state).unwrap();
+        wire["units"][1]["hp"] = serde_json::json!(1);
+        game.state.0 = std::sync::Arc::new(serde_json::from_value(wire).unwrap());
+        game.issue(oxide_sim::Command::Attack {
+            units: vec![UnitId(0)],
+            target: Target::Unit(UnitId(1)).into(),
+            queue: false,
+        });
+        for _ in 0..40 {
+            game.do_tick();
+            if game.state.unit(UnitId(1)).is_none() {
+                break;
+            }
+        }
+        assert!(game.state.unit(UnitId(1)).is_none());
+        assert!(game.presentation.fx.iter().any(|effect| matches!(
+            effect.kind,
+            EffectKind::DirectShot {
+                style: ShotStyle::Contact,
+                surface: Some(HitSurface::Unit(UnitBody {
+                    kind: UnitKind::Harvester,
+                    ..
+                })),
+                ..
+            }
+        )));
+    }
+
+    #[test]
     fn building_reports_keep_surface_facts_through_the_lethal_tick() {
         for lethal in [false, true] {
             let scenario = serde_json::from_value(serde_json::json!({
@@ -1412,7 +1490,7 @@ mod tests {
                 .iter()
                 .find_map(|effect| match effect.kind {
                     EffectKind::DirectShot {
-                        building: Some(hit),
+                        surface: Some(HitSurface::Building(hit)),
                         ..
                     } => Some(hit),
                     _ => None,
@@ -2547,7 +2625,8 @@ mod tests {
                 to: Vec2::ONE,
                 splash: None,
                 completed_tick: 100,
-                building: None,
+                surface: None,
+                attacker: None,
             },
             age: 0.0,
         };
@@ -2667,7 +2746,8 @@ mod tests {
                 to: Vec2::ONE,
                 splash: None,
                 completed_tick,
-                building: None,
+                surface: None,
+                attacker: None,
             },
             age: 0.0,
         });

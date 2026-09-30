@@ -86,6 +86,7 @@ mod performance;
 mod pits;
 pub(crate) mod prim;
 mod support_brackets;
+mod worker;
 mod world;
 use chrome::*;
 use entities::*;
@@ -961,6 +962,21 @@ fn draw_unit_pass(
                 zoom,
             );
         }
+        let worker_phase = match animation.locomotion {
+            crate::presentation_animation::LocomotionState::Rest => 0,
+            crate::presentation_animation::LocomotionState::Moving { cycle } => {
+                motion::tread_phase(cycle)
+            }
+        };
+        let worker_body = sprites.worker_body(
+            unit.kind,
+            faction,
+            animation
+                .cargo
+                .map_or(0, |cargo| (cargo.fill * 5.0).ceil() as usize),
+            worker_phase,
+        );
+        let (source, accent) = worker_body.unwrap_or((source, accent));
         let params = DrawTextureParams {
             dest_size: Some(body_size),
             source: Some(source),
@@ -998,6 +1014,26 @@ fn draw_unit_pass(
                     ..params
                 },
                 zoom,
+            );
+        }
+        if worker_body.is_some() {
+            worker::draw(
+                game,
+                sprites,
+                unit,
+                animation,
+                (body, body_rotation, body_size.x),
+                alpha,
+            );
+        }
+        if worker_body.is_some() {
+            worker::draw_welder(
+                game,
+                sprites,
+                unit,
+                animation,
+                (body, body_rotation, body_size.x),
+                alpha,
             );
         }
         if let Some(cycle) = animation.scanner

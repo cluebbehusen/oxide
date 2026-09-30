@@ -126,11 +126,27 @@ impl EntityLod {
         let contact_sources: BTreeSet<Source> = manifest
             .iter()
             .filter(|(name, _)| {
-                oxide_sim::BuildingKind::ALL.iter().any(|&kind| {
-                    name.strip_prefix("rig_")
-                        .unwrap_or(name)
-                        .starts_with(&format!("{}_", crate::assets::building_stem(kind)))
-                }) && !name.contains("_accent")
+                (oxide_sim::UnitKind::ALL.iter().any(|&kind| {
+                    let stem = crate::assets::unit_stem(kind);
+                    [
+                        format!("{stem}_ferrous"),
+                        format!("{stem}_cupric"),
+                        format!("rig_{stem}_hull_ferrous"),
+                        format!("rig_{stem}_hull_cupric"),
+                        format!("rig_{stem}_body_ferrous"),
+                        format!("rig_{stem}_body_cupric"),
+                        format!("rig_{stem}_body_ferrous_cargo0"),
+                        format!("rig_{stem}_body_cupric_cargo0"),
+                    ]
+                    .contains(name)
+                }) || name.starts_with("scrap_")
+                    || *name == "wreck_pile"
+                    || oxide_sim::BuildingKind::ALL.iter().any(|&kind| {
+                        name.strip_prefix("rig_")
+                            .unwrap_or(name)
+                            .starts_with(&format!("{}_", crate::assets::building_stem(kind)))
+                    }))
+                    && !name.contains("_accent")
             })
             .map(|(_, row)| row.map(|v| v as u32))
             .collect();

@@ -713,9 +713,9 @@ pub(super) fn draw_ground_effects(game: &Scene<'_>, sprites: &Sprites) {
                     ((4.5 - effect.age) / 1.0).clamp(0.0, 1.0) * 0.7,
                 );
                 let structure = RigidSprite {
+                    rotation: 0.,
                     center,
                     size,
-                    rotation: 0.0,
                     source: sprites.building_tiered(body.kind, body.tier, body.faction),
                     accent: sprites.building_tiered_accent(body.kind, body.tier),
                     tint: seat_identity_tint(game, body.player),
