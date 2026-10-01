@@ -5,16 +5,16 @@
 use crate::decision::{Ledger, Producer};
 use crate::frame::{HomeFrame, doubled, footprint_centre, gap, ring};
 use crate::map::MapModel;
-use crate::missions::Hazard;
+use crate::missions::{Hazard, Scratch};
 use crate::profile::ResolvedProfile;
 use chassis::fx::Fx;
-use chassis::grid::TilePos;
+use chassis::grid::{Grid, TilePos};
 use oxide_sim::TICKS_PER_SECOND;
 use oxide_sim::ids::Target;
 use oxide_sim::observation::{BuildingObs, ObservationData};
 use oxide_sim::scenario::BotStance;
 use oxide_sim::stats::FOUNDRY_REPAIR_PRICE;
-use oxide_sim::{BuildingKind, Command, UnitId, UnitKind};
+use oxide_sim::{BuildingKind, Command, PlayerId, UnitId, UnitKind};
 use std::cmp::Reverse;
 
 /// Per mille of its health a building must miss before workers weld it.
@@ -35,6 +35,9 @@ const HOME_TILES: i32 = 8;
 /// there, and the worker slots it fills.
 pub(crate) struct Staffing {
     worked: Vec<(TilePos, usize)>,
+    /// Known nodes with scrap whose route from home avoids known danger, in
+    /// `known_scrap` order.
+    reachable: Vec<TilePos>,
     crew: usize,
 }
 
@@ -82,9 +85,13 @@ pub(crate) fn staffing(
     frame: HomeFrame,
     profile: &ResolvedProfile,
     foundries: &[Producer<'_>],
+    scratch: &Scratch,
 ) -> Staffing {
+    let homes: Vec<&BuildingObs> = foundries.iter().map(|foundry| foundry.building).collect();
+    let reachable = reachable(observation, map, frame, scratch, &homes);
     Staffing {
-        worked: worked_nodes(observation, map, frame, profile, foundries),
+        worked: worked_nodes(observation, map, frame, profile, foundries, &reachable),
+        reachable,
         crew: crew(observation),
     }
 }
@@ -142,8 +149,8 @@ pub(crate) fn train(
 
 /// Brings workers away from home back from armed enemies in sight, sends a
 /// worker to each unattended construction site, welds a damaged building,
-/// then sends idle workers to the least-worked node they can reach clear of
-/// known danger.
+/// then sends idle workers to the least-worked node whose route and site are
+/// clear of known danger.
 pub(crate) fn run(
     observation: &ObservationData,
     map: &MapModel,
@@ -155,7 +162,7 @@ pub(crate) fn run(
     flee(observation, map, frame, hazards, ledger);
     resume_sites(observation, map, frame, ledger);
     weld(observation, map, frame, hazards, ledger);
-    assign_idle(observation, map, frame, &staffing.worked, hazards, ledger);
+    assign_idle(observation, map, frame, staffing, hazards, ledger);
 }
 
 /// Whether the next worker is an Excavator: once a Fabricator stands, when
@@ -374,17 +381,18 @@ fn crew(observation: &ObservationData) -> usize {
 }
 
 /// The live known nodes the seat works, each with its crew. A node belongs
-/// to the nearest built Foundry whose ground reaches it, unless an enemy
-/// building or hostile start is as near, and is worked when a Harvester
-/// hauling from there repays its price within the seat's horizon.
-/// Its crew fills the free tiles around it that its remaining scrap repays,
-/// as full as stance and greed make it.
+/// to the nearest built Foundry whose ground reaches it, is worked when its
+/// route from home avoids known danger and a Harvester hauling from there
+/// repays its price within the seat's horizon. Its crew fills the free tiles
+/// around it that its remaining scrap repays, as full as stance and greed
+/// make it.
 fn worked_nodes(
     observation: &ObservationData,
     map: &MapModel,
     frame: HomeFrame,
     profile: &ResolvedProfile,
     foundries: &[Producer<'_>],
+    reachable: &[TilePos],
 ) -> Vec<(TilePos, usize)> {
     let harvester = UnitKind::Harvester.stats();
     let Some(harvest) = harvester.harvest else {
@@ -402,22 +410,14 @@ fn worked_nodes(
             Some((component, centre, foundry.building))
         })
         .collect();
-    // Hostile Foundries known or presumed, and every other known enemy
-    // building: a node nearer one of them than any own Foundry is theirs.
-    let hostile: Vec<(i64, i64)> = observation
-        .enemy_buildings
-        .iter()
-        .map(|building| footprint_centre(building.kind, building.anchor))
-        .chain(
-            map.hostiles(observation.me)
-                .filter_map(|owner| map.start(owner))
-                .map(|start| footprint_centre(BuildingKind::Foundry, start)),
-        )
-        .collect();
     observation
         .known_scrap
         .iter()
-        .filter(|(_, amount)| *amount > 0)
+        .filter(|(node, _)| {
+            reachable
+                .binary_search_by_key(&(node.y, node.x), |tile| (tile.y, tile.x))
+                .is_ok()
+        })
         .filter_map(|(node, amount)| {
             let (component, reach) = homes
                 .iter()
@@ -431,12 +431,6 @@ fn worked_nodes(
                 })
                 .min()
                 .map(|((reach, _, _), component)| (component, reach))?;
-            if hostile
-                .iter()
-                .any(|centre| octile_tenths(*centre, doubled(*node)) <= reach)
-            {
-                return None;
-            }
             // Ticks for one load: standing at the node, then there and back.
             let trip = Fx::from_num(2 * reach) / (Fx::from_num(10) * harvester.speed);
             let cycle =
@@ -450,6 +444,87 @@ fn worked_nodes(
             (places > 0).then(|| (*node, (places * fill).div_ceil(1_000).max(1) as usize))
         })
         .collect()
+}
+
+/// Known nodes with scrap whose route from home stays out of known danger:
+/// the reach of known enemy ground fire, and the surroundings of enemy
+/// Foundries, known or presumed, where their owners' defenders gather.
+fn reachable(
+    observation: &ObservationData,
+    map: &MapModel,
+    frame: HomeFrame,
+    scratch: &Scratch,
+    homes: &[&BuildingObs],
+) -> Vec<TilePos> {
+    let danger = danger(map, scratch);
+    observation
+        .known_scrap
+        .iter()
+        .filter(|(_, amount)| *amount > 0)
+        .map(|(node, _)| *node)
+        .filter(|node| clear_route(map, observation.me, frame, &danger, homes, *node))
+        .collect()
+}
+
+/// Tiles known enemy ground fire covers or that lie around an enemy Foundry.
+fn danger(map: &MapModel, scratch: &Scratch) -> Grid<bool> {
+    let (width, height) = map.size();
+    let mut danger = Grid::new(width, height, false);
+    let mut mark = |tile: TilePos| {
+        if let Some(cell) = danger.get_mut(tile) {
+            *cell = true;
+        }
+    };
+    for hazard in &scratch.ground {
+        hazard.tiles().for_each(&mut mark);
+    }
+    let (foundry_width, foundry_height) = BuildingKind::Foundry.base_stats().size;
+    for anchor in scratch.enemy_foundries() {
+        for dy in -(HOME_TILES + 1)..=foundry_height + HOME_TILES {
+            for dx in -(HOME_TILES + 1)..=foundry_width + HOME_TILES {
+                mark(anchor.offset(dx, dy));
+            }
+        }
+    }
+    danger
+}
+
+/// Whether the shortest ground route from the seat's start to `node`, which
+/// workers roughly follow, stays out of `danger` until it comes home to one
+/// of `homes`. The route is traced back from the node down the start's
+/// distance field; a node that field does not reach is judged by itself.
+fn clear_route(
+    map: &MapModel,
+    me: PlayerId,
+    frame: HomeFrame,
+    danger: &Grid<bool>,
+    homes: &[&BuildingObs],
+    node: TilePos,
+) -> bool {
+    let size = BuildingKind::Foundry.base_stats().size;
+    let mut tile = node;
+    let mut distance = map.distance(me, tile);
+    loop {
+        if homes
+            .iter()
+            .any(|home| gap(home.anchor, size, tile, (1, 1)) <= HOME_TILES)
+        {
+            return true;
+        }
+        if danger.get(tile) == Some(&true) {
+            return false;
+        }
+        let from = doubled(tile);
+        let next = ring(tile, (1, 1))
+            .map(|next| (map.distance(me, next), next))
+            .filter(|(closer, _)| *closer < distance)
+            .min_by_key(|(closer, next)| (*closer, frame.rank(from, doubled(*next))));
+        let Some((closer, next)) = next else {
+            return true;
+        };
+        tile = next;
+        distance = closer;
+    }
 }
 
 /// Ticks within which a Harvester must repay its price for its node to be
@@ -502,13 +577,13 @@ fn room(observation: &ObservationData, map: &MapModel, node: TilePos, component:
 
 /// Sends each idle worker, nearest home first, to the reachable worked
 /// node with the most places open, or to its nearest reachable known node
-/// when none is worked, never to a node inside known danger. One order per
-/// node.
+/// when none is worked, never to a node inside known danger or whose route
+/// crosses it. One order per node.
 fn assign_idle(
     observation: &ObservationData,
     map: &MapModel,
     frame: HomeFrame,
-    worked: &[(TilePos, usize)],
+    staffing: &Staffing,
     hazards: &[Hazard],
     ledger: &mut Ledger,
 ) {
@@ -516,7 +591,8 @@ fn assign_idle(
         let point = doubled(*node);
         !hazards.iter().any(|hazard| hazard.covers(point))
     };
-    let mut miners: Vec<(TilePos, i64)> = worked
+    let mut miners: Vec<(TilePos, i64)> = staffing
+        .worked
         .iter()
         .filter(|(node, _)| safe(node))
         .map(|(node, crew)| {
@@ -552,13 +628,11 @@ fn assign_idle(
                 *node
             }
             None => {
-                let nearest = observation
-                    .known_scrap
+                let nearest = staffing
+                    .reachable
                     .iter()
-                    .filter(|(node, amount)| {
-                        *amount > 0 && map.touches(*node, component) && safe(node)
-                    })
-                    .map(|(node, _)| *node)
+                    .copied()
+                    .filter(|node| map.touches(*node, component) && safe(node))
                     .min_by_key(|node| frame.rank(from, doubled(*node)));
                 let Some(node) = nearest else {
                     continue;

@@ -28,6 +28,18 @@ impl Hazard {
     pub(crate) fn covers(&self, point: (i64, i64)) -> bool {
         distance2(self.centre, point) <= self.reach * self.reach
     }
+
+    /// The tiles whose centres lie within reach.
+    pub(crate) fn tiles(&self) -> impl Iterator<Item = TilePos> + '_ {
+        let span = |centre: i64| {
+            let low = (centre - self.reach).div_euclid(2);
+            let high = (centre + self.reach).div_euclid(2);
+            (low as i32)..=(high as i32)
+        };
+        span(self.centre.1)
+            .flat_map(move |y| span(self.centre.0).map(move |x| TilePos::new(x, y)))
+            .filter(|tile| self.covers(doubled(*tile)))
+    }
 }
 
 /// Where aircraft leave from and come back to: beside the seat's start, on

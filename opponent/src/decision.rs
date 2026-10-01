@@ -268,7 +268,6 @@ pub(crate) fn decide(
         .copied()
         .filter(|producer| producer.building.kind == BuildingKind::Foundry)
         .collect();
-    let staffing = workers::staffing(observation, map, frame, profile, &foundries);
     let earned = persistent.income.observe(tick, observation.scrap, rejected);
     persistent.memory.forget(tick);
     persistent.memory.observe(observation);
@@ -280,6 +279,7 @@ pub(crate) fn decide(
         profile.stance,
         &persistent.missions,
     );
+    let staffing = workers::staffing(observation, map, frame, profile, &foundries, &scratch);
     let airworks = observation
         .my_buildings
         .iter()
