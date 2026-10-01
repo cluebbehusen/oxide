@@ -239,9 +239,11 @@ pub(crate) fn decide(
         .any(|building| building.kind == BuildingKind::Airworks && building.built);
     let income = persistent.income.per_minute();
     // A seat whose ground reaches no enemy delivers ground units only by
-    // lift, so until an Airworks stands its army is aircraft.
+    // lift, so until an Airworks stands its army is aircraft, and line units
+    // only against invaders already on its ground.
     let outlet = composition::Outlet {
         ground: !scratch.severed || airworks,
+        invaders: scratch.invaders,
         air_strikes: airworks || scratch.severed,
         strike: if scratch.severed {
             crate::missions::strike_need(observation, &persistent.memory, profile, &scratch)

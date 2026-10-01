@@ -1087,6 +1087,61 @@ fn a_short_defense_buys_its_army_before_a_carrier() {
     );
 }
 
+#[test]
+fn a_severed_seat_without_an_airworks_trains_line_units_against_enemies_on_its_ground() {
+    let staged = |east: &[(i32, i32)]| {
+        let mut scenario = strait();
+        scenario.units.clear();
+        scenario
+            .buildings
+            .retain(|building| building.kind != BuildingKind::Airworks);
+        for player in &mut scenario.players {
+            player.scrap = 400;
+        }
+        for (x, y) in east {
+            scenario.units.push(unit(1, UnitKind::Sentinel, *x, *y));
+        }
+        scenario
+    };
+    let line = |state: &State, commands: &[PlayerCommand]| {
+        army(state, commands)
+            .iter()
+            .filter(|(_, kind)| {
+                crate::composition::role(*kind) == Some(crate::composition::Role::Line)
+            })
+            .count()
+    };
+
+    let alone = staged(&[]);
+    let state = alone.build().unwrap();
+    let commands = seat(&alone, 0).act(&state, &mut OwnEvents::default());
+    assert_eq!(line(&state, &commands), 0, "premise: nothing to fight");
+
+    let across: Vec<(i32, i32)> = (9..=13).map(|y| (30, y)).collect();
+    let far = staged(&across);
+    let state = far.build().unwrap();
+    let remembered: Vec<(UnitId, &str, TilePos)> = across
+        .iter()
+        .map(|&(x, y)| (at(&state, x, y), "sentinel", TilePos::new(x, y)))
+        .collect();
+    let mut opponent = remembering(&seat(&far, 0), &far, &state, &remembered);
+    let commands = opponent.act(&state, &mut OwnEvents::default());
+    assert_eq!(
+        line(&state, &commands),
+        0,
+        "an army across the strait is no reason for line units"
+    );
+
+    let landed: Vec<(i32, i32)> = (9..=13).map(|y| (6, y)).collect();
+    let invaded = staged(&landed);
+    let state = invaded.build().unwrap();
+    let commands = seat(&invaded, 0).act(&state, &mut OwnEvents::default());
+    assert!(
+        line(&state, &commands) > 0,
+        "invaders on its own ground are: {commands:?}"
+    );
+}
+
 /// The strait with West's tech and a Harvester but no army, and `scrap` for
 /// both seats.
 fn bare_strait(scrap: u32) -> Scenario {
@@ -1139,6 +1194,29 @@ fn a_severed_seat_without_an_airworks_saves_for_one_instead_of_line_units() {
             |(_, kind)| crate::composition::role(*kind) == Some(crate::composition::Role::Line)
         ),
         "premise: idle time becomes line units where they can walk: {trained:?}"
+    );
+}
+
+#[test]
+fn a_seat_that_gave_up_on_every_target_wants_no_strike_force() {
+    let mut scenario = bare_strait(1_000);
+    scenario.units.push(unit(0, UnitKind::Kestrel, 5, 5));
+    let state = scenario.build().unwrap();
+    let mut opponent = seat(&scenario, 0);
+    opponent.act(&state, &mut OwnEvents::default());
+    let mut json = serde_json::to_value(opponent.checkpoint()).unwrap();
+    json["memory"]["abandoned"] = serde_json::json!([
+        {"kind": "foundry", "anchor": {"x": EAST_START.x, "y": EAST_START.y}, "at": 0}
+    ]);
+    let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
+    let mut opponent = Opponent::restore(&checkpoint, &scenario, &state, map(&scenario)).unwrap();
+    let commands = opponent.act(&state, &mut OwnEvents::default());
+    let trained = army(&state, &commands);
+    assert!(
+        trained.iter().all(|(_, kind)| {
+            crate::composition::role(*kind) != Some(crate::composition::Role::AirStrike)
+        }),
+        "{trained:?}"
     );
 }
 

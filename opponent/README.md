@@ -270,15 +270,17 @@ two fifths of its own, siege for known enemy defenses and by preference,
 anti-air to answer three quarters of the enemy air it has seen (a seen enemy
 Airworks counts as air), and air strikes by preference once it has an Airworks.
 Ground units count only while they can reach an enemy, by ground or by lift once
-an Airworks stands. While ground reaches no enemy, air strikes are wanted with
-or without an Airworks, at least what a strike needs against the easiest known
-target. The most wanted role goes first to the nearest idle producer that can
-afford a unit for it, then the next; idle producers left with nothing wanted
-train line units while ground units can reach an enemy. Each chooses the unit it
-can afford now by coarse suitability: reach against the enemy's usual reach,
-durability for the price, covering both enemy domains, splash against clustered
-enemies, affordability at the seat's income, variety (a kind that already makes
-up most of its role counts for less, so every kind of a role gets its turn), and
+an Airworks stands; before then, known enemy ground units on the seat's own
+ground still call for line units worth three quarters of them. While ground
+reaches no enemy, air strikes are wanted with or without an Airworks, at least
+what a strike needs against the easiest known target the seat has not given up
+on. The most wanted role goes first to the nearest idle producer that can afford
+a unit for it, then the next; idle producers left with nothing wanted train line
+units while ground units can reach an enemy. Each chooses the unit it can afford
+now by coarse suitability: reach against the enemy's usual reach, durability for
+the price, covering both enemy domains, splash against clustered enemies,
+affordability at the seat's income, variety (a kind that already makes up most
+of its role counts for less, so every kind of a role gets its turn), and
 personality. Scouts, carriers, Tenders, Scuttlers and Sappers are bought only
 for scouting, lift, support and raids. A role it needs but cannot train at all
 adds to the investment score of the cheapest building that would let it.

@@ -665,6 +665,9 @@ pub(crate) struct Scratch {
     /// Value against ground of the units at home a lift could take without
     /// cutting into the reserve.
     pub(crate) payload: u64,
+    /// Value of the known armed enemy ground units on ground connected to the
+    /// seat's start.
+    pub(crate) invaders: u64,
 }
 
 impl Scratch {
@@ -698,6 +701,13 @@ impl Scratch {
             severed,
             reserve,
             payload: missions.liftable(observation, map, reserve, payload(observation, map)),
+            invaders: reserve::threat(
+                map,
+                memory,
+                observation.me,
+                observation.tick,
+                Domain::Ground,
+            ),
         }
     }
 }
