@@ -73,6 +73,6 @@ Run commands from the workspace root:
 
 ```sh
 cargo test -p oxide-sim --locked
-cargo test -p oxide-sim --test state_integrity --locked
+cargo test -p oxide-sim --locked --test integration state_integrity::
 cargo clippy -p oxide-sim --all-targets --locked -- -D warnings
 ```

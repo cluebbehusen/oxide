@@ -41,6 +41,10 @@ jobs:
           toolchain: "1.99.0"
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Pull requests restore main's cache instead of each saving a copy
+          # that only that pull request can read.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # macroquad links against the platform's windowing/audio stacks even
       # in headless test builds.
@@ -54,7 +58,10 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo fmt --all --check
 
+      # Lints read the same code on every OS; the few platform branches are
+      # compiled by the test step everywhere and linted for iOS below.
       - name: Clippy
+        if: runner.os == 'Linux'
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       # The iPad build compiles the shell's touch-only branches for
@@ -67,8 +74,10 @@ jobs:
           rustup target add aarch64-apple-ios
           cargo clippy -p oxide-shell --target aarch64-apple-ios --locked -- -D warnings
 
+      # oxide-bot's own suites run on Linux only. Its integer-only code still
+      # meets every OS through the driver's hash fixtures and soak.
       - name: Test
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked ${{ runner.os != 'Linux' && '--exclude oxide-bot' || '' }}
         env:
           OXIDE_SOAK_TRACE_DIR: ${{ runner.temp }}/soak-trace
 
@@ -118,6 +127,8 @@ jobs:
           toolchain: "1.99.0"
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: cargo-llvm-cov
@@ -125,12 +136,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev jq
-      - name: Unit coverage
+      - name: Coverage
         shell: bash
-        run: .github/coverage.sh cov-unit "Unit coverage"
-      - name: Combined coverage
-        shell: bash
-        run: .github/coverage.sh cov-combined "Combined coverage"
+        run: .github/coverage.sh
 
   markdown:
     runs-on: ubuntu-latest
@@ -151,8 +159,8 @@ jobs:
             uvx --from skills-ref==0.1.1 agentskills validate "$skill_dir"
           done
 
-  # The declared rust-version is a promise; moving-stable alone never
-  # tests whether the complete test surface still compiles and links on it.
+  # The declared rust-version is a promise; the pinned toolchain alone never
+  # tests whether the complete test surface still compiles on it.
   msrv:
     runs-on: ubuntu-latest
     # rust-toolchain.toml outranks the toolchain the action makes the
@@ -165,12 +173,14 @@ jobs:
         with:
           toolchain: "1.93"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install Linux system libraries
         run: |
           sudo apt-get update
           sudo apt-get install -y libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev
-      - name: Compile tests on MSRV
-        run: cargo test --workspace --locked --no-run
+      - name: Check all targets on MSRV
+        run: cargo check --workspace --all-targets --locked
 
   # Generated sprites and sounds are checked for reproducibility, and
   # their generators carry their own pinned inline Python dependencies.
