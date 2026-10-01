@@ -182,6 +182,41 @@ a seat trained while its ground touched no standing hostile building, split into
 those that reached other ground, those that died, and those still at home 6,000
 ticks after training.
 
+## Reactivity detectors
+
+Rows also record, for every controlled seat, the situations it met and how it
+answered them. A case opens when a situation first holds and closes once:
+answered when the response shows in time, moot when the situation ends first,
+missed at its deadline. Situations a seat must see count only what it sees.
+`bot-matrix-report` prints each controller's cases per mode, with `oxide-bot`'s
+as the reference. Missed cases keep their ticks for replay review with
+`--replay-dir`.
+
+- **Anti-air:** the first armed enemy aircraft seen; the seat owns a dedicated
+  anti-air unit or a built Flak Turret within 3,600 ticks.
+- **Airworks:** an enemy Airworks seen before any armed aircraft; anti-air
+  before the first one.
+- **Ground and air defense:** a seen armed enemy within 8 tiles of an own
+  Foundry; the seat's units, turrets or guns hit one within 600 ticks.
+- **Artillery:** an enemy shell landing within 8 tiles of the seat's buildings;
+  the seat hits the gun within 1,200 ticks, moot if it dies to something else.
+- **Scouting:** a standing hostile start unseen for 3,600 ticks; seen again
+  within 3,600.
+- **Evacuation:** a worker more than 8 tiles from home in a seen armed enemy's
+  reach; out of reach, having moved 2 tiles, within 240 ticks.
+- **Repair:** a built building other than an obstacle under 75% health with no
+  seen armed enemy within 10 tiles; its health rises within 1,200 ticks.
+- **Restoration:** a destroyed Extractor; another on its site within 3,600
+  ticks, moot if an armed enemy still stands near.
+- **Relief:** a seen armed enemy within 8 tiles of an ally's Foundry; the seat
+  hits one within 1,200 ticks.
+- **Withdrawal,** this bot only: an attack, strike or raid in its fight; it
+  withdraws rather than vanishing with half its units lost.
+
+The report also gives this bot's target switches per 10,000 ticks: how often a
+new attack, strike or lift goes after a different player than the one before it.
+Raids, which take the least guarded harvest line, are left out.
+
 Income compares scrap earned in the minute before ticks 6,000, 12,000 and 24,000
 (deliveries plus Reclaimer, Extractor and Foundry credits) with a saturation
 estimate: two Harvesters on each of the four nearest scrap nodes that still hold

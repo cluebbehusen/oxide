@@ -5,7 +5,7 @@
 use super::{MapFamily, MatchMode, MatrixLabel, Pairing};
 use crate::bot_eval::{
     Deliveries, EvaluationControllerKind, EvaluationLeg, INCOME_CHECKPOINTS, IncomeSample,
-    SeatFailures, Termination,
+    SeatFailures, SeatReactivity, Termination,
 };
 use anyhow::{Context, Result, bail, ensure};
 use oxide_kit::recovery::BuildIdentity;
@@ -70,6 +70,10 @@ pub struct ScoredEvidence {
     pub deliveries: Option<Deliveries>,
     /// Income checkpoints reached.
     pub income: Vec<IncomeSample>,
+    /// Situations met and how they were answered; absent from rows recorded
+    /// before the detectors existed.
+    #[serde(default)]
+    pub reactivity: Option<SeatReactivity>,
 }
 
 /// Reads matrix rows from JSONL files, in file and line order.
@@ -201,6 +205,13 @@ pub struct ControllerTally {
     pub deliveries: Deliveries,
     /// Seat-legs whose rows record deliveries.
     pub deliveries_seat_legs: u32,
+    /// Situations met and how they were answered, summed over the seat-legs
+    /// whose rows record them; absent when none do.
+    pub reactivity: Option<SeatReactivity>,
+    /// Seat-legs whose rows record reactivity.
+    pub reactivity_seat_legs: u32,
+    /// Ticks those seat-legs played while their seat stood, for rates.
+    pub reactivity_ticks: u64,
     /// Income medians by checkpoint.
     pub income: Vec<IncomeMedian>,
     /// Placement in mixed legs; absent without any.
@@ -300,6 +311,9 @@ struct ControllerBuilder {
     idle_army_seat_legs: u32,
     deliveries: Deliveries,
     deliveries_seat_legs: u32,
+    reactivity: Option<SeatReactivity>,
+    reactivity_seat_legs: u32,
+    reactivity_ticks: u64,
     income: BTreeMap<u64, Vec<(u32, u32)>>,
     doubled_places: Vec<u64>,
     survival: Vec<u64>,
@@ -442,6 +456,15 @@ pub fn build_report(rows: &[ScoredRow]) -> Result<MatrixReport> {
                     controller.deliveries.lost += deliveries.lost;
                     controller.deliveries.undelivered += deliveries.undelivered;
                     controller.deliveries_seat_legs += 1;
+                }
+                if let Some(reactivity) = &evidence.reactivity {
+                    controller
+                        .reactivity
+                        .get_or_insert_with(SeatReactivity::default)
+                        .merge(reactivity);
+                    controller.reactivity_seat_legs += 1;
+                    controller.reactivity_ticks +=
+                        evidence.eliminated_at.unwrap_or(row.duration_ticks);
                 }
                 for sample in &evidence.income {
                     controller
@@ -614,6 +637,9 @@ fn finish((mode, key): (MatchMode, GroupKey), builder: GroupBuilder) -> GroupRep
             idle_army_seat_legs: tally.idle_army_seat_legs,
             deliveries: tally.deliveries,
             deliveries_seat_legs: tally.deliveries_seat_legs,
+            reactivity: tally.reactivity,
+            reactivity_seat_legs: tally.reactivity_seat_legs,
+            reactivity_ticks: tally.reactivity_ticks,
             income: tally
                 .income
                 .into_iter()
@@ -794,6 +820,7 @@ impl MatrixReport {
                 }
             }
         }
+        self.render_reactivity(&mut out);
         let _ = writeln!(
             out,
             "\nincome per minute: median percent of saturation (actual/saturation, samples)"
@@ -837,6 +864,78 @@ impl MatrixReport {
             }
         }
         out
+    }
+
+    /// Each controller's situations over the whole of each mode: how many
+    /// arose, the share answered, those missed and moot, and the mean ticks
+    /// to an answer.
+    fn render_reactivity(&self, out: &mut String) {
+        let overall: Vec<(&GroupReport, &ControllerTally, &SeatReactivity)> = self
+            .groups
+            .iter()
+            .filter(|group| group.group == "overall")
+            .flat_map(|group| {
+                group
+                    .controllers
+                    .iter()
+                    .filter_map(move |tally| Some((group, tally, tally.reactivity.as_ref()?)))
+            })
+            .collect();
+        if overall.is_empty() {
+            return;
+        }
+        let _ = writeln!(
+            out,
+            "\nreactivity, overall: situations that arose, the share answered in time, missed, moot, mean ticks to answer"
+        );
+        let _ = writeln!(
+            out,
+            "{:<13} {:<10} {:<15} {:>7} {:>9} {:>7} {:>7} {:>11}",
+            "mode", "controller", "situation", "arose", "answered", "missed", "moot", "mean ticks"
+        );
+        for (group, tally, reactivity) in overall {
+            for (name, reactions) in reactivity.items() {
+                let Some(reactions) = reactions else {
+                    continue;
+                };
+                let answered = if reactions.arose == 0 {
+                    "-".to_string()
+                } else {
+                    format!(
+                        "{:.0}%",
+                        100.0 * reactions.answered as f64 / reactions.arose as f64
+                    )
+                };
+                let mean = reactions
+                    .answer_ticks
+                    .checked_div(reactions.answered)
+                    .map_or_else(|| "-".to_string(), |ticks| ticks.to_string());
+                let _ = writeln!(
+                    out,
+                    "{:<13} {:<10} {:<15} {:>7} {:>9} {:>7} {:>7} {:>11}",
+                    group.mode.as_str(),
+                    controller_name(tally.controller),
+                    name,
+                    reactions.arose,
+                    answered,
+                    reactions.missed,
+                    reactions.moot,
+                    mean
+                );
+            }
+            if let Some(switches) = reactivity.target_switches
+                && tally.reactivity_ticks > 0
+            {
+                let _ = writeln!(
+                    out,
+                    "{:<13} {:<10} target switches per 10k ticks: {:.2} ({} seat-legs)",
+                    group.mode.as_str(),
+                    controller_name(tally.controller),
+                    switches as f64 * 10_000.0 / tally.reactivity_ticks as f64,
+                    tally.reactivity_seat_legs
+                );
+            }
+        }
     }
 
     fn render_pairing(
@@ -962,6 +1061,7 @@ mod tests {
             },
             deliveries: None,
             income,
+            reactivity: None,
         }
     }
 
@@ -1476,6 +1576,73 @@ mod tests {
             .unwrap()
             .render();
         assert!(!unmeasured.contains("severed ground"), "{unmeasured}");
+    }
+
+    #[test]
+    fn reactivity_sums_over_the_rows_that_record_it_and_renders_overall() {
+        let mut rows = pair("a", MapFamily::Open, 0, [NEW, OLD]);
+        let found = SeatReactivity {
+            ground_defense: crate::bot_eval::Reactions {
+                arose: 4,
+                answered: 3,
+                missed: 1,
+                answer_ticks: 90,
+                ..Default::default()
+            },
+            withdrawal: Some(crate::bot_eval::Reactions {
+                arose: 2,
+                answered: 2,
+                answer_ticks: 400,
+                ..Default::default()
+            }),
+            target_switches: Some(1),
+            ..Default::default()
+        };
+        rows[0].evidence[0].reactivity = Some(found.clone());
+        rows[1].evidence[1].reactivity = Some(found);
+        let report = build_report(&rows).unwrap();
+        let new = report.groups[0]
+            .controllers
+            .iter()
+            .find(|tally| tally.controller == EvaluationControllerKind::Opponent)
+            .unwrap();
+        assert_eq!(new.reactivity_seat_legs, 2);
+        let summed = new.reactivity.as_ref().unwrap();
+        assert_eq!(
+            (summed.ground_defense.arose, summed.ground_defense.answered),
+            (8, 6)
+        );
+        let text = report.render();
+        assert!(text.contains("reactivity, overall"), "{text}");
+        assert!(
+            text.lines().any(|line| line.contains("ground defense")
+                && line.contains("75%")
+                && line.contains(" 30")),
+            "{text}"
+        );
+        assert!(text.contains("withdrawal"), "{text}");
+        assert!(text.contains("target switches per 10k ticks"), "{text}");
+
+        let unmeasured = build_report(&pair("a", MapFamily::Open, 0, [NEW, OLD]))
+            .unwrap()
+            .render();
+        assert!(!unmeasured.contains("reactivity"), "{unmeasured}");
+    }
+
+    #[test]
+    fn rows_recorded_before_the_reactivity_detectors_still_load() {
+        let evidence: ScoredEvidence = serde_json::from_value(serde_json::json!({
+            "seat": 0,
+            "eliminated_at": null,
+            "failures": {
+                "repeated_orders": {"incidents": 0, "examples": []},
+                "abandoned_sites": {"incidents": 0, "examples": []},
+                "starved_production": {"incidents": 0, "examples": []},
+            },
+            "income": [],
+        }))
+        .unwrap();
+        assert!(evidence.reactivity.is_none());
     }
 
     #[test]
