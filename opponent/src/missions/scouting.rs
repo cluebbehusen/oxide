@@ -59,8 +59,10 @@ pub(crate) fn points(map: &MapModel, me: PlayerId) -> Vec<Point> {
 
 impl Missions {
     /// Keeps a scout looking at each stale place, no two at one place.
-    /// Returns how many stale places no scout holds or could take, which
-    /// production trains scouts for.
+    /// Returns how many stale places no scout holds that the scout
+    /// production would train could reach, which production trains scouts
+    /// for: an aircraft once an Airworks stands, else a Scuttler. None while
+    /// no mission could take another.
     pub(crate) fn scout(
         &mut self,
         observation: &ObservationData,
@@ -122,7 +124,14 @@ impl Missions {
                 continue;
             };
             let others = held(self, Some(id));
-            match best(now, frame, &points, scouted, &others, goals.of(scout)) {
+            match best(
+                now,
+                frame,
+                &points,
+                scouted,
+                &others,
+                goals.of(flies(scout)),
+            ) {
                 Some((next, goal)) => {
                     if send(observation, frame, hazards, scout, goal, ledger) {
                         let mission = &mut self.list[index];
@@ -159,7 +168,7 @@ impl Missions {
         while self.list.len() < MISSION_CAP {
             let taken = held(self, None);
             let chosen = scouts.iter().enumerate().find_map(|(index, scout)| {
-                best(now, frame, &points, scouted, &taken, goals.of(scout))
+                best(now, frame, &points, scouted, &taken, goals.of(flies(scout)))
                     .map(|best| (index, best))
             });
             let Some((index, (point, goal))) = chosen else {
@@ -178,16 +187,30 @@ impl Missions {
             });
             self.next += 1;
         }
+        if self.list.len() >= MISSION_CAP {
+            return 0;
+        }
         let taken = held(self, None);
+        let air = observation
+            .my_buildings
+            .iter()
+            .any(|building| building.kind == BuildingKind::Airworks && building.built);
+        let reach = goals.of(air);
         scouted
             .iter()
             .enumerate()
             .filter(|(index, seen)| {
                 now - **seen >= STALE_TICKS
+                    && reach[*index].is_some()
                     && u16::try_from(*index).is_ok_and(|point| !taken.contains(&point))
             })
             .count()
     }
+}
+
+/// Whether `scout` flies.
+fn flies(scout: &UnitObs) -> bool {
+    scout.kind.stats().domain == Domain::Air
 }
 
 /// Sends `scout` to `goal`, an aircraft around known anti-air when the
@@ -231,10 +254,11 @@ struct Goals<'a> {
 }
 
 impl Goals<'_> {
-    /// Each point's goal for `scout`, `None` where it cannot go.
-    fn of(&self, scout: &UnitObs) -> &[Option<TilePos>] {
+    /// Each point's goal for a scout, an aircraft when `air`, `None` where it
+    /// cannot go.
+    fn of(&self, air: bool) -> &[Option<TilePos>] {
         let frame = self.frame;
-        if scout.kind.stats().domain == Domain::Air {
+        if air {
             self.air.get_or_init(|| {
                 let (width, height) = BuildingKind::Foundry.base_stats().size;
                 self.points

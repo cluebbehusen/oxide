@@ -841,3 +841,109 @@ fn a_seat_does_not_wall_itself_in() {
         "live scrap closes the second way out until it is mined"
     );
 }
+
+#[test]
+fn an_exposed_opening_buys_no_tech_before_its_first_turret() {
+    let mut scenario = arena(150);
+    scenario.units.push(unit(0, UnitKind::Sentinel, 3, 10));
+    let built = |state: &State| -> Vec<BuildingKind> {
+        builds(&seat_with(&scenario, 0, thrifty()).act(state, &mut OwnEvents::default()))
+            .into_iter()
+            .map(|(kind, _)| kind)
+            .collect()
+    };
+    let mut state = scenario.build().unwrap();
+    let opening = built(&state);
+    assert!(
+        opening.iter().all(|kind| *kind != BuildingKind::Fabricator),
+        "no Turret can be placed yet, so tech waits: {opening:?}"
+    );
+    advance_to(&mut state, crate::defenses::SETTLE_TICKS, &[]);
+    let settled = built(&state);
+    assert!(
+        settled.contains(&BuildingKind::Turret)
+            && settled.iter().all(|kind| *kind != BuildingKind::Fabricator),
+        "{settled:?}"
+    );
+}
+
+#[test]
+fn an_upgraded_gun_holds_what_its_upgrades_paid_for() {
+    // Wardens stand on the approach, so a second Turret's score tracks how
+    // much of them the first one holds.
+    let second = |tier: u8| {
+        let mut scenario = settled(0);
+        let first = offer(
+            &wanted(
+                &scenario,
+                &scenario.build().unwrap(),
+                &Memory::default(),
+                85,
+            ),
+            BuildingKind::Turret,
+        )
+        .expect("a first Turret is wanted")
+        .0;
+        scenario
+            .buildings
+            .push(building(0, BuildingKind::Turret, first.x, first.y));
+        scenario.units.push(unit(0, UnitKind::Kestrel, 10, 5));
+        for (x, y) in [(13, 4), (13, 5), (13, 6), (14, 4), (14, 5), (14, 6)] {
+            scenario.units.push(unit(1, UnitKind::Warden, x, y));
+        }
+        let mut value = serde_json::to_value(scenario.build().unwrap()).unwrap();
+        for entry in value["buildings"].as_array_mut().unwrap() {
+            if entry["kind"] == "turret" {
+                entry["tier"] = tier.into();
+            }
+        }
+        let state: State = serde_json::from_value(value).unwrap();
+        let mut memory = Memory::default();
+        memory.observe(&ObservationData::fog_honest(&state, PlayerId(0)));
+        offer(
+            &wanted(&scenario, &state, &memory, 85),
+            BuildingKind::Turret,
+        )
+        .map_or(0, |(_, score)| score)
+    };
+    let base = second(0);
+    let bulwark = second(2);
+    assert!(base > 0, "premise: a lone Turret leaves the approach short");
+    assert!(bulwark < base, "{bulwark} against {base}");
+}
+
+#[test]
+fn an_army_across_a_chasm_adds_nothing_to_a_raider_on_the_seat_s_ground() {
+    // A first Turret covers the way in, so a second one's score tracks the
+    // threat the first leaves unheld.
+    let staged = |across: bool, first: Option<TilePos>| {
+        let mut scenario = settled(0);
+        for row in &mut scenario.map[1..11] {
+            row.replace_range(11..13, "##");
+        }
+        scenario.units.push(unit(1, UnitKind::Sentinel, 9, 5));
+        scenario.units.push(unit(0, UnitKind::Kestrel, 12, 5));
+        if across {
+            for (x, y) in [(14, 4), (14, 5), (14, 6), (15, 5)] {
+                scenario.units.push(unit(1, UnitKind::Warden, x, y));
+            }
+        }
+        if let Some(first) = first {
+            scenario
+                .buildings
+                .push(building(0, BuildingKind::Turret, first.x, first.y));
+        }
+        let state = scenario.build().unwrap();
+        let mut memory = Memory::default();
+        memory.observe(&ObservationData::fog_honest(&state, PlayerId(0)));
+        offer(
+            &wanted_by(0, false, &scenario, &state, &memory, 85),
+            BuildingKind::Turret,
+        )
+    };
+    let first = staged(false, None)
+        .expect("premise: the raider draws a Turret")
+        .0;
+    let alone = staged(false, Some(first)).map(|(_, score)| score);
+    assert_eq!(staged(true, Some(first)).map(|(_, score)| score), alone);
+}

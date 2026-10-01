@@ -335,6 +335,7 @@ fn reclaimers_wait_for_the_drip_and_refineries_need_a_fabricator() {
             pull: Vec::new(),
             exposed: false,
             stakes: defenses::Stakes::default(),
+            severed: false,
             wanted: Vec::new(),
         })
         .into_iter()
@@ -556,6 +557,7 @@ fn mirrored_seats_rank_equal_extractor_frames_alike() {
             pull: Vec::new(),
             exposed: false,
             stakes: defenses::Stakes::default(),
+            severed: false,
             wanted: Vec::new(),
         })
         .into_iter()
