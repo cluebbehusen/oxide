@@ -753,3 +753,72 @@ fn a_checkpoint_with_two_attacks_under_way_resumes_identically() {
         state.tick(&commands);
     }
 }
+
+#[test]
+fn a_won_defense_frees_its_army_for_a_counterattack() {
+    let scenario = armed(8, &[]);
+    let state = scenario.build().unwrap();
+    let home = foundries(&state, PlayerId(0))[0];
+    let mut defenders: Vec<UnitId> = WEST.iter().map(|(x, y)| at(&state, *x, *y)).collect();
+    defenders.sort_unstable();
+    let (mut state, mut opponent) = staged(
+        &scenario,
+        serde_json::json!({
+            "next": 1,
+            "list": [{
+                "id": 0,
+                "task": {"task": "defend", "asset": home.0, "phase": "recover"},
+                "since": 12,
+                "units": defenders,
+                "goal": {"x": 6, "y": 11},
+            }],
+        }),
+    );
+    let (_, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
+    let missions = trace.unwrap().missions;
+    assert!(
+        attack(&missions).is_none(),
+        "the army still guards home: {missions:?}"
+    );
+
+    advance_to(&mut state, 12 + 600, &[]);
+    let (commands, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
+    let missions = trace.unwrap().missions;
+    assert!(
+        missions
+            .iter()
+            .all(|mission| !matches!(mission.kind, MissionKind::Defend { .. })),
+        "{missions:?}"
+    );
+    let mission = attack(&missions).expect("the freed army attacks");
+    assert_eq!(mission.phase, Phase::Gather);
+    let [(sent, goal)] = &hunts(&commands)[..] else {
+        panic!("{commands:?}");
+    };
+    assert_eq!(*goal, mission.goal);
+    assert!(
+        sent.iter().any(|unit| defenders.contains(unit)),
+        "the defenders lead the counterattack: {sent:?}"
+    );
+}
+
+#[test]
+fn anti_air_near_the_rally_escorts_an_attack() {
+    let escorted = |flak: (i32, i32)| {
+        let mut scenario = armed(8, &[]);
+        scenario
+            .units
+            .push(unit(0, UnitKind::Flakhound, flak.0, flak.1));
+        let state = scenario.build().unwrap();
+        let flakhound = at(&state, flak.0, flak.1);
+        let (commands, trace) = seat(&scenario, 0).act_traced(&state, &mut OwnEvents::default());
+        let mission = attack(&trace.unwrap().missions).expect("premise: an attack forms");
+        let [(sent, _)] = &hunts(&commands)[..] else {
+            panic!("{commands:?}");
+        };
+        assert_eq!(sent.len(), mission.units as usize);
+        sent.contains(&flakhound)
+    };
+    assert!(escorted((10, 11)), "beside the rally");
+    assert!(!escorted((1, 22)), "far behind home");
+}

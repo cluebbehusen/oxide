@@ -318,3 +318,80 @@ fn a_half_explored_footprint_is_still_scouted() {
         decision.commands
     );
 }
+
+#[test]
+fn a_lost_extractor_is_rebuilt_once_its_attacker_is_gone() {
+    let mut scenario = arena(1_000);
+    scenario.map[1].replace_range(6..7, "E");
+    scenario.units.extend([
+        harvester(0, 5, 7),
+        harvester(0, 4, 7),
+        unit(1, UnitKind::Sentinel, 8, 2),
+    ]);
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Extractor,
+        x: 6,
+        y: 1,
+    });
+    let frame = TilePos::new(6, 1);
+    let state = scenario.build().unwrap();
+    let raider = at(&state, 8, 2);
+    let extractor = state
+        .buildings()
+        .iter()
+        .find(|building| building.kind == BuildingKind::Extractor)
+        .unwrap()
+        .id;
+    let mut value = serde_json::to_value(&state).unwrap();
+    for building in value["buildings"].as_array_mut().unwrap() {
+        if building["id"] == extractor.0 {
+            building["hp"] = 1.into();
+        }
+    }
+    let mut state: State = serde_json::from_value(value).unwrap();
+    let mut opponent = seat(&scenario, 0);
+    let mut events = OwnEvents::default();
+    let builds_frame = |commands: &[PlayerCommand]| {
+        commands.iter().any(|command| {
+            matches!(
+                command.command,
+                Command::Build { kind: BuildingKind::Extractor, anchor, .. } if anchor == frame
+            )
+        })
+    };
+    let attack = PlayerCommand {
+        player: PlayerId(1),
+        command: Command::Attack {
+            units: vec![raider],
+            target: AttackTarget::Building(extractor),
+            queue: false,
+        },
+    };
+    let mut lost = false;
+    let mut held = 0;
+    let mut rebuilt = false;
+    while state.current_tick() < 3_000 && !rebuilt {
+        let mut commands = opponent.act(&state, &mut events);
+        let present = state.units().iter().any(|unit| unit.id == raider);
+        if lost && present {
+            assert!(
+                !builds_frame(&commands),
+                "rebuilt while its attacker stands beside the frame"
+            );
+            held += usize::from(!commands.is_empty());
+        }
+        rebuilt = lost && !present && builds_frame(&commands);
+        if state.current_tick() == 0 {
+            commands.push(attack.clone());
+        }
+        lost |= state.building(extractor).is_none();
+        events.record(PlayerId(0), &state.tick(&commands).events);
+    }
+    assert!(lost, "premise: the Extractor falls");
+    assert!(held > 0, "premise: the seat acts while the attacker stays");
+    assert!(
+        rebuilt,
+        "a new Extractor goes on the frame once the attacker is gone"
+    );
+}

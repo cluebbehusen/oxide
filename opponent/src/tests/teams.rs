@@ -250,3 +250,52 @@ fn mirrored_seats_pick_mirrored_rivals_among_equals() {
     assert_eq!(rival(3), rival(0).map(mirrored));
     assert_eq!(rival(2), rival(1).map(mirrored));
 }
+
+#[test]
+fn a_rival_with_an_attack_under_way_stays_the_rival_until_another_clearly_leads() {
+    let scenario = trio([None, None, None]);
+    let rival = |scenario: &Scenario, held: bool| {
+        let state = scenario.build().unwrap();
+        let observation = ObservationData::fog_honest(&state, PlayerId(0));
+        let model = map(scenario);
+        let scratch = scratch(&observation, &model);
+        let missions: Missions = if held {
+            serde_json::from_value(serde_json::json!({
+                "next": 1,
+                "list": [{
+                    "id": 0,
+                    "task": {
+                        "task": "attack",
+                        "target": {"owner": 2, "building": "foundry", "anchor": {"x": 35, "y": 7}},
+                        "phase": "travel",
+                    },
+                    "since": 0,
+                    "units": [at(&state, 8, 9).0],
+                    "goal": {"x": 30, "y": 7},
+                }],
+                "waiting": null,
+            }))
+            .unwrap()
+        } else {
+            Missions::default()
+        };
+        missions.rival(&scratch, &observation, &model, traits(50))
+    };
+    assert_eq!(
+        rival(&scenario, false),
+        Some(PlayerId(1)),
+        "premise: the nearer enemy"
+    );
+    assert_eq!(
+        rival(&scenario, true),
+        Some(PlayerId(2)),
+        "the enemy an attack already goes after keeps the seat's attention"
+    );
+    let mut pressed = scenario.clone();
+    pressed.units.push(unit(1, UnitKind::Sentinel, 7, 3));
+    assert_eq!(
+        rival(&pressed, true),
+        Some(PlayerId(1)),
+        "an enemy at the gate outweighs staying put"
+    );
+}
