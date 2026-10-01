@@ -108,6 +108,13 @@ fn a_seen_enemy_airworks_raises_anti_air_before_any_flyer() {
             .map(|target| target.investment)
     };
     let mut bare = arena(200);
+    // A Turret already guards home, so tech need not wait for one.
+    bare.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Turret,
+        x: 4,
+        y: 9,
+    });
     assert_eq!(target(&bare), None, "premise: nothing worth saving for yet");
     bare.buildings.push(BuildingSpec {
         player: 1,

@@ -53,8 +53,9 @@ selects actions in precedence order:
 2. the saving target, when it is affordable and can be placed;
 3. workers, to keep harvesting saturated: every known node whose trip repays a
    Harvester within a stance and greed horizon, filled as stance and greed
-   choose; until the army reaches the stance minimum, workers never cost more
-   than the army, and a seat that exposed puts up a Turret before any tech;
+   choose; until the army reaches the stance minimum, workers that would cost
+   more than the army wait for army production, and a seat that exposed puts up
+   a Turret before any tech;
 4. missions, advancing their phases and recruiting as needed;
 5. production toward composition needs, from scrap not protected for saving.
 

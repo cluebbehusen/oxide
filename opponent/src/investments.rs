@@ -161,12 +161,13 @@ pub(crate) fn candidates(situation: &Situation<'_>) -> Vec<Candidate> {
             list.push((refinery, base * 7 / 5));
         }
     }
+    let settled = saturated || observation.tick >= defenses::SETTLE_TICKS;
     list.extend(defenses::investments(
         observation,
         situation.map,
         situation.memory,
         traits,
-        saturated || observation.tick >= defenses::SETTLE_TICKS,
+        settled,
         situation.exposed,
     ));
     // A seat without an army to speak of puts up a Turret before any tech:
@@ -180,6 +181,7 @@ pub(crate) fn candidates(situation: &Situation<'_>) -> Vec<Candidate> {
             .max()
             .unwrap_or(0);
         let lead = (tech + (tech / 4).max(150) + 1).max(ADOPT);
+        let mut offered = false;
         for (investment, score) in &mut list {
             if matches!(
                 investment,
@@ -189,6 +191,17 @@ pub(crate) fn candidates(situation: &Situation<'_>) -> Vec<Candidate> {
                 }
             ) {
                 *score = (*score).max(lead);
+                offered = true;
+            }
+        }
+        // No Turret is offered against a threat known only from public facts
+        // until the opening settles, so tech waits for that Turret. Holding
+        // tech just under adoption keeps a target already being saved for.
+        if !settled && !offered {
+            for (investment, score) in &mut list {
+                if matches!(investment, Investment::Tech(_)) {
+                    *score = (*score).min(ADOPT - 1);
+                }
             }
         }
     }

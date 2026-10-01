@@ -949,6 +949,23 @@ fn harvesters_that_outprice_the_army_take_only_what_it_leaves() {
 }
 
 #[test]
+fn workers_bought_before_production_never_cost_more_than_the_army() {
+    // Two Sentinels against two Harvesters leave the price of one more
+    // Harvester before production, not one at each Foundry; production then
+    // spends the rest.
+    let mut scenario = second_foundry(140);
+    scenario.units.push(unit(0, UnitKind::Sentinel, 9, 9));
+    scenario.units.push(unit(0, UnitKind::Sentinel, 9, 10));
+    let state = scenario.build().unwrap();
+    let commands = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
+    let workers = trains(&commands)
+        .into_iter()
+        .filter(|(_, kind)| *kind == UnitKind::Harvester)
+        .count();
+    assert_eq!(workers, 1, "{commands:?}");
+}
+
+#[test]
 fn a_seat_without_an_army_puts_up_a_turret_before_tech() {
     let target = |scenario: &Scenario| {
         let state = scenario.build().unwrap();

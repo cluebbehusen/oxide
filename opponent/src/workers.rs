@@ -107,12 +107,13 @@ pub(crate) fn recover(
 }
 
 /// Trains workers at ready Foundries up to two Harvesters' worth per worked
-/// node.
+/// node, spending at most `budget` on them.
 pub(crate) fn train(
     observation: &ObservationData,
     foundries: &[Producer<'_>],
     staffing: &Staffing,
     greed: u8,
+    mut budget: u64,
     ledger: &mut Ledger,
 ) {
     let mut count = staffing.crew
@@ -130,8 +131,13 @@ pub(crate) fn train(
         } else {
             UnitKind::Harvester
         };
+        let cost = u64::from(kind.stats().cost);
+        if cost > budget {
+            break;
+        }
         if ledger.train(foundry.building.id, kind) {
             count += slots(kind);
+            budget -= cost;
         }
     }
 }
@@ -464,12 +470,14 @@ pub(crate) fn fill(profile: &ResolvedProfile) -> u64 {
 }
 
 /// Free tiles a worker could stand on to work `node`: its neighbours on
-/// `component` that no known building or other node covers.
+/// `component` that no known building, the seat's, an ally's or an enemy's,
+/// or other node covers.
 fn room(observation: &ObservationData, map: &MapModel, node: TilePos, component: u32) -> usize {
     let covered = |tile: TilePos| {
         observation
             .my_buildings
             .iter()
+            .chain(&observation.ally_buildings)
             .chain(&observation.enemy_buildings)
             .any(|building| {
                 let (width, height) = building.kind.base_stats().size;

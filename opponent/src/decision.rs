@@ -326,13 +326,18 @@ pub(crate) fn decide(
     // above is trained while it lasts. Until the army reaches the stance
     // minimum, workers that would cost more than it take only what the army
     // leaves, after production.
-    let paced = !exposed || workforce(observation) <= army(observation);
-    if !short && paced {
+    let pace = if exposed {
+        army(observation).saturating_sub(workforce(observation))
+    } else {
+        u64::MAX
+    };
+    if !short {
         workers::train(
             observation,
             &foundries,
             &staffing,
             profile.traits.greed,
+            pace,
             &mut ledger,
         );
     }
@@ -419,12 +424,13 @@ pub(crate) fn decide(
         }
         produce(observation, &producers, &mut needs, &mut ledger);
     }
-    if !short && !paced {
+    if !short && exposed {
         workers::train(
             observation,
             &foundries,
             &staffing,
             profile.traits.greed,
+            u64::MAX,
             &mut ledger,
         );
     }
@@ -873,7 +879,6 @@ fn share(observation: &ObservationData, profile: &ResolvedProfile) -> u32 {
     (base + greed - cut).clamp(200, 800) as u32
 }
 
-/// What the seat's armed units cost.
 /// Price of the seat's workers, alive or queued.
 fn workforce(observation: &ObservationData) -> u64 {
     observation
@@ -886,6 +891,7 @@ fn workforce(observation: &ObservationData) -> u64 {
         .sum()
 }
 
+/// What the seat's armed units cost.
 fn army(observation: &ObservationData) -> u64 {
     observation
         .my_units
