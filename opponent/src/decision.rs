@@ -141,11 +141,6 @@ impl Ledger {
         self.decision.allowance - self.decision.unit_orders
     }
 
-    /// Unit orders the whole decision may issue.
-    pub(crate) fn allowance(&self) -> u32 {
-        self.decision.allowance
-    }
-
     /// Footprints this decision already committed to.
     pub(crate) fn planned(&self) -> &[(BuildingKind, TilePos)] {
         &self.planned
@@ -247,7 +242,7 @@ pub(crate) fn decide(
     // production for carriers: an army and home defense come first.
     let minimum = crate::missions::minimum(profile.stance);
     let exposed = army(observation) < minimum;
-    let carryable = crate::missions::payload(observation, map).0 >= minimum;
+    let carryable = crate::missions::payload(observation, map) >= minimum;
     let lift = carryable && crate::missions::lift_needed(observation, map, frame);
     let mut pull = needs.pull(observation);
     if lift {
@@ -363,8 +358,17 @@ pub(crate) fn decide(
         persistent
             .missions
             .scout(observation, map, frame, &mut persistent.memory, &mut ledger);
-    let carrying =
-        lift && !short && train_carriers(observation, map, profile, &producers, &mut ledger);
+    let carrying = lift
+        && !short
+        && train_carriers(
+            observation,
+            map,
+            frame,
+            profile,
+            persistent,
+            &producers,
+            &mut ledger,
+        );
     if !carrying {
         if scout {
             train_scout(observation, &producers, &mut ledger);
@@ -504,37 +508,39 @@ fn explore(
     }
 }
 
-/// Keeps enough carriers, alive and queued, to lift the stance's minimum army
-/// at the value per transport slot of the units at home a lift could take,
-/// training one at an idle Airworks when short. It is a stock, like the
-/// Harvesters: no mission is promised the carriers it buys. Returns whether
-/// an idle Airworks waits for the scrap to train one, so that cheaper units
-/// do not spend it first.
+/// Keeps enough carriers, alive and queued, to lift what the best landing
+/// needs with the free units at home, training one at an idle Airworks when
+/// short. It is a stock, like the Harvesters: no mission is promised the
+/// carriers it buys. Returns whether an idle Airworks waits for the scrap to
+/// train one while riders at home already fill every carrier, so that
+/// cheaper units do not spend it first.
 fn train_carriers(
     observation: &ObservationData,
     map: &MapModel,
+    frame: HomeFrame,
     profile: &ResolvedProfile,
+    persistent: &Persistent,
     producers: &[Producer<'_>],
     ledger: &mut Ledger,
 ) -> bool {
-    let (value, slots) = crate::missions::payload(observation, map);
-    let per_slot = value
-        .checked_div(slots)
-        .map_or(EMPTY_SLOT_VALUE, |value| value.max(1));
-    let capacity = u64::from(UnitKind::Skyhook.stats().transport_capacity).max(1);
-    let minimum = crate::missions::minimum(profile.stance);
-    let wanted = minimum.div_ceil(capacity * per_slot).clamp(1, 4) as usize;
-    let carriers = observation
+    let carriers = (observation
         .my_units
         .iter()
         .map(|unit| unit.kind)
         .chain(observation.my_queues.iter().flatten().copied())
         .filter(|kind| crate::missions::carrier(*kind))
         .count()
-        + ledger.queued(UnitKind::Skyhook);
-    if carriers >= wanted {
+        + ledger.queued(UnitKind::Skyhook)) as u64;
+    let Some(waiting) = persistent.missions.carriers_short(
+        observation,
+        map,
+        frame,
+        profile,
+        &persistent.memory,
+        carriers,
+    ) else {
         return false;
-    }
+    };
     producers
         .iter()
         .find(|producer| {
@@ -542,7 +548,7 @@ fn train_carriers(
                 && producer.idle
                 && !ledger.queued_at(producer.building.id)
         })
-        .is_some_and(|airworks| !ledger.train(airworks.building.id, UnitKind::Skyhook))
+        .is_some_and(|airworks| !ledger.train(airworks.building.id, UnitKind::Skyhook) && waiting)
 }
 
 /// Trains the scout scouting wants unless the seat already has or is making
@@ -819,9 +825,6 @@ const SCUTTLERS: usize = 2;
 /// Income per minute, less four for each point of guile, at which the seat
 /// starts keeping Scuttlers for raiding.
 const RAID_INCOME: u32 = 900;
-
-/// The value per transport slot assumed with no line or siege unit at home.
-const EMPTY_SLOT_VALUE: u64 = 90;
 
 /// What a needed lift adds to the Airworks' investment score.
 const LIFT_PULL: u32 = 600;

@@ -140,34 +140,40 @@ a focus, and a member out of reach leaves the mission's fire unfocused.
 When the seat knows of enemy buildings or hostile starts and ground reaches none
 of them, and the seat has at least the stance's minimum army to carry, it needs
 lift. The Airworks then scores higher while the seat has none, and production
-keeps enough Skyhooks, alive and queued, to carry the stance's minimum army,
-from one to four. While an idle Airworks waits for the scrap to train one, other
-production waits too, unless a defense is short.
+keeps enough Skyhooks, alive and queued, to carry what the best landing needs,
+or the stance's minimum while none is known, with the free riders at home packed
+as a lift would pack them, but no more than those riders fill. While an idle
+Airworks waits for the scrap to train one and some of those riders have no room,
+other production waits too, unless a defense is short.
 
 A lift forms only from carriers and passengers that exist: free carriers that
-are idle, empty and over open home ground, no more of them than one decision's
-orders can send off together, and free line and siege units at half health or
-better on home ground, packed into them most value per transport slot first. It
-needs those that can hit ground to be worth the stance's minimum and to outweigh
-the target's known defense by the attack margin. The target is the most valuable
-known enemy building, or hostile start not seen cleared, for its distance that
-no ground route reaches and that has a landing: explored open ground on the
-target's island, set back from it and clear of known fire, where every tile
-unloading could set a rider on belongs to that island.
+are idle, empty and over open home ground, and free line and siege units at half
+health or better on home ground, packed into them most value per transport slot
+first. It needs those that can hit ground to be worth the stance's minimum and
+to outweigh the target's known defense by the attack margin. Carriers are loaded
+as the decision's orders allow until the loads sent reach that need, and more
+are loaded on later decisions while those aboard or walking fall short. The
+target is the most valuable known enemy building, or hostile start not seen
+cleared, for its distance that no ground route reaches and that has a landing:
+explored open ground on the target's island, set back from it and clear of known
+fire, where every tile unloading could set a rider on belongs to that island.
 
 A free carrier hovering where no rider could reach it, such as over the Airworks
 that trained it, first moves to open ground. Riders walk to their carriers and
-board. Once none is still walking, or after a while, the loaded carriers leave
-together if everyone boarded or at least half the need is aboard; a rider that
-stopped short is not sent again. Carriers fly straight to the landing, or around
-known anti-air through a via-point when the straight line crosses it, and then
-home the same way. Riders still walking are stopped and let go; with less than
-half aboard the lift sets everyone down and disbands. Landed riders hunt the
-target and, once no one is aboard, fight on to the next target on the same
-island. Nothing brings them home. A carrier that comes home still loaded sets
-its riders down and lets them go. A target the lift lost its units to, or stood
-idle beside, is skipped for a while. One lift runs at a time, and a defense may
-take its units only while they board.
+board. Once none is still walking and no more were sent, or after a while, the
+loaded carriers leave together in one order if everyone boarded or at least half
+the need is aboard; a rider that stopped short is not sent again. Carriers fly
+straight to the landing, or around known anti-air through a via-point when the
+straight line crosses it. Each sets its riders down at the landing once there,
+as the decision's orders allow, and emptied carriers fly home together the same
+way. Riders still walking are stopped and let go; with less than half aboard the
+lift sets everyone down and disbands. Landed riders hunt the target and, once no
+one is aboard and every emptied carrier is on its way home, fight on to the next
+target on the same island. Nothing brings them home. A carrier that comes home
+still loaded sets its riders down and lets them go. A target the lift lost its
+units to, or stood idle beside, is skipped for a while. One lift runs at a time,
+it never grows past the mission member cap, and a defense may take its units
+only while they board.
 
 ## Strikes
 
