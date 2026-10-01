@@ -46,6 +46,9 @@ pub const BASELINE_CACHE_VERSION: u32 = 1;
 /// File a matrix run publishes in its output directory.
 pub const ROWS_FILE: &str = "rows.jsonl";
 
+/// Compact rows of the evaluated legs, published beside their replays.
+pub const REPLAY_INDEX_FILE: &str = "legs.jsonl";
+
 /// Map shape, reported separately because it decides which capabilities a
 /// match needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -124,6 +127,17 @@ pub enum Pairing {
     Mixed,
     /// `oxide-bot` against itself.
     Baseline,
+}
+
+impl Pairing {
+    /// Stable lowercase name.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::HeadToHead => "head_to_head",
+            Self::Mixed => "mixed",
+            Self::Baseline => "baseline",
+        }
+    }
 }
 
 /// A matrix definition.
@@ -422,6 +436,13 @@ fn seated_plan(
     }
 }
 
+/// A replay path belongs to the run that saved it, so cached rows carry none.
+fn without_replay(row: &mut serde_json::Value) {
+    if let Some(row) = row.as_object_mut() {
+        row.remove("replay");
+    }
+}
+
 /// Baseline rows on disk, keyed by the reference digest and each leg's exact
 /// execution. Entries from another digest, simulation version, tick limit or
 /// stall-loop limit are never read.
@@ -475,9 +496,10 @@ impl BaselineCache {
                     .with_context(|| format!("reading cached row {}", entry.path.display()));
             }
         };
-        let Ok(row) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        let Ok(mut row) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
             return Ok(None);
         };
+        without_replay(&mut row);
         let matches = row["execution_fingerprint"] == entry.execution.as_str()
             && row["tick_limit"] == ticks
             && row["stall_loop_limit"] == serde_json::to_value(stall)?
@@ -495,10 +517,12 @@ impl BaselineCache {
         row: &serde_json::Value,
     ) -> Result<()> {
         let entry = self.entry(plan, ticks, stall)?;
+        let mut row = row.clone();
+        without_replay(&mut row);
         std::fs::create_dir_all(&self.directory)
             .with_context(|| format!("creating baseline cache {}", self.directory.display()))?;
         chassis::fsx::write_atomic(&entry.path, |writer| -> Result<()> {
-            serde_json::to_writer(writer, row)?;
+            serde_json::to_writer(writer, &row)?;
             Ok(())
         })
         .with_context(|| format!("writing cached row {}", entry.path.display()))
@@ -542,6 +566,9 @@ pub struct MatrixOptions<'a> {
     pub jobs: NonZeroUsize,
     /// Baseline cache root.
     pub baseline_cache: &'a Path,
+    /// Directory for a replay of every evaluated leg; cached baseline legs
+    /// have none.
+    pub replay_dir: Option<&'a Path>,
 }
 
 /// One published row with its matrix position.
@@ -587,8 +614,24 @@ pub fn run_matrix(
     }
     let plans: Vec<(EvaluationPlan, Option<PathBuf>)> = pending
         .iter()
-        .map(|&index| (legs[index].plan.clone(), None))
+        .map(|&index| {
+            let leg = &legs[index];
+            let replay = options.replay_dir.map(|dir| {
+                let label = &leg.label;
+                dir.join(format!(
+                    "{index:04}-{}-{}-{}-run{}-{}-{}.json",
+                    label.map,
+                    label.difficulty,
+                    label.stance,
+                    label.run,
+                    label.pairing.as_str(),
+                    leg.plan.leg.name()
+                ))
+            });
+            (leg.plan.clone(), replay)
+        })
         .collect();
+    let index = options.replay_dir.map(|dir| dir.join(REPLAY_INDEX_FILE));
     let evaluated = evaluate_batch(
         &plans,
         &EvaluationBatchOptions {
@@ -596,7 +639,7 @@ pub fn run_matrix(
             stall_loop_limit: stall,
             candidate: options.candidate,
             jobs: options.jobs,
-            output: None,
+            output: index.as_deref(),
             trace_output: None,
         },
     )?
@@ -1004,6 +1047,9 @@ mod tests {
             ("duels.json", MatchMode::Duel, 3),
             ("teams.json", MatchMode::Teams, 5),
             ("free-for-all.json", MatchMode::FreeForAll, 3),
+            ("severed.json", MatchMode::Duel, 3),
+            ("free-for-all-smoke.json", MatchMode::FreeForAll, 3),
+            ("teams-smoke.json", MatchMode::Teams, 5),
         ] {
             let manifest = MatrixManifest::load(&directory.join(name)).unwrap();
             let scenarios = manifest.scenarios(&directory).unwrap();
@@ -1035,6 +1081,7 @@ mod tests {
             candidate: "unit",
             jobs: NonZeroUsize::new(2).unwrap(),
             baseline_cache: &root,
+            replay_dir: None,
         };
         let first = run_matrix(&legs, 30, &options).unwrap();
         assert_eq!((first.evaluated, first.reused), (3, 0));
@@ -1049,6 +1096,22 @@ mod tests {
         let entry = cache
             .entry(baseline, 30, Some(DEFAULT_STALL_LOOP_LIMIT))
             .unwrap();
+        let mut replayed = first.rows[2].row.clone();
+        replayed["replay"] = "another-run/0002.json".into();
+        cache
+            .store(baseline, 30, Some(DEFAULT_STALL_LOOP_LIMIT), &replayed)
+            .unwrap();
+        let stored: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&entry.path).unwrap()).unwrap();
+        assert!(stored.get("replay").is_none(), "stored without its replay");
+        std::fs::write(&entry.path, serde_json::to_vec(&replayed).unwrap()).unwrap();
+        assert_eq!(
+            cache
+                .load(baseline, 30, Some(DEFAULT_STALL_LOOP_LIMIT))
+                .unwrap(),
+            Some(first.rows[2].row.clone()),
+            "an older entry's replay is dropped on load"
+        );
         let mut forged = first.rows[2].row.clone();
         forged["reference_digest"] = "fnv1a64:0000000000000000".into();
         std::fs::write(&entry.path, serde_json::to_vec(&forged).unwrap()).unwrap();
@@ -1082,6 +1145,7 @@ mod tests {
                 candidate: "unit",
                 jobs: NonZeroUsize::new(1).unwrap(),
                 baseline_cache: &root.join("cache"),
+                replay_dir: None,
             },
         )
         .unwrap();

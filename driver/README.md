@@ -51,10 +51,11 @@ records as the frozen reference it compares against.
   batch, then rerun it under a fresh candidate.
 - Evaluation rows also record each seat's team and elimination tick, the
   producing build and reference digest, omniscient failure detectors (repeated
-  impossible orders, abandoned paid construction, starved production, and
-  `oxide-opponent` missions stuck in one phase) with per-producer idle
-  diagnostics, and income against a saturated-economy estimate while the seat is
-  still in the match. These are QA evidence computed from authoritative state
+  impossible orders, abandoned paid construction, starved production,
+  `oxide-opponent` missions stuck in one phase, and an army idle at home) with
+  per-producer idle diagnostics, the fate of armed ground units trained on
+  severed ground, and income against a saturated-economy estimate while the seat
+  is still in the match. These are QA evidence computed from authoritative state
   and the missions a controller reports; they never reach a controller.
 - `bot_matrix` expands a manifest from `evaluation/` into cells of
   `oxide-opponent` against `oxide-bot`, every seat sharing one personality seed,
@@ -69,9 +70,10 @@ records as the frozen reference it compares against.
   publishes labelled rows and prints pair outcomes, the new bot's share of won
   legs with Wilson intervals, decided rates, placement, failure incidents and
   income by match mode, overall and by difficulty, stance and map family;
-  `bot-matrix-report` re-reads published rows. Evaluation inputs live in
-  `evaluation/`, not `scenarios/`, whose every file the shell menu, map gates
-  and golden sweeps read.
+  `bot-matrix-report` re-reads published rows. `--replay-dir` saves a replay of
+  every evaluated leg. Evaluation inputs live in `evaluation/`, not
+  `scenarios/`, whose every file the shell menu, map gates and golden sweeps
+  read.
 - `bot_pressure` runs the staged scenarios in `evaluation/pressure/`: a scripted
   attacker seat presses one situation (an early rush, air harassment, an
   artillery siege, a transport drop) on a bot seat, and a check over

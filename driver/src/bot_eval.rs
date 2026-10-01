@@ -22,8 +22,9 @@ mod failures;
 mod income;
 pub use batch::{EvaluationBatchOptions, EvaluationBatchResult, evaluate_batch};
 pub use failures::{
-    EXEMPT_STALL_REASON, FAILURE_WINDOW_TICKS, FailureIncident, FailureTally, MAX_FAILURE_EXAMPLES,
-    ProducerIdle, REPEATED_ORDER_STALLS, SeatFailures,
+    DELIVERY_TICKS, Deliveries, ENGAGE_MARGIN, EXEMPT_STALL_REASON, FAILURE_WINDOW_TICKS,
+    FailureIncident, FailureTally, HOME_REACH, IDLE_ARMY_FLOOR, IDLE_TICKS, MAX_FAILURE_EXAMPLES,
+    ProducerIdle, REPEATED_ORDER_STALLS, REST_DRIFT, SeatFailures,
 };
 pub use income::{
     HARVESTERS_PER_NODE, INCOME_CHECKPOINTS, INCOME_WINDOW_TICKS, IncomeSample, NODES_PER_FOUNDRY,
@@ -466,6 +467,9 @@ pub struct SeatEvidence {
     pub failures: SeatFailures,
     /// Diagnostic: producers that sat idle while the bank could pay for them.
     pub idle_producers: Vec<ProducerIdle>,
+    /// Diagnostic: what became of armed ground units trained on severed
+    /// ground; absent for seats without a controller.
+    pub deliveries: Option<Deliveries>,
     /// Actual income against a saturation estimate at each checkpoint reached.
     pub income: Vec<IncomeSample>,
 }
@@ -483,6 +487,7 @@ impl SeatEvidence {
             eliminated_at: None,
             failures: SeatFailures::default(),
             idle_producers: Vec::new(),
+            deliveries: None,
             income: Vec::new(),
         }
     }
@@ -745,6 +750,7 @@ fn evaluate_plan_artifact_impl(
             oxide_kit::runner::step(&mut state, &mut bots, Some(&mut replay))
         };
         let tick = state.current_tick();
+        failures.observe_events(&state, &report.events, tick);
         for event in &report.events {
             let Some(sample) = record_evidence_event(&mut evidence, event) else {
                 continue;
@@ -775,15 +781,16 @@ fn evaluate_plan_artifact_impl(
             failures.check(&state, tick, &protected);
         }
     }
-    for (seat, ((evidence, (failures, idle_producers)), income)) in evidence
+    for (seat, ((evidence, report), income)) in evidence
         .iter_mut()
         .zip(failures.finish())
         .zip(income.finish())
         .enumerate()
     {
         evidence.eliminated_at = state.players()[seat].eliminated_at;
-        evidence.failures = failures;
-        evidence.idle_producers = idle_producers;
+        evidence.failures = report.failures;
+        evidence.idle_producers = report.idle_producers;
+        evidence.deliveries = report.deliveries;
         evidence.income = income;
     }
 

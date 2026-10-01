@@ -4,8 +4,10 @@
 //! are QA evidence for evaluation rows and reports; nothing here reaches a
 //! controller.
 
+use chassis::grid::TilePos;
 use oxide_opponent::MissionStatus;
-use oxide_sim::{Building, BuildingKind, PlayerId, State, UnitKind};
+use oxide_sim::stats::Domain;
+use oxide_sim::{Building, BuildingKind, Event, PlayerId, State, UnitId, UnitKind};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -24,6 +26,27 @@ pub const MAX_FAILURE_EXAMPLES: usize = 8;
 /// Stall reason the repeated-order detector ignores: a harvest line holding
 /// out of danger re-reports it every 100 ticks by design.
 pub const EXEMPT_STALL_REASON: &str = "danger_hold";
+
+/// Ticks an armed unit must stay put, out of every enemy's reach, before it
+/// counts toward an idle army.
+pub const IDLE_TICKS: u64 = 2_400;
+
+/// Tiles a resting unit may drift from where it settled and still be resting.
+pub const REST_DRIFT: i32 = 2;
+
+/// Tiles beyond a unit's longest weapon within which an enemy keeps it busy.
+pub const ENGAGE_MARGIN: i32 = 4;
+
+/// Tiles from an own building within which a resting unit is at home.
+pub const HOME_REACH: i32 = 12;
+
+/// Idle value below which an army never counts as idle, so a small home guard
+/// is not an incident.
+pub const IDLE_ARMY_FLOOR: u64 = 1_500;
+
+/// Ticks after training by which a unit trained on severed ground must have
+/// left it to count as delivered.
+pub const DELIVERY_TICKS: u64 = 6_000;
 
 /// One detected failure episode.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +101,29 @@ pub struct SeatFailures {
     /// and the detail its kind and phase; each phase is one episode.
     #[serde(default)]
     pub stuck_missions: FailureTally,
+    /// For [`FAILURE_WINDOW_TICKS`] while a hostile player was still playing,
+    /// armed units worth at least half the seat's army, and at least
+    /// [`IDLE_ARMY_FLOOR`], had each rested at home out of every enemy's reach
+    /// for [`IDLE_TICKS`]. The subject is the idle value and the detail the
+    /// idle and whole army values; the episode ends once that no longer
+    /// holds. Absent from rows recorded before the detector existed.
+    #[serde(default)]
+    pub idle_army: Option<FailureTally>,
+}
+
+/// Diagnostic, not an incident: the value of armed ground units a seat trained
+/// while its ground touched no standing hostile building, by what became of
+/// them. Units still aboard a carrier or on home ground and younger than
+/// [`DELIVERY_TICKS`] when the leg ends are not counted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Deliveries {
+    /// Scrap cost of units that reached other ground.
+    pub delivered: u64,
+    /// Scrap cost of units that died first.
+    pub lost: u64,
+    /// Scrap cost of units still on their home ground [`DELIVERY_TICKS`] after
+    /// training.
+    pub undelivered: u64,
 }
 
 /// Diagnostic, not an incident: ticks one producer sat idle while the
@@ -106,10 +152,25 @@ struct Watch {
     flagged: bool,
 }
 
+/// A seat-level condition: when it started holding, and whether this episode
+/// was reported.
 #[derive(Default)]
-struct Starvation {
+struct Episode {
     since: Option<u64>,
     flagged: bool,
+}
+
+/// Where an armed unit settled and since when it has rested there.
+struct Rest {
+    anchor: TilePos,
+    since: u64,
+}
+
+/// An armed ground unit trained on severed ground, not yet classified.
+struct Pending {
+    trained: u64,
+    cost: u64,
+    home: u32,
 }
 
 #[derive(Default)]
@@ -117,10 +178,64 @@ struct SeatDetector {
     failures: SeatFailures,
     stalls: BTreeMap<(u32, String), StallHistory>,
     sites: BTreeMap<u32, Watch>,
-    starvation: Starvation,
+    starvation: Episode,
     idle: BTreeMap<u32, ProducerIdle>,
     /// Mission phases already reported, by mission id and phase start.
     stuck: BTreeSet<(u64, u64)>,
+    idle_army: Episode,
+    rests: BTreeMap<u32, Rest>,
+    pending: BTreeMap<u32, Pending>,
+    deliveries: Deliveries,
+}
+
+impl SeatDetector {
+    fn watched() -> Self {
+        Self {
+            failures: SeatFailures {
+                idle_army: Some(FailureTally::default()),
+                ..SeatFailures::default()
+            },
+            ..Self::default()
+        }
+    }
+}
+
+/// What the detectors found for one seat.
+#[derive(Debug, Default)]
+pub(super) struct SeatReport {
+    pub(super) failures: SeatFailures,
+    pub(super) idle_producers: Vec<ProducerIdle>,
+    /// Absent for unwatched seats.
+    pub(super) deliveries: Option<Deliveries>,
+}
+
+/// Terrain ground components: equal labels are connected by ground, closed
+/// terrain is 0. Scrap counts as ground and buildings are ignored, so the
+/// labels hold for the whole match.
+struct Ground {
+    width: i32,
+    labels: Vec<u32>,
+}
+
+impl Ground {
+    fn of(state: &State) -> Self {
+        let map = state.map();
+        Self {
+            width: map.width(),
+            labels: chassis::path::cardinal_components(map.width(), map.height(), |tile| {
+                map.tile(tile)
+                    .is_some_and(|tile| !tile.terrain.blocks_ground())
+            }),
+        }
+    }
+
+    fn label(&self, tile: TilePos) -> u32 {
+        usize::try_from(tile.y * self.width + tile.x)
+            .ok()
+            .and_then(|index| self.labels.get(index))
+            .copied()
+            .unwrap_or(0)
+    }
 }
 
 /// Detector memory for one evaluation leg. Seats without a controller are not
@@ -128,6 +243,7 @@ struct SeatDetector {
 pub(super) struct FailureDetectors {
     seats: Vec<Option<SeatDetector>>,
     last_check: Option<u64>,
+    ground: Option<Ground>,
 }
 
 impl FailureDetectors {
@@ -135,9 +251,75 @@ impl FailureDetectors {
         Self {
             seats: watched
                 .into_iter()
-                .map(|watched| watched.then(SeatDetector::default))
+                .map(|watched| watched.then(SeatDetector::watched))
                 .collect(),
             last_check: None,
+            ground: None,
+        }
+    }
+
+    /// Follows the armed ground units watched seats train while severed, where
+    /// carriers unload them, and their deaths.
+    pub(super) fn observe_events(&mut self, state: &State, events: &[Event], now: u64) {
+        for event in events {
+            match *event {
+                Event::UnitTrained {
+                    building,
+                    unit,
+                    kind,
+                    player,
+                } => {
+                    let stats = kind.stats();
+                    if stats.domain != Domain::Ground || !stats.can_fight() {
+                        continue;
+                    }
+                    let Some(Some(detector)) = self.seats.get_mut(usize::from(player.0)) else {
+                        continue;
+                    };
+                    let ground = self.ground.get_or_insert_with(|| Ground::of(state));
+                    // A unit killed on the tick it was trained is gone from the
+                    // post-tick state; its producer still marks its home.
+                    let Some(home) = state
+                        .unit(unit)
+                        .map(|trained| trained.tile())
+                        .or_else(|| state.building(building).map(|producer| producer.anchor))
+                    else {
+                        continue;
+                    };
+                    if severed(state, ground, player) {
+                        detector.pending.insert(
+                            unit.0,
+                            Pending {
+                                trained: now,
+                                cost: u64::from(stats.cost),
+                                home: ground.label(home),
+                            },
+                        );
+                    }
+                }
+                Event::UnitUnloaded {
+                    unit, player, at, ..
+                } => {
+                    if let Some(Some(detector)) = self.seats.get_mut(usize::from(player.0))
+                        && let Some(ground) = &self.ground
+                        && detector
+                            .pending
+                            .get(&unit.0)
+                            .is_some_and(|pending| ground.label(at) != pending.home)
+                        && let Some(pending) = detector.pending.remove(&unit.0)
+                    {
+                        detector.deliveries.delivered += pending.cost;
+                    }
+                }
+                Event::UnitDied { unit, player, .. } => {
+                    if let Some(Some(detector)) = self.seats.get_mut(usize::from(player.0))
+                        && let Some(pending) = detector.pending.remove(&unit.0)
+                    {
+                        detector.deliveries.lost += pending.cost;
+                    }
+                }
+                _ => {}
+            }
         }
     }
 
@@ -178,12 +360,18 @@ impl FailureDetectors {
                     .back()
                     .is_some_and(|last| last + FAILURE_WINDOW_TICKS > now)
             });
+            if let Some(ground) = &self.ground {
+                classify(detector, state, ground, now);
+            }
             let player = PlayerId(index as u8);
             if !state.accepts_commands(player) {
                 detector.sites.clear();
-                detector.starvation = Starvation::default();
+                detector.starvation = Episode::default();
+                detector.idle_army = Episode::default();
+                detector.rests.clear();
                 continue;
             }
+            check_idle_army(detector, state, player, now);
             let completed: Vec<BuildingKind> = state
                 .buildings()
                 .iter()
@@ -241,7 +429,7 @@ impl FailureDetectors {
                 producers > 0 && all_idle && cheapest.is_some_and(|unit| bank >= unit.stats().cost);
             let starvation = &mut detector.starvation;
             if !starving {
-                *starvation = Starvation::default();
+                *starvation = Episode::default();
                 continue;
             }
             let since = *starvation.since.get_or_insert(now);
@@ -278,17 +466,156 @@ impl FailureDetectors {
         }
     }
 
-    /// Detected episodes and idle-producer diagnostics by seat; unwatched
-    /// seats report none.
-    pub(super) fn finish(self) -> Vec<(SeatFailures, Vec<ProducerIdle>)> {
+    /// Detected episodes and diagnostics by seat; unwatched seats report none.
+    pub(super) fn finish(self) -> Vec<SeatReport> {
         self.seats
             .into_iter()
             .map(|seat| {
-                seat.map(|seat| (seat.failures, seat.idle.into_values().collect()))
-                    .unwrap_or_default()
+                seat.map(|seat| SeatReport {
+                    failures: seat.failures,
+                    idle_producers: seat.idle.into_values().collect(),
+                    deliveries: Some(seat.deliveries),
+                })
+                .unwrap_or_default()
             })
             .collect()
     }
+}
+
+/// Whether `player`'s ground touches no standing building of a hostile player
+/// still in the match, judged from the ground under its Foundries.
+fn severed(state: &State, ground: &Ground, player: PlayerId) -> bool {
+    let homes: BTreeSet<u32> = state
+        .buildings()
+        .iter()
+        .filter(|building| building.player == player && building.kind == BuildingKind::Foundry)
+        .map(|building| ground.label(building.anchor))
+        .filter(|label| *label != 0)
+        .collect();
+    !homes.is_empty()
+        && !state.buildings().iter().any(|building| {
+            state.hostile(player, building.player)
+                && building.hp > 0
+                && state.player(building.player).eliminated_at.is_none()
+                && homes.contains(&ground.label(building.anchor))
+        })
+}
+
+/// Settles pending units that reached other ground or stayed home too long.
+/// A unit absent from the field is aboard a carrier; deaths are settled as
+/// they happen.
+fn classify(detector: &mut SeatDetector, state: &State, ground: &Ground, now: u64) {
+    let deliveries = &mut detector.deliveries;
+    detector.pending.retain(|&id, pending| {
+        let Some(unit) = state.unit(UnitId(id)) else {
+            return true;
+        };
+        if ground.label(unit.tile()) != pending.home {
+            deliveries.delivered += pending.cost;
+            false
+        } else if now - pending.trained >= DELIVERY_TICKS {
+            deliveries.undelivered += pending.cost;
+            false
+        } else {
+            true
+        }
+    });
+}
+
+/// Tracks where the seat's armed units rest and records an idle-army episode.
+fn check_idle_army(detector: &mut SeatDetector, state: &State, player: PlayerId, now: u64) {
+    let hostile_units: Vec<(TilePos, Domain)> = state
+        .units()
+        .iter()
+        .filter(|unit| state.hostile(player, unit.player))
+        .map(|unit| (unit.tile(), unit.kind.stats().domain))
+        .collect();
+    let hostile_buildings: Vec<&Building> = state
+        .buildings()
+        .iter()
+        .filter(|building| state.hostile(player, building.player) && building.hp > 0)
+        .collect();
+    let own_buildings: Vec<&Building> = state
+        .buildings()
+        .iter()
+        .filter(|building| building.player == player && building.hp > 0)
+        .collect();
+    let mut army = 0_u64;
+    let mut idle = 0_u64;
+    let mut present = BTreeSet::new();
+    for unit in state.units().iter().filter(|unit| unit.player == player) {
+        let stats = unit.kind.stats();
+        if !stats.can_fight() {
+            continue;
+        }
+        let tile = unit.tile();
+        let reach = |domain: Domain| {
+            let range = if stats.weapons.is_empty() {
+                Some(1)
+            } else {
+                stats
+                    .max_range_vs(domain)
+                    .map(|range| range.ceil().to_num::<i32>())
+            };
+            range.map(|range| range + ENGAGE_MARGIN)
+        };
+        let engaged = hostile_units.iter().any(|&(enemy, domain)| {
+            reach(domain).is_some_and(|reach| enemy.chebyshev(tile) <= reach)
+        }) || reach(Domain::Ground).is_some_and(|reach| {
+            hostile_buildings
+                .iter()
+                .any(|building| gap(tile, building) <= reach)
+        });
+        let rest = detector.rests.entry(unit.id.0).or_insert(Rest {
+            anchor: tile,
+            since: now,
+        });
+        if engaged || rest.anchor.chebyshev(tile) > REST_DRIFT {
+            *rest = Rest {
+                anchor: tile,
+                since: now,
+            };
+        }
+        present.insert(unit.id.0);
+        let cost = u64::from(stats.cost);
+        army += cost;
+        if now - rest.since >= IDLE_TICKS
+            && own_buildings
+                .iter()
+                .any(|building| gap(tile, building) <= HOME_REACH)
+        {
+            idle += cost;
+        }
+    }
+    detector.rests.retain(|id, _| present.contains(id));
+    let contested = state.players().iter().enumerate().any(|(seat, other)| {
+        state.hostile(player, PlayerId(seat as u8)) && other.eliminated_at.is_none()
+    });
+    let episode = &mut detector.idle_army;
+    if !contested || idle < (army / 2).max(IDLE_ARMY_FLOOR) {
+        *episode = Episode::default();
+        return;
+    }
+    let since = *episode.since.get_or_insert(now);
+    if !episode.flagged && now - since >= FAILURE_WINDOW_TICKS {
+        episode.flagged = true;
+        if let Some(tally) = &mut detector.failures.idle_army {
+            tally.record(
+                now,
+                u32::try_from(idle).unwrap_or(u32::MAX),
+                &format!("idle {idle} of {army}"),
+            );
+        }
+    }
+}
+
+/// Chebyshev tiles from `tile` to `building`'s footprint, 0 inside it.
+fn gap(tile: TilePos, building: &Building) -> i32 {
+    let (width, height) = building.stats().size;
+    let far = building.anchor.offset(width - 1, height - 1);
+    let dx = (building.anchor.x - tile.x).max(tile.x - far.x).max(0);
+    let dy = (building.anchor.y - tile.y).max(tile.y - far.y).max(0);
+    dx.max(dy)
 }
 
 /// Updates one watched building's state, restarting its clock when `value`
@@ -425,7 +752,7 @@ mod tests {
         detectors
             .finish()
             .into_iter()
-            .map(|(failures, _)| failures)
+            .map(|report| report.failures)
             .collect()
     }
 
@@ -588,7 +915,7 @@ mod tests {
         detectors.check(&state, FAILURE_WINDOW_TICKS, &[0, 0]);
         detectors.check(&state, 5 * FAILURE_WINDOW_TICKS, &[0, 0]);
         let finished = detectors.finish();
-        let (failures, idle) = &finished[0];
+        let (failures, idle) = (&finished[0].failures, &finished[0].idle_producers);
         assert_eq!(failures.starved_production.incidents, 1);
         assert_eq!(
             failures.starved_production.examples,
@@ -598,7 +925,7 @@ mod tests {
                 detail: "scuttler".into(),
             }]
         );
-        assert_eq!(finished[1].0.starved_production.incidents, 1);
+        assert_eq!(finished[1].failures.starved_production.incidents, 1);
         let [foundry] = idle.as_slice() else {
             panic!("one idle producer: {idle:?}");
         };
@@ -609,12 +936,12 @@ mod tests {
         protected.check(&state, 0, &[1, 0]);
         protected.check(&state, 2 * FAILURE_WINDOW_TICKS, &[1, 0]);
         let finished = protected.finish();
-        assert_eq!(finished[0].0.starved_production.incidents, 0);
+        assert_eq!(finished[0].failures.starved_production.incidents, 0);
         assert!(
-            finished[0].1.is_empty(),
+            finished[0].idle_producers.is_empty(),
             "protected scrap is not idle money"
         );
-        assert_eq!(finished[1].0.starved_production.incidents, 1);
+        assert_eq!(finished[1].failures.starved_production.incidents, 1);
     }
 
     #[test]
@@ -627,7 +954,7 @@ mod tests {
         detectors.check(&state, 0, &[0, 0]);
         detectors.check(&state, 3 * FAILURE_WINDOW_TICKS, &[0, 0]);
         let finished = detectors.finish();
-        let (failures, idle) = &finished[0];
+        let (failures, idle) = (&finished[0].failures, &finished[0].idle_producers);
         assert_eq!(failures.starved_production.incidents, 0);
         let [foundry] = idle.as_slice() else {
             panic!("only the idle Foundry is recorded: {idle:?}");
@@ -650,8 +977,8 @@ mod tests {
             detectors.check(state, 0, &[0, 0]);
             detectors.check(state, 3 * FAILURE_WINDOW_TICKS, &[0, 0]);
             let finished = detectors.finish();
-            assert_eq!(finished[0].0.starved_production.incidents, 0);
-            assert!(finished[0].1.is_empty());
+            assert_eq!(finished[0].failures.starved_production.incidents, 0);
+            assert!(finished[0].idle_producers.is_empty());
         }
     }
 
@@ -719,7 +1046,7 @@ mod tests {
         detectors.check_missions(0, 2 * overdue - 1, &[status(overdue)]);
         detectors.check_missions(0, 2 * overdue, &[status(overdue)]);
         let seats = detectors.finish();
-        let stuck = &seats[0].0.stuck_missions;
+        let stuck = &seats[0].failures.stuck_missions;
         assert_eq!(stuck.incidents, 2);
         assert_eq!(
             stuck.examples[0],
@@ -729,7 +1056,11 @@ mod tests {
                 detail: "defend engage".into(),
             }
         );
-        assert_eq!(seats[1].0, SeatFailures::default(), "an unwatched seat");
+        assert_eq!(
+            seats[1].failures,
+            SeatFailures::default(),
+            "an unwatched seat"
+        );
     }
 
     #[test]
@@ -738,5 +1069,268 @@ mod tests {
         value.as_object_mut().unwrap().remove("stuck_missions");
         let loaded: SeatFailures = serde_json::from_value(value).unwrap();
         assert_eq!(loaded, SeatFailures::default());
+    }
+
+    #[test]
+    fn failures_recorded_before_the_idle_army_detector_read_as_unmeasured() {
+        let mut value = serde_json::to_value(SeatFailures::default()).unwrap();
+        value.as_object_mut().unwrap().remove("idle_army");
+        let loaded: SeatFailures = serde_json::from_value(value).unwrap();
+        assert_eq!(loaded.idle_army, None);
+    }
+
+    /// The detectors' scenario with seat zero's Sentinels on row `y`, from
+    /// column `x` rightward, and any extra units after them.
+    fn army(count: u32, x: i32, y: i32, extra: &[UnitSpec]) -> Scenario {
+        let mut scenario = scenario(Vec::new(), 0);
+        for index in 0..count as i32 {
+            scenario.units.push(UnitSpec {
+                player: 0,
+                kind: UnitKind::Sentinel,
+                x: x + index % 8,
+                y: y + index / 8,
+            });
+        }
+        scenario.units.extend_from_slice(extra);
+        scenario
+    }
+
+    /// Enough Sentinels to clear [`IDLE_ARMY_FLOOR`].
+    fn large() -> u32 {
+        (IDLE_ARMY_FLOOR / u64::from(UnitKind::Sentinel.stats().cost)) as u32 + 1
+    }
+
+    fn idle_army(detectors: FailureDetectors) -> u64 {
+        failures(detectors)[0]
+            .idle_army
+            .as_ref()
+            .map_or(0, |tally| tally.incidents)
+    }
+
+    fn run(detectors: &mut FailureDetectors, state: &State, ticks: std::ops::Range<u64>) {
+        for now in ticks.step_by(12) {
+            detectors.check(state, now, &[0, 0]);
+        }
+    }
+
+    #[test]
+    fn an_army_resting_at_home_is_idle_after_its_rest_and_the_window() {
+        let state = army(large(), 4, 6, &[]).build().unwrap();
+        let mut detectors = FailureDetectors::new([true, true]);
+        run(&mut detectors, &state, 0..IDLE_TICKS + FAILURE_WINDOW_TICKS);
+        assert_eq!(
+            detectors.seats[0]
+                .as_ref()
+                .unwrap()
+                .failures
+                .idle_army
+                .as_ref()
+                .unwrap()
+                .incidents,
+            0
+        );
+        run(
+            &mut detectors,
+            &state,
+            IDLE_TICKS + FAILURE_WINDOW_TICKS..3 * IDLE_TICKS,
+        );
+        let failures = failures(detectors);
+        let tally = failures[0].idle_army.as_ref().unwrap();
+        assert_eq!(tally.incidents, 1, "one episode while it holds");
+        assert_eq!(tally.examples[0].tick, IDLE_TICKS + FAILURE_WINDOW_TICKS);
+        assert_eq!(
+            failures[1].idle_army.as_ref().unwrap().incidents,
+            0,
+            "a seat without an army is never idle"
+        );
+    }
+
+    #[test]
+    fn moving_or_meeting_an_enemy_restarts_a_rest() {
+        let settled = army(large(), 4, 6, &[]).build().unwrap();
+        let moved = army(large(), 8, 6, &[]).build().unwrap();
+        let mut detectors = FailureDetectors::new([true, true]);
+        run(&mut detectors, &settled, 0..3_000);
+        run(&mut detectors, &moved, 3_000..3_000 + IDLE_TICKS);
+        assert_eq!(idle_army(detectors), 0, "the army moved before its episode");
+
+        let enemy = UnitSpec {
+            player: 1,
+            kind: UnitKind::Sentinel,
+            x: 9,
+            y: 9,
+        };
+        let watched = army(large(), 4, 6, &[enemy]).build().unwrap();
+        let mut detectors = FailureDetectors::new([true, true]);
+        run(&mut detectors, &watched, 0..3 * IDLE_TICKS);
+        assert_eq!(idle_army(detectors), 0, "an enemy in reach keeps it busy");
+    }
+
+    #[test]
+    fn an_enemy_the_army_cannot_hit_does_not_keep_it_busy() {
+        let flak = (IDLE_ARMY_FLOOR / u64::from(UnitKind::Flakhound.stats().cost)) as i32 + 1;
+        let mut scenario = scenario(Vec::new(), 0);
+        for index in 0..flak {
+            scenario.units.push(UnitSpec {
+                player: 0,
+                kind: UnitKind::Flakhound,
+                x: 4 + index % 8,
+                y: 6 + index / 8,
+            });
+        }
+        scenario.units.push(UnitSpec {
+            player: 1,
+            kind: UnitKind::Sentinel,
+            x: 9,
+            y: 9,
+        });
+        let state = scenario.build().unwrap();
+        let mut detectors = FailureDetectors::new([true, true]);
+        run(&mut detectors, &state, 0..3 * IDLE_TICKS);
+        assert_eq!(idle_army(detectors), 1, "anti-air beside a ground enemy");
+    }
+
+    #[test]
+    fn a_small_guard_or_a_won_match_is_not_an_idle_army() {
+        let guard = army(2, 4, 6, &[]).build().unwrap();
+        let won = staged(&army(large(), 4, 6, &[]), |value| {
+            value["players"][1]["eliminated_at"] = 0.into();
+        });
+        for state in [&guard, &won] {
+            let mut detectors = FailureDetectors::new([true, true]);
+            run(&mut detectors, state, 0..3 * IDLE_TICKS);
+            assert_eq!(idle_army(detectors), 0);
+        }
+    }
+
+    /// The detectors' map with a pit column between the two starts.
+    fn severed(units: &[UnitSpec]) -> Scenario {
+        let mut scenario = scenario(Vec::new(), 0);
+        for row in &mut scenario.map {
+            row.replace_range(12..13, "~");
+        }
+        scenario.units.extend_from_slice(units);
+        scenario
+    }
+
+    fn sentinel(x: i32) -> UnitSpec {
+        UnitSpec {
+            player: 0,
+            kind: UnitKind::Sentinel,
+            x,
+            y: 9,
+        }
+    }
+
+    fn trained(state: &State) -> Event {
+        let unit = state
+            .units()
+            .iter()
+            .find(|unit| unit.kind == UnitKind::Sentinel)
+            .unwrap();
+        Event::UnitTrained {
+            building: oxide_sim::BuildingId(0),
+            unit: unit.id,
+            kind: unit.kind,
+            player: unit.player,
+        }
+    }
+
+    fn deliveries(detectors: FailureDetectors) -> Deliveries {
+        detectors.finish()[0].deliveries.unwrap()
+    }
+
+    #[test]
+    fn units_trained_on_severed_ground_are_delivered_lost_or_left_home() {
+        let cost = u64::from(UnitKind::Sentinel.stats().cost);
+        let home = severed(&[sentinel(6)]).build().unwrap();
+        let across = severed(&[sentinel(16)]).build().unwrap();
+        let carried = severed(&[]).build().unwrap();
+
+        let mut detectors = FailureDetectors::new([true, true]);
+        detectors.observe_events(&home, &[trained(&home)], 100);
+        detectors.check(&carried, 3_000, &[0, 0]);
+        detectors.check(&across, 4_000, &[0, 0]);
+        assert_eq!(
+            deliveries(detectors),
+            Deliveries {
+                delivered: cost,
+                ..Deliveries::default()
+            },
+            "carried, then set down across the pit"
+        );
+
+        let mut detectors = FailureDetectors::new([true, true]);
+        let event = trained(&home);
+        detectors.observe_events(&home, std::slice::from_ref(&event), 100);
+        let Event::UnitTrained {
+            unit, kind, player, ..
+        } = event
+        else {
+            unreachable!()
+        };
+        let died = Event::UnitDied {
+            unit,
+            kind,
+            player,
+            pos: home.unit(unit).unwrap().pos,
+            grounded: true,
+        };
+        detectors.observe_events(&home, std::slice::from_ref(&died), 200);
+        assert_eq!(deliveries(detectors).lost, cost);
+
+        let mut detectors = FailureDetectors::new([true, true]);
+        detectors.observe_events(&carried, &[event.clone(), died.clone()], 100);
+        assert_eq!(
+            deliveries(detectors).lost,
+            cost,
+            "killed on the tick it was trained"
+        );
+
+        let unloaded = Event::UnitUnloaded {
+            transport: UnitId(u32::MAX),
+            unit,
+            player,
+            at: TilePos::new(16, 9),
+        };
+        let mut detectors = FailureDetectors::new([true, true]);
+        detectors.observe_events(&home, std::slice::from_ref(&event), 100);
+        detectors.observe_events(&across, &[unloaded, died], 110);
+        assert_eq!(
+            deliveries(detectors),
+            Deliveries {
+                delivered: cost,
+                ..Deliveries::default()
+            },
+            "set down across the pit, then killed before the next check"
+        );
+
+        let mut detectors = FailureDetectors::new([true, true]);
+        detectors.observe_events(&home, &[trained(&home)], 100);
+        detectors.check(&home, 100 + DELIVERY_TICKS - 12, &[0, 0]);
+        detectors.check(&home, 100 + DELIVERY_TICKS, &[0, 0]);
+        assert_eq!(deliveries(detectors).undelivered, cost);
+
+        let mut detectors = FailureDetectors::new([true, true]);
+        detectors.observe_events(&home, &[trained(&home)], 100);
+        detectors.check(&carried, 100 + 2 * DELIVERY_TICKS, &[0, 0]);
+        assert_eq!(
+            deliveries(detectors),
+            Deliveries::default(),
+            "a unit still aboard is not counted"
+        );
+    }
+
+    #[test]
+    fn units_trained_on_connected_ground_are_not_followed() {
+        let mut connected = scenario(Vec::new(), 0);
+        connected.units.push(sentinel(6));
+        let state = connected.build().unwrap();
+        let mut detectors = FailureDetectors::new([true, true]);
+        detectors.observe_events(&state, &[trained(&state)], 100);
+        detectors.check(&state, 100 + DELIVERY_TICKS, &[0, 0]);
+        let finished = detectors.finish();
+        assert_eq!(finished[0].deliveries, Some(Deliveries::default()));
+        assert_eq!(finished[1].deliveries, Some(Deliveries::default()));
     }
 }

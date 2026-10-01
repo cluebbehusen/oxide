@@ -134,7 +134,9 @@ but never access to information, strategies, units, commands, or rules.
 on that crate follows its specification and the oxide-opponent skill, not
 `docs/bot-strategy.md` or `docs/bot/`. It must not reintroduce exact
 cross-domain allocation, production forecasts, plan search or planning state
-that spans decisions.
+that spans decisions. Its counts come from need: a constant may bound
+computation or model a difficulty, stance or personality limit, never what the
+bot owns or sends.
 
 Normal matches default to `oxide-bot`, a configurable rules-based controller;
 `oxide-opponent` can be selected per seat. Scrapheap, Standard, Veteran, and

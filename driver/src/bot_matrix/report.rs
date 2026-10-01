@@ -4,8 +4,8 @@
 
 use super::{MapFamily, MatchMode, MatrixLabel, Pairing};
 use crate::bot_eval::{
-    EvaluationControllerKind, EvaluationLeg, INCOME_CHECKPOINTS, IncomeSample, SeatFailures,
-    Termination,
+    Deliveries, EvaluationControllerKind, EvaluationLeg, INCOME_CHECKPOINTS, IncomeSample,
+    SeatFailures, Termination,
 };
 use anyhow::{Context, Result, bail, ensure};
 use oxide_kit::recovery::BuildIdentity;
@@ -64,6 +64,10 @@ pub struct ScoredEvidence {
     pub eliminated_at: Option<u64>,
     /// Detected failure episodes.
     pub failures: SeatFailures,
+    /// Armed ground units trained on severed ground, by outcome; absent from
+    /// rows recorded before the diagnostic existed.
+    #[serde(default)]
+    pub deliveries: Option<Deliveries>,
     /// Income checkpoints reached.
     pub income: Vec<IncomeSample>,
 }
@@ -188,6 +192,15 @@ pub struct ControllerTally {
     pub starved_production: u64,
     /// Missions stuck in one phase past its timeout.
     pub stuck_missions: u64,
+    /// Idle-army episodes over the seat-legs whose rows record the detector.
+    pub idle_army: u64,
+    /// Seat-legs whose rows record the idle-army detector.
+    pub idle_army_seat_legs: u32,
+    /// Armed ground units trained on severed ground, by outcome, over the
+    /// seat-legs whose rows record the diagnostic.
+    pub deliveries: Deliveries,
+    /// Seat-legs whose rows record deliveries.
+    pub deliveries_seat_legs: u32,
     /// Income medians by checkpoint.
     pub income: Vec<IncomeMedian>,
     /// Placement in mixed legs; absent without any.
@@ -283,6 +296,10 @@ struct ControllerBuilder {
     abandoned_sites: u64,
     starved_production: u64,
     stuck_missions: u64,
+    idle_army: u64,
+    idle_army_seat_legs: u32,
+    deliveries: Deliveries,
+    deliveries_seat_legs: u32,
     income: BTreeMap<u64, Vec<(u32, u32)>>,
     doubled_places: Vec<u64>,
     survival: Vec<u64>,
@@ -416,6 +433,16 @@ pub fn build_report(rows: &[ScoredRow]) -> Result<MatrixReport> {
                 controller.abandoned_sites += evidence.failures.abandoned_sites.incidents;
                 controller.starved_production += evidence.failures.starved_production.incidents;
                 controller.stuck_missions += evidence.failures.stuck_missions.incidents;
+                if let Some(idle) = &evidence.failures.idle_army {
+                    controller.idle_army += idle.incidents;
+                    controller.idle_army_seat_legs += 1;
+                }
+                if let Some(deliveries) = evidence.deliveries {
+                    controller.deliveries.delivered += deliveries.delivered;
+                    controller.deliveries.lost += deliveries.lost;
+                    controller.deliveries.undelivered += deliveries.undelivered;
+                    controller.deliveries_seat_legs += 1;
+                }
                 for sample in &evidence.income {
                     controller
                         .income
@@ -583,6 +610,10 @@ fn finish((mode, key): (MatchMode, GroupKey), builder: GroupBuilder) -> GroupRep
             abandoned_sites: tally.abandoned_sites,
             starved_production: tally.starved_production,
             stuck_missions: tally.stuck_missions,
+            idle_army: tally.idle_army,
+            idle_army_seat_legs: tally.idle_army_seat_legs,
+            deliveries: tally.deliveries,
+            deliveries_seat_legs: tally.deliveries_seat_legs,
             income: tally
                 .income
                 .into_iter()
@@ -695,7 +726,7 @@ impl MatrixReport {
         let _ = writeln!(out, "\nfailure incidents");
         let _ = writeln!(
             out,
-            "{:<13} {:<22} {:<10} {:>9} {:>16} {:>16} {:>18} {:>15}",
+            "{:<13} {:<22} {:<10} {:>9} {:>16} {:>16} {:>18} {:>15} {:>20}",
             "mode",
             "group",
             "controller",
@@ -703,13 +734,14 @@ impl MatrixReport {
             "repeated orders",
             "abandoned sites",
             "starved production",
-            "stuck missions"
+            "stuck missions",
+            "idle army"
         );
         for group in &self.groups {
             for tally in &group.controllers {
                 let _ = writeln!(
                     out,
-                    "{:<13} {:<22} {:<10} {:>9} {:>16} {:>16} {:>18} {:>15}",
+                    "{:<13} {:<22} {:<10} {:>9} {:>16} {:>16} {:>18} {:>15} {:>20}",
                     group.mode.as_str(),
                     group.group,
                     controller_name(tally.controller),
@@ -717,8 +749,49 @@ impl MatrixReport {
                     tally.repeated_orders,
                     tally.abandoned_sites,
                     tally.starved_production,
-                    tally.stuck_missions
+                    tally.stuck_missions,
+                    measured(tally.idle_army, tally.idle_army_seat_legs, tally.seat_legs)
                 );
+            }
+        }
+        let severed = |tally: &ControllerTally| {
+            let deliveries = tally.deliveries;
+            deliveries.delivered + deliveries.lost + deliveries.undelivered
+        };
+        if self
+            .groups
+            .iter()
+            .flat_map(|group| &group.controllers)
+            .any(|tally| severed(tally) > 0)
+        {
+            let _ = writeln!(
+                out,
+                "\narmed ground units trained on severed ground, scrap: delivered/lost/undelivered (seat-legs recorded)"
+            );
+            let _ = writeln!(
+                out,
+                "{:<13} {:<22} {:<10} {:>30}",
+                "mode", "group", "controller", "deliveries"
+            );
+            for group in &self.groups {
+                for tally in group.controllers.iter().filter(|tally| severed(tally) > 0) {
+                    let deliveries = tally.deliveries;
+                    let _ = writeln!(
+                        out,
+                        "{:<13} {:<22} {:<10} {:>30}",
+                        group.mode.as_str(),
+                        group.group,
+                        controller_name(tally.controller),
+                        format!(
+                            "{}/{}/{} ({}/{})",
+                            deliveries.delivered,
+                            deliveries.lost,
+                            deliveries.undelivered,
+                            tally.deliveries_seat_legs,
+                            tally.seat_legs
+                        )
+                    );
+                }
             }
         }
         let _ = writeln!(
@@ -821,6 +894,16 @@ impl MatrixReport {
     }
 }
 
+/// A count over the seat-legs whose rows record it: the count alone when every
+/// row does, with its coverage when only some do, and `-` when none do.
+fn measured(count: u64, recorded: u32, seat_legs: u32) -> String {
+    match recorded {
+        0 => "-".into(),
+        _ if recorded == seat_legs => count.to_string(),
+        _ => format!("{count} ({recorded}/{seat_legs} seat-legs)"),
+    }
+}
+
 fn decided(legs: &LegTally) -> String {
     if legs.legs == 0 {
         return "-".into();
@@ -877,6 +960,7 @@ mod tests {
                 },
                 ..SeatFailures::default()
             },
+            deliveries: None,
             income,
         }
     }
@@ -1348,6 +1432,50 @@ mod tests {
             build_report(&rows).is_err(),
             "a head-to-head leg needs both bots"
         );
+    }
+
+    #[test]
+    fn diagnostics_count_only_the_rows_that_record_them() {
+        let mut rows = pair("a", MapFamily::Severed, 0, [NEW, OLD]);
+        rows.push(baseline(
+            label("a", MapFamily::Severed, 0, Pairing::Baseline),
+            false,
+        ));
+        let severed = Deliveries {
+            delivered: 90,
+            lost: 180,
+            undelivered: 900,
+        };
+        rows[0].evidence[0].failures.idle_army = Some(FailureTally {
+            incidents: 2,
+            examples: Vec::new(),
+        });
+        rows[0].evidence[0].deliveries = Some(severed);
+        rows[0].evidence[1].failures.idle_army = Some(FailureTally::default());
+        rows[0].evidence[1].deliveries = Some(Deliveries::default());
+        let report = build_report(&rows).unwrap();
+
+        let [new, old] = report.groups[0].controllers.as_slice() else {
+            panic!("two controllers: {:?}", report.groups[0].controllers);
+        };
+        assert_eq!(
+            (new.idle_army, new.idle_army_seat_legs, new.seat_legs),
+            (2, 1, 2)
+        );
+        assert_eq!(
+            (old.idle_army, old.idle_army_seat_legs, old.seat_legs),
+            (0, 1, 4)
+        );
+        assert_eq!((new.deliveries, new.deliveries_seat_legs), (severed, 1));
+        let text = report.render();
+        assert!(text.contains("2 (1/2 seat-legs)"), "{text}");
+        assert!(text.contains("0 (1/4 seat-legs)"), "{text}");
+        assert!(text.contains("90/180/900 (1/2)"), "{text}");
+
+        let unmeasured = build_report(&pair("a", MapFamily::Open, 0, [NEW, OLD]))
+            .unwrap()
+            .render();
+        assert!(!unmeasured.contains("severed ground"), "{unmeasured}");
     }
 
     #[test]
