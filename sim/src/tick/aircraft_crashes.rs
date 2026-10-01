@@ -28,7 +28,7 @@ pub(super) fn remember_motion(state: &mut State, before: &[(UnitId, Vec2Fx)]) {
         unit.air_motion = if unit.domain() == Domain::Ground {
             Vec2Fx::ZERO
         } else if delta.length_sq() > speed * speed {
-            delta * (speed / (sqrt(delta.length_sq()) + Fx::lit("0.000001")))
+            delta * (speed / (sqrt(delta.length_sq()) + const { Fx::lit("0.000001") }))
         } else {
             delta
         };
@@ -43,7 +43,7 @@ pub(super) fn schedule(state: &mut State) {
         if unit.hp != 0 || unit.domain() != Domain::Air || unit.kind.crash_profile().is_none() {
             continue;
         }
-        let coast = unit.air_motion * Fx::from_num(AIRCRAFT_CRASH_TICKS) * Fx::lit("0.8");
+        let coast = unit.air_motion * Fx::from_num(AIRCRAFT_CRASH_TICKS) * const { Fx::lit("0.8") };
         state.aircraft_crashes.push(AircraftCrash {
             unit: unit.id,
             player: unit.player,

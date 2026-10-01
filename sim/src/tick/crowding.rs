@@ -5,7 +5,7 @@ use chassis::grid::{CARDINALS, TilePos};
 use std::collections::BTreeSet;
 
 pub(crate) fn compression() -> Fx {
-    Fx::lit("0.65")
+    const { Fx::lit("0.65") }
 }
 pub(crate) fn spacing(a: &Unit, b: &Unit) -> Fx {
     let distance = a.kind.stats().radius + b.kind.stats().radius;
@@ -49,7 +49,7 @@ impl Pressure {
                         .path
                         .as_ref()
                         .map(|path| path.final_point.unwrap_or(path.goal.center()))
-                        .filter(|&point| other.pos.dist_sq(point) <= Fx::lit("1.5625"));
+                        .filter(|&point| other.pos.dist_sq(point) <= const { Fx::lit("1.5625") });
                     Neighbor {
                         pos: other.pos,
                         destination,
@@ -106,8 +106,9 @@ pub(crate) fn choose(
         for candidate in &mut waiting {
             let outward = candidate.point - center;
             if outward != Vec2Fx::ZERO {
-                candidate.point +=
-                    outward * ((unit.kind.stats().radius * 2 + Fx::lit("0.20")) / outward.length());
+                candidate.point += outward
+                    * ((unit.kind.stats().radius * 2 + const { Fx::lit("0.20") })
+                        / outward.length());
                 candidate.goal = chassis::grid::TilePos::containing(candidate.point);
             }
         }

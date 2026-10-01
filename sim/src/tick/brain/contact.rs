@@ -17,7 +17,9 @@ fn approach_building(state: &mut State, id: UnitId, building: BuildingId) -> boo
     let (anchor, size) = (b.anchor, b.stats().size);
     let unit = state.unit(id).expect("contact unit");
     let (from, pos, player, kind) = (unit.tile(), unit.pos, unit.player, unit.kind);
-    if pos.dist_sq(crate::geometry::footprint_contact(pos, anchor, size)) > Fx::lit("6.25") {
+    if pos.dist_sq(crate::geometry::footprint_contact(pos, anchor, size))
+        > const { Fx::lit("6.25") }
+    {
         return approach_rect(state, id, anchor, size);
     }
     if unit.path.as_ref().is_some_and(|path| {
@@ -67,7 +69,7 @@ fn approach_building(state: &mut State, id: UnitId, building: BuildingId) -> boo
 pub(in crate::tick) fn clearance(unit: &crate::Unit) -> Fx {
     unit.kind.stats().contact_reach.map_or_else(
         || unit.kind.stats().radius + crate::stats::WORK_FOOTPRINT_GAP,
-        |reach| unit.kind.stats().radius + reach - Fx::lit("0.05"),
+        |reach| unit.kind.stats().radius + reach - const { Fx::lit("0.05") },
     )
 }
 
@@ -81,7 +83,7 @@ pub(in crate::tick) fn endpoint(
     let surface = state.contact_surface(state.building(building)?);
     let point = surface.stance(entry, clearance(unit));
     let goal = TilePos::containing(entry);
-    (point.dist_sq(goal.center()) <= Fx::lit("2.25")
+    (point.dist_sq(goal.center()) <= const { Fx::lit("2.25") }
         && state
             .ground_terrain()
             .with_contact(Some(surface))
@@ -93,7 +95,7 @@ pub(in crate::tick) fn collision_radius(unit: &crate::Unit) -> Fx {
     unit.kind
         .stats()
         .radius
-        .min(clearance(unit) - Fx::lit("0.002"))
+        .min(clearance(unit) - const { Fx::lit("0.002") })
 }
 
 pub(in crate::tick) fn surface_for(
@@ -133,7 +135,9 @@ pub(in crate::tick) fn surface_for(
     };
     let b = target
         .and_then(|id| state.building(id))
-        .filter(|b| b.hp > 0 && unit.pos.dist_sq(b.closest_point_to(unit.pos)) <= Fx::lit("2.25"))
+        .filter(|b| {
+            b.hp > 0 && unit.pos.dist_sq(b.closest_point_to(unit.pos)) <= const { Fx::lit("2.25") }
+        })
         .or_else(|| {
             (!state.passable(unit.tile()))
                 .then(|| {

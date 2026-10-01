@@ -273,7 +273,7 @@ const CONTACT_WINDOW: i32 = 2;
 
 /// Whether two bodies are in contact, with the slack the arrival wave uses.
 fn touching(a: &crate::state::Unit, b: &crate::state::Unit) -> bool {
-    let slack = Fx::lit("0.05");
+    let slack = const { Fx::lit("0.05") };
     a.pos.dist(b.pos) <= a.kind.stats().radius + b.kind.stats().radius + slack
 }
 

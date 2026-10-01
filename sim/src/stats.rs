@@ -281,7 +281,7 @@ impl UnitStats {
     /// `40.75`. Only meaningful when `turn_rate > 0`.
     pub fn turn_radius(&self) -> Fx {
         debug_assert!(self.turn_rate > 0);
-        self.speed * Fx::lit("40.75") / Fx::from_num(i64::from(self.turn_rate))
+        self.speed * const { Fx::lit("40.75") } / Fx::from_num(i64::from(self.turn_rate))
     }
 
     /// The ring inside which a turn-limited flier accepts a waypoint or
@@ -501,7 +501,7 @@ impl UnitKind {
         };
         Some(CrashProfile {
             damage,
-            radius: Fx::lit("2"),
+            radius: const { Fx::lit("2") },
         })
     }
 

@@ -426,7 +426,7 @@ impl Unit {
         let reach = crate::geometry::work_approach_distance(self.kind.stats().radius)
             + crate::stats::WORK_REACH
             - crate::stats::WORK_APPROACH_GAP
-            + Fx::lit("0.04");
+            + const { Fx::lit("0.04") };
         self.pos
             .dist_sq(crate::geometry::footprint_contact(self.pos, anchor, size))
             <= reach * reach
@@ -762,7 +762,7 @@ impl<'a> GroundTerrain<'a> {
 
     pub(crate) fn at_contact(&self, pos: Vec2Fx, radius: Fx) -> bool {
         self.contact.is_some_and(|surface| {
-            let reach = radius + Fx::lit("0.25");
+            let reach = radius + const { Fx::lit("0.25") };
             pos.dist_sq(surface.closest(pos)) <= reach * reach
                 && self.contact_clear(pos, pos, radius)
         })
@@ -784,7 +784,7 @@ impl<'a> GroundTerrain<'a> {
     }
 
     /// Whether a non-stealthy, non-provisional building covers `tile`.
-    fn building_blocks(&self, tile: TilePos) -> bool {
+    pub(crate) fn building_blocks(&self, tile: TilePos) -> bool {
         let width = self.map.width();
         if tile.x < 0 || tile.y < 0 || tile.x >= width || tile.y >= self.map.height() {
             return false;
@@ -1196,8 +1196,8 @@ impl State {
             if let Some(path) = &u.path
                 && let Some(point) = path.final_point
                 && (!point_inside_envelope(point)
-                    || (point.x - path.goal.center().x).abs() > Fx::lit("1.5")
-                    || (point.y - path.goal.center().y).abs() > Fx::lit("1.5")
+                    || (point.x - path.goal.center().x).abs() > const { Fx::lit("1.5") }
+                    || (point.y - path.goal.center().y).abs() > const { Fx::lit("1.5") }
                     || self.map.tile(path.goal).is_none()
                     || path.waypoints.last() != Some(&path.goal)
                     || path.next as usize >= path.waypoints.len()
