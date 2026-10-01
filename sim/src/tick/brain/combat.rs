@@ -334,7 +334,7 @@ pub(super) fn land_shells(state: &mut State, hits: &mut Vec<PendingHit>, events:
                     && shell.targets.ground
                     && state.hostile(shell.player, b.player)
                     && b.closest_point_to(shell.impact).dist_sq(shell.impact)
-                        <= chassis::fx::Fx::lit("0.0001")
+                        <= const { chassis::fx::Fx::lit("0.0001") }
             })
             .min_by_key(|b| (b.kind.is_stealthy() && b.built, b.id));
         if let Some(b) = direct {
@@ -956,7 +956,7 @@ pub(super) fn advance(
                 .map(|(_, bid, aim)| (Target::Building(bid), aim))
         });
     let Some((target, aim)) = target else {
-        automatic_radar(state, index, id, true, events, hits, launches);
+        automatic_radar(state, index, id, true, events, hits, launches, &mut None);
         return;
     };
 
@@ -2064,8 +2064,8 @@ fn approach_firing_area(
     for y in ((b.anchor.y - r).max(0) * 2)..((b.anchor.y + h + r).min(state.map.height()) * 2) {
         for x in ((b.anchor.x - r).max(0) * 2)..((b.anchor.x + w + r).min(state.map.width()) * 2) {
             let point = Vec2Fx::new(
-                Fx::from_num(x) / 2 + Fx::lit("0.25"),
-                Fx::from_num(y) / 2 + Fx::lit("0.25"),
+                Fx::from_num(x) / 2 + const { Fx::lit("0.25") },
+                Fx::from_num(y) / 2 + const { Fx::lit("0.25") },
             );
             if legal(point) {
                 points.push(point);
@@ -2075,7 +2075,7 @@ fn approach_firing_area(
     let aim = b.closest_point_to(pos);
     let distance = pos.dist(aim);
     if distance > weapon.range {
-        let point = pos.move_toward(aim, distance - weapon.range + Fx::lit("0.02"));
+        let point = pos.move_toward(aim, distance - weapon.range + const { Fx::lit("0.02") });
         if legal(point) {
             points.push(point);
         }

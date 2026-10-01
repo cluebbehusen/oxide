@@ -1039,7 +1039,8 @@ fn source_route_avoiding_danger(
     let mut candidates: Vec<_> = crate::geometry::work_positions(
         source.pos,
         (1, 1),
-        crate::geometry::work_approach_distance(unit.kind.stats().radius) + Fx::lit("0.06"),
+        crate::geometry::work_approach_distance(unit.kind.stats().radius)
+            + const { Fx::lit("0.06") },
         unit.kind.stats().radius * crowding::compression(),
     )
     .into_iter()

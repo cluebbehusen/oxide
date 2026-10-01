@@ -219,7 +219,7 @@ pub fn work_positions(
     let y = Fx::from_num(anchor.y);
     let w = Fx::from_num(size.0);
     let h = Fx::from_num(size.1);
-    let inset = Fx::lit("0.02");
+    let inset = const { Fx::lit("0.02") };
     let mut points = Vec::new();
     for (span, horizontal) in [(w, true), (h, false)] {
         let divisions = (span / pitch).floor().to_num::<i32>().max(1);

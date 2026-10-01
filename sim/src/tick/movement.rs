@@ -199,9 +199,7 @@ pub(super) fn claimed_ground_escape(state: &State, id: crate::ids::UnitId) -> Op
     if unit.hp == 0
         || unit.domain() != crate::stats::Domain::Ground
         || unit.path.is_some()
-        || state
-            .buildings_at(unit.tile())
-            .all(|b| b.kind.is_stealthy() || b.provisional)
+        || !state.ground_terrain().building_blocks(unit.tile())
     {
         return None;
     }
@@ -547,7 +545,7 @@ fn steer_toward(
     let dot = facing.x * d.x + facing.y * d.y;
     // Three quarters of a compass step: retain the current bearing near
     // the quantization boundary instead of reversing on successive ticks.
-    if dot >= Fx::ZERO && cross.abs() <= dot * Fx::lit("0.0184") {
+    if dot >= Fx::ZERO && cross.abs() <= dot * const { Fx::lit("0.0184") } {
         return;
     }
     let Some((short, sweep)) = flight::turn_to(unit.heading, d) else {
@@ -850,6 +848,30 @@ fn collision_pair_key(
     )
 }
 
+/// Whether a candidate pair can reach the overlap test of one relaxation
+/// pass. Bodies of different layers never do. A ground body moves no farther
+/// than its unspent [`COLLISION_MAX_STEP`] budget, so a ground pair farther
+/// apart than its full spacing plus both budgets never does either. Air
+/// corrections clamp to the flight envelope, which can carry a body farther,
+/// so air pairs always stay. Dropping pairs before the sort keeps the relative
+/// order of every pair that remains.
+fn may_touch_this_pass(state: &State, spent: &[Fx], i: usize, j: usize) -> bool {
+    let (a, b) = (&state.units[i], &state.units[j]);
+    let domain = a.domain();
+    if domain != b.domain() {
+        return false;
+    }
+    if domain == crate::stats::Domain::Air {
+        return true;
+    }
+    let reach = a.kind.stats().radius
+        + b.kind.stats().radius
+        + (COLLISION_MAX_STEP - spent[i])
+        + (COLLISION_MAX_STEP - spent[j])
+        + const { Fx::lit("0.015625") };
+    a.pos.dist_sq(b.pos) < reach * reach
+}
+
 /// Candidate contacts in a seat-local order. A half-turn maps each pair to a
 /// pair with the same owner-local ranks and canonical geometry. Counterpart
 /// pairs therefore remain adjacent; they touch disjoint units and commute,
@@ -861,6 +883,7 @@ fn collision_pairs(
     reversed: bool,
     index: &super::spatial::UnitIndex,
     owner_ranks: &[usize],
+    spent: &[Fx],
 ) -> Vec<(usize, usize)> {
     let mut pairs = Vec::new();
     // A heading-first airframe flies a committed arc that its steering has
@@ -884,7 +907,7 @@ fn collision_pairs(
             };
             let row = index.row_span(home.y + dy, home.x - 1, home.x + 1);
             for j in OrientedRow::new(row, rotated_frame) {
-                if j > i && shoveable(j) {
+                if j > i && shoveable(j) && may_touch_this_pass(state, spent, i, j) {
                     pairs.push((i, j));
                 }
             }
@@ -940,7 +963,7 @@ fn relaxation_pass(
         spent.clear();
         spent.resize(n, Fx::ZERO);
     }
-    for (i, j) in collision_pairs(state, reversed, index, owner_ranks) {
+    for (i, j) in collision_pairs(state, reversed, index, owner_ranks, spent) {
         let (pos_i, radius_i, dom_i) = {
             let u = &state.units[i];
             (u.pos, u.kind.stats().radius, u.domain())

@@ -9,7 +9,7 @@ use super::super::{
 };
 use super::combat::{acquire_target, acquire_target_from};
 use crate::event::{Event, StallReason};
-use crate::ids::UnitId;
+use crate::ids::{Target, UnitId};
 use crate::state::{Goal, Order, PathFollow, State};
 use chassis::grid::TilePos;
 
@@ -17,7 +17,12 @@ use chassis::grid::TilePos;
 /// leash is set here (and refreshed by retaliation), never by player
 /// commands: an explicit attack is a commitment, and `assign` clears
 /// any tether the moment a command lands.
-pub(super) fn idle(state: &mut State, index: &super::super::spatial::UnitIndex, id: UnitId) {
+pub(super) fn idle(
+    state: &mut State,
+    index: &super::super::spatial::UnitIndex,
+    id: UnitId,
+    acquired: Option<Option<Target>>,
+) {
     // A guard back at its post cools down before it looks for the next
     // fight; the leash clears when the cooldown drains — and the guard
     // is instantly STATIONED again (it verifiably stood the whole
@@ -40,7 +45,7 @@ pub(super) fn idle(state: &mut State, index: &super::super::spatial::UnitIndex, 
         }
         return;
     }
-    if let Some(target) = acquire_target(state, index, id) {
+    if let Some(target) = acquired.unwrap_or_else(|| acquire_target(state, index, id)) {
         let unit = state.unit_mut(id).expect("caller checked");
         let anchor = unit.tile();
         let stationed = unit.settled >= crate::stats::LEASH_STATION_TICKS;
@@ -556,7 +561,7 @@ fn touching_settled_arrival(
     }
     let my_stats = unit.kind.stats();
     let my_radius = my_stats.radius;
-    let contact_slack = chassis::fx::Fx::lit("0.05");
+    let contact_slack = const { chassis::fx::Fx::lit("0.05") };
     // Contact only means anything between bodies that collide: a flyer
     // hovering over a parked crowd is not "touching" it.
     let reach = crate::stats::ARRIVAL_NEAR.to_num::<i32>() + 1;

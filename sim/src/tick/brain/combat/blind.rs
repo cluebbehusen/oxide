@@ -110,7 +110,7 @@ fn buffer_blind(
                     && b.hp > 0
                     && !b.provisional
                     && state.hostile(player, b.player)
-                    && b.closest_point_to(aim).dist_sq(aim) <= Fx::lit("0.0001")
+                    && b.closest_point_to(aim).dist_sq(aim) <= const { Fx::lit("0.0001") }
             })
             .min_by_key(|b| b.id)
             .map(|b| Target::Building(b.id))
@@ -288,6 +288,10 @@ fn fire_unit(
     }
 }
 
+/// Fires an automatic unit's weapon at a radar contact in reach when it has
+/// no ordinary target. `acquired` receives the ordinary acquisition whenever
+/// this judged one, so a brain later in the same tick need not repeat it.
+#[allow(clippy::too_many_arguments)]
 pub(in crate::tick::brain) fn automatic_radar(
     state: &mut State,
     index: &super::super::super::spatial::UnitIndex,
@@ -296,6 +300,7 @@ pub(in crate::tick::brain) fn automatic_radar(
     events: &mut Vec<Event>,
     hits: &mut Vec<PendingHit>,
     launches: &mut Vec<crate::state::Shell>,
+    acquired: &mut Option<Option<Target>>,
 ) -> bool {
     let u = state.unit(id).expect("live unit");
     let stats = u.kind.stats();
@@ -303,7 +308,11 @@ pub(in crate::tick::brain) fn automatic_radar(
         || stats.turn_rate > 0
         || stats.weapons.is_empty()
         || (moving && u.kind == crate::UnitKind::Bombard)
-        || acquire_target(state, index, id).is_some()
+        || {
+            let target = acquire_target(state, index, id);
+            *acquired = Some(target);
+            target.is_some()
+        }
     {
         return false;
     }
@@ -635,7 +644,8 @@ mod tests {
             false,
             &mut events,
             &mut hits,
-            &mut launches
+            &mut launches,
+            &mut None
         ));
         assert!(events.iter().any(|event| matches!(event,
             Event::AttackHit { attacker, weapon: 1, target: None, .. } if *attacker == gun)));
