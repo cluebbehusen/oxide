@@ -865,3 +865,37 @@ fn checkpoints_round_trip_and_restore_only_opponent_seats() {
         "checkpoint seat is not an oxide-opponent seat"
     );
 }
+
+#[test]
+fn a_producer_about_to_finish_queues_its_next_unit_now() {
+    let mut scenario = second_foundry(1_000);
+    scenario.units.extend((1..=2).map(|x| harvester(0, x, 10)));
+    let mut state = scenario.build().unwrap();
+    let homes = foundries(&state, PlayerId(0));
+    let busy: Vec<PlayerCommand> = homes
+        .iter()
+        .map(|building| PlayerCommand {
+            player: PlayerId(0),
+            command: Command::Train {
+                building: *building,
+                kind: UnitKind::Sentinel,
+            },
+        })
+        .collect();
+    let finishes = u64::from(UnitKind::Sentinel.stats().train_ticks);
+    // The last decision before the Sentinels finish, and the one before it.
+    let last = (finishes - 1) / 12 * 12;
+    advance_to(&mut state, last - 12, &busy);
+    let early = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
+    assert!(trains(&early).is_empty(), "{early:?}");
+    advance_to(&mut state, last, &[]);
+    let late = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
+    assert_eq!(
+        trains(&late),
+        [
+            (homes[0], UnitKind::Sentinel),
+            (homes[1], UnitKind::Sentinel)
+        ],
+        "each queues its next unit before it would stand empty"
+    );
+}

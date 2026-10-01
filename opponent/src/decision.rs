@@ -186,12 +186,14 @@ impl Ledger {
     }
 }
 
-/// A built own producer, and whether its queue was empty when the decision
-/// began.
+/// A built own producer, and whether its queue runs out before the next
+/// decision, so a unit queued now keeps it working. Every unit trains for
+/// longer than a decision interval, so one unit a decision keeps a ready
+/// producer busy.
 #[derive(Clone, Copy)]
 pub(crate) struct Producer<'a> {
     pub(crate) building: &'a BuildingObs,
-    pub(crate) idle: bool,
+    pub(crate) ready: bool,
 }
 
 /// Defense first, then worker recovery, then an affordable saving target
@@ -215,7 +217,11 @@ pub(crate) fn decide(
         return ledger.decision;
     };
     let tick = observation.tick;
-    let producers = producers(observation, frame);
+    let producers = producers(
+        observation,
+        frame,
+        crate::decision_interval(profile.difficulty),
+    );
     let foundries: Vec<Producer<'_>> = producers
         .iter()
         .copied()
@@ -270,6 +276,7 @@ pub(crate) fn decide(
         pull.push((BuildingKind::Airworks, LIFT_PULL));
     }
     let situation = Situation {
+        wanted: needs.wanted(),
         observation,
         map,
         memory: &persistent.memory,
@@ -539,9 +546,9 @@ fn explore(
 }
 
 /// Keeps enough carriers, alive and queued, to lift what the best landing
-/// needs with the free units at home, training one at an idle Airworks when
+/// needs with the free units at home, training one at a ready Airworks when
 /// short. It is a stock, like the Harvesters: no mission is promised the
-/// carriers it buys. Returns whether an idle Airworks waits for the scrap to
+/// carriers it buys. Returns whether a ready Airworks waits for the scrap to
 /// train one while riders at home already fill every carrier, so that
 /// cheaper units do not spend it first.
 fn train_carriers(
@@ -575,7 +582,7 @@ fn train_carriers(
         .iter()
         .find(|producer| {
             producer.building.kind == BuildingKind::Airworks
-                && producer.idle
+                && producer.ready
                 && !ledger.queued_at(producer.building.id)
         })
         .is_some_and(|airworks| !ledger.train(airworks.building.id, UnitKind::Skyhook) && waiting)
@@ -622,7 +629,7 @@ fn train_scout(observation: &ObservationData, producers: &[Producer<'_>], ledger
 
 /// Keeps a Tender, alive or queued, for so much missing health among the
 /// seat's armed ground units, more the more it leans on support, up to two,
-/// training one at an idle producer that can.
+/// training one at a ready producer that can.
 fn train_tenders(
     observation: &ObservationData,
     profile: &ResolvedProfile,
@@ -656,7 +663,7 @@ fn train_tenders(
         return;
     }
     let producer = producers.iter().find(|producer| {
-        producer.idle
+        producer.ready
             && !ledger.queued_at(producer.building.id)
             && producer
                 .building
@@ -673,7 +680,7 @@ fn train_tenders(
 /// Keeps two Scuttlers, alive or queued, for raiding once income reaches a
 /// level that falls with guile, and a Sapper for each known enemy defense
 /// that can hit ground, up to an attack's worth, once the seat has scrap to
-/// spare, less the more it leans on siege. Each trains at an idle producer
+/// spare, less the more it leans on siege. Each trains at a ready producer
 /// that can.
 fn train_raiders(
     observation: &ObservationData,
@@ -717,7 +724,7 @@ fn train_raiders(
             continue;
         }
         let producer = producers.iter().find(|producer| {
-            producer.idle
+            producer.ready
                 && !ledger.queued_at(producer.building.id)
                 && producer.building.kind.base_stats().produces.contains(&kind)
         });
@@ -727,16 +734,27 @@ fn train_raiders(
     }
 }
 
-/// Built producers, nearest home first.
-fn producers(observation: &ObservationData, frame: HomeFrame) -> Vec<Producer<'_>> {
+/// Built producers, nearest home first, each ready when the work left in its
+/// queue ends within `interval` ticks.
+fn producers(observation: &ObservationData, frame: HomeFrame, interval: u64) -> Vec<Producer<'_>> {
     let mut producers: Vec<Producer<'_>> = observation
         .my_buildings
         .iter()
         .zip(&observation.my_queues)
-        .filter(|(building, _)| building.built && !building.kind.base_stats().produces.is_empty())
-        .map(|(building, queue)| Producer {
-            building,
-            idle: queue.is_empty(),
+        .enumerate()
+        .filter(|(_, (building, _))| {
+            building.built && !building.kind.base_stats().produces.is_empty()
+        })
+        .map(|(index, (building, queue))| {
+            let queued: u64 = queue
+                .iter()
+                .map(|kind| u64::from(kind.stats().train_ticks))
+                .sum();
+            let done = u64::from(observation.own_queue_progress(index).unwrap_or(0));
+            Producer {
+                building,
+                ready: queued.saturating_sub(done) < interval,
+            }
         })
         .collect();
     producers.sort_by_key(|producer| {
@@ -746,10 +764,10 @@ fn producers(observation: &ObservationData, frame: HomeFrame) -> Vec<Producer<'_
     producers
 }
 
-/// Gives the most wanted role first claim on idle producers, from
-/// unprotected scrap: in turn, the nearest idle producer that can afford a
-/// unit for it queues the best one, and a role no idle producer can afford
-/// gives way to the next. Idle producers left with no wanted role train line
+/// Gives the most wanted role first claim on ready producers, from
+/// unprotected scrap: in turn, the nearest ready producer that can afford a
+/// unit for it queues the best one, and a role no ready producer can afford
+/// gives way to the next. Ready producers left with no wanted role train line
 /// units while ground units can reach an enemy.
 fn produce(
     observation: &ObservationData,
@@ -759,7 +777,7 @@ fn produce(
 ) {
     let mut idle: Vec<&Producer<'_>> = producers
         .iter()
-        .filter(|producer| producer.idle && !ledger.queued_at(producer.building.id))
+        .filter(|producer| producer.ready && !ledger.queued_at(producer.building.id))
         .collect();
     while let Some((index, kind)) = needs.wanted().into_iter().find_map(|role| {
         idle.iter().enumerate().find_map(|(index, producer)| {

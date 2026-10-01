@@ -1,6 +1,7 @@
 //! What the seat could invest in, how much it wants each, and the next
 //! purchase toward it. The list is recomputed every decision.
 
+use crate::composition::{self, Role};
 use crate::defenses;
 use crate::expansion;
 use crate::frame::{HomeFrame, footprint_centre};
@@ -8,8 +9,8 @@ use crate::map::MapModel;
 use crate::memory::Memory;
 use crate::profile::PersonalityTraits;
 use chassis::grid::TilePos;
-use oxide_sim::observation::ObservationData;
-use oxide_sim::{BuildingId, BuildingKind, PlayerId};
+use oxide_sim::observation::{BuildingObs, ObservationData};
+use oxide_sim::{BuildingId, BuildingKind, PlayerId, TICKS_PER_SECOND, UnitKind};
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 
@@ -80,6 +81,8 @@ pub(crate) struct Situation<'a> {
     pub(crate) pull: Vec<(BuildingKind, u32)>,
     /// Whether the seat's army is under the stance's minimum.
     pub(crate) exposed: bool,
+    /// The army roles with a deficit.
+    pub(crate) wanted: Vec<Role>,
 }
 
 /// Every investment the seat wants at all, most wanted first.
@@ -113,8 +116,13 @@ pub(crate) fn candidates(situation: &Situation<'_>) -> Vec<Candidate> {
         let score = full * situation.income.min(360) / 360 + pull(BuildingKind::Crucible);
         list.push((Investment::Tech(BuildingKind::Crucible), score));
     }
-    for kind in [BuildingKind::Fabricator, BuildingKind::Airworks] {
-        if busy(situation, kind) {
+    for kind in [
+        BuildingKind::Foundry,
+        BuildingKind::Fabricator,
+        BuildingKind::Airworks,
+        BuildingKind::Crucible,
+    ] {
+        if another(situation, kind) {
             list.push((
                 Investment::Capacity(kind),
                 400 + 2 * u32::from(traits.greed),
@@ -293,21 +301,50 @@ fn requirement_step(
     build_step(observation, missing, depth - 1)
 }
 
-/// Whether every built producer of `kind` was busy when the decision began
-/// and income could keep one more working at 300 a minute each. A producer
-/// already being built answers the need.
-fn busy(situation: &Situation<'_>, kind: BuildingKind) -> bool {
+/// Whether the seat wants another producer of `kind`: every one it has was
+/// working when the decision began, a role it trains is wanted, and the
+/// income the working producers leave unspent could keep one more of `kind`
+/// as busy as those it has. A producer already being built answers the need.
+fn another(situation: &Situation<'_>, kind: BuildingKind) -> bool {
     let observation = situation.observation;
-    let producers: Vec<bool> = observation
+    let producers: Vec<(&BuildingObs, &Vec<UnitKind>)> = observation
         .my_buildings
         .iter()
         .zip(&observation.my_queues)
         .filter(|(building, _)| building.kind == kind)
-        .map(|(building, queue)| building.built && !queue.is_empty())
         .collect();
-    !producers.is_empty()
-        && producers.iter().all(|busy| *busy)
-        && situation.income >= 300 * (producers.len() as u32 + 1)
+    let working = producers
+        .iter()
+        .all(|(building, queue)| building.built && !queue.is_empty());
+    let needed = situation
+        .wanted
+        .iter()
+        .any(|role| composition::serves(observation, kind, *role));
+    if producers.is_empty() || !working || !needed {
+        return false;
+    }
+    let spent: u64 = observation
+        .my_buildings
+        .iter()
+        .zip(&observation.my_queues)
+        .filter(|(building, _)| building.built)
+        .map(|(_, queue)| spending(queue))
+        .sum();
+    let each = producers
+        .iter()
+        .map(|(_, queue)| spending(queue))
+        .sum::<u64>()
+        / producers.len() as u64;
+    u64::from(situation.income).saturating_sub(spent) >= each
+}
+
+/// Scrap a minute a producer spends on the unit at the front of `queue`.
+fn spending(queue: &[UnitKind]) -> u64 {
+    queue.first().map_or(0, |kind| {
+        let stats = kind.stats();
+        u64::from(stats.cost) * u64::from(TICKS_PER_SECOND) * 60
+            / u64::from(stats.train_ticks.max(1))
+    })
 }
 
 /// Own buildings of `kind`, built or not.
