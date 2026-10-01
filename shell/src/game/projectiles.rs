@@ -154,7 +154,7 @@ mod tests {
     }
 
     #[test]
-    fn saved_projectile_releases_retain_heading_slots_and_simulation_parity() {
+    fn replay_projectile_releases_retain_heading_slots_and_simulation_parity() {
         let scenario: Scenario = serde_json::from_value(serde_json::json!({
             "name": "Bomber release", "seed": 619,
             "map": [

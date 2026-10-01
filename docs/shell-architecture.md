@@ -566,11 +566,15 @@ rules.
 
 Direct-fire reports resolve cosmetic contact against solid rendered body pixels.
 Units use their drawn frame, rotation, interpolation and aircraft lift; visible
-geometry survives lethal removal. Compact contact regions derive from atlas
-alpha at load time and are shared by all instances. Projectile launch history
-retains recorded flight duration and identified targets through arrival.
-Unguided unit contacts stay on the original course and require the nominal
-impact to overlap the body; bomb spread and ground misses retain their
+body-frame selection survives lethal removal. Reported unit strikes stay
+anchored to the hit-tick pose while the target moves. Compact contact regions
+derive from atlas alpha at load time and are shared by all instances. Projectile
+launch history retains recorded flight duration and identified targets through
+arrival. When launch history is absent after checkpoint restoration, payload
+recipients are reconstructed from visible world bodies at the fixed impact
+point; landing reports can also use pre-removal bodies. No historical ticks are
+executed. Unguided unit contacts stay on the original course and require the
+nominal impact to overlap the body; bomb spread and ground misses retain their
 positions. Surface flashes, fragments, dust and scorch marks share the cosmetic
 contact point. Weapon and recipient profiles distinguish rail, orb, mortar,
 shell, rocket and bomb contacts. Simulation targeting, damage, shell arrivals

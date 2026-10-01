@@ -361,16 +361,15 @@ pub(super) fn strike_contact(
                     super::unit_body_pose(game, sprites, unit, game.presentation.tick_fraction());
                 return posed_unit_contact(sprites, &pose, from, pose.center);
             }
-            unit_contact(sprites, hit.body, from, hit.center, hit.center)
+            unit_contact(sprites, hit, from, hit.center)
         }
     }
 }
 
 pub(super) fn unit_contact(
     sprites: &Sprites,
-    body: crate::game::UnitBody,
+    hit: crate::game::UnitHit,
     from: Vec2,
-    center: Vec2,
     aim: Vec2,
 ) -> Option<Vec2> {
     let rotate = |v: Vec2, angle: f32| {
@@ -379,17 +378,9 @@ pub(super) fn unit_contact(
             v.x * angle.sin() + v.y * angle.cos(),
         )
     };
-    let source = sprites
-        .worker_body(body.kind, body.faction, 0, 0)
-        .map_or_else(
-            || {
-                sprites.unit_rig(body.kind).map_or_else(
-                    || sprites.unit(body.kind, body.faction),
-                    |rig| rig.hull(body.faction, 0).0,
-                )
-            },
-            |(body, _)| body,
-        );
+    let body = hit.body;
+    let center = hit.center;
+    let source = super::unit_body_sources(sprites, body.kind, body.faction, hit.frame).0;
     let size = super::unit_draw_scale(body.kind);
     sprites
         .sprite_contact(
@@ -436,25 +427,10 @@ fn payload_contact(
         .presentation
         .projectile_releases
         .flight(game.state.shells(), index)
-        .and_then(|flight| flight.target)
-        .or_else(|| {
-            game.state
-                .buildings()
-                .iter()
-                .find(|building| {
-                    shell.targets.ground
-                        && game.state.hostile(shell.player, building.player)
-                        && building
-                            .closest_point_to(shell.impact)
-                            .dist_sq(shell.impact)
-                            <= chassis::fx::Fx::lit("0.0001")
-                })
-                .map(|building| oxide_sim::Target::Building(building.id))
-        });
-    let surface = game
-        .presentation
-        .hit_surface(game.state, target)
-        .filter(|surface| surface.covers(at));
+        .and_then(|flight| flight.target);
+    let surface =
+        game.presentation
+            .payload_surface(game.state, target, shell.player, at, shell.targets);
     let from = vec2(
         shell.launch.x.to_num::<f32>(),
         shell.launch.y.to_num::<f32>(),
@@ -517,10 +493,8 @@ pub(super) fn impact_contact(
         from
     };
     match surface {
-        Some(crate::game::HitSurface::Unit(hit)) => {
-            unit_contact(sprites, hit.body, ray_from, hit.center, at)
-                .filter(|point| on_payload_course(from, at, *point))
-        }
+        Some(crate::game::HitSurface::Unit(hit)) => unit_contact(sprites, hit, ray_from, at)
+            .filter(|point| on_payload_course(from, at, *point)),
         _ => strike_contact(
             game,
             sprites,
@@ -1677,9 +1651,14 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                 ..
             } => {
                 use crate::game::ShotStyle;
-                let contact = strike_contact(game, sprites, surface, from, to, style)
-                    .filter(|&contact| game.presentation.all_seeing() || sees(contact))
-                    .unwrap_or(to);
+                let contact = match surface {
+                    Some(crate::game::HitSurface::Unit(hit)) => {
+                        unit_contact(sprites, hit, from, hit.center)
+                    }
+                    _ => strike_contact(game, sprites, surface, from, to, style),
+                }
+                .filter(|&contact| game.presentation.all_seeing() || sees(contact))
+                .unwrap_or(to);
                 let a = game.presentation.camera.to_screen(from);
                 let b = game.presentation.camera.to_screen(contact);
                 let age = fx.age_at(game.state.current_tick(), game.presentation.tick_fraction());
