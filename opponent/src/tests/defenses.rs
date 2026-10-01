@@ -841,3 +841,28 @@ fn a_seat_does_not_wall_itself_in() {
         "live scrap closes the second way out until it is mined"
     );
 }
+
+#[test]
+fn an_exposed_opening_buys_no_tech_before_its_first_turret() {
+    let mut scenario = arena(150);
+    scenario.units.push(unit(0, UnitKind::Sentinel, 3, 10));
+    let built = |state: &State| -> Vec<BuildingKind> {
+        builds(&seat_with(&scenario, 0, thrifty()).act(state, &mut OwnEvents::default()))
+            .into_iter()
+            .map(|(kind, _)| kind)
+            .collect()
+    };
+    let mut state = scenario.build().unwrap();
+    let opening = built(&state);
+    assert!(
+        opening.iter().all(|kind| *kind != BuildingKind::Fabricator),
+        "no Turret can be placed yet, so tech waits: {opening:?}"
+    );
+    advance_to(&mut state, crate::defenses::SETTLE_TICKS, &[]);
+    let settled = built(&state);
+    assert!(
+        settled.contains(&BuildingKind::Turret)
+            && settled.iter().all(|kind| *kind != BuildingKind::Fabricator),
+        "{settled:?}"
+    );
+}
