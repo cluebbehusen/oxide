@@ -38,6 +38,7 @@ fn offered(scenario: &Scenario, state: &State, tick: u64) -> Vec<Investment> {
         depletion: 0,
         pull: Vec::new(),
         exposed: true,
+        severed: false,
         wanted: vec![
             crate::composition::Role::Line,
             crate::composition::Role::Siege,

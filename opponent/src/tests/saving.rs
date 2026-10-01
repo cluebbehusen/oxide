@@ -333,6 +333,7 @@ fn reclaimers_wait_for_the_drip_and_refineries_need_a_fabricator() {
             depletion: 0,
             pull: Vec::new(),
             exposed: false,
+            severed: false,
             wanted: Vec::new(),
         })
         .into_iter()
@@ -553,6 +554,7 @@ fn mirrored_seats_rank_equal_extractor_frames_alike() {
             depletion: 0,
             pull: Vec::new(),
             exposed: false,
+            severed: false,
             wanted: Vec::new(),
         })
         .into_iter()

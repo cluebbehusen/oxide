@@ -286,6 +286,7 @@ pub(crate) fn decide(
         depletion: depletion(observation, map),
         pull,
         exposed,
+        severed: scratch.severed,
     };
     let candidates = investments::candidates(&situation);
     let share = share(observation, profile);

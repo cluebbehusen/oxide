@@ -1302,3 +1302,52 @@ fn a_payload_worth_two_lifts_flies_both_to_distinct_targets() {
     };
     assert_ne!(first.kind, second.kind, "each goes after its own target");
 }
+
+/// West's ground cut off from East's start by a wall, East's start in a
+/// walled corner.
+const WALLED: [&str; 24] = [
+    "########################################",
+    "#..............................#.......#",
+    "#..............................#.......#",
+    "#..............................#.......#",
+    "#.........s....................#..2....#",
+    "#..............................#.......#",
+    "#..ss..........................#.......#",
+    "#..s...........................#.......#",
+    "#..............................#.......#",
+    "#..............................#########",
+    "#....1.................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#..ss..................................#",
+    "#..s...................................#",
+    "#......................................#",
+    "#.........s............................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "########################################",
+];
+
+#[test]
+fn a_severed_seat_short_of_an_army_does_not_hold_its_tech_for_a_turret() {
+    let mut scenario = field();
+    scenario.map = WALLED.map(str::to_owned).to_vec();
+    scenario.players[0].scrap = 300;
+    for y in 9..=12 {
+        scenario.units.push(harvester(0, 8, y));
+    }
+    for y in [10, 11] {
+        scenario.units.push(unit(0, UnitKind::Sentinel, 10, y));
+    }
+    let state = scenario.build().unwrap();
+    let (_, trace) = seat(&scenario, 0).act_traced(&state, &mut OwnEvents::default());
+    assert_eq!(
+        trace.unwrap().target.map(|target| target.investment),
+        Some(Investment::Tech(BuildingKind::Airworks)),
+        "its army reaches the enemy only once an Airworks stands"
+    );
+}
