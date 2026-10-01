@@ -242,7 +242,7 @@ pub(crate) fn decide(
     // production for carriers: an army and home defense come first.
     let minimum = crate::missions::minimum(profile.stance);
     let exposed = army(observation) < minimum;
-    let carryable = crate::missions::payload(observation, map).0 >= minimum;
+    let carryable = crate::missions::payload(observation, map) >= minimum;
     let lift = carryable && crate::missions::lift_needed(observation, map, frame);
     let mut pull = needs.pull(observation);
     if lift {
@@ -365,7 +365,7 @@ pub(crate) fn decide(
             map,
             frame,
             profile,
-            &persistent.memory,
+            persistent,
             &producers,
             &mut ledger,
         );
@@ -509,17 +509,17 @@ fn explore(
 }
 
 /// Keeps enough carriers, alive and queued, to lift what the best landing
-/// needs with the units at home, training one at an idle Airworks when short.
-/// It is a stock, like the Harvesters: no mission is promised the carriers it
-/// buys. Returns whether an idle Airworks waits for the scrap to train one
-/// while riders at home already fill every carrier, so that cheaper units do
-/// not spend it first.
+/// needs with the free units at home, training one at an idle Airworks when
+/// short. It is a stock, like the Harvesters: no mission is promised the
+/// carriers it buys. Returns whether an idle Airworks waits for the scrap to
+/// train one while riders at home already fill every carrier, so that
+/// cheaper units do not spend it first.
 fn train_carriers(
     observation: &ObservationData,
     map: &MapModel,
     frame: HomeFrame,
     profile: &ResolvedProfile,
-    memory: &Memory,
+    persistent: &Persistent,
     producers: &[Producer<'_>],
     ledger: &mut Ledger,
 ) -> bool {
@@ -531,16 +531,16 @@ fn train_carriers(
         .filter(|kind| crate::missions::carrier(*kind))
         .count()
         + ledger.queued(UnitKind::Skyhook)) as u64;
-    let capacity = u64::from(UnitKind::Skyhook.stats().transport_capacity).max(1);
-    let (_, slots) = crate::missions::payload(observation, map);
-    // The riders at home bound the stock, so carriers that already hold them
-    // all need no landing search.
-    if carriers >= slots.max(capacity).div_ceil(capacity)
-        || carriers >= crate::missions::carriers_wanted(observation, map, frame, profile, memory)
-    {
+    let Some(waiting) = persistent.missions.carriers_short(
+        observation,
+        map,
+        frame,
+        profile,
+        &persistent.memory,
+        carriers,
+    ) else {
         return false;
-    }
-    let waiting = slots > carriers * capacity;
+    };
     producers
         .iter()
         .find(|producer| {
