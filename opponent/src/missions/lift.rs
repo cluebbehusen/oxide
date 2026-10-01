@@ -111,7 +111,6 @@ impl Missions {
             return Vec::new();
         };
         let lifting_kind: fn(&Task) -> bool = |task| matches!(task, Task::Lift { .. });
-        self.clear(&lifting, ledger);
         let mut given_up: Vec<Objective> = Vec::new();
         for id in self.ids(lifting_kind) {
             let Some(index) = self.index_of(id) else {
@@ -121,6 +120,18 @@ impl Missions {
             if let Some(target) = self.advance_lift(index, &lifting, ledger) {
                 given_up.push(target);
             }
+        }
+        let loading = self.list.iter().any(|mission| {
+            matches!(
+                mission.task,
+                Task::Lift {
+                    phase: LiftPhase::Load,
+                    ..
+                }
+            )
+        });
+        if lifting.severed || loading {
+            self.clear(&lifting, ledger);
         }
         loop {
             lifting.held = self.held(lifting_kind, None, &given_up);
@@ -135,7 +146,8 @@ impl Missions {
     }
 
     /// Moves free carriers hovering where no rider could reach them, such as
-    /// over the Airworks that trained them, to open ground.
+    /// over the Airworks that trained them, to open ground. Lifts under way
+    /// spend the decision's orders first.
     fn clear(&self, lifting: &Lifting<'_>, ledger: &mut Ledger) {
         let observation = lifting.observation;
         for unit in self

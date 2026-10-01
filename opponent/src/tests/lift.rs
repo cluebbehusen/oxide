@@ -448,6 +448,22 @@ fn the_carrier_stock_counts_riders_as_they_pack() {
 }
 
 #[test]
+fn a_seat_needing_no_lift_leaves_its_carriers_where_they_hover() {
+    let mut scenario = field();
+    garrison(&mut scenario);
+    scenario.units.push(unit(0, UnitKind::Skyhook, 4, 12));
+    let state = scenario.build().unwrap();
+    let hook = at(&state, 4, 12);
+    let commands = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
+    assert!(
+        runs(&commands)
+            .iter()
+            .all(|(units, _)| !units.contains(&hook)),
+        "{commands:?}"
+    );
+}
+
+#[test]
 fn an_army_no_lift_could_carry_buys_no_carriers() {
     let mut scenario = strait();
     scenario.players[0].scrap = 1_000;
