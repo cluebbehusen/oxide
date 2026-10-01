@@ -133,6 +133,11 @@ impl MapModel {
         }
     }
 
+    /// The map's width and height in tiles.
+    pub(crate) fn size(&self) -> (i32, i32) {
+        (self.components.width(), self.components.height())
+    }
+
     /// Expansion sites, in a fixed order whose index names a site.
     pub(crate) fn sites(&self) -> &[Site] {
         &self.sites

@@ -6,7 +6,7 @@ use crate::defenses;
 use crate::events::OwnEvent;
 use crate::frame::{HomeFrame, footprint_centre, gap};
 use crate::income::Income;
-use crate::investments::{self, Situation, Step};
+use crate::investments::{self, Investment, Situation, Step};
 use crate::map::MapModel;
 use crate::memory::Memory;
 use crate::missions::{Missions, Scratch};
@@ -268,7 +268,6 @@ pub(crate) fn decide(
         .copied()
         .filter(|producer| producer.building.kind == BuildingKind::Foundry)
         .collect();
-    let staffing = workers::staffing(observation, map, frame, profile, &foundries);
     let earned = persistent.income.observe(tick, observation.scrap, rejected);
     persistent.memory.forget(tick);
     persistent.memory.observe(observation);
@@ -280,6 +279,7 @@ pub(crate) fn decide(
         profile.stance,
         &persistent.missions,
     );
+    let staffing = workers::staffing(observation, map, frame, profile, &foundries, &scratch);
     let airworks = observation
         .my_buildings
         .iter()
@@ -316,8 +316,34 @@ pub(crate) fn decide(
     if lift {
         pull.push((BuildingKind::Airworks, LIFT_PULL));
     }
+    let units = needs.premium(
+        observation,
+        observation
+            .scrap
+            .saturating_sub(persistent.saving.protected()),
+    );
+    // A saved unit whose role no longer lacks it is no reason for another
+    // producer.
+    let wanted = needs.wanted();
+    let waiting = match persistent.saving.investment() {
+        Some(Investment::Unit(kind))
+            if observation.scrap >= kind.stats().cost
+                && composition::role(kind).is_some_and(|role| wanted.contains(&role)) =>
+        {
+            let ready = producers.iter().any(|producer| {
+                producer.ready
+                    && investments::producers_of(observation, kind)
+                        .any(|building| building.id == producer.building.id)
+            });
+            investments::producers_of(observation, kind)
+                .next()
+                .filter(|_| !ready)
+                .map(|building| building.kind)
+        }
+        _ => None,
+    };
     let situation = Situation {
-        wanted: needs.wanted(),
+        wanted,
         observation,
         map,
         memory: &persistent.memory,
@@ -329,6 +355,8 @@ pub(crate) fn decide(
         exposed,
         stakes: defenses::Stakes::of(profile),
         severed: scratch.severed,
+        units,
+        waiting,
     };
     let candidates = investments::candidates(&situation);
     let share = share(observation, profile);
@@ -352,9 +380,10 @@ pub(crate) fn decide(
     persistent
         .missions
         .prune(observation, &mut persistent.memory);
-    let short = persistent
-        .missions
-        .defend(observation, map, frame, &mut ledger);
+    let short =
+        persistent
+            .missions
+            .defend(observation, map, frame, &persistent.memory, &mut ledger);
     scratch.rival = persistent
         .missions
         .rival(&scratch, observation, map, profile.traits);
@@ -370,7 +399,15 @@ pub(crate) fn decide(
             &mut ledger,
         );
     } else {
-        buy(observation, map, frame, persistent, &mut ledger);
+        buy(
+            observation,
+            map,
+            frame,
+            &producers,
+            persistent,
+            &mut needs,
+            &mut ledger,
+        );
     }
     // A short defense leaves scrap to the army: only the recovery Harvester
     // above is trained while it lasts. Until the army reaches the stance
@@ -525,13 +562,16 @@ pub(crate) fn decide(
 }
 
 /// Buys the saving target's next step once the whole uncommitted bank covers
-/// it: an upgrade, or a building on the first home spot the seat's knowledge
-/// allows, raised by the nearest free Harvester.
+/// it: an upgrade, a unit at the nearest ready producer that trains it, or a
+/// building on the first home spot the seat's knowledge allows, raised by the
+/// nearest free Harvester.
 fn buy(
     observation: &ObservationData,
     map: &MapModel,
     frame: HomeFrame,
+    producers: &[Producer<'_>],
     persistent: &mut Persistent,
+    needs: &mut Needs,
     ledger: &mut Ledger,
 ) {
     let Some(investment) = persistent.saving.investment() else {
@@ -560,6 +600,25 @@ fn buy(
             ledger.upgrade(id, price);
             ledger.protected = 0;
             persistent.saving.attempted(step, building.anchor);
+        }
+        Step::Train(kind) => {
+            if !affordable {
+                return;
+            }
+            let producer = producers.iter().find(|producer| {
+                producer.ready
+                    && !ledger.queued_at(producer.building.id)
+                    && investments::producers_of(observation, kind)
+                        .any(|building| building.id == producer.building.id)
+            });
+            let Some(producer) = producer else {
+                return;
+            };
+            if ledger.train_urgently(producer.building.id, kind) {
+                needs.queued(kind);
+                ledger.protected = 0;
+                persistent.saving.attempted(step, producer.building.anchor);
+            }
         }
         Step::Build(kind) => {
             let anchors: Vec<TilePos> = investments::anchors(map, observation, investment, kind)

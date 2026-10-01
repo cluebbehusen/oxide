@@ -5,13 +5,14 @@
 //! known enemy building send ground fighters beside it, and shells from a gun
 //! out of sight send them toward where it probably stands.
 
-use super::attack::building_value;
+use super::attack::{defense, defense_around};
 use super::{
     DefendPhase, MISSION_CAP, Mission, Missions, Task, UNIT_CAP, hits, hunt, insert, mine, value,
 };
 use crate::decision::Ledger;
 use crate::frame::{HomeFrame, centre_distance, doubled, footprint_centre, gap, ring};
 use crate::map::MapModel;
+use crate::memory::Memory;
 use chassis::grid::TilePos;
 use oxide_sim::observation::{BuildingObs, ObservationData, UnitObs};
 use oxide_sim::stats::{Domain, WeaponStats};
@@ -42,7 +43,9 @@ impl Missions {
     /// Answers every threatened Foundry: recruits free units that can hit its
     /// threats until, in each domain it is attacked from, they outweigh the
     /// attackers by half again, and sends them at the grounded threat nearest
-    /// the Foundry, else at a gun out of sight. A defense that is only
+    /// the Foundry, else at a gun out of sight. A shelling building counts
+    /// with the known defense around it, and only while the units the defense
+    /// holds or could take would beat that defense by half again. A defense that is only
     /// recovering lends its units, as does an attack not yet fighting.
     /// Returns whether any defense stayed short.
     ///
@@ -57,10 +60,46 @@ impl Missions {
         observation: &ObservationData,
         map: &MapModel,
         frame: HomeFrame,
+        memory: &Memory,
         ledger: &mut Ledger,
     ) -> bool {
         let now = observation.tick;
-        let groups = threats(observation, map, frame);
+        let lendable = self.available(observation, true);
+        let mut groups = threats(observation, map, frame);
+        for (foundry, siege, _) in &mut groups {
+            let component = map.component(foundry.anchor);
+            // What the Foundry's defense holds and could take, not units out
+            // on missions that will not lend them.
+            let defenders = self
+                .list
+                .iter()
+                .filter(|mission| {
+                    matches!(mission.task, Task::Defend { asset, .. } if asset == foundry.id)
+                })
+                .flat_map(|mission| mission.units.iter().copied());
+            // A recovering defense lends its units, so they may be in both.
+            let mut pool: Vec<UnitId> = lendable.iter().copied().chain(defenders).collect();
+            pool.sort_unstable();
+            pool.dedup();
+            let force: u64 = pool
+                .into_iter()
+                .filter(|id| !ledger.stuck(*id))
+                .filter_map(|id| mine(observation, id))
+                .filter(|unit| hits(unit, Domain::Ground))
+                .filter(|unit| {
+                    unit.kind.stats().domain == Domain::Air || map.component(unit.tile) == component
+                })
+                .map(value)
+                .sum();
+            // A battery among defenses the seat cannot beat now is left to
+            // production: fighters sent beside it would only feed its guns.
+            siege
+                .batteries
+                .retain(|(_, beside)| defense(observation, memory, *beside) * 3 / 2 <= force);
+        }
+        groups.retain(|(_, siege, _)| {
+            !siege.units.is_empty() || !siege.batteries.is_empty() || siege.unseen.is_some()
+        });
         for mission in &mut self.list {
             let Task::Defend { asset, phase } = &mut mission.task else {
                 continue;
@@ -120,11 +159,8 @@ impl Missions {
                     * 3
                     / 2
             });
-            let guns = siege
-                .batteries
-                .iter()
-                .map(|(battery, _)| building_value(battery))
-                .sum::<u64>()
+            let besides: Vec<TilePos> = siege.batteries.iter().map(|(_, beside)| *beside).collect();
+            let guns = defense_around(observation, memory, &besides)
                 + siege.unseen.map_or(0, |_| gun_value());
             let need = [pressing[0] + guns * 3 / 2, pressing[1]];
             let index = self.list.iter().position(

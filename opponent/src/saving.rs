@@ -159,7 +159,8 @@ impl Saving {
 
 /// What became of a purchase.
 enum Outcome {
-    /// The building, its physical site, or the upgrade stands.
+    /// The building, its physical site, or the upgrade stands, or the unit
+    /// is queued.
     Placed,
     /// A provisional scaffold or a worker's claim still waits for its
     /// ground to be confirmed, which can still refund it.
@@ -184,6 +185,20 @@ fn outcome(observation: &ObservationData, investment: Investment, attempt: Attem
                 Some(_) => Outcome::Pending,
                 None if claimed => Outcome::Pending,
                 None => Outcome::Missing,
+            }
+        }
+        Step::Train(kind) => {
+            let queued = observation
+                .my_buildings
+                .iter()
+                .zip(&observation.my_queues)
+                .any(|(building, queue)| {
+                    building.anchor == attempt.anchor && queue.contains(&kind)
+                });
+            if queued {
+                Outcome::Placed
+            } else {
+                Outcome::Missing
             }
         }
         Step::Upgrade(id) => {

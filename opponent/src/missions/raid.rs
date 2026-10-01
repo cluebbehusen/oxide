@@ -7,7 +7,7 @@
 
 use super::Scratch;
 use super::air::{self, Hazard};
-use super::attack::{FIT, defense, healthy, margin, minimum, striking};
+use super::attack::{FIT, defense, fortified, healthy, margin, minimum, striking};
 use super::{
     MISSION_CAP, Mission, Missions, Objective, RaidPhase, Task, approach, hunt, mine, run,
     standing, value,
@@ -142,8 +142,8 @@ impl Missions {
     }
 
     /// Scuttlers a raid on the least guarded known harvest line not raided
-    /// lately needs: its known guard by the margin, at least one. None
-    /// while no such line is known.
+    /// lately and not under known guns needs: its known guard by the margin,
+    /// at least one. None while no such line is known.
     pub(crate) fn raid_squad(
         &self,
         observation: &ObservationData,
@@ -330,6 +330,7 @@ impl Foray<'_> {
     /// for: for Sappers the most valuable known enemy building for its
     /// distance with little known defense, for the others the enemy
     /// Extractor or Foundry with the least known defense, nearest first.
+    /// Scuttlers leave lines that known enemy guns cover.
     /// Targets recently raided are skipped, and ground raiders need a ground
     /// route.
     fn target(&self, kind: Raider, strength: u64) -> Option<(Objective, TilePos, u64)> {
@@ -414,6 +415,8 @@ impl Foray<'_> {
                         BuildingKind::Extractor | BuildingKind::Foundry
                     )
                 })
+                // A line under known guns is an attack's work, not a raid's.
+                .filter(|(_, goal)| kind != Raider::Scuttler || !fortified(observation, *goal))
                 .filter_map(|(target, goal)| {
                     let guarded = match kind {
                         Raider::Bomber => {

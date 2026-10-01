@@ -28,6 +28,18 @@ impl Hazard {
     pub(crate) fn covers(&self, point: (i64, i64)) -> bool {
         distance2(self.centre, point) <= self.reach * self.reach
     }
+
+    /// The tiles whose centres lie within reach.
+    pub(crate) fn tiles(&self) -> impl Iterator<Item = TilePos> + '_ {
+        let span = |centre: i64| {
+            let low = (centre - self.reach).div_euclid(2);
+            let high = (centre + self.reach).div_euclid(2);
+            (low as i32)..=(high as i32)
+        };
+        span(self.centre.1)
+            .flat_map(move |y| span(self.centre.0).map(move |x| TilePos::new(x, y)))
+            .filter(|tile| self.covers(doubled(*tile)))
+    }
 }
 
 /// Where aircraft leave from and come back to: beside the seat's start, on
@@ -100,6 +112,8 @@ pub(super) fn route(
 
 /// Known enemies that fire at `domain`: remembered units by confidence and
 /// known buildings by health, each reaching its weapon range plus clearance.
+/// A site in sight cannot fire yet; a remembered one may have been finished
+/// since it was seen.
 pub(crate) fn hazards(
     observation: &ObservationData,
     memory: &Memory,
@@ -122,9 +136,11 @@ pub(crate) fn hazards(
         })
     });
     let buildings = observation.enemy_buildings.iter().filter_map(|building| {
-        let stats = building.kind.base_stats();
-        let range = reach(stats.weapons)?;
-        let (width, height) = stats.size;
+        if !building.built && building.seen {
+            return None;
+        }
+        let range = reach(building.kind.tier_stats(building.tier).weapons)?;
+        let (width, height) = building.kind.base_stats().size;
         Some(Hazard {
             centre: footprint_centre(building.kind, building.anchor),
             reach: i64::from(2 * (range + CLEARANCE) + width.max(height)),

@@ -191,6 +191,8 @@ fn working_producers_ask_for_another_while_unspent_income_and_need_last() {
             stakes: defenses::Stakes::default(),
             severed: false,
             wanted,
+            units: Vec::new(),
+            waiting: None,
         })
         .into_iter()
         .map(|candidate| candidate.investment)
@@ -375,6 +377,8 @@ fn a_working_foundry_or_crucible_asks_for_another_at_home() {
             stakes: defenses::Stakes::default(),
             severed: false,
             wanted,
+            units: Vec::new(),
+            waiting: None,
         })
         .into_iter()
         .map(|candidate| candidate.investment)

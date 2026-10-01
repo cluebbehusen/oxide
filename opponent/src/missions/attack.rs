@@ -797,36 +797,74 @@ impl<'a> Plan<'a> {
 /// The known ground defense around `tile`: remembered armed enemy units by
 /// confidence, and known enemy buildings that fire on ground by health.
 pub(super) fn defense(observation: &ObservationData, memory: &Memory, tile: TilePos) -> u64 {
+    defense_around(observation, memory, &[tile])
+}
+
+/// The known ground defense around any of `tiles`, each defender counted
+/// once.
+pub(super) fn defense_around(
+    observation: &ObservationData,
+    memory: &Memory,
+    tiles: &[TilePos],
+) -> u64 {
     let now = observation.tick;
     let units: u64 = memory
         .units()
         .iter()
         .filter(|unit| !unit.kind.stats().weapons.is_empty())
-        .filter(|unit| unit.tile.chebyshev(tile) <= DEFENSE_TILES)
+        .filter(|unit| {
+            tiles
+                .iter()
+                .any(|tile| unit.tile.chebyshev(*tile) <= DEFENSE_TILES)
+        })
         .map(|unit| unit.value(now))
         .sum();
     let buildings: u64 = observation
         .enemy_buildings
         .iter()
-        .filter(|building| {
-            building
-                .kind
-                .base_stats()
-                .weapons
-                .iter()
-                .any(|weapon| weapon.targets.ground)
-        })
-        .filter(|building| {
-            gap(
-                building.anchor,
-                building.kind.base_stats().size,
-                tile,
-                (1, 1),
-            ) < DEFENSE_TILES
-        })
+        .filter(|building| tiles.iter().any(|tile| guards(building, *tile)))
         .map(building_value)
         .sum();
     units + buildings
+}
+
+/// Whether a known, built enemy building's ground fire reaches `tile`.
+pub(super) fn fortified(observation: &ObservationData, tile: TilePos) -> bool {
+    observation.enemy_buildings.iter().any(|building| {
+        let reach = building
+            .kind
+            .tier_stats(building.tier)
+            .weapons
+            .iter()
+            .filter(|weapon| weapon.targets.ground)
+            .map(|weapon| weapon.range.ceil().to_num::<i32>())
+            .max();
+        building.built
+            && reach.is_some_and(|reach| {
+                gap(
+                    building.anchor,
+                    building.kind.base_stats().size,
+                    tile,
+                    (1, 1),
+                ) < reach
+            })
+    })
+}
+
+/// Whether `building` fires on ground and stands around `tile`.
+fn guards(building: &BuildingObs, tile: TilePos) -> bool {
+    building
+        .kind
+        .base_stats()
+        .weapons
+        .iter()
+        .any(|weapon| weapon.targets.ground)
+        && gap(
+            building.anchor,
+            building.kind.base_stats().size,
+            tile,
+            (1, 1),
+        ) < DEFENSE_TILES
 }
 
 /// Whether any visible armed enemy or seen enemy building is within contact
@@ -854,14 +892,18 @@ pub(super) fn contact(observation: &ObservationData, members: &[&UnitObs]) -> bo
         })
 }
 
-/// A known building's price, discounted by its missing health.
-pub(super) fn building_value(building: &BuildingObs) -> u64 {
-    let stats = building.kind.base_stats();
-    let cost = stats
-        .construction
-        .as_ref()
-        .map_or(0, |construction| construction.cost);
-    u64::from(cost) * u64::from(building.hp) / u64::from(stats.max_hp.max(1))
+/// A known building's price with every upgrade it reached, discounted by its
+/// missing health at that tier.
+pub(crate) fn building_value(building: &BuildingObs) -> u64 {
+    let tiers = building.kind.tiers();
+    let reached = usize::from(building.tier).min(tiers.len() - 1);
+    let paid: u64 = tiers[..=reached]
+        .iter()
+        .filter_map(|stats| stats.construction.as_ref())
+        .map(|construction| u64::from(construction.cost))
+        .sum();
+    let max_hp = building.kind.tier_stats(building.tier).max_hp;
+    paid * u64::from(building.hp) / u64::from(max_hp.max(1))
 }
 
 /// Units nearest `rally` first until their value reaches `need`, at most
@@ -931,5 +973,32 @@ pub(crate) fn margin(difficulty: BotDifficulty) -> u64 {
         BotDifficulty::Standard => 2_000,
         BotDifficulty::Veteran => 1_750,
         BotDifficulty::Prime => 1_500,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxide_sim::{PlayerId, Scenario};
+
+    #[test]
+    fn defenders_around_several_tiles_count_once() {
+        let state = Scenario::skirmish().build().unwrap();
+        let mut observation = ObservationData::fog_honest(&state, PlayerId(0));
+        let turret = BuildingObs {
+            player: PlayerId(1),
+            kind: BuildingKind::Turret,
+            anchor: TilePos::new(20, 10),
+            hp: BuildingKind::Turret.base_stats().max_hp,
+            built: true,
+            ..observation.my_buildings[0].clone()
+        };
+        observation.enemy_buildings = vec![turret];
+        let memory = Memory::default();
+        let (a, b) = (TilePos::new(18, 10), TilePos::new(22, 10));
+        let one = defense(&observation, &memory, a);
+        assert_eq!(one, 100, "premise: the Turret guards each tile");
+        assert_eq!(defense(&observation, &memory, b), one);
+        assert_eq!(defense_around(&observation, &memory, &[a, b]), one);
     }
 }

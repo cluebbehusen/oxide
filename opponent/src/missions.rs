@@ -30,7 +30,7 @@ mod strike;
 mod support;
 
 pub(crate) use air::{Hazard, hazards};
-pub(crate) use attack::{margin, minimum};
+pub(crate) use attack::{building_value, margin, minimum};
 pub(crate) use lift::{carrier, payload};
 pub(crate) use scouting::points;
 pub(crate) use strike::strike_need;
@@ -724,6 +724,14 @@ pub(crate) struct Scratch {
 }
 
 impl Scratch {
+    /// Anchors of known enemy Foundries and of hostile starts not seen cleared.
+    pub(crate) fn enemy_foundries(&self) -> impl Iterator<Item = TilePos> + '_ {
+        self.objectives
+            .iter()
+            .filter(|objective| objective.building == BuildingKind::Foundry)
+            .map(|objective| objective.anchor)
+    }
+
     /// Works these out for `observation`, after memory has seen it.
     pub(crate) fn new(
         observation: &ObservationData,

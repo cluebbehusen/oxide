@@ -47,6 +47,8 @@ fn offered(scenario: &Scenario, state: &State, tick: u64) -> Vec<Investment> {
             crate::composition::Role::AntiAir,
             crate::composition::Role::AirStrike,
         ],
+        units: Vec::new(),
+        waiting: None,
     };
     candidates(&situation)
         .into_iter()
@@ -66,6 +68,7 @@ fn bought(state: &State, investments: &[Investment]) -> Vec<(BuildingKind, u8)> 
             Investment::Expansion(_) => Some((BuildingKind::Foundry, 0)),
             Investment::Extractor(_) => Some((BuildingKind::Extractor, 0)),
             Investment::Reclaimer => Some((BuildingKind::Reclaimer, 0)),
+            Investment::Unit(_) => None,
             Investment::Upgrade { building, tier } => state
                 .buildings()
                 .iter()
