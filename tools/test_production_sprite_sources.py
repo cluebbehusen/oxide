@@ -166,7 +166,7 @@ class ProductionSpriteSourceTests(unittest.TestCase):
             digest.update(image.tobytes())
         self.assertEqual(
             digest.hexdigest(),
-            "44920b9cdeeb1c9b7ed78bae0331ad1002e7b63c457695d51cbcebce51b1995a",
+            "0ec627a546131cd5592ce2a85d13a94c04734de181c32989f3e173b956d4e253",
         )
 
     def test_promoted_specialists_match_approved_pixels(self) -> None:
