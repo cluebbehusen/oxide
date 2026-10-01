@@ -94,12 +94,11 @@ class ProductionSpriteSourceTests(unittest.TestCase):
         digest = hashlib.sha256()
         for key, image in sorted(frames.items()):
             self.assertEqual(self.registry[key].tobytes(), image.tobytes(), key)
-            if not key.startswith(("rig_harvester_body_", "rig_excavator_body_", "rig_tender_body_", "rig_scuttler_body_")):
-                digest.update(key.encode())
-                digest.update(image.tobytes())
+            digest.update(key.encode())
+            digest.update(image.tobytes())
         self.assertEqual(
             digest.hexdigest(),
-            "4ec6ef878811b7555afa9b4488dd0a3c80442137a1e943c38b8ecf4fb662ac64",
+            "3d47503eef2e1f3982c42fe5e579521e4715cf8905becb87d812f1834c84a4c8",
         )
 
     def test_lift_rotors_keep_three_distinct_poses_during_actions(self) -> None:

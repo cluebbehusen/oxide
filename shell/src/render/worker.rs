@@ -89,21 +89,9 @@ fn contact(
             if !crate::strategic_markers::visible(game, patient) {
                 return None;
             }
-            let faction = game.state.player(patient.player).faction;
-            let center = game.presentation.draw_pos(id, patient.pos, alpha);
-            let rotation = game.presentation.draw_heading(id, patient.heading, alpha);
-            let size = super::unit_draw_scale(patient.kind);
-            let source = sprites
-                .worker_body(patient.kind, faction, 0, 0)
-                .map_or_else(
-                    || {
-                        sprites.unit_rig(patient.kind).map_or_else(
-                            || sprites.unit(patient.kind, faction),
-                            |rig| rig.hull(faction, 0).0,
-                        )
-                    },
-                    |(body, _)| body,
-                );
+            let pose = super::unit_body_pose(game, sprites, patient, alpha);
+            let (center, rotation, size, source) =
+                (pose.center, pose.body_rotation, pose.size, pose.source);
             let point = sprites.sprite_contact(
                 source,
                 rotate(from - center, -rotation),
