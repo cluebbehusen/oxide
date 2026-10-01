@@ -242,7 +242,8 @@ fn take(free: &mut Vec<UnitId>, taken: &[UnitId]) {
     free.retain(|id| !taken.contains(id));
 }
 
-/// What threatens a Foundry. Several may at once.
+/// What threatens a Foundry: enemies in sight and shelling enemy buildings,
+/// or, with neither, a gun out of sight.
 #[derive(Default)]
 struct Siege<'a> {
     /// Enemies in sight.
@@ -256,10 +257,10 @@ struct Siege<'a> {
 
 /// Visible enemies and shelling enemy buildings that threaten the seat's
 /// buildings, grouped by the built Foundry each is nearest, home-nearest
-/// Foundry first, with any gun out of sight shelling the seat joining its
-/// Foundry's group, then enemies that could hit an ally's buildings, grouped
-/// by the ally's Foundry, each marked whether the Foundry is the seat's own.
-/// An enemy joins only if it stands on or beside that Foundry's ground.
+/// Foundry first, then the seat's other Foundries shelled by a gun out of
+/// sight, then enemies that could hit an ally's buildings, grouped by the
+/// ally's Foundry, each marked whether the Foundry is the seat's own. An
+/// enemy joins only if it stands on or beside that Foundry's ground.
 fn threats<'a>(
     observation: &'a ObservationData,
     map: &MapModel,
@@ -286,20 +287,16 @@ fn threats<'a>(
             groups.push((foundry, siege, own));
         }
         if own {
+            // A gun out of sight waits until the threats in sight are gone:
+            // answered together, shelling that never stops keeps the defense
+            // recruiting ground units and the army never leaves home.
             for (foundry, gun) in unseen(observation, map, frame) {
-                match groups
-                    .iter_mut()
-                    .find(|(other, _, _)| other.id == foundry.id)
-                {
-                    Some((_, siege, _)) => siege.unseen = Some(gun),
-                    None => groups.push((
-                        foundry,
-                        Siege {
-                            unseen: Some(gun),
-                            ..Siege::default()
-                        },
-                        true,
-                    )),
+                if !groups.iter().any(|(other, _, _)| other.id == foundry.id) {
+                    let siege = Siege {
+                        unseen: Some(gun),
+                        ..Siege::default()
+                    };
+                    groups.push((foundry, siege, true));
                 }
             }
         }

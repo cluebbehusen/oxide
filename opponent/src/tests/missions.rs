@@ -637,15 +637,8 @@ fn a_checkpoint_while_answering_unseen_shelling_resumes_identically() {
     }
 }
 
-/// Whether a defense hunts toward the gun at `GUN` rather than at the
-/// shelled picket.
-fn toward_the_gun(goal: TilePos) -> bool {
-    let (picket, gun) = (TilePos::new(PICKET.0, PICKET.1), TilePos::new(GUN.0, GUN.1));
-    goal.x > picket.x && goal.chebyshev(picket) >= goal.chebyshev(gun)
-}
-
 #[test]
-fn an_air_raid_does_not_hide_shells_from_a_gun_out_of_sight() {
+fn a_gun_out_of_sight_waits_while_raiders_in_sight_hold_the_foundry() {
     let mut scenario = shelling(&[0]);
     scenario.units.push(unit(1, UnitKind::Buzzard, 4, 5));
     let mut state = scenario.build().unwrap();
@@ -664,11 +657,14 @@ fn an_air_raid_does_not_hide_shells_from_a_gun_out_of_sight() {
         "premise: the raider is in sight and the gun is not"
     );
     let commands = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
-    let [(units, goal)] = &hunts(&commands)[..] else {
+    let [(_, goal)] = &hunts(&commands)[..] else {
         panic!("{commands:?}");
     };
-    assert!(!units.is_empty());
-    assert!(toward_the_gun(*goal), "{goal:?}");
+    let foundry = TilePos::new(3, 11);
+    assert!(
+        crate::frame::gap(foundry, (3, 3), *goal, (1, 1)) <= 1,
+        "defenders wait beside the Foundry for the raid: {goal:?}"
+    );
 }
 
 /// The field with each of `shelled` holding its garrison and picket, the other
