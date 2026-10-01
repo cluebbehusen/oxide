@@ -131,12 +131,9 @@ impl Opponent {
         }
         let observation = ObservationData::fog_honest(state, self.player);
         let events = events.take();
-        let rejected = events
-            .iter()
-            .any(|event| matches!(event, OwnEvent::CommandRejected { .. }));
         let decision = decision::decide(
             &observation,
-            rejected,
+            &events,
             &self.map,
             &self.profile,
             &mut self.persistent,

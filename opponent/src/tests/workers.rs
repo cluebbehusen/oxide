@@ -168,3 +168,95 @@ fn memory_keeps_every_enemy_unit_in_sight_beyond_a_hundred_and_twenty_eight() {
     let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
     assert!(Opponent::restore(&checkpoint, &scenario, &state, map(&scenario)).is_ok());
 }
+
+/// `player`'s own events holding one `no_route` stall of `unit` where it
+/// stands in `state`.
+fn no_route(state: &State, player: u8, unit: UnitId) -> OwnEvents {
+    let mut events = OwnEvents::default();
+    events.record(
+        PlayerId(player),
+        &[oxide_sim::Event::OrderStalled {
+            unit,
+            player: PlayerId(player),
+            pos: state.unit(unit).unwrap().pos,
+            reason: oxide_sim::StallReason::NoRoute,
+        }],
+    );
+    events
+}
+
+/// Units `commands` send to harvest.
+fn harvesting(commands: &[PlayerCommand]) -> Vec<UnitId> {
+    harvests(commands)
+        .into_iter()
+        .flat_map(|(_, units)| units)
+        .collect()
+}
+
+#[test]
+fn a_harvester_that_found_no_route_sits_out_until_a_while_passes() {
+    let scenario = arena(0);
+    let mut state = scenario.build().unwrap();
+    let (stuck, free) = (at(&state, 7, 6), at(&state, 6, 6));
+    let mut opponent = seat_with(&scenario, 0, thrifty());
+    let first = harvesting(&opponent.act(&state, &mut no_route(&state, 0, stuck)));
+    assert!(
+        first.contains(&free) && !first.contains(&stuck),
+        "{first:?}"
+    );
+    let checkpoint = opponent.checkpoint();
+    let json = serde_json::to_value(&checkpoint).unwrap();
+    assert_eq!(json["memory"]["stuck"][0]["unit"], stuck.0, "{json}");
+    let mut opponent = Opponent::restore(&checkpoint, &scenario, &state, map(&scenario)).unwrap();
+    advance_to(&mut state, 120, &[]);
+    let later = harvesting(&opponent.act(&state, &mut OwnEvents::default()));
+    assert!(!later.contains(&stuck), "still where it stalled: {later:?}");
+    advance_to(&mut state, 1_200, &[]);
+    let retried = harvesting(&opponent.act(&state, &mut OwnEvents::default()));
+    assert!(retried.contains(&stuck), "{retried:?}");
+}
+
+#[test]
+fn a_stuck_harvester_that_moves_is_ordered_again() {
+    let scenario = arena(0);
+    let mut state = scenario.build().unwrap();
+    let stuck = at(&state, 7, 6);
+    let mut opponent = seat_with(&scenario, 0, thrifty());
+    opponent.act(&state, &mut no_route(&state, 0, stuck));
+    advance_to(&mut state, 120, &[run(0, vec![stuck], 10, 9)]);
+    assert_ne!(
+        state.unit(stuck).unwrap().tile(),
+        TilePos::new(7, 6),
+        "premise"
+    );
+    let moved = harvesting(&opponent.act(&state, &mut OwnEvents::default()));
+    assert!(moved.contains(&stuck), "{moved:?}");
+}
+
+#[test]
+fn checkpoints_reject_malformed_stuck_units() {
+    let validated = |stuck: serde_json::Value| {
+        let memory: crate::memory::Memory = serde_json::from_value(serde_json::json!({
+            "units": [],
+            "failures": [],
+            "abandoned": [],
+            "scouted": [],
+            "stuck": stuck,
+        }))
+        .unwrap();
+        memory.validate(100, 24, 12, 0)
+    };
+    let entry = |unit: u32, x: i32, at: u64| serde_json::json!({"unit": unit, "tile": {"x": x, "y": 3}, "at": at});
+    assert_eq!(
+        validated(serde_json::json!([entry(3, 1, 90), entry(5, 2, 100)])),
+        Ok(())
+    );
+    for stuck in [
+        serde_json::json!([entry(5, 1, 90), entry(3, 2, 90)]),
+        serde_json::json!([entry(3, 1, 90), entry(3, 2, 90)]),
+        serde_json::json!([entry(3, 1, 101)]),
+        serde_json::json!([entry(3, 99, 90)]),
+    ] {
+        assert!(validated(stuck.clone()).is_err(), "{stuck}");
+    }
+}

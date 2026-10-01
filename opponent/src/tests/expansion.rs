@@ -304,7 +304,7 @@ fn a_half_explored_footprint_is_still_scouted() {
     let mut persistent = opponent.persistent.clone();
     let decision = crate::decision::decide(
         &observation,
-        false,
+        &[],
         &model,
         opponent.profile(),
         &mut persistent,

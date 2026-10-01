@@ -60,6 +60,9 @@ impl Missions {
             .iter()
             .filter(|unit| unit.kind == UnitKind::Tender && unit.idle)
         {
+            if ledger.spendable() < crate::workers::WELD_FLOOR {
+                return;
+            }
             let patients: Vec<&UnitObs> = free
                 .iter()
                 .copied()

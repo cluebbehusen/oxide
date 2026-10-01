@@ -116,7 +116,8 @@ the running total and mission state.
 Checkpoints preserve all non-derivable state that affects future decisions. No
 other non-derivable state persists between decisions:
 
-- memory of enemy units and buildings, and of failed objectives;
+- memory of enemy units and buildings, of failed objectives, and of own units
+  whose orders stalled for want of a route;
 - missions and their phases;
 - the investment list and saving target;
 - the previous bank and spending used to estimate income;
@@ -131,12 +132,13 @@ checkpoint field needs a design review.
 ## Own events
 
 The host session keeps each seat's own `OrderStalled` and `CommandRejected`
-events in a bounded, ordered buffer and passes it with the observation; when the
-buffer is full, the oldest event is dropped. The buffer is saved with
-checkpoints. A background decision reads it without draining it; events are
-consumed when that decision's result is installed. A rejection that cannot be
-tied unambiguously to one command triggers a check of the observed outcome; it
-never marks a particular purchase as failed.
+events in a bounded, ordered buffer and passes it with the observation. It keeps
+one stall per unit and reason and one rejection per reason; when it is full, the
+oldest event is dropped. The buffer is saved with checkpoints. A background
+decision reads it without draining it; events are consumed when that decision's
+result is installed. A rejection that cannot be tied unambiguously to one
+command triggers a check of the observed outcome; it never marks a particular
+purchase as failed.
 
 ## Map knowledge
 

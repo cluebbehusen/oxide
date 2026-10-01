@@ -136,7 +136,7 @@ impl Missions {
             let mut candidates: Vec<&UnitObs> = free
                 .iter()
                 .filter_map(|id| mine(observation, *id))
-                .filter(|unit| !members.contains(&unit.id))
+                .filter(|unit| !members.contains(&unit.id) && !ledger.stuck(unit.id))
                 .filter(|unit| match siege {
                     Siege::Seen(threats) => can_hit_any(unit, threats),
                     Siege::Unseen(_) => hits(unit, Domain::Ground),

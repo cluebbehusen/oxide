@@ -467,6 +467,9 @@ impl Missions {
                         .iter()
                         .filter(|unit| unit.kind == UnitKind::Tender && unit.idle)
                     {
+                        if ledger.spendable() < crate::workers::WELD_FLOOR {
+                            break;
+                        }
                         if let Some(patient) = patient(plan.map, plan.frame, tender, &members) {
                             ledger.order(weld(tender.id, patient));
                         }
