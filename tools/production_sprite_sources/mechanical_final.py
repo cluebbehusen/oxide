@@ -84,6 +84,18 @@ def install_machines(registry: dict[str, Image.Image], out: Path) -> None:
                 put(f"harvester_{faction}_cargo{cargo}{suffix}", image)
                 if cargo == 0:
                     put(f"harvester_{faction}{suffix}", image)
+        for cargo in range(6):
+            put(
+                f"rig_harvester_body_{faction}_cargo{cargo}",
+                workers.harvester(faction, cargo=cargo, body_only=True),
+            )
+        for kind in ("excavator", "tender", "scuttler"):
+            for phase in range(3):
+                suffix = "" if phase == 0 else f"_move{phase}"
+                put(
+                    f"rig_{kind}_body_{faction}{suffix}",
+                    getattr(workers, kind)(faction, move=phase, body_only=True),
+                )
         for kind in ("excavator", "tender", "scuttler", "sapper"):
             for suffix, move, action in [
                 ("", 0, 0),

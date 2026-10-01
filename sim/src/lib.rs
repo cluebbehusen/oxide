@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 
+pub mod building_contact;
 pub mod command;
 pub mod event;
 pub mod geometry;

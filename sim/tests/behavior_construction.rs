@@ -971,6 +971,9 @@ fn same_tick_construction_cannot_absorb_a_lethal_hit() {
         .find(|b| b.anchor == anchor)
         .unwrap()
         .id;
+    run_until(&mut state, 100, |s, _| {
+        s.building(site).unwrap().progress > 0
+    });
     // Freeze construction at exactly 70 hp (the first ramp step is zero).
     state.tick(&[cmd(
         0,

@@ -263,7 +263,15 @@ def ground(variant: int) -> None:
     # terrain instead of a flat wash.
     lift = [-6, -3, 0, 2, 4, 7][variant % 6]
     base = tuple(max(0, c + lift) for c in GROUND)
-    img, d = canvas(px, (*base, 255))
+    img, _ = canvas(px, (*base, 255))
+    finish(img, px, f"ground_{variant}")
+
+
+def ground_detail(variant: int) -> None:
+    """Grit and a crack drawn apart from the shade, so the shell can vary
+    them independently of the shade's diagonal wave."""
+    px = 64
+    img, d = canvas(px)
     rng = random.Random(1000 + variant)
     # Sparse grit: a few darker and lighter flecks, nothing that tiles loudly.
     for _ in range(26):
@@ -279,7 +287,7 @@ def ground(variant: int) -> None:
         y0 += rng.randrange(-6, 7)
         points.append((x0, y0))
     d.line([(s(x), s(y)) for x, y in points], fill=(*GROUND_DARK, 255), width=SS)
-    finish(img, px, f"ground_{variant}")
+    finish(img, px, f"ground_detail_{variant}")
 
 
 def rock(variant: int) -> None:
@@ -3441,6 +3449,8 @@ def generate(output: Path) -> None:
     print(f"writing {OUT}")
     for i in range(6):
         ground(i)
+    for i in range(12):
+        ground_detail(i)
     for i in range(4):
         rock(i)
     rock_skirt()

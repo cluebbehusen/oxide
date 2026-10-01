@@ -132,14 +132,15 @@ pub struct SeatReactivity {
     /// once it owns anti-air, missed if the first such aircraft comes first.
     pub airworks: Reactions,
     /// A seen armed enemy ground unit pressed one of its Foundries; answered
-    /// when its units, turrets or guns hit a presser within
-    /// [`DEFENSE_TICKS`].
+    /// when its units or turrets hit a presser, or its guns fire at one,
+    /// within [`DEFENSE_TICKS`].
     pub ground_defense: Reactions,
     /// The same for armed enemy aircraft.
     pub air_defense: Reactions,
-    /// An enemy gun shelled its units or buildings, landing within
-    /// [`PRESS_TILES`] of one of its buildings; answered when it hits the gun
-    /// within [`ARTILLERY_TICKS`], moot if the gun dies to something else.
+    /// An enemy gun fired a shell at its units or buildings that lands within
+    /// [`PRESS_TILES`] of one of its buildings; answered when it hits the gun,
+    /// or its own guns fire at it, within [`ARTILLERY_TICKS`] of the shell's
+    /// launch, moot if the gun dies to something else.
     pub artillery: Reactions,
     /// A standing hostile start went unseen for [`STALE_TICKS`]; answered when
     /// seen again within [`SCOUT_TICKS`].
@@ -157,7 +158,7 @@ pub struct SeatReactivity {
     /// enemy still stands near it then.
     pub restoration: Reactions,
     /// A seen armed enemy ground unit pressed an ally's Foundry; answered when
-    /// the seat hits a presser within [`RELIEF_TICKS`].
+    /// the seat hits a presser, or fires at one, within [`RELIEF_TICKS`].
     pub relief: Reactions,
     /// `oxide-opponent` only: an attack, strike or raid entered its fight;
     /// answered when it withdrew, missed when it vanished mid-fight having
@@ -285,6 +286,8 @@ struct SeatWatch {
     /// Workers whose case was missed while they stay in reach.
     stayed: BTreeSet<u32>,
     patients: BTreeMap<u32, Patient>,
+    /// Buildings whose case closed while they stay damaged.
+    tended: BTreeSet<u32>,
     extractors: BTreeMap<u32, TilePos>,
     restores: BTreeMap<TilePos, Case>,
     fights: Option<BTreeMap<u64, Fight>>,
@@ -323,7 +326,12 @@ impl ReactivityDetectors {
     /// shelling, deaths and destroyed Extractors.
     pub(super) fn observe_events(&mut self, state: &State, events: &[Event], now: u64) {
         for (player, target) in strikes(state, events) {
-            let Some(Some(watch)) = self.seats.get_mut(usize::from(player.0)) else {
+            // An eliminated seat's remnants no longer answer for it.
+            let Some(Some(watch)) = self
+                .seats
+                .get_mut(usize::from(player.0))
+                .filter(|_| state.accepts_commands(player))
+            else {
                 continue;
             };
             if let Target::Unit(unit) = target {
@@ -364,7 +372,8 @@ impl ReactivityDetectors {
                             && building.hp > 0
                             && gap(impact, building) <= PRESS_TILES
                     });
-                    if !state.hostile(player, victim) || !at_home {
+                    if !state.hostile(player, victim) || !at_home || !state.accepts_commands(victim)
+                    {
                         continue;
                     }
                     if let Some(Some(watch)) = self.seats.get_mut(usize::from(victim.0))
@@ -414,14 +423,29 @@ impl ReactivityDetectors {
                     if watch.patients.remove(&building.0).is_some() {
                         watch.found.repair.lapse();
                     }
+                    watch.tended.remove(&building.0);
                     if let Some(anchor) = watch.extractors.remove(&building.0)
                         && !watch.restores.contains_key(&anchor)
+                        && state.accepts_commands(player)
                     {
                         watch.found.restoration.open();
                         watch.restores.insert(
                             anchor,
                             Case::new(now, building.0, format!("({}, {})", anchor.x, anchor.y)),
                         );
+                    }
+                }
+                // An Extractor finished and destroyed between two checks
+                // still opens a restoration case.
+                Event::BuildingCompleted {
+                    building,
+                    player,
+                    kind: BuildingKind::Extractor,
+                } => {
+                    if let Some(Some(watch)) = self.seats.get_mut(usize::from(player.0))
+                        && let Some(extractor) = state.building(building)
+                    {
+                        watch.extractors.insert(building.0, extractor.anchor);
                     }
                 }
                 _ => {}
@@ -665,8 +689,23 @@ fn settle(watch: &mut SeatWatch) {
 }
 
 /// The player each strike in `events` came from, and what it went at: unit
-/// hits, turret shots and shells.
+/// hits, turret shots and shells. A shooter destroyed on the same tick is
+/// known by the event of its death.
 fn strikes(state: &State, events: &[Event]) -> Vec<(PlayerId, Target)> {
+    let died = |shooter: Target| {
+        events.iter().find_map(|event| match (event, shooter) {
+            (Event::UnitDied { unit, player, .. }, Target::Unit(dead)) if *unit == dead => {
+                Some(*player)
+            }
+            (
+                Event::BuildingDestroyed {
+                    building, player, ..
+                },
+                Target::Building(dead),
+            ) if *building == dead => Some(*player),
+            _ => None,
+        })
+    };
     events
         .iter()
         .filter_map(|event| match *event {
@@ -674,12 +713,19 @@ fn strikes(state: &State, events: &[Event]) -> Vec<(PlayerId, Target)> {
                 attacker,
                 target: Some(target),
                 ..
-            } => Some((state.unit(attacker)?.player, target)),
+            } => Some((
+                owner(state, Target::Unit(attacker)).or_else(|| died(Target::Unit(attacker)))?,
+                target,
+            )),
             Event::TurretFired {
                 turret,
                 target: Some(target),
                 ..
-            } => Some((state.building(turret)?.player, target)),
+            } => Some((
+                owner(state, Target::Building(turret))
+                    .or_else(|| died(Target::Building(turret)))?,
+                target,
+            )),
             Event::ShellLaunched {
                 player,
                 target: Some(target),
@@ -1007,20 +1053,26 @@ fn repair(watch: &mut SeatWatch, own: &[&Building], seen: &[&Unit], now: u64) {
         let id = building.id.0;
         let max = building.stats().max_hp.max(1);
         let damaged = building.built && building.hp * 1_000 < max * DAMAGED;
+        // One damage episode is one case: a building whose case closed opens
+        // another only once it has been back above the threshold.
+        if !damaged {
+            watch.tended.remove(&id);
+        }
         match watch.patients.get(&id) {
             Some(patient) => {
                 if building.hp > patient.hp {
                     watch.found.repair.answer(&patient.case, now);
-                    watch.patients.remove(&id);
                 } else if !clear(building) || !building.built {
                     watch.found.repair.lapse();
-                    watch.patients.remove(&id);
                 } else if now - patient.case.opened >= REPAIR_TICKS {
                     watch.found.repair.miss(&patient.case);
-                    watch.patients.remove(&id);
+                } else {
+                    continue;
                 }
+                watch.patients.remove(&id);
+                watch.tended.insert(id);
             }
-            None if damaged && clear(building) => {
+            None if damaged && clear(building) && !watch.tended.contains(&id) => {
                 watch.found.repair.open();
                 watch.patients.insert(
                     id,
@@ -1562,6 +1614,107 @@ mod tests {
         let mut detectors = ReactivityDetectors::new([true, false]);
         run(&mut detectors, &state, 0..12);
         assert_eq!(counts(&found(detectors, 0).ground_defense), (1, 0, 0, 1));
+    }
+
+    /// `state` without `player`'s buildings of `kind`.
+    fn without(state: &State, player: u8, kind: &str) -> State {
+        let mut value = serde_json::to_value(state).unwrap();
+        value["buildings"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|building| !(building["player"] == player && building["kind"] == kind));
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn a_hit_from_a_shooter_killed_that_tick_still_answers() {
+        // The defender comes last, so the field without it keeps every other
+        // unit's id.
+        let state = built(&field(
+            &[(1, UnitKind::Sentinel, 6, 3), (0, UnitKind::Sentinel, 2, 6)],
+            &[],
+            false,
+        ));
+        let presser = unit_at(&state, 6, 3);
+        let defender = unit_at(&state, 2, 6);
+        let after = built(&field(&[(1, UnitKind::Sentinel, 6, 3)], &[], false));
+        let died = Event::UnitDied {
+            unit: defender,
+            kind: UnitKind::Sentinel,
+            player: PlayerId(0),
+            pos: Vec2Fx::ZERO,
+            grounded: true,
+        };
+        let mut detectors = ReactivityDetectors::new([true, false]);
+        run(&mut detectors, &state, 0..24);
+        detectors.observe_events(&after, &[hit(defender, Target::Unit(presser)), died], 30);
+        assert_eq!(counts(&found(detectors, 0).ground_defense), (1, 1, 0, 0));
+    }
+
+    #[test]
+    fn an_eliminated_seat_opens_and_answers_no_cases() {
+        let state = built(&field(
+            &[(1, UnitKind::Bombard, 9, 3), (0, UnitKind::Sentinel, 6, 6)],
+            &[(0, BuildingKind::Fabricator, 3, 8)],
+            false,
+        ));
+        let gun = unit_at(&state, 9, 3);
+        let sentinel = unit_at(&state, 6, 6);
+        let shell = Event::ShellLaunched {
+            shooter: Target::Unit(gun),
+            unit_pose: None,
+            target: Some(Target::Building(building_of(
+                &state,
+                0,
+                BuildingKind::Fabricator,
+            ))),
+            player: PlayerId(1),
+            from: Vec2Fx::ZERO,
+            to: TilePos::new(4, 8).center(),
+            flight: 20,
+        };
+        let fallen = without(&state, 0, "foundry");
+        assert!(!fallen.accepts_commands(PlayerId(0)), "premise");
+
+        let mut detectors = ReactivityDetectors::new([true, false]);
+        detectors.observe_events(&fallen, std::slice::from_ref(&shell), 12);
+        assert_eq!(
+            found(detectors, 0).artillery.arose,
+            0,
+            "shelling a fallen seat is no case"
+        );
+
+        let mut detectors = ReactivityDetectors::new([true, false]);
+        detectors.observe_events(&state, std::slice::from_ref(&shell), 12);
+        detectors.observe_events(&fallen, &[hit(sentinel, Target::Unit(gun))], 24);
+        assert_eq!(
+            counts(&found(detectors, 0).artillery),
+            (1, 0, 0, 1),
+            "its remnants answer nothing"
+        );
+    }
+
+    #[test]
+    fn a_building_still_damaged_after_its_case_closes_opens_no_second_case() {
+        let fabricator = (0, BuildingKind::Fabricator, 5, 6);
+        let state = built(&field(&[], &[fabricator], false));
+        let hurt = damaged(&state, "fabricator", 100);
+        let mending = damaged(&state, "fabricator", 140);
+        let mut detectors = ReactivityDetectors::new([true, false]);
+        run(&mut detectors, &hurt, 0..24);
+        run(&mut detectors, &mending, 24..240);
+        assert_eq!(counts(&found(detectors, 0).repair), (1, 1, 0, 0));
+
+        let mut detectors = ReactivityDetectors::new([true, false]);
+        run(&mut detectors, &hurt, 0..24);
+        run(&mut detectors, &mending, 24..36);
+        run(&mut detectors, &state, 36..48);
+        run(&mut detectors, &hurt, 48..60);
+        assert_eq!(
+            found(detectors, 0).repair.arose,
+            2,
+            "damaged again once repaired"
+        );
     }
 
     #[test]

@@ -40,37 +40,40 @@ one decision issues; purchases do not count against that allowance.
 A visible enemy that can hit ground threatens the seat when it stands within
 eight tiles of one of the seat's buildings, or within its weapon's reach if that
 is longer, or when its shells could land where hostile shells are landing near
-them. Threats group by the built Foundry each is nearest, and each group gets
-one defend mission, the home Foundry's first. Only threats on or beside that
-Foundry's ground count: one across water or a chasm is left to production, since
-chasing it would stall every defender. The mission recruits free units that can
-hit one of its threats, ground units only from that Foundry's ground, nearest
-the Foundry first, until against ground and air attackers alike they are worth
-half again what those attackers are. It sends them in one Hunt at the grounded
-threat nearest the Foundry; against flyers alone they wait beside the building
-nearest the raid, where anti-air reaches them, since the ground under a flyer
-may be none they can stand on. It sends them again only when its goal moves more
-than three tiles on the Foundry's ground or the mission re-engages, and a
-defense that stops fighting while focused sends its units back to its goal
-rather than after the retreating enemy. With no threat left the mission
-recovers, lending its units to any other threatened Foundry, and after 120 quiet
-ticks it lets them go where they stand. Once its own Foundries are answered, an
-ally's Foundry under ground attack gets a defend mission of its own from the
-units left free, which lends them back whenever the seat's own Foundries need
-them; an ally's shortfall is never the seat's emergency.
+them. So does a known enemy building, in sight or remembered, whose shells could
+land there; defenders go to the tile beside it nearest the Foundry. Threats
+group by the built Foundry each is nearest, and each group gets one defend
+mission, the home Foundry's first. Only threats on or beside that Foundry's
+ground count: one across water or a chasm is left to production, since chasing
+it would stall every defender. The mission recruits free units that can hit one
+of its threats, ground units only from that Foundry's ground, nearest the
+Foundry first, until against ground and air attackers alike they are worth half
+again what those attackers are. It sends them in one Hunt at the grounded threat
+nearest the Foundry; against flyers alone they wait beside the building nearest
+the raid, where anti-air reaches them, since the ground under a flyer may be
+none they can stand on. It sends them again only when its goal moves more than
+three tiles on the Foundry's ground or the mission re-engages, and a defense
+that stops fighting while focused sends its units back to its goal rather than
+after the retreating enemy. With no threat left the mission recovers, lending
+its units to any other threatened Foundry, and after 120 quiet ticks it lets
+them go where they stand. Once its own Foundries are answered, an ally's Foundry
+under ground attack gets a defend mission of its own from the units left free,
+which lends them back whenever the seat's own Foundries need them; an ally's
+shortfall is never the seat's emergency.
 
 A hostile shell landing near the seat's buildings that no enemy it knows of
-could have fired comes from a gun out of sight. The built Foundry nearest the
-impact then gets a defend mission that sends units that can hit ground, worth
-half again one of the cheapest guns, toward where the gun probably stands: from
-the impact toward the nearest hostile start, as far as artillery reaches, on the
-Foundry's ground. Once the gun is in sight the ordinary defense takes over.
+could have fired comes from a gun out of sight. Once the built Foundry nearest
+the impact has no threat in sight, it gets a defend mission that sends units
+that can hit ground, worth half again one of the cheapest guns, toward where the
+gun probably stands: from the impact toward the nearest hostile start, as far as
+artillery reaches, on the Foundry's ground. Once the gun is in sight the
+ordinary defense takes over.
 
 A defense that cannot recruit enough makes the decision an emergency: it skips
 the saving purchase, trains no Harvesters beyond the one a seat without any
-needs, and lets production spend protected scrap. A defense against a gun out of
-sight never does, since static defenses cannot reach it. Missions own only units
-that exist; production never works for a mission.
+needs, and lets production spend protected scrap. Shelling, from a building or a
+gun out of sight, never does, since static defenses cannot reach the guns.
+Missions own only units that exist; production never works for a mission.
 
 ## Home reserve
 
@@ -79,13 +82,14 @@ aircraft and units on the start's ground, worth enough against ground and
 against aircraft for what could come. Against each, the reserve is nothing while
 no enemy could reach home that way. Otherwise it is the stance's floor or its
 share of the known enemy army that could, whichever is more, less the built
-static defenses that cover it and the units already out defending. Turtle keeps
-at least its minimum army and half again the known threat, Balanced half its
-minimum and the threat, and Aggressive half the threat. Ground reaches home from
-a hostile start connected by ground, or once an enemy carrier or Airworks is
-seen; aircraft once enemy armed aircraft or an Airworks is seen. Offense takes
-only units beyond the reserve, leaving those nearest home; a lift leaves its
-weakest riders. Defense takes every unit regardless.
+static defenses on the start's ground that cover it and the units already out
+defending. Turtle keeps at least its minimum army and half again the known
+threat, Balanced half its minimum and the threat, and Aggressive half the
+threat. Ground reaches home from a hostile start connected by ground, or once an
+enemy carrier or Airworks is seen; aircraft once enemy armed aircraft or an
+Airworks is seen. Offense takes only units beyond the reserve, leaving those
+nearest home; a lift leaves its weakest riders. Defense takes every unit
+regardless.
 
 ## Static defense
 
@@ -97,19 +101,21 @@ nearest hostile start. Ground threats count only where ground connects them to
 the building, except that a seat under the stance's minimum army also puts up a
 Turret against enemy buildings and starts across a chasm, whose units could
 land. Flak Turrets answer seen or remembered enemy aircraft or a known enemy
-Airworks. Guns hold a threat once they are worth it divided by the margin an
-attack brings over a defense; the threat is the armed enemies known behind the
-approach, and at least an army at the stance's minimum. Each site is an
-investment worth how far the guns covering the approach it covers fall short of
-that, by the building's value, by how sure the seat is of the threat, and by
-personality: fortification for Turrets and Bastions, fortification and support
-for Flak Turrets. A seat under the stance's minimum army with no Turret puts one
-up before any tech, whatever its fortification: one gun holds an early rush that
-a tech building still going up would not. A Bastion counts only ground the
-seat's or an ally's buildings see. When the threat is only a guess from public
-facts, equal sites go to the one nearest the building; otherwise to the one
-nearest the threat. Sites go only on ground where one of the seat's Harvesters
-stands to build them, and a site the simulation refused is skipped for a while.
+Airworks. Guns hold a threat once they are worth it, with every upgrade they
+have had, divided by the margin an attack brings over a defense; the threat is
+the armed enemies known behind the approach, on ground connected to the building
+unless they could only land, and at least an army at the stance's minimum. Each
+site is an investment worth how far the guns covering the approach it covers
+fall short of that, by the building's value, by how sure the seat is of the
+threat, and by personality: fortification for Turrets and Bastions,
+fortification and support for Flak Turrets. A seat under the stance's minimum
+army with no Turret puts one up before any tech, whatever its fortification: one
+gun holds an early rush that a tech building still going up would not. A Bastion
+counts only ground the seat's or an ally's buildings see. When the threat is
+only a guess from public facts, equal sites go to the one nearest the building;
+otherwise to the one nearest the threat. Sites go only on ground where one of
+the seat's Harvesters stands to build them, and a site the simulation refused is
+skipped for a while.
 
 Once the opening economy is up, a seat whose army is still under the stance's
 minimum weighs a hostile start nearly like seen enemies, so most seats put up an
@@ -180,11 +186,11 @@ missing health among its members and at least one, weld its wounded while the
 army regroups there and the seat has scrap to pay, and follow it otherwise.
 
 At Veteran and Prime, an engaged mission focuses its fire: when every member
-that can hit an enemy near it already reaches that enemy in a straight line, and
-every member on the ground stands on that enemy's ground, they shoot the weakest
-such enemy together, and keep that focus while it stays in reach. Nobody chases
-a focus or seeks a way round to it, and a member out of reach leaves the
-mission's fire unfocused.
+that can hit an enemy near it already reaches that enemy in a straight line that
+terrain does not stop, and every member on the ground stands on that enemy's
+ground, they shoot the weakest such enemy together, and keep that focus while it
+stays in reach. Nobody chases a focus or seeks a way round to it, and a member
+out of reach leaves the mission's fire unfocused.
 
 ## Lift
 
@@ -192,10 +198,10 @@ When the seat knows of enemy buildings or hostile starts and ground reaches none
 of them, and the seat has at least the stance's minimum army to carry beyond the
 home reserve, it needs lift. The Airworks then scores higher while the seat has
 none, and production keeps enough Skyhooks, alive and queued, to carry what the
-best landing needs, or the stance's minimum while none is known, but no more
-than the riders at home fill. While a ready Airworks waits for the scrap to
-train one and those riders already fill every carrier, other production waits
-too, unless a defense is short.
+best landing needs, or the stance's minimum while none is known, with the free
+riders at home packed as a lift would pack them, but no more than those riders
+fill. While a ready Airworks waits for the scrap to train one and some of those
+riders have no room, other production waits too, unless a defense is short.
 
 A lift forms only from carriers and passengers that exist: free carriers that
 are idle, empty and over open home ground, and free line and siege units at half
@@ -220,10 +226,11 @@ straight line crosses it. Each sets its riders down at the landing once there,
 as the decision's orders allow, and emptied carriers fly home together the same
 way. Riders still walking are stopped and let go; with less than half aboard the
 lift sets everyone down and disbands. Landed riders hunt the target and, once no
-one is aboard, fight on to the next target on the same island. Nothing brings
-them home. A carrier that comes home still loaded sets its riders down and lets
-them go. A target the lift lost its units to, or stood idle beside, is skipped
-for a while. A defense may take a lift's units only while they board.
+one is aboard and every emptied carrier is on its way home, fight on to the next
+target on the same island. Nothing brings them home. A carrier that comes home
+still loaded sets its riders down and lets them go. A target the lift lost its
+units to, or stood idle beside, is skipped for a while. A lift never grows past
+the mission member cap, and a defense may take its units only while they board.
 
 ## Strikes
 
@@ -254,13 +261,14 @@ for a while, which spaces them out, while attacks, lifts and strikes may still
 go after it.
 
 Once its income reaches a level that falls with guile, the seat keeps the
-Scuttlers, alive or queued, that a raid on the least defended known harvest line
-needs. Once it has scrap to spare, less the more it leans on siege, it keeps a
-Sapper for each known enemy defense that can hit ground around the targets of
-attacks under way and of the next attack. An attack on a target with such
-defenses takes a free Sapper along for each while it gathers or recovers, and
-once it fights sends each at the nearest such defense on its ground, leaving
-them to it when the rest of the army moves on.
+Scuttlers, alive or queued and out on no other mission, that a raid on the least
+defended known harvest line needs. Once it has scrap to spare, less the more it
+leans on siege, it keeps a Sapper for each known enemy defense, in sight or
+remembered, that can hit ground around the targets of attacks under way and of
+the next attack. An attack on a target with such defenses takes a free Sapper
+along for each while it gathers or recovers, and once it fights sends each at
+the nearest such defense on its ground, leaving them to it when the rest of the
+army moves on.
 
 ## Scouting
 
@@ -269,10 +277,11 @@ remembers when it last saw each. Each point unseen for a while draws its own
 scout, the most valuable first: hostile starts, then sites nearer an enemy than
 home. A scout moves on to the next point no other scout holds when it sees its
 own. Scouts are free Kestrels or Gnats, or else Scuttlers that can walk there.
-For each stale point no scout could take, the seat trains one: its air scout
-once it has an Airworks, a Scuttler before. An air scout flies around known
-anti-air when the straight line crosses it, and a point whose scout was lost on
-the way counts as seen, so the next scout waits until it is stale again.
+For each stale point no scout could take, the seat trains one that could reach
+it: its air scout once it has an Airworks, a Scuttler before. It trains none
+while no mission could take another. An air scout flies around known anti-air
+when the straight line crosses it, and a point whose scout was lost on the way
+counts as seen, so the next scout waits until it is stale again.
 
 ## Support
 
@@ -294,9 +303,11 @@ two fifths of its own, siege for known enemy defenses and by preference,
 anti-air to answer three quarters of the enemy air it has seen (a seen enemy
 Airworks counts as air), and air strikes by preference once it has an Airworks.
 Ground units count only while they can reach an enemy, by ground or by lift once
-an Airworks stands. While ground reaches no enemy, air strikes are wanted with
-or without an Airworks, at least what a strike needs against the easiest known
-target. The most wanted role goes first to the nearest ready producer that can
+an Airworks stands; before then, known enemy ground units on the seat's own
+ground still call for line units worth three quarters of them. While ground
+reaches no enemy, air strikes are wanted with or without an Airworks, at least
+what a strike needs against the easiest known target the seat has not given up
+on. The most wanted role goes first to the nearest ready producer that can
 afford a unit for it, then the next; ready producers left with nothing wanted
 train line units while ground units can reach an enemy. Each chooses the unit it
 can afford now by coarse suitability: reach against the enemy's usual reach,
@@ -311,12 +322,13 @@ adds to the investment score of the cheapest building that would let it.
 
 Each decision scores its investments: a first Fabricator, Airworks and Crucible,
 another Fabricator, Airworks, Crucible or home Foundry when every one of that
-kind is working, a role it trains is still wanted, and the income the working
-producers leave unspent could keep one more as busy, an expansion Foundry at a
-scrap field away from every start, an Extractor on a free frame on its home
-ground, more Reclaimers (worth more with no expansion left), static defenses,
-Repair Bays, and upgrades. Saturated harvesting, time, income, home depletion,
-army needs, a needed lift and personality set the scores.
+kind is working, an army role it trains is still wanted, and the income the
+working producers leave unspent could keep one more as busy (carriers, Tenders,
+Scuttlers and Sappers never call for one), an expansion Foundry at a scrap field
+away from every start, an Extractor on a free frame on its home ground, more
+Reclaimers (worth more with no expansion left), static defenses, Repair Bays,
+and upgrades. Saturated harvesting, time, income, home depletion, army needs, a
+needed lift and personality set the scores.
 
 An expansion site's value weighs the scrap it still holds and its free frames,
 up with greed, against its ground distance from home, how much nearer a hostile
@@ -376,7 +388,7 @@ reason, or of a rejection for the same reason, replaces the earlier one in its
 place; a buffer holds at most 1,024 events and drops the oldest first. A tick
 without a decision leaves the buffer untouched. A rejection holds back that
 decision's income sample. A unit whose order stalled for want of a route sits
-out orders, and workers and defenses pick others, until it moves off where it
+out orders, and joins no new mission or work, until it moves off where it
 stopped or 600 ticks pass. The trace reports the events.
 
 ## Selection

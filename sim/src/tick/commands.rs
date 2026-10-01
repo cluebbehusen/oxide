@@ -330,6 +330,7 @@ fn assign(unit: &mut crate::state::Unit, order: Order, queue: bool) -> bool {
             return true;
         }
     }
+    unit.unloading = None;
     unit.order = order;
     unit.path = None;
     unit.progress = 0;
@@ -343,6 +344,7 @@ fn assign(unit: &mut crate::state::Unit, order: Order, queue: bool) -> bool {
 /// cannot drift between program writers.
 fn assign_circuit(unit: &mut crate::state::Unit, mut legs: impl Iterator<Item = Order>) {
     end_station_keeping(unit);
+    unit.unloading = None;
     unit.order = legs.next().expect("caller validated a non-empty route");
     unit.queue = legs.collect();
     unit.looping = true;

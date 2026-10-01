@@ -29,7 +29,11 @@ pub(super) fn advance(unit: &mut Unit, map: &Map) {
             unit.path = None;
             return;
         };
-        let center = waypoint.center();
+        let center = if path.next as usize + 1 == path.waypoints.len() {
+            path.final_point.unwrap_or(waypoint.center())
+        } else {
+            waypoint.center()
+        };
         if let Some(&next) = path.waypoints.get(path.next as usize + 1)
             && unit.pos.dist_sq(center) <= radius * radius
             && clear_segment(map, unit.pos, next.center())

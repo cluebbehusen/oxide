@@ -160,14 +160,14 @@ impl Missions {
             let Some(index) = self.index_of(id) else {
                 continue;
             };
-            let fit = self.refresh(&mut plan, scratch);
+            let fit = self.refresh(&mut plan, scratch, ledger);
             plan.held = self.held(attacking, Some(id), &given_up);
             if let Some(failed) = self.advance(index, &plan, &fit, ledger) {
                 given_up.push(failed);
             }
         }
 
-        let mut fit = self.refresh(&mut plan, scratch);
+        let mut fit = self.refresh(&mut plan, scratch, ledger);
         let free: u64 = fit.iter().map(|unit| value(unit)).sum();
         let mut producers = observation
             .my_buildings
@@ -193,7 +193,7 @@ impl Missions {
             if !self.launch(&plan, &fit, ledger) {
                 break;
             }
-            fit = self.refresh(&mut plan, scratch);
+            fit = self.refresh(&mut plan, scratch, ledger);
         }
         given_up
             .into_iter()
@@ -227,11 +227,16 @@ impl Missions {
             held: held.clone(),
             per_tender: super::support::per_tender(profile.traits.support),
         };
-        let mut defenses: Vec<oxide_sim::BuildingId> = held
+        // Remembered buildings share one id, so a defense is told apart by
+        // where it stands.
+        let mut defenses: Vec<_> = held
             .iter()
             .filter_map(|target| plan.target(target.owner, target.building, target.anchor))
             .chain(plan.best(None))
-            .flat_map(|target| plan.defenses(target).map(|building| building.id))
+            .flat_map(|target| {
+                plan.defenses(target)
+                    .map(|building| (building.player, building.kind, building.anchor))
+            })
             .collect();
         defenses.sort_unstable();
         defenses.dedup();
@@ -241,10 +246,15 @@ impl Missions {
     /// The free army beyond the home reserve fit to fight, farthest from home
     /// first, and the idle free Tenders and Sappers into `plan`, as earlier
     /// missions of this decision left them.
-    fn refresh<'a>(&self, plan: &mut Plan<'a>, scratch: &Scratch) -> Vec<&'a UnitObs> {
+    fn refresh<'a>(
+        &self,
+        plan: &mut Plan<'a>,
+        scratch: &Scratch,
+        ledger: &Ledger,
+    ) -> Vec<&'a UnitObs> {
         let (observation, map) = (plan.observation, plan.map);
         let free: Vec<&UnitObs> = self
-            .available(observation, false)
+            .free(observation, ledger)
             .into_iter()
             .filter_map(|id| mine(observation, id))
             .collect();

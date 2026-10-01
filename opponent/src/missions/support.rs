@@ -51,7 +51,7 @@ impl Missions {
         ledger: &mut Ledger,
     ) {
         let free: Vec<&UnitObs> = self
-            .available(observation, false)
+            .free(observation, ledger)
             .into_iter()
             .filter_map(|id| mine(observation, id))
             .collect();

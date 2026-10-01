@@ -299,7 +299,8 @@ pub(in crate::tick::brain) fn automatic_radar(
 ) -> bool {
     let u = state.unit(id).expect("live unit");
     let stats = u.kind.stats();
-    if stats.turn_rate > 0
+    if u.kind.stats().contact_reach.is_some()
+        || stats.turn_rate > 0
         || stats.weapons.is_empty()
         || (moving && u.kind == crate::UnitKind::Bombard)
         || acquire_target(state, index, id).is_some()
@@ -428,7 +429,8 @@ pub(in crate::tick::brain) fn attack_known(
         .position(|weapon| view.domain.is_none_or(|d| weapon.targets.covers(d)));
     if let Some(primary) = primary {
         let weapon = &stats.weapons[primary];
-        if solution(state, pos, stats.domain, view, weapon) {
+        if kind.stats().contact_reach.is_none() && solution(state, pos, stats.domain, view, weapon)
+        {
             // Turn-limited bombers obtain their own sight before release range.
             if stats.turn_rate == 0 {
                 fire_unit(
@@ -484,6 +486,7 @@ pub(in crate::tick::brain) fn attack_known(
         true
     } else if let Some(waypoints) = route_for(state, kind, tile, goal) {
         state.unit_mut(id).expect("live unit").path = Some(PathFollow {
+            final_point: None,
             goal,
             waypoints,
             next: 0,
@@ -539,6 +542,7 @@ fn route_to_firing_stand(
     candidates.sort_unstable_by_key(|candidate| (candidate.0, candidate.1, candidate.2));
     let routed = candidates.into_iter().find_map(|(_, _, _, goal)| {
         route_for(state, kind, start, goal).map(|waypoints| PathFollow {
+            final_point: None,
             goal,
             waypoints,
             next: 0,

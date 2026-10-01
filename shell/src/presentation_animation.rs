@@ -2,7 +2,7 @@
 //!
 //! This module owns no gameplay state. Its clocks advance in completed
 //! simulation ticks, while [`AnimationController`] remembers only recent
-//! output events that are not recoverable from the current world snapshot.
+//! output events and mechanism transitions that are not recoverable from the current world snapshot.
 //! Clearing the controller is therefore always safe when seeking or bulk
 //! advancing a replay.
 
@@ -17,6 +17,8 @@ use oxide_sim::{
 
 const GROUND_MOVE_PERIOD: u64 = 6;
 const HARVEST_PERIOD: u64 = 20;
+const EXCAVATOR_ROLLER_PERIOD: u64 = 20;
+const WELD_ARM_FOLD_TICKS: f32 = 12.0;
 const CONSTRUCTION_PERIOD: u64 = 8;
 const FOUNDRY_PRODUCTION_PERIOD: u64 = 24;
 const FABRICATOR_PRODUCTION_PERIOD: u64 = 12;
@@ -98,6 +100,15 @@ pub(crate) enum LocomotionState {
     Moving { cycle: f32 },
 }
 
+/// Identity of the visible surface touched by a worker's tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkTarget {
+    Scrap(chassis::grid::TilePos),
+    Wreck(chassis::grid::TilePos),
+    Building(BuildingId),
+    Unit(UnitId),
+}
+
 /// Work performed by a non-combat unit.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum UnitWorkState {
@@ -116,6 +127,8 @@ pub(crate) enum UnitWorkState {
     Repairing { target: Vec2Fx, cycle: f32 },
     /// A scrap worker is actively stripping a friendly structure for scrap.
     Salvaging { target: Vec2Fx, cycle: f32 },
+    /// Cargo is still aboard during this authoritative release cycle.
+    Unloading { target: Vec2Fx, progress: f32 },
 }
 
 /// The visible fill of a scrap worker's internal cargo bay.
@@ -171,6 +184,14 @@ pub(crate) enum AttackPhase {
     Recover { weapon: usize, progress: f32 },
 }
 
+/// A chassis-mounted tool unfolding toward its work surface or returning to stow.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct WeldingArmState {
+    pub(crate) target: WorkTarget,
+    pub(crate) deployment: f32,
+    pub(crate) active: bool,
+}
+
 /// All independent animation channels for one unit.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct UnitAnimationState {
@@ -178,6 +199,8 @@ pub(crate) struct UnitAnimationState {
     pub(crate) locomotion: LocomotionState,
     /// Economy mechanism state.
     pub(crate) work: UnitWorkState,
+    pub(crate) work_target: Option<WorkTarget>,
+    pub(crate) welding_arm: Option<WeldingArmState>,
     /// Harvest cargo, present for Harvesters and Excavators.
     pub(crate) cargo: Option<CargoState>,
     /// Event-driven attack report and recovery.
@@ -201,6 +224,7 @@ pub(crate) struct UnitAnimationFacts {
     kind: UnitKind,
     moved: bool,
     work: UnitWorkFact,
+    work_target: Option<WorkTarget>,
     carrying: u32,
     demolition_contact: bool,
     cooldowns: [u32; MAX_WEAPONS],
@@ -209,17 +233,26 @@ pub(crate) struct UnitAnimationFacts {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UnitWorkFact {
     Idle,
-    Harvesting(Vec2Fx),
+    Harvesting(Vec2Fx, u32),
     Constructing(BuildingId, Vec2Fx),
     Repairing(Vec2Fx),
     Salvaging(Vec2Fx),
+    Unloading(Vec2Fx, u8),
 }
 
 impl UnitAnimationFacts {
     /// Reads the unit's visible mechanisms from the post-tick world.
     pub(crate) fn capture(state: &State, unit: &Unit, moved: bool) -> Self {
-        let work = if let Some(target) = active_harvesting(state, unit) {
-            UnitWorkFact::Harvesting(target)
+        let unloading = unit.unloading.and_then(|release| {
+            state
+                .building(release.foundry)
+                .filter(|b| unit.work_stopped() && state.in_building_work_reach(unit, b.id))
+                .map(|b| (b.center(), release.elapsed))
+        });
+        let work = if let Some((target, elapsed)) = unloading {
+            UnitWorkFact::Unloading(target, elapsed)
+        } else if let Some(target) = active_harvesting(state, unit) {
+            UnitWorkFact::Harvesting(target, unit.progress)
         } else if let Some((site, target)) = active_unit_construction(state, unit) {
             UnitWorkFact::Constructing(site, target)
         } else if let Some(target) = active_unit_repair(state, unit) {
@@ -229,7 +262,27 @@ impl UnitAnimationFacts {
         } else {
             UnitWorkFact::Idle
         };
+        let work_target = if work == UnitWorkFact::Idle {
+            None
+        } else if let Some(release) = unit.unloading {
+            Some(WorkTarget::Building(release.foundry))
+        } else {
+            match unit.order {
+                Order::Harvest { node, .. } => Some(if state.map().scrap_at(node) > 0 {
+                    WorkTarget::Scrap(node)
+                } else {
+                    WorkTarget::Wreck(node)
+                }),
+                Order::Build { site } => Some(WorkTarget::Building(site)),
+                Order::Repair { building } | Order::Salvage { building } => {
+                    Some(WorkTarget::Building(building))
+                }
+                Order::RepairUnit { unit } => Some(WorkTarget::Unit(unit)),
+                _ => None,
+            }
+        };
         Self {
+            work_target,
             id: unit.id,
             kind: unit.kind,
             moved,
@@ -351,7 +404,22 @@ struct TransportActionStamp {
     kind: TransportActionKind,
 }
 
-/// Presentation-only memory for output events that have no standing state.
+#[derive(Debug, Clone, Copy)]
+struct WeldingArmTransition {
+    target: WorkTarget,
+    from: f32,
+    started: u64,
+    extending: bool,
+}
+
+impl WeldingArmTransition {
+    fn deployment(self, clock: AnimationClock) -> f32 {
+        let elapsed = clock.elapsed_since(self.started).unwrap_or(0.) / WELD_ARM_FOLD_TICKS;
+        (self.from + if self.extending { elapsed } else { -elapsed }).clamp(0., 1.)
+    }
+}
+
+/// Presentation-only memory for transient reports and mechanism transitions.
 #[derive(Debug, Default)]
 pub(crate) struct AnimationController {
     unit_attacks: HashMap<UnitId, [Option<u64>; MAX_WEAPONS]>,
@@ -359,6 +427,7 @@ pub(crate) struct AnimationController {
     repair_pulses: HashMap<BuildingId, u64>,
     transport_actions: HashMap<UnitId, TransportActionStamp>,
     airworks_launches: HashMap<BuildingId, u64>,
+    welding_arms: HashMap<UnitId, WeldingArmTransition>,
 }
 
 impl AnimationController {
@@ -434,6 +503,7 @@ impl AnimationController {
         self.repair_pulses.clear();
         self.transport_actions.clear();
         self.airworks_launches.clear();
+        self.welding_arms.clear();
     }
 
     /// Forgets ids no longer present in the current world.
@@ -449,6 +519,94 @@ impl AnimationController {
             state.building(*building).is_some()
                 && state.current_tick().saturating_sub(*completed_tick) < AIRWORKS_LAUNCH_TICKS
         });
+    }
+
+    /// Captures tool transitions once per completed simulation tick.
+    pub(crate) fn observe_workers(&mut self, state: &State) {
+        let tick = state.current_tick();
+        for unit in state
+            .units()
+            .iter()
+            .filter(|unit| unit.kind == UnitKind::Excavator)
+        {
+            self.observe_worker(UnitAnimationFacts::capture(state, unit, false), tick);
+        }
+        self.welding_arms.retain(|id, arm| {
+            state.unit(*id).is_some()
+                && (arm.extending || arm.deployment(AnimationClock::new(tick, 0.)) > 0.)
+        });
+    }
+
+    /// Rebuilds settled tools at a seek destination without replaying deployment.
+    pub(crate) fn reset_workers(&mut self, state: &State) {
+        self.welding_arms.clear();
+        self.observe_workers(state);
+        for arm in self.welding_arms.values_mut() {
+            arm.from = 1.;
+        }
+    }
+
+    fn observe_worker(&mut self, facts: UnitAnimationFacts, tick: u64) {
+        let active = matches!(facts.work, UnitWorkFact::Repairing(_))
+            .then_some(facts.work_target)
+            .flatten();
+        let clock = AnimationClock::new(tick, 0.);
+        if let Some(target) = active {
+            let arm = self
+                .welding_arms
+                .entry(facts.id)
+                .or_insert(WeldingArmTransition {
+                    target,
+                    from: 0.,
+                    started: tick,
+                    extending: true,
+                });
+            if !arm.extending {
+                arm.from = arm.deployment(clock);
+                arm.started = tick;
+                arm.extending = true;
+            }
+            arm.target = target;
+        } else if let Some(arm) = self.welding_arms.get_mut(&facts.id)
+            && arm.extending
+        {
+            arm.from = arm.deployment(clock);
+            arm.started = tick;
+            arm.extending = false;
+        }
+    }
+
+    fn welding_arm(
+        &self,
+        facts: UnitAnimationFacts,
+        clock: AnimationClock,
+        options: AnimationOptions,
+    ) -> Option<WeldingArmState> {
+        if facts.kind != UnitKind::Excavator {
+            return None;
+        }
+        let active = matches!(facts.work, UnitWorkFact::Repairing(_));
+        if let Some(arm) = self.welding_arms.get(&facts.id) {
+            let deployment = if options.reduced_motion {
+                f32::from(active)
+            } else {
+                arm.deployment(clock)
+            };
+            (active || deployment > 0.).then_some(WeldingArmState {
+                target: arm.target,
+                deployment,
+                active,
+            })
+        } else {
+            active
+                .then_some(facts.work_target)
+                .flatten()
+                .map(|target| WeldingArmState {
+                    target,
+                    deployment: 1.,
+                    active: true,
+                })
+        }
     }
 
     /// Resolves authored animation channels for one unit.
@@ -471,9 +629,25 @@ impl AnimationController {
         };
         let work = match facts.work {
             UnitWorkFact::Idle => UnitWorkState::Idle,
-            UnitWorkFact::Harvesting(target) => UnitWorkState::Harvesting {
+            UnitWorkFact::Unloading(target, elapsed) => UnitWorkState::Unloading {
                 target,
-                cycle: clock.cycle(facts.id.0, HARVEST_PERIOD, options.reduced_motion),
+                progress: if options.reduced_motion {
+                    0.5
+                } else {
+                    (f32::from(elapsed) + clock.tick_fraction)
+                        / f32::from(oxide_sim::stats::UNLOAD_TICKS)
+                },
+            },
+            UnitWorkFact::Harvesting(target, progress) => UnitWorkState::Harvesting {
+                target,
+                cycle: if facts.kind == UnitKind::Excavator {
+                    clock.cycle(facts.id.0, EXCAVATOR_ROLLER_PERIOD, options.reduced_motion)
+                } else if options.reduced_motion {
+                    0.5
+                } else {
+                    (progress as f32 + clock.tick_fraction)
+                        / facts.kind.stats().harvest.map_or(1, |h| h.ticks_per_scrap) as f32
+                },
             },
             UnitWorkFact::Constructing(site, target) => UnitWorkState::Constructing {
                 site,
@@ -521,6 +695,8 @@ impl AnimationController {
             _ => PropulsionState::None,
         };
         UnitAnimationState {
+            work_target: facts.work_target,
+            welding_arm: self.welding_arm(facts, clock, options),
             locomotion,
             work,
             cargo,
@@ -865,15 +1041,11 @@ fn active_harvesting(state: &State, unit: &Unit) -> Option<Vec2Fx> {
     else {
         return None;
     };
-    if unit.carrying >= harvest.capacity {
+    if unit.carrying >= harvest.capacity || unit.unloading.is_some() || !unit.work_stopped() {
         return None;
     }
-    let tile = unit.tile();
-    let active = if state.map().scrap_at(node) > 0 {
-        unit.in_harvest_reach(node, (1, 1))
-    } else {
-        state.map().wreck_at(node) > 0 && tile == node
-    };
+    let active = (state.map().scrap_at(node) > 0 || state.map().wreck_at(node) > 0)
+        && unit.in_work_reach(node, (1, 1));
     active.then_some(node.center())
 }
 
@@ -886,13 +1058,14 @@ fn active_unit_construction(state: &State, unit: &Unit) -> Option<(BuildingId, V
             && building.progress > 0
             && building.player == unit.player
             && unit.kind.stats().harvest.is_some()
-            && tile_adjacent_to_building(unit.tile(), building))
+            && unit.work_stopped()
+            && state.in_building_work_reach(unit, building.id))
         .then_some((site, building.center()))
     })
 }
 
 fn active_unit_repair(state: &State, unit: &Unit) -> Option<Vec2Fx> {
-    if !unit.kind.stats().welder || unit.progress == 0 || unit.path.is_some() {
+    if !unit.kind.stats().welder || unit.progress == 0 || !unit.work_stopped() {
         return None;
     }
     match unit.order {
@@ -901,7 +1074,7 @@ fn active_unit_repair(state: &State, unit: &Unit) -> Option<Vec2Fx> {
                 && patient.built
                 && patient.hp > 0
                 && patient.hp < patient.stats().max_hp
-                && tile_adjacent_to_building(unit.tile(), patient))
+                && state.in_building_work_reach(unit, patient.id))
             .then_some(patient.center())
         }),
         Order::RepairUnit { unit: patient } => state.unit(patient).and_then(|patient| {
@@ -911,16 +1084,16 @@ fn active_unit_repair(state: &State, unit: &Unit) -> Option<Vec2Fx> {
                 && patient.hp < patient.kind.stats().max_hp
                 && patient.path.is_none()
                 && !matches!(patient.order, Order::Found { .. })
-                && unit.pos.dist_sq(patient.pos)
-                    <= oxide_sim::stats::REPAIR_REACH * oxide_sim::stats::REPAIR_REACH)
-                .then_some(patient.pos)
+                && patient.drive_speed == chassis::fx::Fx::ZERO
+                && unit.in_repair_reach(patient))
+            .then_some(patient.pos)
         }),
         _ => None,
     }
 }
 
 fn active_unit_salvage(state: &State, unit: &Unit) -> Option<Vec2Fx> {
-    if unit.kind.stats().harvest.is_none() || unit.progress == 0 || unit.path.is_some() {
+    if unit.kind.stats().harvest.is_none() || unit.progress == 0 || !unit.work_stopped() {
         return None;
     }
     let Order::Salvage { building } = unit.order else {
@@ -931,7 +1104,7 @@ fn active_unit_salvage(state: &State, unit: &Unit) -> Option<Vec2Fx> {
             && target.built
             && target.hp > 0
             && target.kind != BuildingKind::Foundry
-            && tile_adjacent_to_building(unit.tile(), target))
+            && state.in_building_work_reach(unit, target.id))
         .then_some(target.center())
     })
 }
@@ -948,22 +1121,9 @@ fn active_site_construction(state: &State, building: &Building) -> bool {
             unit.player == building.player
                 && unit.kind.stats().harvest.is_some()
                 && matches!(unit.order, Order::Build { site } if site == building.id)
-                && tile_adjacent_to_building(unit.tile(), building)
+                && unit.work_stopped()
+                && state.in_building_work_reach(unit, building.id)
         })
-}
-
-fn tile_adjacent_to_building(tile: chassis::grid::TilePos, building: &Building) -> bool {
-    let (width, height) = building.stats().size;
-    let anchor = building.anchor;
-    let inside = tile.x >= anchor.x
-        && tile.y >= anchor.y
-        && tile.x < anchor.x + width
-        && tile.y < anchor.y + height;
-    !inside
-        && tile.x >= anchor.x - 1
-        && tile.y >= anchor.y - 1
-        && tile.x <= anchor.x + width
-        && tile.y <= anchor.y + height
 }
 
 #[cfg(test)]
@@ -984,6 +1144,7 @@ mod tests {
             kind,
             moved: false,
             work: UnitWorkFact::Idle,
+            work_target: None,
             carrying: 0,
             demolition_contact: false,
             cooldowns: [0; MAX_WEAPONS],
@@ -1337,6 +1498,100 @@ mod tests {
     }
 
     #[test]
+    fn excavator_roller_ignores_scrap_meter_resets() {
+        let controller = AnimationController::default();
+        let mut facts = unit_facts(UnitKind::Excavator);
+        let options = AnimationOptions::default();
+        let target = TilePos::new(10, 10).center();
+        let clock = AnimationClock::new(100, 0.5);
+        facts.work = UnitWorkFact::Harvesting(target, 4);
+        let before = controller.unit_state(facts, clock, options).work;
+        facts.work = UnitWorkFact::Harvesting(target, 0);
+        assert_eq!(before, controller.unit_state(facts, clock, options).work);
+        assert_eq!(
+            before,
+            controller
+                .unit_state(facts, AnimationClock::new(120, 0.5), options)
+                .work
+        );
+        assert_ne!(
+            before,
+            controller
+                .unit_state(facts, AnimationClock::new(105, 0.5), options)
+                .work
+        );
+    }
+
+    #[test]
+    fn welding_arm_history_does_not_survive_a_missing_worker_or_seek() {
+        let state = Scenario::skirmish().build().unwrap();
+        let mut controller = AnimationController::default();
+        let mut facts = unit_facts(UnitKind::Excavator);
+        facts.id = UnitId(u32::MAX);
+        facts.work = UnitWorkFact::Repairing(TilePos::new(10, 10).center());
+        facts.work_target = Some(WorkTarget::Building(BuildingId(4)));
+        controller.observe_worker(facts, 0);
+        assert!(controller.welding_arms.contains_key(&facts.id));
+        controller.observe_workers(&state);
+        assert!(!controller.welding_arms.contains_key(&facts.id));
+        controller.observe_worker(facts, 0);
+        controller.reset_workers(&state);
+        assert!(!controller.welding_arms.contains_key(&facts.id));
+    }
+
+    #[test]
+    fn excavator_welder_folds_once_and_reverses_without_jumping() {
+        let mut controller = AnimationController::default();
+        let mut facts = unit_facts(UnitKind::Excavator);
+        let target = WorkTarget::Building(BuildingId(4));
+        facts.work = UnitWorkFact::Repairing(TilePos::new(10, 10).center());
+        facts.work_target = Some(target);
+        let options = AnimationOptions::default();
+        controller.observe_worker(facts, 10);
+        let arm = |controller: &AnimationController, facts, tick| {
+            controller
+                .unit_state(facts, AnimationClock::new(tick, 0.), options)
+                .welding_arm
+        };
+        assert_eq!(arm(&controller, facts, 10).unwrap().deployment, 0.);
+        assert_eq!(arm(&controller, facts, 16).unwrap().deployment, 0.5);
+        controller.observe_worker(facts, 16);
+        assert_eq!(arm(&controller, facts, 22).unwrap().deployment, 1.);
+        assert_eq!(arm(&controller, facts, 30).unwrap().deployment, 1.);
+        let working = facts;
+        facts.work = UnitWorkFact::Idle;
+        facts.work_target = None;
+        controller.observe_worker(facts, 30);
+        let retracting = arm(&controller, facts, 36).unwrap();
+        assert_eq!(retracting.target, target);
+        assert_eq!(retracting.deployment, 0.5);
+        assert!(!retracting.active);
+        assert_eq!(retracting, arm(&controller, facts, 36).unwrap());
+        controller.observe_worker(working, 36);
+        assert_eq!(arm(&controller, working, 36).unwrap().deployment, 0.5);
+        assert_eq!(arm(&controller, working, 42).unwrap().deployment, 1.);
+        controller.observe_worker(facts, 44);
+        assert_eq!(arm(&controller, facts, 56), None);
+        controller.reset_transients();
+        assert_eq!(arm(&controller, facts, 15), None);
+        assert_eq!(arm(&controller, working, 15).unwrap().deployment, 1.);
+        assert_eq!(
+            controller
+                .unit_state(
+                    working,
+                    AnimationClock::new(15, 0.),
+                    AnimationOptions {
+                        reduced_motion: true
+                    }
+                )
+                .welding_arm
+                .unwrap()
+                .deployment,
+            1.
+        );
+    }
+
+    #[test]
     fn harvesting_requires_real_work_and_cargo_is_a_continuous_fill() {
         let state = Scenario::skirmish().build().expect("skirmish builds");
         let base = state
@@ -1355,11 +1610,19 @@ mod tests {
             anchor: Some(node),
             retiring: false,
         };
-        unit.pos = node.offset(-1, 0).center();
+        unit.pos = oxide_sim::geometry::work_approach_point(
+            node.offset(-1, 0),
+            node,
+            (1, 1),
+            unit.kind.stats().radius,
+        );
         unit.carrying = 5;
         unit.progress = 1;
         let facts = UnitAnimationFacts::capture(&state, &unit, false);
-        assert_eq!(facts.work, UnitWorkFact::Harvesting(node.center()));
+        assert_eq!(
+            facts.work,
+            UnitWorkFact::Harvesting(node.center(), unit.progress)
+        );
         let animation = AnimationController::default().unit_state(
             facts,
             AnimationClock::new(5, 0.0),
@@ -1374,7 +1637,7 @@ mod tests {
         unit.progress = 0;
         assert_eq!(
             UnitAnimationFacts::capture(&state, &unit, false).work,
-            UnitWorkFact::Harvesting(node.center()),
+            UnitWorkFact::Harvesting(node.center(), unit.progress),
             "a scoop boundary retains the physical work target and facing"
         );
         unit.progress = 1;
@@ -1387,6 +1650,30 @@ mod tests {
         assert_eq!(
             UnitAnimationFacts::capture(&state, &unit, false).work,
             UnitWorkFact::Idle
+        );
+    }
+
+    #[test]
+    fn unloading_pose_and_cargo_follow_simulation_ticks() {
+        let controller = AnimationController::default();
+        let mut facts = unit_facts(UnitKind::Harvester);
+        facts.carrying = 7;
+        facts.work = UnitWorkFact::Unloading(point(), 6);
+        facts.work_target = Some(WorkTarget::Building(BuildingId(3)));
+        let clock = AnimationClock::new(20, 0.25);
+        let state = controller.unit_state(facts, clock, AnimationOptions::default());
+        assert!(
+            matches!(state.work, UnitWorkState::Unloading { progress, .. } if progress == 0.625)
+        );
+        assert_eq!(state.cargo.unwrap().amount, 7);
+        facts.carrying = 0;
+        facts.work = UnitWorkFact::Idle;
+        let released = controller.unit_state(facts, clock, AnimationOptions::default());
+        assert_eq!(released.cargo.unwrap().amount, 0);
+        assert_eq!(released.work, UnitWorkState::Idle);
+        assert_eq!(
+            released,
+            controller.unit_state(facts, clock, AnimationOptions::default())
         );
     }
 
@@ -1421,7 +1708,16 @@ mod tests {
             queue: false,
             defer: false,
         })]);
-        state.tick(&[]);
+        for _ in 0..100 {
+            if state
+                .buildings()
+                .iter()
+                .any(|b| b.anchor == anchor && b.progress > 0)
+            {
+                break;
+            }
+            state.tick(&[]);
+        }
 
         let site = state
             .buildings()
@@ -1504,9 +1800,15 @@ mod tests {
             id: UnitId(2),
             player: PlayerId(0),
             kind: UnitKind::Harvester,
-            pos: TilePos::new(9, 10).center(),
+            pos: oxide_sim::geometry::work_approach_point(
+                site.anchor.offset(-1, 0),
+                site.anchor,
+                site.stats().size,
+                UnitKind::Harvester.stats().radius,
+            ),
             hp: UnitKind::Harvester.stats().max_hp,
             carrying: 0,
+            unloading: None,
             cooldowns: [0; MAX_WEAPONS],
             brace_ticks: 0,
             turret_heading: None,
@@ -1523,10 +1825,10 @@ mod tests {
             cargo: Vec::new(),
             landed: false,
         };
-        assert!(tile_adjacent_to_building(builder.tile(), &site));
+        assert!(builder.in_work_reach(site.anchor, site.stats().size));
         assert!(matches!(builder.order, Order::Build { site: id } if id == site.id));
         builder.pos = TilePos::new(1, 1).center();
-        assert!(!tile_adjacent_to_building(builder.tile(), &site));
+        assert!(!builder.in_work_reach(site.anchor, site.stats().size));
     }
 
     #[test]

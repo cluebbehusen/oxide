@@ -1,14 +1,13 @@
-//! Launch poses retained only while their authoritative payloads are in flight.
-
-use std::collections::HashMap;
+//! Launch facts retained only through their authoritative payload arrival.
 
 use macroquad::prelude::{Vec2, vec2};
 use oxide_sim::state::Shell;
-use oxide_sim::{Event, ProjectileKind, State, Target, UnitId, UnitKind};
+use oxide_sim::{Event, ProjectileKind, State, Target, UnitKind};
+use std::collections::HashMap;
 
 #[derive(Debug, Default)]
 pub(crate) struct ProjectileReleases {
-    releases: HashMap<(UnitId, u64), Vec<LaunchPose>>,
+    releases: HashMap<(Target, u64), Vec<Flight>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -18,71 +17,76 @@ pub(crate) struct LaunchPose {
     pub(crate) slot: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Flight {
+    pub(crate) target: Option<Target>,
+    pub(crate) ticks: u64,
+    pose: Option<LaunchPose>,
+}
+
 impl ProjectileReleases {
     pub(crate) fn observe(&mut self, state: &State, events: &[Event]) {
+        // The landing report is read after the arrival tick has completed.
         self.releases
-            .retain(|(_, arrival), _| *arrival >= state.current_tick());
-        let mut slots = HashMap::<UnitId, usize>::new();
+            .retain(|(_, arrival), _| *arrival >= state.current_tick().saturating_sub(1));
+        let mut slots = HashMap::<Target, usize>::new();
         for event in events {
             if let Event::ShellLaunched {
-                shooter: Target::Unit(id),
-                unit_pose: Some(pose),
+                shooter,
+                target,
+                unit_pose,
                 flight,
                 ..
             } = event
-                && matches!(
-                    pose.kind,
-                    UnitKind::Condor | UnitKind::Moth | UnitKind::Bombard
-                )
             {
-                let heading = chassis::compass::dir(pose.heading);
-                let slot = slots.entry(*id).or_default();
-                self.releases
-                    .entry((*id, state.current_tick() - 1 + flight))
-                    .or_default()
-                    .push(LaunchPose {
+                let releases = self
+                    .releases
+                    .entry((*shooter, state.current_tick() - 1 + flight))
+                    .or_default();
+                let slot = slots.entry(*shooter).or_default();
+                let pose = unit_pose.map(|pose| {
+                    let heading = chassis::compass::dir(pose.heading);
+                    LaunchPose {
                         heading: vec2(heading.x.to_num::<f32>(), heading.y.to_num::<f32>()),
                         kind: pose.kind,
                         slot: *slot,
-                    });
+                    }
+                });
+                releases.push(Flight {
+                    target: *target,
+                    ticks: *flight,
+                    pose,
+                });
                 *slot += 1;
             }
         }
     }
 
+    pub(crate) fn flight(&self, shells: &[Shell], index: usize) -> Option<Flight> {
+        let shell = shells.get(index)?;
+        let releases = self.releases.get(&(shell.shooter, shell.arrival))?;
+        // Map-edge clamping can give several bombs the same arrival tick.
+        // They retain launch order and are removed together.
+        let occurrence = shells[..index]
+            .iter()
+            .filter(|earlier| earlier.shooter == shell.shooter && earlier.arrival == shell.arrival)
+            .count();
+        releases.get(occurrence).copied()
+    }
+
     pub(crate) fn artillery_heading(&self, shell: &Shell) -> Option<Vec2> {
-        let Target::Unit(id) = shell.shooter else {
-            return None;
-        };
         self.releases
-            .get(&(id, shell.arrival))?
-            .first()
+            .get(&(shell.shooter, shell.arrival))?
+            .first()?
+            .pose
             .filter(|pose| pose.kind == UnitKind::Bombard)
             .map(|pose| pose.heading)
     }
 
     pub(crate) fn release(&self, shells: &[Shell], index: usize) -> Option<LaunchPose> {
-        let shell = shells.get(index)?;
-        if shell.kind != ProjectileKind::Bomb {
-            return None;
-        }
-        let Target::Unit(id) = shell.shooter else {
-            return None;
-        };
-        let releases = self.releases.get(&(id, shell.arrival))?;
-        // Map-edge clamping can give several bombs the same arrival tick.
-        // Those shells keep launch order and are removed together.
-        let occurrence = if releases.len() == 1 {
-            0
-        } else {
-            shells[..index]
-                .iter()
-                .filter(|earlier| {
-                    earlier.shooter == shell.shooter && earlier.arrival == shell.arrival
-                })
-                .count()
-        };
-        releases.get(occurrence).copied()
+        (shells.get(index)?.kind == ProjectileKind::Bomb)
+            .then(|| self.flight(shells, index)?.pose)?
+            .filter(|pose| matches!(pose.kind, UnitKind::Condor | UnitKind::Moth))
     }
 }
 
@@ -91,7 +95,7 @@ mod tests {
     use super::*;
     use crate::game::Game;
     use chassis::grid::TilePos;
-    use oxide_sim::{Command, PlayerCommand, PlayerId, Scenario};
+    use oxide_sim::{Command, PlayerCommand, PlayerId, Scenario, UnitId};
 
     #[test]
     fn edge_release_uses_the_firing_pose_before_egress_and_survives_shooter_loss() {
@@ -150,7 +154,7 @@ mod tests {
     }
 
     #[test]
-    fn saved_projectile_releases_retain_heading_slots_and_simulation_parity() {
+    fn replay_projectile_releases_retain_heading_slots_and_simulation_parity() {
         let scenario: Scenario = serde_json::from_value(serde_json::json!({
             "name": "Bomber release", "seed": 619,
             "map": [

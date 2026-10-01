@@ -640,14 +640,32 @@ pub(super) fn draw_ground_effects(game: &Scene<'_>, sprites: &Sprites) {
     let zoom = game.presentation.camera.zoom;
     for effect in &game.presentation.fx {
         match effect.kind {
-            EffectKind::Impact { at, radius, .. }
-                if visible(game, at) && floor_contact(game, at) =>
-            {
+            EffectKind::Impact {
+                at,
+                radius,
+                from,
+                surface,
+                payload,
+                ..
+            } => {
+                if matches!(surface, Some(crate::game::HitSurface::Unit(hit)) if hit.airborne) {
+                    continue;
+                }
+                let contact =
+                    super::entities::impact_contact(game, sprites, surface, from, at, payload);
+                if !visible(game, contact) || !floor_contact(game, contact) {
+                    continue;
+                }
                 ground_mark(
-                    game.presentation.camera.to_screen(at),
+                    game.presentation.camera.to_screen(contact),
                     zoom,
                     radius * 0.68,
-                    ((1.4 - effect.age) / 0.7).clamp(0.0, 1.0) * 0.70,
+                    ((1.4
+                        - effect
+                            .age_at(game.state.current_tick(), game.presentation.tick_fraction()))
+                        / 0.7)
+                        .clamp(0.0, 1.0)
+                        * 0.70,
                 );
             }
             EffectKind::Debris { at, body, seed } => {
@@ -713,9 +731,9 @@ pub(super) fn draw_ground_effects(game: &Scene<'_>, sprites: &Sprites) {
                     ((4.5 - effect.age) / 1.0).clamp(0.0, 1.0) * 0.7,
                 );
                 let structure = RigidSprite {
+                    rotation: 0.,
                     center,
                     size,
-                    rotation: 0.0,
                     source: sprites.building_tiered(body.kind, body.tier, body.faction),
                     accent: sprites.building_tiered_accent(body.kind, body.tier),
                     tint: seat_identity_tint(game, body.player),

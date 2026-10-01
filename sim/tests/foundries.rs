@@ -146,9 +146,13 @@ fn a_completed_expansion_produces_and_smelts_its_own_drip() {
     );
 
     // Two standing Foundries smelt two per period once the warm-up ends.
-    let mut value = serde_json::to_value(&state).unwrap();
-    value["tick"] = serde_json::json!(FOUNDRY_DRIP_START_TICK - 1);
-    let mut state: State = serde_json::from_value(value).unwrap();
+    let next_credit = (state.current_tick() + 1)
+        .max(FOUNDRY_DRIP_START_TICK)
+        .div_ceil(FOUNDRY_DRIP_PERIOD)
+        * FOUNDRY_DRIP_PERIOD;
+    while state.current_tick() < next_credit - 1 {
+        state.tick(&[]);
+    }
     let bank = state.player(PlayerId(0)).scrap;
     state.tick(&[]);
     assert_eq!(

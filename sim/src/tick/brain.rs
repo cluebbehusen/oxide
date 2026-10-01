@@ -277,6 +277,7 @@ pub(super) fn run(
 }
 
 mod combat;
+pub(in crate::tick) mod contact;
 mod economy;
 pub(super) use economy::return_cargo_destination;
 mod locomotion;

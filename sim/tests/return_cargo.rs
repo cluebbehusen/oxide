@@ -74,7 +74,8 @@ fn return_cargo_replaces_work_and_queue_then_deposits_once_and_stays() {
                     e,
                     Event::ScrapDeposited {
                         player: PlayerId(0),
-                        amount: 7
+                        amount: 7,
+                        ..
                     }
                 ))
                 .count(),
@@ -82,7 +83,10 @@ fn return_cargo_replaces_work_and_queue_then_deposits_once_and_stays() {
         );
         let b = state.building(foundry).unwrap();
         let u = state.unit(worker).unwrap();
-        assert!(u.in_harvest_reach(b.anchor, b.stats().size));
+        assert!(
+            u.pos.dist(state.contact_surface(b).closest(u.pos))
+                <= u.kind.stats().radius + oxide_sim::stats::WORK_REACH
+        );
         assert!(matches!(u.order, Order::Idle));
         for _ in 0..200 {
             state.tick(&[]);
@@ -371,20 +375,19 @@ fn return_cargo_honors_a_far_explicit_foundry_and_saturates_the_bank() {
             .any(|e| matches!(e, Event::ScrapDeposited { amount: 5, .. }))
     );
     let b = state.building(far).unwrap();
+    let u = state.unit(worker).unwrap();
     assert!(
-        state
-            .unit(worker)
-            .unwrap()
-            .in_harvest_reach(b.anchor, b.stats().size)
+        u.pos.dist(state.contact_surface(b).closest(u.pos))
+            <= u.kind.stats().radius + oxide_sim::stats::WORK_REACH
     );
     let mut data = serde_json::to_value(&state).unwrap();
     data["units"][0]["carrying"] = json!(5);
     data["players"][0]["scrap"] = json!(u32::MAX - 2);
     state = serde_json::from_value(data).unwrap();
-    let report = state.tick(&[cmd(0, delivery(worker, Some(far), false))]);
+    state.tick(&[cmd(0, delivery(worker, Some(far), false))]);
+    let events = run_until(&mut state, 20, |s, _| s.unit(worker).unwrap().carrying == 0);
     assert!(
-        report
-            .events
+        events
             .iter()
             .any(|e| matches!(e, Event::ScrapDeposited { amount: 2, .. }))
     );

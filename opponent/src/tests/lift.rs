@@ -397,6 +397,73 @@ fn the_carrier_stock_follows_the_need_and_the_riders_at_home() {
 }
 
 #[test]
+fn the_carrier_stock_counts_riders_as_they_pack() {
+    let staged = |skyhooks: usize, sentinels: i32| {
+        let mut scenario = strait();
+        scenario.players[0].scrap = 1_000;
+        scenario
+            .units
+            .retain(|unit| !matches!(unit.kind, UnitKind::Skyhook | UnitKind::Sentinel));
+        for (x, y) in [(10, 8), (10, 15), (10, 4), (10, 19)]
+            .into_iter()
+            .take(skyhooks)
+        {
+            scenario.units.push(unit(0, UnitKind::Skyhook, x, y));
+        }
+        for x in 6..6 + sentinels {
+            scenario.units.push(unit(0, UnitKind::Sentinel, x, 13));
+        }
+        for x in 6..10 {
+            scenario.units.push(unit(0, UnitKind::Bombard, x, 10));
+        }
+        let state = scenario.build().unwrap();
+        seat_with(&scenario, 0, turtle(BotDifficulty::Standard))
+            .act(&state, &mut OwnEvents::default())
+    };
+    let skyhooks = |commands: &[PlayerCommand]| {
+        trains(commands)
+            .iter()
+            .filter(|(_, kind)| *kind == UnitKind::Skyhook)
+            .count()
+    };
+
+    let commands = staged(3, 0);
+    assert_eq!(
+        (skyhooks(&commands), loads(&commands).len()),
+        (1, 0),
+        "a Skyhook holds one Bombard, so three carry three of the four"
+    );
+    let commands = staged(4, 0);
+    assert_eq!(
+        (skyhooks(&commands), loads(&commands).len()),
+        (0, 4),
+        "four carry them all"
+    );
+    let commands = staged(3, 4);
+    assert_eq!(
+        skyhooks(&commands),
+        1,
+        "four Sentinels fill one Skyhook and the Bombards still take one each"
+    );
+}
+
+#[test]
+fn a_seat_needing_no_lift_leaves_its_carriers_where_they_hover() {
+    let mut scenario = field();
+    garrison(&mut scenario);
+    scenario.units.push(unit(0, UnitKind::Skyhook, 4, 12));
+    let state = scenario.build().unwrap();
+    let hook = at(&state, 4, 12);
+    let commands = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
+    assert!(
+        runs(&commands)
+            .iter()
+            .all(|(units, _)| !units.contains(&hook)),
+        "{commands:?}"
+    );
+}
+
+#[test]
 fn an_army_no_lift_could_carry_buys_no_carriers() {
     let mut scenario = strait();
     scenario.players[0].scrap = 1_000;
@@ -614,6 +681,121 @@ fn a_carrier_back_home_still_loaded_sets_its_riders_down_and_lets_them_go() {
         let rider = state.units().iter().find(|unit| unit.id == id).unwrap();
         assert_eq!(model.component(rider.tile()), home);
     }
+}
+
+#[test]
+fn emptied_carriers_short_of_orders_fly_home_before_the_lift_fights() {
+    let scenario = strait();
+    let state = scenario.build().unwrap();
+    let mut opponent = seat(&scenario, 0);
+    opponent.act(&state, &mut OwnEvents::default());
+    let mut json = serde_json::to_value(opponent.checkpoint()).unwrap();
+    json["missions"]["list"][0]["task"]["phase"] = "fly".into();
+    let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
+
+    // The same units, set down on East's island with an interceptor over the
+    // strait that the flight home must go around, and two idle Harvesters at
+    // home taking two of a Scrapheap seat's three orders.
+    let mut landed = strait();
+    landed.players[0].bot_config = Some(BotConfig::opponent(
+        BotDifficulty::Scrapheap,
+        BotStance::Balanced,
+        11,
+    ));
+    let mut riders = (30..=33).flat_map(|x| [(x, 9), (x, 15)]);
+    for spec in &mut landed.units {
+        let (x, y) = match spec.kind {
+            UnitKind::Skyhook if spec.y < 11 => (30, 11),
+            UnitKind::Skyhook => (30, 13),
+            _ => riders.next().unwrap(),
+        };
+        (spec.x, spec.y) = (x, y);
+    }
+    landed.units.push(unit(1, UnitKind::Sylph, 20, 8));
+    for (x, y) in [(2, 14), (2, 15)] {
+        landed.map[y].replace_range(x..x + 1, "s");
+    }
+    landed.units.push(harvester(0, 4, 14));
+    landed.units.push(harvester(0, 4, 15));
+    let mut state = landed.build().unwrap();
+    let interceptor = [(at(&state, 20, 8), "sylph", TilePos::new(20, 8))];
+    let restored = Opponent::restore(&checkpoint, &landed, &state, map(&landed)).unwrap();
+    let mut opponent = remembering(&restored, &landed, &state, &interceptor);
+    let carriers: Vec<UnitId> = skyhooks(&state, 0).iter().map(|unit| unit.id).collect();
+
+    let (commands, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
+    assert_eq!(harvests(&commands).len(), 2, "premise: {commands:?}");
+    assert!(
+        runs(&commands)
+            .iter()
+            .all(|(units, _)| units.iter().all(|id| !carriers.contains(id))),
+        "no orders are left for the two-leg flight home: {commands:?}"
+    );
+    assert_eq!(
+        lift(&trace.unwrap().missions).map(|mission| mission.phase),
+        Some(Phase::Fly),
+        "the lift waits for its carriers"
+    );
+
+    let mut home_runs = Vec::new();
+    let (next, until) = (state.current_tick() + 12, state.current_tick() + 600);
+    advance_to(&mut state, next, &commands);
+    while state.current_tick() < until {
+        let commands = opponent.act(&state, &mut OwnEvents::default());
+        home_runs.extend(
+            runs(&commands)
+                .into_iter()
+                .filter(|(units, _)| units.iter().all(|id| carriers.contains(id))),
+        );
+        state.tick(&commands);
+    }
+    let model = map(&landed);
+    let home = model.component(TilePos::new(3, 11));
+    assert!(
+        home_runs
+            .iter()
+            .any(|(_, goal)| model.component(*goal) != home),
+        "around the anti-air: {home_runs:?}"
+    );
+    for hook in skyhooks(&state, 0) {
+        assert_eq!(model.component(hook.tile()), home, "{:?}", hook.tile());
+    }
+}
+
+#[test]
+fn a_lift_at_the_member_cap_boards_no_more_and_still_restores() {
+    let mut scenario = strait();
+    let state = scenario.build().unwrap();
+    let mut opponent = seat(&scenario, 0);
+    opponent.act(&state, &mut OwnEvents::default());
+    // Members enough that one more load would pass the cap, standing on any
+    // open ground of either island.
+    let taken = |tile: TilePos| {
+        state.units().iter().any(|unit| unit.tile() == tile)
+            || state.buildings().iter().any(|building| {
+                let (width, height) = building.stats().size;
+                crate::frame::gap(building.anchor, (width, height), tile, (1, 1)) < 2
+            })
+    };
+    let first = state.units().len() as u32;
+    let members: Vec<UnitSpec> = (1..23)
+        .flat_map(|y| (1..39).map(move |x| TilePos::new(x, y)))
+        .filter(|tile| STRAIT[tile.y as usize].as_bytes()[tile.x as usize] == b'.' && !taken(*tile))
+        .take(255)
+        .map(|tile| harvester(0, tile.x, tile.y))
+        .collect();
+    assert_eq!(members.len(), 255, "premise: room for every member");
+    scenario.units.extend(members);
+    let state = scenario.build().unwrap();
+    let mut json = serde_json::to_value(opponent.checkpoint()).unwrap();
+    json["missions"]["list"][0]["units"] = (first..first + 255).collect::<Vec<u32>>().into();
+    let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
+    let mut opponent = Opponent::restore(&checkpoint, &scenario, &state, map(&scenario)).unwrap();
+    opponent.act(&state, &mut OwnEvents::default());
+    assert!(
+        Opponent::restore(&opponent.checkpoint(), &scenario, &state, map(&scenario)).is_ok(),
+        "no lift grew past the cap"
+    );
 }
 
 #[test]
@@ -937,6 +1119,61 @@ fn a_short_defense_buys_its_army_before_a_carrier() {
     );
 }
 
+#[test]
+fn a_severed_seat_without_an_airworks_trains_line_units_against_enemies_on_its_ground() {
+    let staged = |east: &[(i32, i32)]| {
+        let mut scenario = strait();
+        scenario.units.clear();
+        scenario
+            .buildings
+            .retain(|building| building.kind != BuildingKind::Airworks);
+        for player in &mut scenario.players {
+            player.scrap = 400;
+        }
+        for (x, y) in east {
+            scenario.units.push(unit(1, UnitKind::Sentinel, *x, *y));
+        }
+        scenario
+    };
+    let line = |state: &State, commands: &[PlayerCommand]| {
+        army(state, commands)
+            .iter()
+            .filter(|(_, kind)| {
+                crate::composition::role(*kind) == Some(crate::composition::Role::Line)
+            })
+            .count()
+    };
+
+    let alone = staged(&[]);
+    let state = alone.build().unwrap();
+    let commands = seat(&alone, 0).act(&state, &mut OwnEvents::default());
+    assert_eq!(line(&state, &commands), 0, "premise: nothing to fight");
+
+    let across: Vec<(i32, i32)> = (9..=13).map(|y| (30, y)).collect();
+    let far = staged(&across);
+    let state = far.build().unwrap();
+    let remembered: Vec<(UnitId, &str, TilePos)> = across
+        .iter()
+        .map(|&(x, y)| (at(&state, x, y), "sentinel", TilePos::new(x, y)))
+        .collect();
+    let mut opponent = remembering(&seat(&far, 0), &far, &state, &remembered);
+    let commands = opponent.act(&state, &mut OwnEvents::default());
+    assert_eq!(
+        line(&state, &commands),
+        0,
+        "an army across the strait is no reason for line units"
+    );
+
+    let landed: Vec<(i32, i32)> = (9..=13).map(|y| (6, y)).collect();
+    let invaded = staged(&landed);
+    let state = invaded.build().unwrap();
+    let commands = seat(&invaded, 0).act(&state, &mut OwnEvents::default());
+    assert!(
+        line(&state, &commands) > 0,
+        "invaders on its own ground are: {commands:?}"
+    );
+}
+
 /// The strait with West's tech and a Harvester but no army, and `scrap` for
 /// both seats.
 fn bare_strait(scrap: u32) -> Scenario {
@@ -1000,6 +1237,29 @@ fn a_severed_seat_without_an_airworks_saves_for_one_instead_of_line_units() {
 }
 
 #[test]
+fn a_seat_that_gave_up_on_every_target_wants_no_strike_force() {
+    let mut scenario = bare_strait(1_000);
+    scenario.units.push(unit(0, UnitKind::Kestrel, 5, 5));
+    let state = scenario.build().unwrap();
+    let mut opponent = seat(&scenario, 0);
+    opponent.act(&state, &mut OwnEvents::default());
+    let mut json = serde_json::to_value(opponent.checkpoint()).unwrap();
+    json["memory"]["abandoned"] = serde_json::json!([
+        {"kind": "foundry", "anchor": {"x": EAST_START.x, "y": EAST_START.y}, "at": 0}
+    ]);
+    let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
+    let mut opponent = Opponent::restore(&checkpoint, &scenario, &state, map(&scenario)).unwrap();
+    let commands = opponent.act(&state, &mut OwnEvents::default());
+    let trained = army(&state, &commands);
+    assert!(
+        trained.iter().all(|(_, kind)| {
+            crate::composition::role(*kind) != Some(crate::composition::Role::AirStrike)
+        }),
+        "{trained:?}"
+    );
+}
+
+#[test]
 fn a_severed_seat_with_an_airworks_trains_air_strikes_before_it_has_an_army() {
     let mut scenario = bare_strait(1_000);
     // A scout already, so the Airworks is free for the army.
@@ -1041,4 +1301,53 @@ fn a_payload_worth_two_lifts_flies_both_to_distinct_targets() {
         panic!("{lifts:?}");
     };
     assert_ne!(first.kind, second.kind, "each goes after its own target");
+}
+
+/// West's ground cut off from East's start by a wall, East's start in a
+/// walled corner.
+const WALLED: [&str; 24] = [
+    "########################################",
+    "#..............................#.......#",
+    "#..............................#.......#",
+    "#..............................#.......#",
+    "#.........s....................#..2....#",
+    "#..............................#.......#",
+    "#..ss..........................#.......#",
+    "#..s...........................#.......#",
+    "#..............................#.......#",
+    "#..............................#########",
+    "#....1.................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#..ss..................................#",
+    "#..s...................................#",
+    "#......................................#",
+    "#.........s............................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "########################################",
+];
+
+#[test]
+fn a_severed_seat_short_of_an_army_does_not_hold_its_tech_for_a_turret() {
+    let mut scenario = field();
+    scenario.map = WALLED.map(str::to_owned).to_vec();
+    scenario.players[0].scrap = 300;
+    for y in 9..=12 {
+        scenario.units.push(harvester(0, 8, y));
+    }
+    for y in [10, 11] {
+        scenario.units.push(unit(0, UnitKind::Sentinel, 10, y));
+    }
+    let state = scenario.build().unwrap();
+    let (_, trace) = seat(&scenario, 0).act_traced(&state, &mut OwnEvents::default());
+    assert_eq!(
+        trace.unwrap().target.map(|target| target.investment),
+        Some(Investment::Tech(BuildingKind::Airworks)),
+        "its army reaches the enemy only once an Airworks stands"
+    );
 }

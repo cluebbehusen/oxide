@@ -268,6 +268,7 @@ fn a_free_stepping_welder_still_consumes_the_room() {
     let midmeter = state.units()[0].id;
     let joiner = state.units()[1].id;
     let max = BuildingKind::Turret.base_stats().max_hp;
+    let surface = state.contact_surface(state.building(turret).unwrap());
     let mut value = serde_json::to_value(state).unwrap();
     value["buildings"]
         .as_array_mut()
@@ -282,6 +283,15 @@ fn a_free_stepping_welder_still_consumes_the_room() {
             .iter_mut()
             .find(|record| record["id"] == serde_json::json!(unit.0))
             .unwrap();
+        let goal = if unit == midmeter {
+            TilePos::new(2, 4)
+        } else {
+            TilePos::new(4, 4)
+        };
+        record["pos"] = serde_json::json!(surface.stance(
+            goal.center(),
+            UnitKind::Harvester.stats().radius + oxide_sim::stats::WORK_FOOTPRINT_GAP
+        ));
         record["progress"] = serde_json::json!(progress);
         record["order"] = serde_json::to_value(Order::Repair { building: turret }).unwrap();
     }

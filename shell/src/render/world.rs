@@ -535,21 +535,40 @@ pub(crate) fn draw_tiles(game: &crate::game::Scene<'_>, sprites: &Sprites) {
             let screen = game.presentation.camera.to_screen(vec2(x as f32, y as f32));
             // Position hashes drive all variety: deterministic, no state.
             let h = (x.wrapping_mul(31).wrapping_add(y.wrapping_mul(17))) as usize;
+            // The linear hash deliberately steps shades in diagonal waves.
+            // Grit and cracks use a mixed hash so no shade repeats one texture;
+            // FNV's low bits track coordinate parity, so read its high bits.
             let variant = h % 6;
+            let detail = (coordinate_hash(x, y, 0x4752_4e44) >> 16) as usize;
             let next = game
                 .presentation
                 .camera
                 .to_screen(vec2((x + 1) as f32, (y + 1) as f32));
+            let tile_size = vec2(
+                next.x.floor() - screen.x.floor(),
+                next.y.floor() - screen.y.floor(),
+            );
             sprites.draw(
                 screen.x.floor(),
                 screen.y.floor(),
                 tint,
                 DrawTextureParams {
-                    dest_size: Some(vec2(
-                        next.x.floor() - screen.x.floor(),
-                        next.y.floor() - screen.y.floor(),
-                    )),
+                    dest_size: Some(tile_size),
                     source: Some(sprites.ground(variant)),
+                    ..Default::default()
+                },
+            );
+            let detail_count = sprites.ground_detail_count();
+            let orientation = detail / detail_count;
+            sprites.draw(
+                screen.x.floor(),
+                screen.y.floor(),
+                tint,
+                DrawTextureParams {
+                    dest_size: Some(tile_size),
+                    source: Some(sprites.ground_detail(detail)),
+                    flip_x: orientation & 1 == 1,
+                    flip_y: orientation & 2 == 2,
                     ..Default::default()
                 },
             );

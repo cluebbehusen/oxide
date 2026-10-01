@@ -16,9 +16,7 @@ use crate::profile::{PersonalityTraits, ResolvedProfile};
 use crate::workers;
 use chassis::grid::TilePos;
 use oxide_sim::observation::{BuildingObs, ObservationData};
-use oxide_sim::stats::{
-    BuildingStats, CHARGE_DAMAGE, Domain, FOUNDRY_REPAIR_PRICE, REPAIR_BAY_RADIUS,
-};
+use oxide_sim::stats::{CHARGE_DAMAGE, Domain, FOUNDRY_REPAIR_PRICE, REPAIR_BAY_RADIUS};
 use oxide_sim::{BuildingKind, UnitKind};
 use std::cell::OnceCell;
 use std::cmp::Reverse;
@@ -179,11 +177,15 @@ impl Asset {
     }
 }
 
+/// Where a threat comes from, the domain it moves in, and, for ground units
+/// that must walk, the grounds they count from.
+type ThreatKey = ((i64, i64), Domain, Option<Vec<u32>>);
+
 /// Where a weapon reaches, in doubled coordinates.
 #[derive(Clone, Copy)]
 struct Cover {
     centre: (i64, i64),
-    /// What the weapon cost.
+    /// What the weapon cost, with every upgrade it has had.
     value: u64,
     /// Squared doubled reach, and squared doubled minimum range.
     reach2: i64,
@@ -193,14 +195,17 @@ struct Cover {
 }
 
 impl Cover {
-    fn of(stats: &BuildingStats, kind: BuildingKind, anchor: TilePos) -> Option<Self> {
+    fn of(kind: BuildingKind, tier: u8, anchor: TilePos) -> Option<Self> {
+        let stats = kind.tier_stats(tier);
         let mut cover = Cover {
             centre: footprint_centre(kind, anchor),
             value: kind
-                .base_stats()
-                .construction
-                .as_ref()
-                .map_or(0, |construction| u64::from(construction.cost)),
+                .tiers()
+                .iter()
+                .take(usize::from(tier) + 1)
+                .filter_map(|stats| stats.construction.as_ref())
+                .map(|construction| u64::from(construction.cost))
+                .sum(),
             reach2: 0,
             min2: i64::MAX,
             ground: false,
@@ -262,13 +267,7 @@ impl<'a> Guard<'a> {
             .my_buildings
             .iter()
             .filter(|building| !building.provisional)
-            .filter_map(|building| {
-                Cover::of(
-                    building.kind.tier_stats(building.tier),
-                    building.kind,
-                    building.anchor,
-                )
-            })
+            .filter_map(|building| Cover::of(building.kind, building.tier, building.anchor))
             .collect();
         let sight: Vec<((i64, i64), i64)> = observation
             .my_buildings
@@ -317,9 +316,10 @@ impl<'a> Guard<'a> {
             walkers,
         };
         // Many buildings share a threat's source.
-        let mut threats: Vec<((i64, i64), Domain, u64)> = Vec::new();
+        let mut threats: Vec<(ThreatKey, u64)> = Vec::new();
         for asset in &mut assets {
             let centre = asset.centre;
+            let around = grounds(map, asset.anchor, asset.size);
             asset.ground = approach(&known, asset, Domain::Ground);
             asset.air = approach(&known, asset, Domain::Air);
             for (domain, approach) in [
@@ -329,13 +329,26 @@ impl<'a> Guard<'a> {
                 let Some(approach) = approach else {
                     continue;
                 };
+                // Ground units count only where ground connects them to the
+                // building, unless they would come by landing.
+                let beside = (domain == Domain::Ground && approach.evidence != Evidence::Landing)
+                    .then_some(&around);
                 let known = threats
                     .iter()
-                    .find(|(source, of, _)| *source == approach.source && *of == domain)
-                    .map(|(_, _, value)| *value);
+                    .find(|((source, of, on), _)| {
+                        *source == approach.source && *of == domain && on.as_ref() == beside
+                    })
+                    .map(|(_, value)| *value);
                 let value = known.unwrap_or_else(|| {
-                    let value = threat(memory, observation.tick, approach.source, domain, stakes);
-                    threats.push((approach.source, domain, value));
+                    let value = threat(
+                        memory,
+                        map,
+                        observation.tick,
+                        (approach.source, domain),
+                        beside.map(Vec::as_slice),
+                        stakes,
+                    );
+                    threats.push(((approach.source, domain, beside.cloned()), value));
                     value
                 });
                 let need = value * 1_000 / stakes.margin.max(1);
@@ -688,7 +701,7 @@ impl<'a> Guard<'a> {
         guarded: impl Fn(&Asset) -> bool,
     ) -> Option<(TilePos, u64)> {
         let size = kind.base_stats().size;
-        let reach = Cover::of(kind.base_stats(), kind, TilePos::new(0, 0));
+        let reach = Cover::of(kind, 0, TilePos::new(0, 0));
         let bastion = kind == BuildingKind::Bastion;
         // Each asset with the most any site beside it could be worth: every
         // sample still open, or every far point nobody sees.
@@ -867,7 +880,7 @@ fn upgrade(guard: &Guard<'_>, building: &BuildingObs, weight: u64) -> Option<(In
         return None;
     }
     let stats = building.kind.tier_stats(building.tier);
-    let cover = Cover::of(stats, building.kind, building.anchor);
+    let cover = Cover::of(building.kind, building.tier, building.anchor);
     let array = building.kind == BuildingKind::Array;
     if cover.is_none() && !array {
         return None;
@@ -1023,9 +1036,25 @@ pub(crate) fn emergency(
 
 /// The value of the armed enemies in `domain` the seat remembers near
 /// `source`, by how sure it is they are still there, and at least an army at
-/// the stance's minimum.
-fn threat(memory: &Memory, now: u64, source: (i64, i64), domain: Domain, stakes: Stakes) -> u64 {
+/// the stance's minimum. Given `beside`, only those standing beside one of
+/// those grounds count.
+fn threat(
+    memory: &Memory,
+    map: &MapModel,
+    now: u64,
+    (source, domain): ((i64, i64), Domain),
+    beside: Option<&[u32]>,
+    stakes: Stakes,
+) -> u64 {
     let near: u64 = armed_near(memory, source, domain)
+        .filter(|unit| {
+            beside.is_none_or(|grounds| {
+                ring(unit.tile, (1, 1)).any(|tile| {
+                    map.component(tile)
+                        .is_some_and(|component| grounds.contains(&component))
+                })
+            })
+        })
         .map(|unit| unit.value(now))
         .sum();
     near.max(stakes.minimum)

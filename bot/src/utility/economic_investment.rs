@@ -2184,9 +2184,23 @@ mod tests {
             far[0].workers,
             far[0].marginal(local, 6_000),
         );
-        obs.my_units[0].tile = source;
+        // A wreck is worked from two positions on each orthogonal side.
+        obs.my_units = (1..)
+            .zip([
+                (0, -1),
+                (0, -1),
+                (-1, 0),
+                (-1, 0),
+                (1, 0),
+                (1, 0),
+                (0, 1),
+                (0, 1),
+            ])
+            .map(|(id, (dx, dy))| worker(id, source.offset(dx, dy)))
+            .collect();
         let near = regions(&obs);
-        assert_eq!(near[0].workers[0].ready_after, 0);
+        assert_eq!(near[0].work.positions, near[0].workers.len());
+        assert!(near[0].workers.iter().all(|worker| worker.ready_after == 0));
         assert_eq!(near[0].marginal(local, 6_000), 0);
         obs.visible.fill(false);
         assert!(

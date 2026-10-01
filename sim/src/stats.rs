@@ -221,6 +221,8 @@ pub struct HarvestStats {
 /// Static parameters of a unit kind.
 #[derive(Debug, Clone, Copy)]
 pub struct UnitStats {
+    /// Tool reach beyond the chassis for direct-contact weapons.
+    pub contact_reach: Option<Fx>,
     /// Hit points at spawn.
     pub max_hp: u32,
     /// Movement speed in tiles per tick.
@@ -742,6 +744,7 @@ pub const MAX_WEAPONS: usize = 2;
 pub const BOMBARD_BRACE_TICKS: u8 = 12;
 
 const HARVESTER: UnitStats = UnitStats {
+    contact_reach: None,
     max_hp: 60,
     speed: Fx::lit("0.125"), // 2.5 tiles/s at 20 tps
     radius: Fx::lit("0.3"),
@@ -765,6 +768,7 @@ const HARVESTER: UnitStats = UnitStats {
 };
 
 const SENTINEL: UnitStats = UnitStats {
+    contact_reach: None,
     // A cheap screen and scout rather than an efficient massed army:
     // rails one-shot it, Scuttler swarms out-trade it, and fixed
     // defenses punish unsupported groups.
@@ -813,6 +817,7 @@ const SENTINEL: UnitStats = UnitStats {
 };
 
 const SCUTTLER: UnitStats = UnitStats {
+    contact_reach: Some(Fx::lit("0.16")),
     max_hp: 40,
     speed: Fx::lit("0.16"), // 3.2 tiles/s — outruns everything on the ground
     radius: Fx::lit("0.28"),
@@ -843,6 +848,7 @@ const SCUTTLER: UnitStats = UnitStats {
 };
 
 const LANCER: UnitStats = UnitStats {
+    contact_reach: None,
     max_hp: 50,
     speed: Fx::lit("0.08"), // 1.6 tiles/s — the army protects it, not vice versa
     radius: Fx::lit("0.35"),
@@ -876,6 +882,7 @@ const LANCER: UnitStats = UnitStats {
 };
 
 const BOMBARD: UnitStats = UnitStats {
+    contact_reach: None,
     max_hp: 80,
     speed: Fx::lit("0.06"), // 1.2 tiles/s — a gun that walks, barely
     radius: Fx::lit("0.4"),
@@ -906,6 +913,7 @@ const BOMBARD: UnitStats = UnitStats {
 };
 
 const FLAKHOUND: UnitStats = UnitStats {
+    contact_reach: None,
     max_hp: 120,
     speed: Fx::lit("0.10"), // 2.0 tiles/s
     radius: Fx::lit("0.38"),
@@ -936,6 +944,7 @@ const FLAKHOUND: UnitStats = UnitStats {
 };
 
 const STINGER: UnitStats = UnitStats {
+    contact_reach: None,
     max_hp: 45,
     speed: Fx::lit("0.14"), // 2.8 tiles/s
     radius: Fx::lit("0.28"),
@@ -966,6 +975,7 @@ const STINGER: UnitStats = UnitStats {
 };
 
 const BUZZARD: UnitStats = UnitStats {
+    contact_reach: None,
     max_hp: 110,
     speed: Fx::lit("0.10"), // 2.0 tiles/s
     radius: Fx::lit("0.4"),
@@ -998,6 +1008,7 @@ const BUZZARD: UnitStats = UnitStats {
 };
 
 const DARTER: UnitStats = UnitStats {
+    contact_reach: None,
     max_hp: 55,
     speed: Fx::lit("0.17"), // 3.4 tiles/s — the fastest thing in the sky
     radius: Fx::lit("0.3"),
@@ -1029,6 +1040,7 @@ const DARTER: UnitStats = UnitStats {
 };
 
 const TALON: UnitStats = UnitStats {
+    contact_reach: None,
     max_hp: 90,
     speed: Fx::lit("0.14"), // 2.8 tiles/s
     radius: Fx::lit("0.35"),
@@ -1059,6 +1071,7 @@ const TALON: UnitStats = UnitStats {
 };
 
 const WISP: UnitStats = UnitStats {
+    contact_reach: None,
     max_hp: 50,
     speed: Fx::lit("0.19"), // 3.8 tiles/s
     radius: Fx::lit("0.28"),
@@ -1089,6 +1102,7 @@ const WISP: UnitStats = UnitStats {
 };
 
 const WARDEN: UnitStats = UnitStats {
+    contact_reach: None,
     // The line brawler can trade into massed rails without replacing
     // the Lancer's role as the more efficient dedicated counter.
     max_hp: 260,
@@ -1121,6 +1135,7 @@ const WARDEN: UnitStats = UnitStats {
 };
 
 const TENDER: UnitStats = UnitStats {
+    contact_reach: None,
     max_hp: 150,
     speed: Fx::lit("0.11"),
     radius: Fx::lit("0.38"),
@@ -1143,6 +1158,7 @@ const TENDER: UnitStats = UnitStats {
 };
 
 const EXCAVATOR: UnitStats = UnitStats {
+    contact_reach: None,
     max_hp: 160,
     speed: Fx::lit("0.11"),
     radius: Fx::lit("0.42"),
@@ -1166,6 +1182,7 @@ const EXCAVATOR: UnitStats = UnitStats {
 };
 
 const KESTREL: UnitStats = UnitStats {
+    contact_reach: None,
     max_hp: 60,
     speed: Fx::lit("0.2"),
     radius: Fx::lit("0.3"),
@@ -1186,6 +1203,7 @@ const KESTREL: UnitStats = UnitStats {
 };
 
 const GNAT: UnitStats = UnitStats {
+    contact_reach: None,
     max_hp: 45,
     speed: Fx::lit("0.22"),
     radius: Fx::lit("0.26"),
@@ -1206,6 +1224,7 @@ const GNAT: UnitStats = UnitStats {
 };
 
 const SHRIKE: UnitStats = UnitStats {
+    contact_reach: None,
     max_hp: 160,
     speed: Fx::lit("0.16"),
     radius: Fx::lit("0.38"),
@@ -1236,6 +1255,7 @@ const SHRIKE: UnitStats = UnitStats {
 };
 
 const SYLPH: UnitStats = UnitStats {
+    contact_reach: None,
     max_hp: 100,
     speed: Fx::lit("0.21"),
     radius: Fx::lit("0.3"),
@@ -1266,6 +1286,7 @@ const SYLPH: UnitStats = UnitStats {
 };
 
 const CONDOR: UnitStats = UnitStats {
+    contact_reach: None,
     max_hp: 260,
     speed: Fx::lit("0.11"),
     radius: Fx::lit("0.45"),
@@ -1296,6 +1317,7 @@ const CONDOR: UnitStats = UnitStats {
 };
 
 const MOTH: UnitStats = UnitStats {
+    contact_reach: None,
     max_hp: 140,
     speed: Fx::lit("0.15"),
     radius: Fx::lit("0.4"),
@@ -1326,6 +1348,7 @@ const MOTH: UnitStats = UnitStats {
 };
 
 const BREAKER: UnitStats = UnitStats {
+    contact_reach: None,
     // A costly late-game answer to clustered tier-one armor. One shell
     // destroys a Lancer and punishes the surrounding clump; aircraft,
     // artillery, and economic pressure remain effective counters.
@@ -1359,6 +1382,7 @@ const BREAKER: UnitStats = UnitStats {
 };
 
 const AVALANCHE: UnitStats = UnitStats {
+    contact_reach: None,
     max_hp: 300,
     speed: Fx::lit("0.045"),
     radius: Fx::lit("0.5"),
@@ -1392,6 +1416,7 @@ const AVALANCHE: UnitStats = UnitStats {
 };
 
 const SKYHOOK: UnitStats = UnitStats {
+    contact_reach: None,
     max_hp: 200,
     speed: Fx::lit("0.13"),
     radius: Fx::lit("0.45"),
@@ -1412,6 +1437,7 @@ const SKYHOOK: UnitStats = UnitStats {
 };
 
 const SAPPER: UnitStats = UnitStats {
+    contact_reach: None,
     max_hp: 50,
     speed: Fx::lit("0.15"),
     radius: Fx::lit("0.3"),
@@ -2151,12 +2177,6 @@ pub fn unit_repair_debit(kind: UnitKind, progress: u32) -> u32 {
 /// (against max_hp). A full-health salvage banks exactly cost*800/1000.
 pub const SALVAGE_REFUND_PERMILLE: u64 = 800;
 
-/// How close a welder must stand to a wounded machine for the torch to
-/// hold, in tiles between body centers — body contact, a hair over the
-/// widest radius pair, and well under any weapon's reach. Unit welds
-/// have no footprint to be adjacent to; this is their adjacency.
-pub const REPAIR_REACH: Fx = Fx::lit("1.2");
-
 /// Reach of the Repair Bay's welding aura, in tiles from the nearest
 /// point of its footprint — a base ring, not battlefield cover: shorter
 /// than every siege weapon's reach, so the counter to a healed defense
@@ -2214,9 +2234,20 @@ pub const PATH_EXPANSION_CAP: u32 = 20_000;
 /// into another patch.
 pub const HARVEST_ZONE_RADIUS: i32 = 7;
 
-/// Maximum worker-center distance from a scrap or drop-off footprint edge.
-/// Includes diagonal doorstep centers while excluding the far side of their tile.
-pub const HARVEST_REACH: Fx = Fx::lit("0.75");
+/// Chassis overhang into the empty margin of a work target's tile footprint.
+pub const WORK_FOOTPRINT_OVERHANG: Fx = Fx::lit("0.42");
+
+/// Clearance between a working chassis center and a footprint's outer margin.
+pub const WORK_FOOTPRINT_GAP: Fx = Fx::lit("0.03");
+
+/// Clearance beyond the combined hull radii when approaching a field-repair patient.
+pub const WORK_APPROACH_GAP: Fx = Fx::lit("0.10");
+
+/// Tool reach beyond the hull, including a small contact tolerance.
+pub const WORK_REACH: Fx = Fx::lit("0.15");
+
+/// An uninterrupted half-second release before cargo enters the bank.
+pub const UNLOAD_TICKS: u8 = 10;
 
 /// A radar blip only makes salvage unsafe when it is this close to a
 /// candidate source. Contacts carry no identity or range, so a distant
@@ -2287,11 +2318,6 @@ pub const GROUND_BRAKE_TICKS: u8 = 3;
 /// the body actually is. Long enough that a slide past a neighbor is not a
 /// replan; short enough that shoving a parked worker never lasts a second.
 pub const STALL_REPLAN_TICKS: u8 = 12;
-
-/// A parked worker claims every work tile whose center lies within this
-/// distance of its hull, so a second worker steers for a center it can
-/// actually reach instead of the one a stopped neighbor already covers.
-pub const WORK_TILE_CLAIM_REACH: Fx = Fx::lit("0.9");
 
 /// How many upcoming route waypoints the ground follower may skip per tick
 /// toward the furthest one its hull can reach on a straight, clear leg.

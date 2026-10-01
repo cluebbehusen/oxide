@@ -1,12 +1,11 @@
-//! Mirrored economic work and attack follow-ups must preserve physical fairness.
+//! Fixed-facing building contact preserves deterministic bot continuation.
 
-use chassis::fx::{Fx, Vec2Fx};
 use oxide_bot::seat_bots;
 use oxide_sim::scenario::BotConfig;
-use oxide_sim::{Event, PlayerId, Scenario};
+use oxide_sim::{Event, Scenario, State};
 
 #[test]
-fn mirrored_economies_and_attack_followups_preserve_positions_and_income() {
+fn fixed_facing_economies_and_attack_followups_replay_identically() {
     let mut scenario = Scenario::skirmish();
     let mut rows: Vec<Vec<char>> = scenario
         .map
@@ -44,10 +43,8 @@ fn mirrored_economies_and_attack_followups_preserve_positions_and_income() {
     scenario.retint_seat(1, faction);
     let mut state = scenario.build().unwrap();
     let mut bots = seat_bots(&scenario).unwrap();
-    let extent = Vec2Fx::new(
-        Fx::from_num(state.map().width()),
-        Fx::from_num(state.map().height()),
-    );
+    let mut replay = state.clone();
+    let mut replay_bots = seat_bots(&scenario).unwrap();
     for tick in 0..12_300 {
         let commands: Vec<_> = bots.iter_mut().flat_map(|bot| bot.act(&state)).collect();
         let report = state.tick(&commands);
@@ -57,33 +54,21 @@ fn mirrored_economies_and_attack_followups_preserve_positions_and_income() {
                 .iter()
                 .any(|event| matches!(event, Event::CommandRejected { .. }))
         );
+        let replay_commands: Vec<_> = replay_bots
+            .iter_mut()
+            .flat_map(|bot| bot.act(&replay))
+            .collect();
+        assert_eq!(commands, replay_commands, "commands after tick {tick}");
         assert_eq!(
-            state.players()[0].scrap,
-            state.players()[1].scrap,
-            "bank after tick {tick}"
+            report,
+            replay.tick(&replay_commands),
+            "events after tick {tick}"
         );
-        let left: Vec<_> = state
-            .units()
-            .iter()
-            .filter(|unit| unit.player == PlayerId(0))
-            .collect();
-        let right: Vec<_> = state
-            .units()
-            .iter()
-            .filter(|unit| unit.player == PlayerId(1))
-            .collect();
-        assert_eq!(left.len(), right.len(), "roster after tick {tick}");
-        for (left, right) in left.into_iter().zip(right) {
-            assert_eq!(left.kind, right.kind);
-            assert_eq!(
-                extent - left.pos,
-                right.pos,
-                "units {}/{}, after tick {tick}",
-                left.id,
-                right.id
-            );
-            assert_eq!(left.hp, right.hp, "health after tick {tick}");
-            assert_eq!(left.carrying, right.carrying, "cargo after tick {tick}");
+        assert_eq!(state.hash(), replay.hash(), "world after tick {tick}");
+        if tick % 500 == 0 {
+            replay =
+                serde_json::from_slice::<State>(&serde_json::to_vec(&replay).unwrap()).unwrap();
+            replay.validate_invariants().unwrap();
         }
     }
 }
