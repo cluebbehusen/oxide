@@ -535,7 +535,10 @@ pub(crate) fn draw_tiles(game: &crate::game::Scene<'_>, sprites: &Sprites) {
             let screen = game.presentation.camera.to_screen(vec2(x as f32, y as f32));
             // Position hashes drive all variety: deterministic, no state.
             let h = (x.wrapping_mul(31).wrapping_add(y.wrapping_mul(17))) as usize;
-            let variant = h % 6;
+            // A linear hash repeats ground art along diagonals and in a fixed
+            // lattice, so ground variety mixes every coordinate bit.
+            let ground = coordinate_hash(x, y, 0x4752_4e44) as usize;
+            let variant = ground % 6;
             let next = game
                 .presentation
                 .camera
@@ -593,9 +596,9 @@ pub(crate) fn draw_tiles(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                 }
             } else if !themed
                 && tile.terrain == oxide_sim::map::Terrain::Ground
-                && h.is_multiple_of(23)
+                && ground.is_multiple_of(23)
             {
-                Some((sprites.decal(h / 23 % 3), 0.0, tint))
+                Some((sprites.decal(ground / 23 % 3), 0.0, tint))
             } else {
                 None
             };
