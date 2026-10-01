@@ -30,6 +30,7 @@ pub struct Sprites {
     /// [`crate::panel::VerbIcon`].
     verb_icons: [Rect; 14],
     ground: [Rect; 6],
+    ground_detail: [Rect; 12],
     quarry_dressing: Option<[Rect; 12]>,
     rock: [Rect; 23],
     /// Full-tile exclusion barriers, indexed `neighbor_mask * 2 + variant`.
@@ -249,6 +250,21 @@ const VERB_ICON_KEYS: [&str; 14] = [
 
 const GROUND_KEYS: [&str; 6] = [
     "ground_0", "ground_1", "ground_2", "ground_3", "ground_4", "ground_5",
+];
+
+const GROUND_DETAIL_KEYS: [&str; 12] = [
+    "ground_detail_0",
+    "ground_detail_1",
+    "ground_detail_2",
+    "ground_detail_3",
+    "ground_detail_4",
+    "ground_detail_5",
+    "ground_detail_6",
+    "ground_detail_7",
+    "ground_detail_8",
+    "ground_detail_9",
+    "ground_detail_10",
+    "ground_detail_11",
 ];
 
 const ROCK_KEYS: [&str; 23] = [
@@ -718,6 +734,7 @@ fn atlas_keys(atlas: &Manifest) -> Vec<String> {
         .iter()
         .chain(VERB_ICON_KEYS.iter())
         .chain(GROUND_KEYS.iter())
+        .chain(GROUND_DETAIL_KEYS.iter())
         .chain(ROCK_KEYS.iter())
         .chain(PEAK_BARRIER_KEYS.iter())
         .chain(DECAL_KEYS.iter())
@@ -952,6 +969,7 @@ impl Sprites {
             page_height,
             verb_icons: pick(&rects, VERB_ICON_KEYS)?,
             ground: pick(&rects, GROUND_KEYS)?,
+            ground_detail: pick(&rects, GROUND_DETAIL_KEYS)?,
             quarry_dressing: quarry_dressing_rows(&rects)?,
             rock: pick(&rects, ROCK_KEYS)?,
             peak_barriers: pick(&rects, PEAK_BARRIER_KEYS)?,
@@ -1134,6 +1152,15 @@ impl Sprites {
     /// A ground variant's atlas region.
     pub fn ground(&self, variant: usize) -> Rect {
         self.ground[variant % self.ground.len()]
+    }
+
+    /// A ground grit-and-crack overlay's atlas region.
+    pub fn ground_detail(&self, variant: usize) -> Rect {
+        self.ground_detail[variant % self.ground_detail.len()]
+    }
+
+    pub fn ground_detail_count(&self) -> usize {
+        self.ground_detail.len()
     }
 
     pub(crate) fn quarry_dressing(&self, variant: usize) -> Option<Rect> {
