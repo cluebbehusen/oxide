@@ -949,24 +949,27 @@ fn upgrade(guard: &Guard<'_>, building: &BuildingObs, weight: u64) -> Option<(In
     // The next tier, where it reaches, and the strength it adds.
     let raised = cover.map(|cover| {
         let next = Cover::of(building.kind, building.tier + 1, building.anchor).unwrap_or(cover);
-        (next, next.value.saturating_sub(cover.value))
+        (cover, next)
     });
     let worth: u64 = guard
         .assets
         .iter()
         .map(|asset| match raised {
-            Some((next, added)) => [Domain::Ground, Domain::Air]
+            Some((cover, next)) => [Domain::Ground, Domain::Air]
                 .into_iter()
                 .filter_map(|domain| Some((domain, asset.approach(domain)?)))
                 .map(|(domain, approach)| {
-                    // The army scrap of the shortfall at the samples it
-                    // covers that the added strength closes.
+                    // The army scrap of the shortfall at the samples the next
+                    // tier covers that it closes beyond the gun today.
                     let short: u64 = approach
                         .samples
                         .iter()
                         .zip(&approach.open)
-                        .filter(|(point, _)| next.covers(domain, **point))
-                        .map(|(_, open)| approach.shortfall(*open).min(added))
+                        .map(|(point, open)| {
+                            approach
+                                .shortfall(*open)
+                                .min(raises(cover, next, domain, *point))
+                        })
                         .sum();
                     asset.value * short * approach.evidence.weight() / 1_000
                 })
@@ -1648,6 +1651,19 @@ fn strength(stats: &BuildingStats) -> u64 {
     u64::from(sentinel.cost) * ratio.isqrt() / 1_000
 }
 
+/// The strength a gun's next tier `next` adds at `point` over the gun today
+/// `cover`: all of it where the gun does not reach yet, the difference where
+/// it does, none beyond the next tier's reach.
+fn raises(cover: Cover, next: Cover, domain: Domain, point: (i64, i64)) -> u64 {
+    if !next.covers(domain, point) {
+        0
+    } else if cover.covers(domain, point) {
+        next.value.saturating_sub(cover.value)
+    } else {
+        next.value
+    }
+}
+
 /// What a building costs to place.
 fn price(stats: &BuildingStats) -> u64 {
     stats
@@ -1676,6 +1692,24 @@ mod tests {
             bastion < 2 * turret,
             "a Bastion costs over twice a Turret but does not hold twice as much"
         );
+    }
+
+    #[test]
+    fn an_upgrade_adds_its_whole_strength_where_the_gun_did_not_reach() {
+        let anchor = TilePos::new(10, 10);
+        let turret = Cover::of(BuildingKind::Turret, 0, anchor).unwrap();
+        let heavy = Cover::of(BuildingKind::Turret, 1, anchor).unwrap();
+        let centre = footprint_centre(BuildingKind::Turret, anchor);
+        // Two, five and a half and eight tiles out, in doubled coordinates.
+        let near = (centre.0 + 4, centre.1);
+        let edge = (centre.0 + 11, centre.1);
+        let far = (centre.0 + 16, centre.1);
+        assert!(turret.covers(Domain::Ground, near) && !turret.covers(Domain::Ground, edge));
+        assert!(heavy.covers(Domain::Ground, edge) && !heavy.covers(Domain::Ground, far));
+        let raised = |point| raises(turret, heavy, Domain::Ground, point);
+        assert_eq!(raised(near), heavy.value - turret.value);
+        assert_eq!(raised(edge), heavy.value);
+        assert_eq!(raised(far), 0);
     }
 
     #[test]
