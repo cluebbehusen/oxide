@@ -116,9 +116,14 @@ fn route_target(
         {
             target += 1;
         }
+        // A work point is admitted from its goal tile's center. The motor
+        // holds a body inside the contact band to that precise clearance, so
+        // a straight leg that grazes a neighboring footprint on the way in
+        // would stop the hull short of the point for good.
         let mut point = path_point(path, target);
         if target + 1 == path.waypoints.len()
-            && TilePos::containing(point) != path.goal
+            && (TilePos::containing(point) != path.goal
+                || terrain.at_contact(unit.pos, contact_radius))
             && !terrain.contact_clear(unit.pos, point, contact_radius)
         {
             point = path.goal.center();

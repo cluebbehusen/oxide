@@ -241,3 +241,41 @@ fn unusable_building_stances_stall_once_and_obey_order_failure_policy() {
         );
     }
 }
+
+#[test]
+fn builders_reach_a_stance_past_a_neighboring_footprint_corner() {
+    for x in [19, 21] {
+        let scenario: Scenario = serde_json::from_value(json!({
+            "name":"neighbor corner", "mode":"sandbox", "seed":42, "map":vec!["................................";24],
+            "players":[{"name":"Local","faction":"ferrous","scrap":10000,"bot":false}],
+            "units":[{"player":0,"kind":"harvester","x":x,"y":12}],
+            "buildings":[{"player":0,"kind":"flak_turret","x":20,"y":15}]
+        }))
+        .unwrap();
+        let mut state = scenario.build().unwrap();
+        let id = state.units()[0].id;
+        state.tick(&[command(Command::Build {
+            units: vec![id],
+            kind: oxide_sim::BuildingKind::Turret,
+            anchor: TilePos::new(20, 16),
+            queue: false,
+            defer: false,
+        })]);
+        let site = state
+            .buildings()
+            .iter()
+            .find(|b| b.anchor == TilePos::new(20, 16))
+            .expect("site placed")
+            .id;
+        let mut started = false;
+        for _ in 0..300 {
+            state.tick(&[]);
+            if state.building(site).unwrap().progress > 0 {
+                started = true;
+                break;
+            }
+        }
+        assert!(started, "builder from x={x} froze: {:?}", state.unit(id));
+        assert!(state.in_building_work_reach(state.unit(id).unwrap(), site));
+    }
+}
