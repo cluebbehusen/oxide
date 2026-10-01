@@ -110,10 +110,7 @@ impl State {
                     .map(|b| Target::Building(b.id));
                 Some(AttackView {
                     entity,
-                    position: Vec2Fx::new(
-                        Fx::from_num(memory.anchor.x) + Fx::from_num(size.0) / Fx::from_num(2),
-                        Fx::from_num(memory.anchor.y) + Fx::from_num(size.1) / Fx::from_num(2),
-                    ),
+                    position: crate::geometry::footprint_center(memory.anchor, size),
                     footprint: Some((memory.anchor, size)),
                     domain: Some(Domain::Ground),
                     velocity: Vec2Fx::ZERO,

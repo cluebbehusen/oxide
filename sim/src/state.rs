@@ -666,9 +666,7 @@ impl Building {
 
     /// Center of the footprint in world coordinates.
     pub fn center(&self) -> Vec2Fx {
-        let (w, h) = self.stats().size;
-        let far = self.anchor.offset(w - 1, h - 1);
-        (self.anchor.center() + far.center()) * chassis::fx::HALF
+        crate::geometry::footprint_center(self.anchor, self.stats().size)
     }
 
     /// The point of the footprint rectangle closest to `from` — what range

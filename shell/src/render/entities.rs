@@ -126,6 +126,8 @@ pub(crate) fn breadcrumb_points(
     projection: &crate::game::projection::Projection,
     unit: &oxide_sim::Unit,
 ) -> Vec<(usize, Vec2, Color)> {
+    use crate::game::world_vec;
+    use crate::input::tile_center;
     if unit.player != game.presentation.human {
         return Vec::new();
     }
@@ -153,36 +155,42 @@ pub(crate) fn breadcrumb_points(
         | oxide_sim::Order::Land { .. } => BONE_FAINT,
         oxide_sim::Order::Idle => BONE_FAINT,
     };
+    // Building targets draw at their footprint's center, which lies on a
+    // tile seam when the footprint is even, so they are never tile-snapped.
     let goal_of = |order: &oxide_sim::Order| {
         let goal = match order {
             oxide_sim::Order::Run { goal }
             | oxide_sim::Order::Advance { goal }
-            | oxide_sim::Order::Hunt { goal } => goal.tile(),
-            oxide_sim::Order::Harvest { node, .. } => *node,
-            oxide_sim::Order::ReturnCargo { foundry, .. } => game.state.building(*foundry)?.anchor,
-            oxide_sim::Order::Build { site } => projection.building(game.state, *site)?.anchor,
-            oxide_sim::Order::Found { anchor, .. } => *anchor,
+            | oxide_sim::Order::Hunt { goal } => tile_center(goal.tile()),
+            oxide_sim::Order::Harvest { node, .. } => tile_center(*node),
+            oxide_sim::Order::ReturnCargo { foundry, .. } => {
+                world_vec(game.state.building(*foundry)?.center())
+            }
+            oxide_sim::Order::Build { site } => {
+                world_vec(projection.building(game.state, *site)?.center())
+            }
+            oxide_sim::Order::Found { kind, anchor } => world_vec(
+                oxide_sim::geometry::footprint_center(*anchor, kind.base_stats().size),
+            ),
             oxide_sim::Order::Repair { building } | oxide_sim::Order::Salvage { building } => {
-                game.state.building(*building)?.anchor
+                world_vec(game.state.building(*building)?.center())
             }
             // A weld patient is the viewer's own machine — always seen.
-            oxide_sim::Order::RepairUnit { unit } => game.state.unit(*unit)?.tile(),
-            oxide_sim::Order::Board { transport } => game.state.unit(*transport)?.tile(),
-            oxide_sim::Order::Unload { at } => at.tile(),
-            // A landing that took over a walk marks the walk's click.
-            oxide_sim::Order::Land { goal, from } => from.unwrap_or(*goal),
-            // A building's center lies on a tile seam when its footprint is
-            // even, so the target draws at its exact position, unsnapped.
-            oxide_sim::Order::Attack { target, .. } => {
-                let view = game.state.attack_view(game.presentation.human, *target)?;
-                return Some((crate::game::world_vec(view.position), verb_color(order)));
+            oxide_sim::Order::RepairUnit { unit } => tile_center(game.state.unit(*unit)?.tile()),
+            oxide_sim::Order::Board { transport } => {
+                tile_center(game.state.unit(*transport)?.tile())
             }
+            oxide_sim::Order::Unload { at } => tile_center(at.tile()),
+            // A landing that took over a walk marks the walk's click.
+            oxide_sim::Order::Land { goal, from } => tile_center(from.unwrap_or(*goal)),
+            oxide_sim::Order::Attack { target, .. } => world_vec(
+                game.state
+                    .attack_view(game.presentation.human, *target)?
+                    .position,
+            ),
             oxide_sim::Order::Idle => return None,
         };
-        Some((
-            vec2(goal.x as f32 + 0.5, goal.y as f32 + 0.5),
-            verb_color(order),
-        ))
+        Some((goal, verb_color(order)))
     };
     // Each point carries its PROGRAM position (0 = the active order,
     // i = queue[i-1]) — the same order the dock pushes chips in, so a

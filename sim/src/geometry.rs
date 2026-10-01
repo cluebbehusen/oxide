@@ -152,6 +152,15 @@ pub fn rect_approach_origin_for_map(
     )
 }
 
+/// Center of a footprint in world coordinates. An even side puts it on a tile seam.
+pub fn footprint_center(anchor: TilePos, size: (i32, i32)) -> chassis::fx::Vec2Fx {
+    use chassis::fx::{Fx, HALF, Vec2Fx};
+    Vec2Fx::new(
+        Fx::from_num(anchor.x) + Fx::from_num(size.0) * HALF,
+        Fx::from_num(anchor.y) + Fx::from_num(size.1) * HALF,
+    )
+}
+
 /// Nearest point on the closed rectangle occupied by a footprint.
 pub fn footprint_contact(
     pos: chassis::fx::Vec2Fx,
