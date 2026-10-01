@@ -5609,6 +5609,108 @@ fn an_attack_on_an_even_footprint_draws_at_its_center() {
 }
 
 #[test]
+fn work_on_an_even_footprint_draws_at_its_center() {
+    let scenario = oxide_sim::Scenario::from_json(
+        &serde_json::json!({
+            "name": "Even footprint work",
+            "seed": 5,
+            "players": [
+                {"name": "Builder", "faction": "ferrous", "scrap": 1000, "bot": false},
+                {"name": "Rival", "faction": "cupric", "scrap": 0, "bot": true}
+            ],
+            "map": [
+                "########################",
+                "#1.....................#",
+                "#......................#",
+                "#......................#",
+                "#......................#",
+                "#......................#",
+                "#......................#",
+                "#...................2..#",
+                "#......................#",
+                "########################"
+            ],
+            "units": [{"player": 0, "kind": "harvester", "x": 3, "y": 4}],
+            "buildings": [
+                {"player": 0, "kind": "fabricator", "x": 14, "y": 2},
+                {"player": 1, "kind": "fabricator", "x": 19, "y": 5}
+            ]
+        })
+        .to_string(),
+    )
+    .expect("even footprint parses");
+    let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("builds");
+    let human = game.presentation.human;
+    let worker = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == human)
+        .unwrap()
+        .id;
+    let salvaged = game
+        .state
+        .buildings_at(TilePos::new(14, 2))
+        .next()
+        .unwrap()
+        .id;
+    let kind = oxide_sim::BuildingKind::Fabricator;
+    let build = |anchor, queue, defer| PlayerCommand {
+        player: human,
+        command: Command::Build {
+            units: vec![worker],
+            kind,
+            anchor,
+            queue,
+            defer,
+        },
+    };
+    game.presentation.selection.units = vec![worker];
+    // Staged, so the provisional claim is still a Found order and the
+    // queued site exists only in the projection.
+    game.pending.extend([
+        build(TilePos::new(6, 5), false, true),
+        build(TilePos::new(10, 5), true, false),
+        PlayerCommand {
+            player: human,
+            command: Command::Salvage {
+                units: vec![worker],
+                building: salvaged,
+                queue: true,
+            },
+        },
+    ]);
+    let view = game.view();
+    let projection = view.projection();
+    let orders = &projection.program(worker).unwrap().orders;
+    assert!(
+        matches!(
+            orders[..],
+            [
+                oxide_sim::Order::Found { .. },
+                oxide_sim::Order::Build { .. },
+                oxide_sim::Order::Salvage { building },
+            ] if building == salvaged
+        ),
+        "premise: {orders:?}"
+    );
+    let points: Vec<_> = crate::render::entities::breadcrumb_points(
+        &view,
+        &projection,
+        game.state.unit(worker).unwrap(),
+    )
+    .into_iter()
+    .map(|(index, point, _)| (index, point))
+    .collect();
+    let at = |x, y| game.presentation.camera.to_screen(vec2(x, y));
+    assert_eq!(
+        points,
+        vec![(0, at(7.0, 6.0)), (1, at(11.0, 6.0)), (2, at(15.0, 3.0))],
+        "each marker sits where the footprint's four tiles meet"
+    );
+}
+
+#[test]
 fn the_docks_subject_always_draws_its_trail() {
     // Twelve older harvesters ahead of thirteen newer sentinels: the
     // majority-kind subject sits past the decor cap in raw selection

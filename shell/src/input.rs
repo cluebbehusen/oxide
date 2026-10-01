@@ -377,11 +377,10 @@ pub(crate) fn placement_anchor(
 }
 
 fn placement_ping(kind: oxide_sim::BuildingKind, anchor: TilePos) -> Vec2 {
-    let (w, h) = kind.base_stats().size;
-    vec2(
-        anchor.x as f32 + w as f32 * 0.5,
-        anchor.y as f32 + h as f32 * 0.5,
-    )
+    crate::game::world_vec(oxide_sim::geometry::footprint_center(
+        anchor,
+        kind.base_stats().size,
+    ))
 }
 
 /// The map tile a ground order names. The camera's edge slack lets the
