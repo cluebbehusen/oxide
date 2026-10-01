@@ -4,11 +4,12 @@
 //! carriers and passengers. Production keeps a stock of carriers, and nothing
 //! waits on a carrier that is not built.
 
+use super::Scratch;
 use super::air::{self, Hazard};
 use super::attack::{FIT, defense, healthy, margin, minimum, striking};
 use super::{
     LiftPhase, MISSION_CAP, Mission, Missions, Objective, Task, UNIT_CAP, approach, hunt, mine,
-    objectives, run, standing,
+    run, standing,
 };
 use crate::composition::{self, Role};
 use crate::decision::Ledger;
@@ -50,23 +51,6 @@ pub(super) fn timeout(phase: LiftPhase) -> u64 {
     }
 }
 
-/// Whether the seat needs lift: it knows of enemy buildings or starts, and
-/// ground reaches none of them.
-pub(crate) fn needed(observation: &ObservationData, map: &MapModel, frame: HomeFrame) -> bool {
-    let objectives = objectives(observation, map);
-    !objectives.is_empty()
-        && objectives.iter().all(|objective| {
-            approach(
-                map,
-                observation.me,
-                frame,
-                objective.building,
-                objective.anchor,
-            )
-            .is_none()
-        })
-}
-
 /// A place to fly a payload to.
 #[derive(Clone, Copy)]
 struct Drop {
@@ -98,9 +82,13 @@ struct Lifting<'a> {
     profile: &'a ResolvedProfile,
     home: u32,
     /// Known fire against aircraft, which carriers must avoid.
-    air: Vec<Hazard>,
+    air: &'a [Hazard],
     /// Known fire against ground, which a landing avoids.
-    ground: Vec<Hazard>,
+    ground: &'a [Hazard],
+    objectives: &'a [Objective],
+    severed: bool,
+    /// What offense leaves at home.
+    reserve: [u64; 2],
 }
 
 impl Missions {
@@ -111,12 +99,12 @@ impl Missions {
         &mut self,
         observation: &ObservationData,
         map: &MapModel,
-        frame: HomeFrame,
         profile: &ResolvedProfile,
         memory: &Memory,
+        scratch: &Scratch,
         ledger: &mut Ledger,
     ) -> Option<(BuildingKind, TilePos)> {
-        let lifting = Lifting::new(observation, map, frame, profile, memory)?;
+        let lifting = Lifting::new(observation, map, profile, memory, scratch)?;
         match self
             .list
             .iter()
@@ -135,8 +123,7 @@ impl Missions {
     /// orders allow; the rest board on later decisions.
     fn form(&mut self, lifting: &Lifting<'_>, ledger: &mut Ledger) {
         let observation = lifting.observation;
-        let (map, frame) = (lifting.map, lifting.frame);
-        if self.list.len() >= MISSION_CAP || !needed(observation, map, frame) {
+        if self.list.len() >= MISSION_CAP || !lifting.severed {
             return;
         }
         let loads = self.loads(lifting, ledger);
@@ -193,7 +180,7 @@ impl Missions {
             .iter()
             .map(|unit| (unit.id, unit.kind.stats().transport_capacity))
             .collect();
-        pack(&rooms, &riders(lifting, &free))
+        pack(&rooms, &self.riders(lifting, &free))
             .into_iter()
             .map(|(carrier, riders)| {
                 let value = riders.iter().map(|unit| striking(unit)).sum();
@@ -202,6 +189,28 @@ impl Missions {
                 (carrier, riders, value)
             })
             .collect()
+    }
+
+    /// The riders among `free` a lift takes, most value per transport slot
+    /// first so a few strong units are not crowded out by many weak ones
+    /// nearer home, less the weakest ones the reserve keeps.
+    fn riders<'a>(&self, lifting: &Lifting<'_>, free: &[&'a UnitObs]) -> Vec<&'a UnitObs> {
+        let frame = lifting.frame;
+        let mut riders: Vec<&UnitObs> = free
+            .iter()
+            .copied()
+            .filter(|unit| rides(unit.kind) && healthy(unit, FIT))
+            .collect();
+        riders.sort_by_key(|unit| {
+            let slots = u64::from(unit.kind.stats().transport_size.max(1));
+            (
+                std::cmp::Reverse(striking(unit) * 1_000 / slots),
+                frame.rank(frame.home, doubled(unit.tile)),
+                unit.id,
+            )
+        });
+        self.spare(lifting.observation, lifting.map, lifting.reserve)
+            .trim(lifting.map, riders)
     }
 
     /// The seat's units no mission holds on its home ground.
@@ -223,13 +232,13 @@ impl Missions {
         &self,
         observation: &ObservationData,
         map: &MapModel,
-        frame: HomeFrame,
         profile: &ResolvedProfile,
         memory: &Memory,
+        scratch: &Scratch,
         have: u64,
     ) -> Option<bool> {
-        let lifting = Lifting::new(observation, map, frame, profile, memory)?;
-        let riders = riders(&lifting, &self.free_at_home(&lifting));
+        let lifting = Lifting::new(observation, map, profile, memory, scratch)?;
+        let riders = self.riders(&lifting, &self.free_at_home(&lifting));
         // Every carrier is a Skyhook and first fit opens a room only when no
         // earlier one fits, so the first k rooms are what k carriers load.
         let capacity = UnitKind::Skyhook.stats().transport_capacity;
@@ -509,8 +518,10 @@ impl Missions {
         let (map, observation, frame) = (lifting.map, lifting.observation, lifting.frame);
         let island = map.component(target.anchor);
         let from = flight.landing;
-        let next = objectives(observation, map)
-            .into_iter()
+        let next = lifting
+            .objectives
+            .iter()
+            .copied()
             .filter(|objective| *objective != target)
             .filter(|objective| island.is_some() && map.component(objective.anchor) == island)
             .filter(|objective| {
@@ -554,9 +565,9 @@ impl<'a> Lifting<'a> {
     fn new(
         observation: &'a ObservationData,
         map: &'a MapModel,
-        frame: HomeFrame,
         profile: &'a ResolvedProfile,
         memory: &'a Memory,
+        scratch: &'a Scratch,
     ) -> Option<Self> {
         let home = map
             .start(observation.me)
@@ -564,41 +575,55 @@ impl<'a> Lifting<'a> {
         Some(Self {
             observation,
             map,
-            frame,
+            frame: scratch.frame,
             memory,
             profile,
             home,
-            air: air::hazards(observation, memory, Domain::Air),
-            ground: air::hazards(observation, memory, Domain::Ground),
+            air: &scratch.air,
+            ground: &scratch.ground,
+            objectives: &scratch.objectives,
+            severed: scratch.severed,
+            reserve: scratch.reserve,
         })
     }
 
     /// The best target no ground route reaches that has a landing, by value
     /// for its distance from home.
     fn best_drop(&self) -> Option<Drop> {
-        targets(self.observation, self.map, self.frame, self.memory)
-            .into_iter()
-            .find_map(|target| {
-                Some(Drop {
-                    target,
-                    landing: self.landing(target)?,
-                })
+        targets(
+            self.objectives,
+            self.observation,
+            self.map,
+            self.frame,
+            self.memory,
+        )
+        .into_iter()
+        .find_map(|target| {
+            Some(Drop {
+                target,
+                landing: self.landing(target)?,
             })
+        })
     }
 
     /// Army value the lift [`best_drop`](Self::best_drop) would choose needs,
     /// with the defense around its target standing in for its landing's so no
     /// landing is ranked.
     fn rough_need(&self) -> u64 {
-        targets(self.observation, self.map, self.frame, self.memory)
-            .into_iter()
-            .find(|target| self.landings(*target).next().is_some())
-            .map_or(0, |target| {
-                defense(self.observation, self.memory, target.anchor)
-                    * margin(self.profile.difficulty)
-                    / 1_000
-            })
-            .max(minimum(self.profile.stance))
+        targets(
+            self.objectives,
+            self.observation,
+            self.map,
+            self.frame,
+            self.memory,
+        )
+        .into_iter()
+        .find(|target| self.landings(*target).next().is_some())
+        .map_or(0, |target| {
+            defense(self.observation, self.memory, target.anchor) * margin(self.profile.difficulty)
+                / 1_000
+        })
+        .max(minimum(self.profile.stance))
     }
 
     /// Army value a lift to `landing` needs: its known ground defense times
@@ -619,7 +644,7 @@ impl<'a> Lifting<'a> {
             let exposure: u64 = self
                 .air
                 .iter()
-                .chain(&self.ground)
+                .chain(self.ground)
                 .filter(|hazard| hazard.covers(point))
                 .map(|hazard| hazard.value)
                 .sum();
@@ -709,7 +734,7 @@ impl<'a> Lifting<'a> {
     }
 
     fn route(&self, from: TilePos, to: TilePos) -> Option<TilePos> {
-        air::route(self.observation, self.frame, &self.air, from, to)
+        air::route(self.observation, self.frame, self.air, from, to)
     }
 
     /// The tile beside `target` on its island nearest `from`.
@@ -781,6 +806,7 @@ fn fly_to(carriers: Vec<UnitId>, via: Option<TilePos>, goal: TilePos, ledger: &m
 /// The targets no ground route reaches and not given up on, most valuable for
 /// their distance from home first.
 fn targets(
+    objectives: &[Objective],
     observation: &ObservationData,
     map: &MapModel,
     frame: HomeFrame,
@@ -789,8 +815,9 @@ fn targets(
     let Some(start) = map.start(observation.me) else {
         return Vec::new();
     };
-    let mut ranked = objectives(observation, map)
-        .into_iter()
+    let mut ranked = objectives
+        .iter()
+        .copied()
         .filter(|objective| {
             approach(
                 map,
@@ -843,27 +870,6 @@ fn pack<'a>(carriers: &[(UnitId, u8)], riders: &[&'a UnitObs]) -> Vec<(UnitId, V
         .filter(|(_, _, riders)| !riders.is_empty())
         .map(|(id, _, riders)| (id, riders))
         .collect()
-}
-
-/// The riders among `free` a lift takes, most value per transport slot
-/// first so a few strong units are not crowded out by many weak ones nearer
-/// home.
-fn riders<'a>(lifting: &Lifting<'_>, free: &[&'a UnitObs]) -> Vec<&'a UnitObs> {
-    let frame = lifting.frame;
-    let mut riders: Vec<&UnitObs> = free
-        .iter()
-        .copied()
-        .filter(|unit| rides(unit.kind) && healthy(unit, FIT))
-        .collect();
-    riders.sort_by_key(|unit| {
-        let slots = u64::from(unit.kind.stats().transport_size.max(1));
-        (
-            std::cmp::Reverse(striking(unit) * 1_000 / slots),
-            frame.rank(frame.home, doubled(unit.tile)),
-            unit.id,
-        )
-    });
-    riders
 }
 
 /// Whether `kind` carries others.

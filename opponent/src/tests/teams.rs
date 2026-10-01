@@ -1,5 +1,7 @@
 use super::*;
-use crate::missions::Missions;
+use crate::frame::HomeFrame;
+use crate::memory::Memory;
+use crate::missions::{Missions, Scratch};
 use crate::profile::PersonalityTraits;
 use oxide_sim::observation::ObservationData;
 
@@ -112,13 +114,28 @@ fn traits(guile: u8) -> PersonalityTraits {
     }
 }
 
+/// The decision scratch a seat builds for `observation`.
+fn scratch(observation: &ObservationData, model: &MapModel) -> Scratch {
+    let frame = HomeFrame::of(observation, model).unwrap();
+    Scratch::new(
+        observation,
+        model,
+        frame,
+        &Memory::default(),
+        BotStance::Balanced,
+        &Missions::default(),
+    )
+}
+
 #[test]
 fn among_several_enemies_the_one_pressing_the_seat_is_the_rival() {
     let scenario = trio([None, None, None]);
     let rival = |scenario: &Scenario| {
         let state = scenario.build().unwrap();
         let observation = ObservationData::fog_honest(&state, PlayerId(0));
-        Missions::default().rival(&observation, &map(scenario), traits(50))
+        let model = map(scenario);
+        let scratch = scratch(&observation, &model);
+        Missions::default().rival(&scratch, &observation, &model, traits(50))
     };
     assert_eq!(rival(&scenario), Some(PlayerId(1)), "the nearer enemy");
     let mut pressed = scenario.clone();
@@ -131,8 +148,10 @@ fn a_duel_has_no_rival() {
     let scenario = arena(0);
     let state = scenario.build().unwrap();
     let observation = ObservationData::fog_honest(&state, PlayerId(0));
+    let model = map(&scenario);
+    let scratch = scratch(&observation, &model);
     assert_eq!(
-        Missions::default().rival(&observation, &map(&scenario), traits(50)),
+        Missions::default().rival(&scratch, &observation, &model, traits(50)),
         None
     );
 }
@@ -220,7 +239,8 @@ fn mirrored_seats_pick_mirrored_rivals_among_equals() {
     let model = map(&scenario);
     let rival = |seat: u8| {
         let observation = ObservationData::fog_honest(&state, PlayerId(seat));
-        Missions::default().rival(&observation, &model, traits(50))
+        let scratch = scratch(&observation, &model);
+        Missions::default().rival(&scratch, &observation, &model, traits(50))
     };
     let mirrored = |seat: PlayerId| PlayerId(3 - seat.0);
     assert!(

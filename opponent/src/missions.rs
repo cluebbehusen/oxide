@@ -11,6 +11,7 @@ use crate::map::{MapModel, UNREACHABLE};
 use crate::memory::Memory;
 use chassis::grid::TilePos;
 use oxide_sim::observation::{ObservationData, UnitObs};
+use oxide_sim::scenario::BotStance;
 use oxide_sim::stats::Domain;
 use oxide_sim::{BuildingId, BuildingKind, Command, PlayerId, UnitId};
 use serde::{Deserialize, Serialize};
@@ -21,6 +22,7 @@ mod defense;
 mod focus;
 mod lift;
 mod raid;
+mod reserve;
 mod rival;
 mod scouting;
 mod strike;
@@ -28,7 +30,7 @@ mod support;
 
 pub(crate) use air::{Hazard, hazards};
 pub(crate) use attack::{SAPPERS, minimum};
-pub(crate) use lift::{carrier, needed as lift_needed, payload};
+pub(crate) use lift::{carrier, payload};
 pub(crate) use scouting::points;
 
 /// Missions the seat runs at once.
@@ -639,6 +641,64 @@ fn approach(
                 frame.rank(frame.home, doubled(*tile)),
             )
         })
+}
+
+/// What one decision works out once for every mission that asks: known fire,
+/// the targets there are, whether ground reaches any of them, what offense
+/// leaves at home, and the army at home a lift could take. It lives only as
+/// long as that decision.
+pub(crate) struct Scratch {
+    /// The seat's frame.
+    pub(crate) frame: HomeFrame,
+    /// Known fire against aircraft.
+    pub(crate) air: Vec<Hazard>,
+    /// Known fire against ground units.
+    pub(crate) ground: Vec<Hazard>,
+    /// Known enemy buildings, and hostile starts not seen cleared.
+    objectives: Vec<Objective>,
+    /// Whether the seat knows of targets and ground reaches none of them.
+    pub(crate) severed: bool,
+    /// Value against ground and against aircraft that offense leaves home,
+    /// before the units out defending count.
+    pub(crate) reserve: [u64; 2],
+    /// Value against ground of the units at home a lift could take without
+    /// cutting into the reserve.
+    pub(crate) payload: u64,
+}
+
+impl Scratch {
+    /// Works these out for `observation`, after memory has seen it.
+    pub(crate) fn new(
+        observation: &ObservationData,
+        map: &MapModel,
+        frame: HomeFrame,
+        memory: &Memory,
+        stance: BotStance,
+        missions: &Missions,
+    ) -> Self {
+        let reserve = reserve::reserve(observation, map, memory, stance);
+        let objectives = objectives(observation, map);
+        let severed = !objectives.is_empty()
+            && objectives.iter().all(|objective| {
+                approach(
+                    map,
+                    observation.me,
+                    frame,
+                    objective.building,
+                    objective.anchor,
+                )
+                .is_none()
+            });
+        Self {
+            frame,
+            air: hazards(observation, memory, Domain::Air),
+            ground: hazards(observation, memory, Domain::Ground),
+            objectives,
+            severed,
+            reserve,
+            payload: missions.liftable(observation, map, reserve, payload(observation, map)),
+        }
+    }
 }
 
 /// Known enemy buildings, and hostile starts not seen cleared.

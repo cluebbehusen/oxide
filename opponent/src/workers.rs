@@ -5,11 +5,10 @@
 use crate::decision::{Ledger, Producer};
 use crate::frame::{HomeFrame, doubled, footprint_centre, gap, ring};
 use crate::map::MapModel;
-use crate::memory::Memory;
-use crate::missions::{self, Hazard};
+use crate::missions::Hazard;
 use chassis::grid::TilePos;
 use oxide_sim::observation::{BuildingObs, ObservationData};
-use oxide_sim::stats::{Domain, FOUNDRY_REPAIR_PRICE};
+use oxide_sim::stats::FOUNDRY_REPAIR_PRICE;
 use oxide_sim::{BuildingKind, Command, UnitId, UnitKind};
 use std::cmp::Reverse;
 
@@ -143,15 +142,14 @@ pub(crate) fn run(
     observation: &ObservationData,
     map: &MapModel,
     frame: HomeFrame,
-    memory: &Memory,
+    hazards: &[Hazard],
     staffing: &Staffing,
     ledger: &mut Ledger,
 ) {
-    let hazards = missions::hazards(observation, memory, Domain::Ground);
-    flee(observation, map, frame, &hazards, ledger);
+    flee(observation, map, frame, hazards, ledger);
     resume_sites(observation, map, frame, ledger);
-    weld(observation, map, frame, &hazards, ledger);
-    assign_idle(observation, map, frame, &staffing.worked, &hazards, ledger);
+    weld(observation, map, frame, hazards, ledger);
+    assign_idle(observation, map, frame, &staffing.worked, hazards, ledger);
 }
 
 /// Whether the next worker is an Excavator: once a Fabricator stands, when

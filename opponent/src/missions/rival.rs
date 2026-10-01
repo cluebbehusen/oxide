@@ -1,6 +1,7 @@
 //! With several enemies, attacks and strikes go after one of them at a time.
 
-use super::{Missions, Objective, Task, objectives, standing};
+use super::Scratch;
+use super::{Missions, Objective, Task};
 use crate::frame::{HomeFrame, centre_distance, footprint_centre, gap};
 use crate::map::MapModel;
 use crate::profile::PersonalityTraits;
@@ -32,14 +33,12 @@ impl Missions {
     /// `None` with one enemy or none.
     pub(crate) fn rival(
         &self,
+        scratch: &Scratch,
         observation: &ObservationData,
         map: &MapModel,
         traits: PersonalityTraits,
     ) -> Option<PlayerId> {
-        let targets: Vec<Objective> = objectives(observation, map)
-            .into_iter()
-            .filter(|target| standing(observation, *target))
-            .collect();
+        let targets: &[Objective] = &scratch.objectives;
         let mut owners: Vec<PlayerId> = targets.iter().map(|target| target.owner).collect();
         owners.sort_unstable();
         owners.dedup();
