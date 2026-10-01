@@ -161,8 +161,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 npx --yes prettier@3.9.6 --check "**/*.md"
-cargo cov-unit
-cargo cov-combined
+.github/coverage.sh
 ```
 
 Do not poll GitHub PR checks unless the user explicitly asks. While the PR's CI
@@ -173,12 +172,21 @@ pending checks as pending; do not wait for or repeatedly fetch their status.
 Do not weaken a gate to pass it. Fix the implementation or discuss why the
 contract is wrong.
 
-The combined coverage gate skips the representative-map integrity soak and the
-focused dense-bomber production lifecycle because LLVM instrumentation makes
-them expensive while adding little line coverage.
-`cargo test --workspace --locked` runs both on every CI platform; the exhaustive
-all-map integrity soak is opt-in. Compact controller contracts run under
-combined coverage.
+The coverage script builds once for both gates: the unit gate counts library and
+binary unit tests, and the combined gate adds the integration suites. The
+combined gate skips the representative-map integrity soak and the focused
+dense-bomber production lifecycle because LLVM instrumentation makes them
+expensive while adding little line coverage. `cargo test --workspace --locked`
+runs both; the exhaustive all-map integrity soak is opt-in. Compact controller
+contracts run under combined coverage.
+
+CI runs `oxide-bot`'s own suites on Linux only. macOS and Windows still run the
+driver's hash fixtures and integrity soak, which exercise it.
+
+The `oxide-sim` and `oxide-bot` integration suites each compile into one test
+binary: modules of `tests/integration/main.rs`, whose guard test fails on an
+undeclared file. Add new suites there rather than as separate files under
+`tests/`; each extra binary recompiles and relinks against the workspace.
 
 Hash fixtures supplement explicit behavior assertions in small, staged
 scenarios. Do not pin autonomous match histories or require particular

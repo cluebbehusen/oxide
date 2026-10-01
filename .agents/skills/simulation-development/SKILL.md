@@ -85,10 +85,10 @@ cargo clippy -p oxide-sim --all-targets --locked -- -D warnings
 When commands or serialized state change, include these focused surfaces:
 
 ```sh
-cargo test -p oxide-sim --test state_integrity --locked
-cargo test -p oxide-sim --test command_canonicalization --locked
-cargo test -p oxide-sim --test fuzz --locked
-cargo test -p oxide-sim --test determinism --locked
+cargo test -p oxide-sim --locked --test integration state_integrity::
+cargo test -p oxide-sim --locked --test integration command_canonicalization::
+cargo test -p oxide-sim --locked --test integration fuzz::
+cargo test -p oxide-sim --locked --test integration determinism::
 ```
 
 Required gates may run locally or through CI under `AGENTS.md`; do not duplicate

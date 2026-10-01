@@ -1057,7 +1057,7 @@ impl State {
     /// border is a state the sim really does produce.
     ///
     /// Every field added to [`State`] or its nested types owes a row here
-    /// and a fixture in `sim/tests/state_integrity.rs`.
+    /// and a fixture in `sim/tests/integration/state_integrity.rs`.
     ///
     /// Public for tooling that wants to re-check a state it mutated by
     /// hand; the sim itself never calls it inside [`State::tick`].

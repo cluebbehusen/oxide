@@ -97,10 +97,10 @@ rather than treating a percentage threshold as a verdict.
 Start with the affected module and integration suite. Common controller seams:
 
 ```sh
-cargo test -p oxide-bot --test bot_brain --locked
+cargo test -p oxide-bot --locked --test integration bot_brain::
 cargo test -p oxide-bot --lib utility::policy_tests --locked
-cargo test -p oxide-bot --test scripted_bot --locked
-cargo test -p oxide-bot --test bot_frames --locked
+cargo test -p oxide-bot --locked --test integration scripted_bot::
+cargo test -p oxide-bot --locked --test integration bot_frames::
 ```
 
 For battlefield or reconnaissance ownership, include `battlefield_adaptation`,
