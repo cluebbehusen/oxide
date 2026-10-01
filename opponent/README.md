@@ -35,9 +35,11 @@ armed enemy in sight stands near it and the seat has scrap to pay, each damaged
 building nobody welds yet gets the nearest free worker, most missing value
 first. Idle workers go to the reachable worked node with the most places open,
 or with none worked to the nearest node with a clear route, never one inside the
-reach of known enemy weapons; with neither they wait at home. Every ready
-producer then trains toward the army's needs. Difficulty caps the unit orders
-one decision issues; purchases do not count against that allowance.
+reach of known enemy weapons; with neither they wait at home. A worker
+harvesting a node whose route has turned dangerous is sent elsewhere the same
+way, or home. Every ready producer then trains toward the army's needs.
+Difficulty caps the unit orders one decision issues; purchases do not count
+against that allowance.
 
 ## Defense
 
@@ -45,21 +47,21 @@ A visible enemy that can hit ground threatens the seat when it stands within
 eight tiles of one of the seat's buildings, or within its weapon's reach if that
 is longer, or when its shells could land where hostile shells are landing near
 them. So does a known enemy building, in sight or remembered, whose shells could
-land there, while the seat's units that can hit ground outweigh the known
-defense around the tile beside it nearest the Foundry by half again; defenders
-go to that tile. A battery among stronger defenses is left to production.
-Threats group by the built Foundry each is nearest, and each group gets one
-defend mission, the home Foundry's first. Only threats on or beside that
-Foundry's ground count: one across water or a chasm is left to production, since
-chasing it would stall every defender. The mission recruits free units that can
-hit one of its threats, ground units only from that Foundry's ground, nearest
-the Foundry first, until against ground and air attackers alike they are worth
-half again what those attackers are. It sends them in one Hunt at the grounded
-threat nearest the Foundry; against flyers alone they wait beside the building
-nearest the raid, where anti-air reaches them, since the ground under a flyer
-may be none they can stand on. It sends them again only when its goal moves more
-than three tiles on the Foundry's ground or the mission re-engages, and a
-defense that stops fighting while focused sends its units back to its goal
+land there, while the units that can hit ground the defense holds or could take
+outweigh the known defense around the tile beside it nearest the Foundry by half
+again; defenders go to that tile. A battery among stronger defenses is left to
+production. Threats group by the built Foundry each is nearest, and each group
+gets one defend mission, the home Foundry's first. Only threats on or beside
+that Foundry's ground count: one across water or a chasm is left to production,
+since chasing it would stall every defender. The mission recruits free units
+that can hit one of its threats, ground units only from that Foundry's ground,
+nearest the Foundry first, until against ground and air attackers alike they are
+worth half again what those attackers are. It sends them in one Hunt at the
+grounded threat nearest the Foundry; against flyers alone they wait beside the
+building nearest the raid, where anti-air reaches them, since the ground under a
+flyer may be none they can stand on. It sends them again only when its goal
+moves more than three tiles on the Foundry's ground or the mission re-engages,
+and a defense that stops fighting while focused sends its units back to its goal
 rather than after the retreating enemy. With no threat left the mission
 recovers, lending its units to any other threatened Foundry, and after 120 quiet
 ticks it lets them go where they stand. Once its own Foundries are answered, an
@@ -261,10 +263,10 @@ beyond the home reserve set out on a raid, those nearest the target until they
 are worth what it needs. Scuttlers and ground-attack aircraft too few for a
 strike go after the enemy Extractor or Foundry whose known defense they outweigh
 by the attack margin, least defended and then nearest first, Scuttlers only
-where no known enemy building that fires on ground stands guard, the aircraft
-flying around known anti-air. Sappers go after the most valuable known enemy
-building for its distance with little known defense that they are enough to blow
-up. Scuttlers and aircraft turn back once one is badly hurt, once the known fire
+where no known, built enemy building's ground fire reaches, the aircraft flying
+around known anti-air. Sappers go after the most valuable known enemy building
+for its distance with little known defense that they are enough to blow up.
+Scuttlers and aircraft turn back once one is badly hurt, once the known fire
 reaching them outweighs them, or once they have been at the target a while;
 Sappers turn back only when outweighed on the way. Raids skip a raided target
 for a while, which spaces them out, while attacks, lifts and strikes may still
