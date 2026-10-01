@@ -160,3 +160,84 @@ fn rectangular_building_wall_still_blocks_ordinary_travel() {
         assert!(!state.passable(TilePos::new(12, y)));
     }
 }
+
+#[test]
+fn unusable_building_stances_stall_once_and_obey_order_failure_policy() {
+    for (kind, own_building) in [("harvester", true), ("sentinel", false)] {
+        let mut map = vec![vec!['#'; 12]; 12];
+        map[4][4] = '.';
+        map[3][4] = '.';
+        for row in &mut map[5..7] {
+            row[5..7].fill('.');
+        }
+        let scenario: Scenario = serde_json::from_value(json!({
+            "name":"unusable stance", "mode":"sandbox", "seed":42,
+            "map":map.into_iter().map(|row| row.into_iter().collect::<String>()).collect::<Vec<_>>(),
+            "players":[{"name":"Local","faction":"ferrous","scrap":10000,"bot":false},
+                       {"name":"Target","faction":"cupric","scrap":0,"bot":false}],
+            "units":[{"player":0,"kind":kind,"x":4,"y":4}],
+            "buildings":[{"player":if own_building {0} else {1},"kind":"foundry","x":5,"y":5}]
+        })).unwrap();
+        let initial = scenario.build().unwrap();
+        let id = initial.units()[0].id;
+        let building = initial.buildings()[0].id;
+        let mut data = serde_json::to_value(initial).unwrap();
+        data["buildings"][0]["hp"] = json!(100);
+        let mut state: State = serde_json::from_value(data).unwrap();
+        let order = if own_building {
+            Command::Repair {
+                units: vec![id],
+                building,
+                queue: false,
+            }
+        } else {
+            Command::Attack {
+                units: vec![id],
+                target: Target::Building(building).into(),
+                queue: false,
+            }
+        };
+        let mut events = state
+            .tick(&[
+                command(order),
+                command(Command::Run {
+                    units: vec![id],
+                    goal: TilePos::new(4, 3),
+                    queue: true,
+                }),
+            ])
+            .events;
+        for _ in 0..10 {
+            events.extend(state.tick(&[]).events);
+        }
+        assert_eq!(events.iter().filter(|event| matches!(event,
+            Event::OrderStalled { unit, reason: oxide_sim::event::StallReason::NoRoute, .. } if *unit == id
+        )).count(), 1, "{kind}: {events:?}");
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, Event::CommandRejected { .. })),
+            "{kind}: {events:?}"
+        );
+        let unit = state.unit(id).unwrap();
+        assert!(unit.queue.is_empty(), "{kind}: {unit:?}");
+        if own_building {
+            assert!(
+                matches!(unit.order, oxide_sim::Order::Run { goal } if goal.tile() == TilePos::new(4, 3)),
+                "{kind}: {unit:?}"
+            );
+        } else {
+            assert!(
+                matches!(unit.order, oxide_sim::Order::Idle),
+                "{kind}: {unit:?}"
+            );
+        }
+        assert!(
+            !matches!(
+                unit.order,
+                oxide_sim::Order::Repair { .. } | oxide_sim::Order::Attack { .. }
+            ),
+            "{kind}: {unit:?}"
+        );
+    }
+}

@@ -183,7 +183,7 @@ pub fn work_approach_point(
 }
 
 /// Whether a chassis circle fits the adjacent passable tiles.
-pub(crate) fn circle_clear(
+pub fn circle_clear(
     point: chassis::fx::Vec2Fx,
     radius: chassis::fx::Fx,
     open: impl Fn(TilePos) -> bool,
@@ -196,4 +196,41 @@ pub(crate) fn circle_clear(
             open(at) || point.dist_sq(footprint_contact(point, at, (1, 1))) >= radius * radius
         })
     })
+}
+
+/// Candidate centers around a work footprint with mirrored face offsets.
+pub fn work_positions(
+    anchor: TilePos,
+    size: (i32, i32),
+    clearance: chassis::fx::Fx,
+    pitch: chassis::fx::Fx,
+) -> Vec<chassis::fx::Vec2Fx> {
+    use chassis::fx::{Fx, Vec2Fx};
+    let x = Fx::from_num(anchor.x);
+    let y = Fx::from_num(anchor.y);
+    let w = Fx::from_num(size.0);
+    let h = Fx::from_num(size.1);
+    let inset = Fx::lit("0.02");
+    let mut points = Vec::new();
+    for (span, horizontal) in [(w, true), (h, false)] {
+        let divisions = (span / pitch).floor().to_num::<i32>().max(1);
+        for i in 0..=divisions + i32::from(divisions % 2 != 0) {
+            // Mirrored offsets share the same division rounding.
+            let offset = if i > divisions {
+                span / Fx::from_num(2)
+            } else {
+                span / Fx::from_num(2)
+                    + (span - inset * Fx::from_num(2)) * Fx::from_num(2 * i - divisions)
+                        / Fx::from_num(2 * divisions)
+            };
+            if horizontal {
+                points.push(Vec2Fx::new(x + offset, y - clearance));
+                points.push(Vec2Fx::new(x + offset, y + h + clearance));
+            } else {
+                points.push(Vec2Fx::new(x - clearance, y + offset));
+                points.push(Vec2Fx::new(x + w + clearance, y + offset));
+            }
+        }
+    }
+    points
 }

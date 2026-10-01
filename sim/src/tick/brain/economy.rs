@@ -1036,7 +1036,7 @@ fn source_route_avoiding_danger(
         })
     };
     let frame = crate::tick::rect_approach_origin(state, player, from, source.pos, (1, 1));
-    let mut candidates: Vec<_> = contact::positions(
+    let mut candidates: Vec<_> = crate::geometry::work_positions(
         source.pos,
         (1, 1),
         crate::geometry::work_approach_distance(unit.kind.stats().radius) + Fx::lit("0.06"),
@@ -1247,7 +1247,7 @@ fn known_rect_route(
         .buildings()
         .iter()
         .find(|b| b.anchor == anchor && b.stats().size == size && b.player == player);
-    let mut candidates: Vec<_> = contact::positions(
+    let mut candidates: Vec<_> = crate::geometry::work_positions(
         anchor,
         size,
         contact::clearance(unit),

@@ -2109,8 +2109,9 @@ fn approach_firing_area(
         |tile| state.passable_for(domain, tile),
         |goal| super::super::route_for_position(state, kind, pos, goal),
     );
+    let reachable = path.is_some();
     state.unit_mut(id).expect("attacker").path = path;
-    true
+    reachable
 }
 
 #[cfg(test)]
