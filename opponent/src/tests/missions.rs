@@ -641,3 +641,191 @@ fn a_checkpoint_while_answering_unseen_shelling_resumes_identically() {
         state.tick(&commands);
     }
 }
+
+#[test]
+fn a_gun_out_of_sight_waits_while_raiders_in_sight_hold_the_foundry() {
+    let mut scenario = shelling(&[0]);
+    scenario.units.push(unit(1, UnitKind::Buzzard, 4, 5));
+    let mut state = scenario.build().unwrap();
+    open_fire(&mut state, &[0]);
+    until_shells_come(&scenario, &mut state, &[0]);
+    let observation = ObservationData::fog_honest(&state, PlayerId(0));
+    assert!(
+        observation
+            .enemy_units
+            .iter()
+            .any(|enemy| enemy.kind == UnitKind::Buzzard)
+            && observation
+                .enemy_units
+                .iter()
+                .all(|enemy| enemy.kind != UnitKind::Bombard),
+        "premise: the raider is in sight and the gun is not"
+    );
+    let commands = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
+    let [(_, goal)] = &hunts(&commands)[..] else {
+        panic!("{commands:?}");
+    };
+    let foundry = TilePos::new(3, 11);
+    assert!(
+        crate::frame::gap(foundry, (3, 3), *goal, (1, 1)) <= 1,
+        "defenders wait beside the Foundry for the raid: {goal:?}"
+    );
+}
+
+/// The field with each of `shelled` holding its garrison and picket, the other
+/// seat a Bastion in range of that picket and a Kestrel spotting for it, and,
+/// when `watched`, a Kestrel of the shelled seat over that Bastion.
+fn bastions(shelled: &[u8], watched: bool) -> Scenario {
+    let mut scenario = field();
+    for &player in shelled {
+        for spot in GARRISON.into_iter().chain([PICKET]) {
+            let (x, y) = turned(player, spot);
+            scenario.units.push(unit(player, UnitKind::Sentinel, x, y));
+        }
+    }
+    for &player in shelled {
+        let (x, y) = turned(player, SPOTTER);
+        scenario
+            .units
+            .push(unit(1 - player, UnitKind::Kestrel, x, y));
+    }
+    for &player in shelled.iter().filter(|_| watched) {
+        let (x, y) = turned(player, (16, 9));
+        scenario.units.push(unit(player, UnitKind::Kestrel, x, y));
+    }
+    for &player in shelled {
+        // A 2x2 footprint turns about its far corner.
+        let (x, y) = turned(player, (16, 11));
+        let (x, y) = if player == 0 { (x, y) } else { (x - 1, y - 1) };
+        scenario.buildings.push(BuildingSpec {
+            player: 1 - player,
+            kind: BuildingKind::Bastion,
+            x,
+            y,
+        });
+    }
+    scenario
+}
+
+/// Plays `state` to a decision tick on which West sees a shell coming and,
+/// when `away`, no longer sees the Bastion, after Running West's Kestrel home
+/// on the first tick.
+fn until_bastion_fires(scenario: &Scenario, state: &mut State, away: bool) {
+    if away {
+        let kestrels: Vec<UnitId> = state
+            .units()
+            .iter()
+            .filter(|unit| unit.player == PlayerId(0) && unit.kind == UnitKind::Kestrel)
+            .map(|unit| unit.id)
+            .collect();
+        state.tick(&[PlayerCommand {
+            player: PlayerId(0),
+            command: Command::Run {
+                units: kestrels,
+                goal: TilePos::new(3, 3),
+                queue: false,
+            },
+        }]);
+    }
+    let seat = seat(scenario, 0);
+    let ready = |state: &State| {
+        let observation = ObservationData::fog_honest(state, PlayerId(0));
+        !observation.incoming_shells.is_empty()
+            && observation
+                .enemy_buildings
+                .iter()
+                .any(|building| building.kind == BuildingKind::Bastion && building.seen != away)
+    };
+    while !seat.decision_due(state) || !ready(state) {
+        assert!(state.current_tick() < 1_200, "premise: the Bastion fires");
+        state.tick(&[]);
+    }
+}
+
+/// Asserts West's one decision on `state` answers the Bastion's shells with a
+/// defense hunting beside it.
+fn defended_beside_the_bastion(scenario: &Scenario, state: &State, seen: bool) {
+    let observation = ObservationData::fog_honest(state, PlayerId(0));
+    let known = observation
+        .enemy_buildings
+        .iter()
+        .find(|building| building.kind == BuildingKind::Bastion)
+        .expect("premise: the Bastion is known");
+    assert_eq!(known.seen, seen, "premise: in sight or remembered");
+    assert!(
+        observation
+            .enemy_units
+            .iter()
+            .all(|enemy| enemy.kind.stats().weapons.is_empty()),
+        "premise: no armed enemy unit in sight"
+    );
+    let (commands, trace) = seat(scenario, 0).act_traced(state, &mut OwnEvents::default());
+    let [(units, goal)] = &hunts(&commands)[..] else {
+        panic!("{commands:?}");
+    };
+    assert!(!units.is_empty());
+    assert_eq!(
+        crate::frame::gap(known.anchor, (2, 2), *goal, (1, 1)),
+        0,
+        "beside the Bastion, not toward a guess: {goal:?}"
+    );
+    assert!(
+        trace
+            .unwrap()
+            .missions
+            .iter()
+            .any(|mission| matches!(mission.kind, MissionKind::Defend { .. })
+                && mission.phase == Phase::Engage),
+        "a defense answers it"
+    );
+}
+
+#[test]
+fn shells_from_a_bastion_in_sight_send_fighters_beside_it() {
+    let scenario = bastions(&[0], true);
+    let mut state = scenario.build().unwrap();
+    until_bastion_fires(&scenario, &mut state, false);
+    defended_beside_the_bastion(&scenario, &state, true);
+}
+
+#[test]
+fn shells_from_a_remembered_bastion_send_fighters_beside_it() {
+    let mut scenario = bastions(&[0], true);
+    // A Barricade takes the picket's place: it neither sees the Bastion nor
+    // walks out after it, so the Bastion stays remembered once the Kestrel
+    // that saw it leaves.
+    scenario
+        .units
+        .retain(|unit| !(unit.player == 0 && (unit.x, unit.y) == PICKET));
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Barricade,
+        x: PICKET.0,
+        y: PICKET.1,
+    });
+    let mut state = scenario.build().unwrap();
+    until_bastion_fires(&scenario, &mut state, true);
+    defended_beside_the_bastion(&scenario, &state, false);
+}
+
+#[test]
+fn mirrored_seats_shelled_by_mirrored_bastions_answer_alike() {
+    let scenario = bastions(&[0, 1], true);
+    let mut state = scenario.build().unwrap();
+    let both = |state: &State| {
+        [0, 1].iter().all(|player| {
+            !ObservationData::fog_honest(state, PlayerId(*player))
+                .incoming_shells
+                .is_empty()
+        })
+    };
+    let seat0 = seat(&scenario, 0);
+    while !seat0.decision_due(&state) || !both(&state) {
+        assert!(state.current_tick() < 600, "premise: both Bastions fire");
+        state.tick(&[]);
+    }
+    let west = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
+    let east = seat(&scenario, 1).act(&state, &mut OwnEvents::default());
+    assert!(!hunts(&west).is_empty(), "premise: {west:?}");
+    assert_eq!(mirror(&state, west), east);
+}

@@ -30,7 +30,7 @@ mod support;
 
 pub(crate) use air::{Hazard, hazards};
 pub(crate) use attack::{SAPPERS, minimum};
-pub(crate) use lift::{carrier, carriers_wanted, payload};
+pub(crate) use lift::{carrier, payload};
 pub(crate) use scouting::points;
 pub(crate) use strike::strike_need;
 
@@ -691,9 +691,12 @@ pub(crate) struct Scratch {
     /// Value against ground and against aircraft that offense leaves home,
     /// before the units out defending count.
     pub(crate) reserve: [u64; 2],
-    /// Value against ground and transport slots of the units at home a lift
-    /// could take without cutting into the reserve.
-    pub(crate) payload: (u64, u64),
+    /// Value against ground of the units at home a lift could take without
+    /// cutting into the reserve.
+    pub(crate) payload: u64,
+    /// Value of the known armed enemy ground units on ground connected to the
+    /// seat's start.
+    pub(crate) invaders: u64,
 }
 
 impl Scratch {
@@ -728,6 +731,13 @@ impl Scratch {
             rival: None,
             reserve,
             payload: missions.liftable(observation, map, reserve, payload(observation, map)),
+            invaders: reserve::threat(
+                map,
+                memory,
+                observation.me,
+                observation.tick,
+                Domain::Ground,
+            ),
         }
     }
 }

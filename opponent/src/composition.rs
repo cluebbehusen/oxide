@@ -142,7 +142,8 @@ impl Enemy {
 pub(crate) struct Needs {
     need: [i64; 4],
     weight: [u64; 4],
-    /// Whether ground units can reach an enemy.
+    /// Whether ground units can reach an enemy: a building or start, or
+    /// invaders on the seat's own ground.
     ground: bool,
     enemy: Enemy,
     traits: PersonalityTraits,
@@ -159,9 +160,12 @@ pub(crate) fn weight(trait_value: u8) -> u64 {
 
 /// Where the seat's army can go.
 pub(crate) struct Outlet {
-    /// Ground units can reach an enemy: by ground, or by lift once an
-    /// Airworks stands.
+    /// Ground units can reach an enemy building or start: by ground, or by
+    /// lift once an Airworks stands.
     pub(crate) ground: bool,
+    /// Value of the known enemy ground units on the seat's own ground, which
+    /// its ground units reach even where they reach no enemy building.
+    pub(crate) invaders: u64,
     /// Air strikes are wanted: an Airworks stands, or ground reaches no enemy.
     pub(crate) air_strikes: bool,
     /// Air strike value wanted at the least: while ground reaches no enemy,
@@ -170,7 +174,9 @@ pub(crate) struct Outlet {
 }
 
 /// Needs from what the seat has seen and owns and where its army can go.
-/// Ground roles are wanted only while ground units can reach an enemy.
+/// Ground roles are wanted only while ground units can reach an enemy
+/// building or start; until then line units are wanted only against
+/// invaders on the seat's own ground.
 pub(crate) fn needs(
     observation: &ObservationData,
     memory: &Memory,
@@ -202,6 +208,9 @@ pub(crate) fn needs(
         need[Role::Line as usize] = (3 * ground / 4).max(2 * army / 5) - own[Role::Line as usize];
         need[Role::Siege as usize] =
             defenses / 2 + army * i64::from(traits.siege) / 400 - own[Role::Siege as usize];
+    } else {
+        let invaders = i64::try_from(outlet.invaders).unwrap_or(i64::MAX);
+        need[Role::Line as usize] = 3 * invaders / 4 - own[Role::Line as usize];
     }
     need[Role::AntiAir as usize] = 3 * air / 4 - own[Role::AntiAir as usize];
     if outlet.air_strikes {
@@ -211,7 +220,7 @@ pub(crate) fn needs(
     }
     Needs {
         need,
-        ground: outlet.ground,
+        ground: outlet.ground || outlet.invaders > 0,
         weight: [
             1_000,
             weight(traits.siege),

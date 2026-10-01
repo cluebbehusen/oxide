@@ -245,9 +245,11 @@ pub(crate) fn decide(
         .any(|building| building.kind == BuildingKind::Airworks && building.built);
     let income = persistent.income.per_minute();
     // A seat whose ground reaches no enemy delivers ground units only by
-    // lift, so until an Airworks stands its army is aircraft.
+    // lift, so until an Airworks stands its army is aircraft, and line units
+    // only against invaders already on its ground.
     let outlet = composition::Outlet {
         ground: !scratch.severed || airworks,
+        invaders: scratch.invaders,
         air_strikes: airworks || scratch.severed,
         strike: if scratch.severed {
             crate::missions::strike_need(observation, &persistent.memory, profile, &scratch)
@@ -267,7 +269,7 @@ pub(crate) fn decide(
     // production for carriers: an army and home defense come first.
     let minimum = crate::missions::minimum(profile.stance);
     let exposed = army(observation) < minimum;
-    let carryable = scratch.payload.0 >= minimum;
+    let carryable = scratch.payload >= minimum;
     let lift = carryable && scratch.severed;
     let mut pull = needs.pull(observation);
     if lift {
@@ -402,7 +404,7 @@ pub(crate) fn decide(
             observation,
             map,
             profile,
-            &persistent.memory,
+            persistent,
             &scratch,
             &producers,
             &mut ledger,
@@ -556,16 +558,16 @@ fn explore(
 }
 
 /// Keeps enough carriers, alive and queued, to lift what the best landing
-/// needs with the units at home, training one at a ready Airworks when short.
-/// It is a stock, like the Harvesters: no mission is promised the carriers it
-/// buys. Returns whether a ready Airworks waits for the scrap to train one
-/// while riders at home already fill every carrier, so that cheaper units do
-/// not spend it first.
+/// needs with the free units at home, training one at a ready Airworks when
+/// short. It is a stock, like the Harvesters: no mission is promised the
+/// carriers it buys. Returns whether a ready Airworks waits for the scrap to
+/// train one while riders at home already fill every carrier, so that
+/// cheaper units do not spend it first.
 fn train_carriers(
     observation: &ObservationData,
     map: &MapModel,
     profile: &ResolvedProfile,
-    memory: &Memory,
+    persistent: &Persistent,
     scratch: &Scratch,
     producers: &[Producer<'_>],
     ledger: &mut Ledger,
@@ -578,16 +580,16 @@ fn train_carriers(
         .filter(|kind| crate::missions::carrier(*kind))
         .count()
         + ledger.queued(UnitKind::Skyhook)) as u64;
-    let capacity = u64::from(UnitKind::Skyhook.stats().transport_capacity).max(1);
-    let (_, slots) = scratch.payload;
-    // The riders at home bound the stock, so carriers that already hold them
-    // all need no landing search.
-    if carriers >= slots.max(capacity).div_ceil(capacity)
-        || carriers >= crate::missions::carriers_wanted(observation, map, profile, memory, scratch)
-    {
+    let Some(waiting) = persistent.missions.carriers_short(
+        observation,
+        map,
+        profile,
+        &persistent.memory,
+        scratch,
+        carriers,
+    ) else {
         return false;
-    }
-    let waiting = slots > carriers * capacity;
+    };
     producers
         .iter()
         .find(|producer| {
