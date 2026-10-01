@@ -171,16 +171,18 @@ pub(crate) fn breadcrumb_points(
             oxide_sim::Order::Unload { at } => at.tile(),
             // A landing that took over a walk marks the walk's click.
             oxide_sim::Order::Land { goal, from } => from.unwrap_or(*goal),
+            // A building's center lies on a tile seam when its footprint is
+            // even, so the target draws at its exact position, unsnapped.
             oxide_sim::Order::Attack { target, .. } => {
                 let view = game.state.attack_view(game.presentation.human, *target)?;
-                return Some((
-                    chassis::grid::TilePos::containing(view.position),
-                    verb_color(order),
-                ));
+                return Some((crate::game::world_vec(view.position), verb_color(order)));
             }
             oxide_sim::Order::Idle => return None,
         };
-        Some((goal, verb_color(order)))
+        Some((
+            vec2(goal.x as f32 + 0.5, goal.y as f32 + 0.5),
+            verb_color(order),
+        ))
     };
     // Each point carries its PROGRAM position (0 = the active order,
     // i = queue[i-1]) — the same order the dock pushes chips in, so a
@@ -190,13 +192,7 @@ pub(crate) fn breadcrumb_points(
     let mut points: Vec<(usize, Vec2, Color)> = Vec::new();
     for (i, order) in program.orders.iter().enumerate() {
         if let Some((g, c)) = goal_of(order) {
-            points.push((
-                i,
-                game.presentation
-                    .camera
-                    .to_screen(vec2(g.x as f32 + 0.5, g.y as f32 + 0.5)),
-                c,
-            ));
+            points.push((i, game.presentation.camera.to_screen(g), c));
         }
     }
     points
