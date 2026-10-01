@@ -436,6 +436,13 @@ fn seated_plan(
     }
 }
 
+/// A replay path belongs to the run that saved it, so cached rows carry none.
+fn without_replay(row: &mut serde_json::Value) {
+    if let Some(row) = row.as_object_mut() {
+        row.remove("replay");
+    }
+}
+
 /// Baseline rows on disk, keyed by the reference digest and each leg's exact
 /// execution. Entries from another digest, simulation version, tick limit or
 /// stall-loop limit are never read.
@@ -489,9 +496,10 @@ impl BaselineCache {
                     .with_context(|| format!("reading cached row {}", entry.path.display()));
             }
         };
-        let Ok(row) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        let Ok(mut row) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
             return Ok(None);
         };
+        without_replay(&mut row);
         let matches = row["execution_fingerprint"] == entry.execution.as_str()
             && row["tick_limit"] == ticks
             && row["stall_loop_limit"] == serde_json::to_value(stall)?
@@ -509,10 +517,12 @@ impl BaselineCache {
         row: &serde_json::Value,
     ) -> Result<()> {
         let entry = self.entry(plan, ticks, stall)?;
+        let mut row = row.clone();
+        without_replay(&mut row);
         std::fs::create_dir_all(&self.directory)
             .with_context(|| format!("creating baseline cache {}", self.directory.display()))?;
         chassis::fsx::write_atomic(&entry.path, |writer| -> Result<()> {
-            serde_json::to_writer(writer, row)?;
+            serde_json::to_writer(writer, &row)?;
             Ok(())
         })
         .with_context(|| format!("writing cached row {}", entry.path.display()))
@@ -1086,6 +1096,22 @@ mod tests {
         let entry = cache
             .entry(baseline, 30, Some(DEFAULT_STALL_LOOP_LIMIT))
             .unwrap();
+        let mut replayed = first.rows[2].row.clone();
+        replayed["replay"] = "another-run/0002.json".into();
+        cache
+            .store(baseline, 30, Some(DEFAULT_STALL_LOOP_LIMIT), &replayed)
+            .unwrap();
+        let stored: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&entry.path).unwrap()).unwrap();
+        assert!(stored.get("replay").is_none(), "stored without its replay");
+        std::fs::write(&entry.path, serde_json::to_vec(&replayed).unwrap()).unwrap();
+        assert_eq!(
+            cache
+                .load(baseline, 30, Some(DEFAULT_STALL_LOOP_LIMIT))
+                .unwrap(),
+            Some(first.rows[2].row.clone()),
+            "an older entry's replay is dropped on load"
+        );
         let mut forged = first.rows[2].row.clone();
         forged["reference_digest"] = "fnv1a64:0000000000000000".into();
         std::fs::write(&entry.path, serde_json::to_vec(&forged).unwrap()).unwrap();

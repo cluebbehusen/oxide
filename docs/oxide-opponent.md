@@ -53,8 +53,9 @@ selects actions in precedence order:
 2. the saving target, when it is affordable and can be placed;
 3. workers, to keep harvesting saturated: every known node whose trip repays a
    Harvester within a stance and greed horizon, filled as stance and greed
-   choose; until the army reaches the stance minimum, workers never cost more
-   than the army, and a seat that exposed puts up a Turret before any tech;
+   choose; until the army reaches the stance minimum, workers that would cost
+   more than the army wait for army production, and a seat that exposed puts up
+   a Turret before any tech;
 4. missions, advancing their phases and recruiting as needed;
 5. production toward composition needs, from scrap not protected for saving.
 
@@ -70,8 +71,9 @@ the running total and mission state.
   buildings, an expansion Foundry at a specific site, a defense at a specific
   spot, upgrades. Needs, capability needs, personality and situation set the
   scores. Production capacity comes from the income working producers leave
-  unspent while their roles have need, and producers queue far enough to stay
-  busy until the next decision.
+  unspent while their army roles have need, and producers queue far enough to
+  stay busy until the next decision. Small stocks such as carriers, Tenders and
+  Sappers draw on the producers the army leaves, and never add one.
 - The top investment is funded through its next purchasable step. The bot keeps
   one optional saving target with its price, reason and cancel conditions.
 - Income is not observed directly. The bot estimates it from the change in bank
