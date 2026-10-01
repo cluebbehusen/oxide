@@ -11,7 +11,7 @@ use chassis::fx::Fx;
 use chassis::grid::{Grid, TilePos};
 use oxide_sim::TICKS_PER_SECOND;
 use oxide_sim::ids::Target;
-use oxide_sim::observation::{BuildingObs, ObservationData};
+use oxide_sim::observation::{BuildingObs, ObservationData, UnitObs};
 use oxide_sim::scenario::BotStance;
 use oxide_sim::stats::FOUNDRY_REPAIR_PRICE;
 use oxide_sim::{BuildingKind, Command, PlayerId, UnitId, UnitKind};
@@ -190,11 +190,7 @@ fn flee(
     hazards: &[Hazard],
     ledger: &mut Ledger,
 ) {
-    let foundries: Vec<&BuildingObs> = observation
-        .my_buildings
-        .iter()
-        .filter(|building| building.kind == BuildingKind::Foundry && building.built)
-        .collect();
+    let foundries = built_foundries(observation);
     if hazards.is_empty() {
         return;
     }
@@ -213,14 +209,7 @@ fn flee(
         if !threatened || home {
             continue;
         }
-        let ground = map.component(unit.tile);
-        let from = doubled(unit.tile);
-        let refuge = foundries
-            .iter()
-            .flat_map(|foundry| ring(foundry.anchor, size))
-            .filter(|tile| ground.is_some() && map.component(*tile) == ground)
-            .min_by_key(|tile| (frame.rank(from, doubled(*tile)), *tile));
-        let Some(refuge) = refuge else {
+        let Some(refuge) = refuge(map, frame, &foundries, unit.tile) else {
             continue;
         };
         if !ledger.order(Command::Run {
@@ -231,6 +220,32 @@ fn flee(
             return;
         }
     }
+}
+
+/// The seat's built Foundries.
+fn built_foundries(observation: &ObservationData) -> Vec<&BuildingObs> {
+    observation
+        .my_buildings
+        .iter()
+        .filter(|building| building.kind == BuildingKind::Foundry && building.built)
+        .collect()
+}
+
+/// The tile beside one of `foundries` on the ground of `tile` nearest it.
+fn refuge(
+    map: &MapModel,
+    frame: HomeFrame,
+    foundries: &[&BuildingObs],
+    tile: TilePos,
+) -> Option<TilePos> {
+    let size = BuildingKind::Foundry.base_stats().size;
+    let ground = map.component(tile)?;
+    let from = doubled(tile);
+    foundries
+        .iter()
+        .flat_map(|foundry| ring(foundry.anchor, size))
+        .filter(|beside| map.component(*beside) == Some(ground))
+        .min_by_key(|beside| (frame.rank(from, doubled(*beside)), *beside))
 }
 
 /// Sends the nearest free worker to weld each damaged own building nobody
@@ -515,7 +530,18 @@ fn clear_route(
             return false;
         }
         let from = doubled(tile);
+        let open = |tile: TilePos| map.component(tile).is_some();
+        // Diagonal steps never cut a corner, as in the distance field. A
+        // worker stands on any tile beside the node, so the first step may.
+        let legal = |next: &TilePos| {
+            let (dx, dy) = (next.x - tile.x, next.y - tile.y);
+            tile == node
+                || dx == 0
+                || dy == 0
+                || (open(tile.offset(dx, 0)) && open(tile.offset(0, dy)))
+        };
         let next = ring(tile, (1, 1))
+            .filter(legal)
             .map(|next| (map.distance(me, next), next))
             .filter(|(closer, _)| *closer < distance)
             .min_by_key(|(closer, next)| (*closer, frame.rank(from, doubled(*next))));
@@ -578,7 +604,9 @@ fn room(observation: &ObservationData, map: &MapModel, node: TilePos, component:
 /// Sends each idle worker, nearest home first, to the reachable worked
 /// node with the most places open, or to its nearest reachable known node
 /// when none is worked, never to a node inside known danger or whose route
-/// crosses it. One order per node.
+/// crosses it. A worker harvesting a node whose route has turned dangerous
+/// is sent elsewhere the same way, or home when nowhere is left. One order
+/// per node.
 fn assign_idle(
     observation: &ObservationData,
     map: &MapModel,
@@ -604,15 +632,27 @@ fn assign_idle(
             (*node, *crew as i64 - working as i64)
         })
         .collect();
+    let stale = |unit: &UnitObs| {
+        unit.harvesting.is_some_and(|node| {
+            staffing
+                .reachable
+                .binary_search_by_key(&(node.y, node.x), |tile| (tile.y, tile.x))
+                .is_err()
+        })
+    };
     let mut idle: Vec<_> = observation
         .my_units
         .iter()
         .filter(|unit| {
-            unit.idle && worker(unit.kind) && !ledger.employs(unit.id) && !ledger.stuck(unit.id)
+            (unit.idle || stale(unit))
+                && worker(unit.kind)
+                && !ledger.employs(unit.id)
+                && !ledger.stuck(unit.id)
         })
         .collect();
     idle.sort_by_key(|unit| (frame.rank(frame.home, doubled(unit.tile)), unit.id));
     let mut assignments: Vec<(TilePos, UnitId)> = Vec::new();
+    let mut stranded: Vec<&UnitObs> = Vec::new();
     for unit in idle {
         let Some(component) = map.component(unit.tile) else {
             continue;
@@ -635,6 +675,9 @@ fn assign_idle(
                     .filter(|node| map.touches(*node, component) && safe(node))
                     .min_by_key(|node| frame.rank(from, doubled(*node)));
                 let Some(node) = nearest else {
+                    if stale(unit) {
+                        stranded.push(unit);
+                    }
                     continue;
                 };
                 node
@@ -650,7 +693,20 @@ fn assign_idle(
             queue: false,
         };
         if !ledger.order(command) {
-            break;
+            return;
+        }
+    }
+    let foundries = built_foundries(observation);
+    for unit in stranded {
+        let Some(refuge) = refuge(map, frame, &foundries, unit.tile) else {
+            continue;
+        };
+        if !ledger.order(Command::Run {
+            units: vec![unit.id],
+            goal: refuge,
+            queue: false,
+        }) {
+            return;
         }
     }
 }

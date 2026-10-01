@@ -814,12 +814,27 @@ pub(super) fn defense(observation: &ObservationData, memory: &Memory, tile: Tile
     units + buildings
 }
 
-/// Whether a known enemy building that fires on ground stands around `tile`.
+/// Whether a known, built enemy building's ground fire reaches `tile`.
 pub(super) fn fortified(observation: &ObservationData, tile: TilePos) -> bool {
-    observation
-        .enemy_buildings
-        .iter()
-        .any(|building| guards(building, tile))
+    observation.enemy_buildings.iter().any(|building| {
+        let reach = building
+            .kind
+            .tier_stats(building.tier)
+            .weapons
+            .iter()
+            .filter(|weapon| weapon.targets.ground)
+            .map(|weapon| weapon.range.ceil().to_num::<i32>())
+            .max();
+        building.built
+            && reach.is_some_and(|reach| {
+                gap(
+                    building.anchor,
+                    building.kind.base_stats().size,
+                    tile,
+                    (1, 1),
+                ) < reach
+            })
+    })
 }
 
 /// Whether `building` fires on ground and stands around `tile`.

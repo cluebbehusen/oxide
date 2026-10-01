@@ -44,8 +44,8 @@ impl Missions {
     /// threats until, in each domain it is attacked from, they outweigh the
     /// attackers by half again, and sends them at the grounded threat nearest
     /// the Foundry, else at a gun out of sight. A shelling building counts
-    /// with the known defense around it, and only while the seat's units
-    /// could beat that defense by half again. A defense that is only
+    /// with the known defense around it, and only while the units the defense
+    /// holds or could take would beat that defense by half again. A defense that is only
     /// recovering lends its units, as does an attack not yet fighting.
     /// Returns whether any defense stayed short.
     ///
@@ -64,12 +64,25 @@ impl Missions {
         ledger: &mut Ledger,
     ) -> bool {
         let now = observation.tick;
+        let lendable = self.available(observation, true);
         let mut groups = threats(observation, map, frame);
         for (foundry, siege, _) in &mut groups {
             let component = map.component(foundry.anchor);
-            let force: u64 = observation
-                .my_units
+            // What the Foundry's defense holds and could take, not units out
+            // on missions that will not lend them.
+            let defenders = self
+                .list
                 .iter()
+                .filter(|mission| {
+                    matches!(mission.task, Task::Defend { asset, .. } if asset == foundry.id)
+                })
+                .flat_map(|mission| mission.units.iter().copied());
+            let force: u64 = lendable
+                .iter()
+                .copied()
+                .chain(defenders)
+                .filter(|id| !ledger.stuck(*id))
+                .filter_map(|id| mine(observation, id))
                 .filter(|unit| hits(unit, Domain::Ground))
                 .filter(|unit| {
                     unit.kind.stats().domain == Domain::Air || map.component(unit.tile) == component

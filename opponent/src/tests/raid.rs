@@ -382,6 +382,32 @@ fn scuttlers_leave_a_line_under_known_guns_however_many_wait() {
 }
 
 #[test]
+fn a_turret_out_of_reach_of_the_line_leaves_it_to_raiders() {
+    let mut scenario = outpost(UnitKind::Scuttler, BuildingKind::Foundry);
+    for y in 5..=9 {
+        scenario.units.push(unit(0, UnitKind::Scuttler, 17, y));
+    }
+    scenario.units.push(unit(0, UnitKind::Kestrel, 25, 8));
+    scenario.buildings.push(BuildingSpec {
+        player: 1,
+        kind: BuildingKind::Turret,
+        x: 29,
+        y: 10,
+    });
+    let state = scenario.build().unwrap();
+    let observation = ObservationData::fog_honest(&state, PlayerId(0));
+    assert!(
+        observation
+            .enemy_buildings
+            .iter()
+            .any(|building| building.kind == BuildingKind::Turret),
+        "premise: the Turret is known"
+    );
+    let (_, trace) = seat(&scenario, 0).act_traced(&state, &mut OwnEvents::default());
+    assert!(raid(&trace.unwrap().missions).is_some());
+}
+
+#[test]
 fn a_raid_sends_only_the_raiders_its_target_needs() {
     let spots = [(17, 10), (17, 11), (17, 12), (18, 11)];
     let mut scenario = outpost(UnitKind::Scuttler, BuildingKind::Foundry);

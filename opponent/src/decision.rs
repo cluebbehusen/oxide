@@ -322,8 +322,14 @@ pub(crate) fn decide(
             .scrap
             .saturating_sub(persistent.saving.protected()),
     );
+    // A saved unit whose role no longer lacks it is no reason for another
+    // producer.
+    let wanted = needs.wanted();
     let waiting = match persistent.saving.investment() {
-        Some(Investment::Unit(kind)) if observation.scrap >= kind.stats().cost => {
+        Some(Investment::Unit(kind))
+            if observation.scrap >= kind.stats().cost
+                && composition::role(kind).is_some_and(|role| wanted.contains(&role)) =>
+        {
             let ready = producers.iter().any(|producer| {
                 producer.ready
                     && investments::producers_of(observation, kind)
@@ -337,7 +343,7 @@ pub(crate) fn decide(
         _ => None,
     };
     let situation = Situation {
-        wanted: needs.wanted(),
+        wanted,
         observation,
         map,
         memory: &persistent.memory,
@@ -393,7 +399,15 @@ pub(crate) fn decide(
             &mut ledger,
         );
     } else {
-        buy(observation, map, frame, &producers, persistent, &mut ledger);
+        buy(
+            observation,
+            map,
+            frame,
+            &producers,
+            persistent,
+            &mut needs,
+            &mut ledger,
+        );
     }
     // A short defense leaves scrap to the army: only the recovery Harvester
     // above is trained while it lasts. Until the army reaches the stance
@@ -557,6 +571,7 @@ fn buy(
     frame: HomeFrame,
     producers: &[Producer<'_>],
     persistent: &mut Persistent,
+    needs: &mut Needs,
     ledger: &mut Ledger,
 ) {
     let Some(investment) = persistent.saving.investment() else {
@@ -600,6 +615,7 @@ fn buy(
                 return;
             };
             if ledger.train_urgently(producer.building.id, kind) {
+                needs.queued(kind);
                 ledger.protected = 0;
                 persistent.saving.attempted(step, producer.building.anchor);
             }

@@ -98,6 +98,75 @@ fn an_idle_harvester_is_not_sent_past_a_known_turret() {
     assert!(!sent(true));
 }
 
+/// The field split by a staggered rock wall, at x = 20 down to y = 10 and at
+/// x = 19 below, so (19, 10) and (20, 11) touch only across a corner; the
+/// wall opens at (19, 20). A scrap node at (21, 9) lies beyond it, an East
+/// Turret covers the opening when `guarded`, and a West Kestrel has seen
+/// both.
+fn staggered(guarded: bool) -> Scenario {
+    let mut scenario = field();
+    for (y, row) in scenario.map.iter_mut().enumerate() {
+        match y {
+            1..=10 => row.replace_range(20..21, "#"),
+            11..=22 if y != 20 => row.replace_range(19..20, "#"),
+            _ => {}
+        }
+    }
+    scenario.map[9].replace_range(21..22, "s");
+    scenario.units.push(unit(0, UnitKind::Kestrel, 25, 14));
+    if guarded {
+        scenario.buildings.push(BuildingSpec {
+            player: 1,
+            kind: BuildingKind::Turret,
+            x: 21,
+            y: 19,
+        });
+    }
+    scenario
+}
+
+#[test]
+fn a_route_never_slips_past_danger_across_a_blocked_corner() {
+    let worked = |guarded| {
+        let scenario = staggered(guarded);
+        let state = scenario.build().unwrap();
+        crew(&crews(&scenario, &state, BotStance::Turtle, 50), (21, 9))
+    };
+    assert!(worked(false).is_some(), "premise: the open route is worked");
+    assert_eq!(
+        worked(true),
+        None,
+        "the only legal route runs past the Turret"
+    );
+}
+
+#[test]
+fn a_harvester_whose_route_turns_dangerous_is_called_home() {
+    let mut scenario = walled(true);
+    scenario.units.push(harvester(0, 5, 11));
+    let mut state = scenario.build().unwrap();
+    let worker = at(&state, 5, 11);
+    state.tick(&[PlayerCommand {
+        player: PlayerId(0),
+        command: Command::Harvest {
+            units: vec![worker],
+            node: TilePos::new(30, 3),
+            queue: false,
+        },
+    }]);
+    let mut opponent = seat_with(&scenario, 0, fortified());
+    while !opponent.decision_due(&state) {
+        state.tick(&[]);
+    }
+    let commands = opponent.act(&state, &mut OwnEvents::default());
+    assert!(
+        runs(&commands)
+            .iter()
+            .any(|(units, _)| units.contains(&worker)),
+        "{commands:?}"
+    );
+}
+
 #[test]
 fn contested_scrap_with_a_clear_route_is_worked() {
     // Nearer East's Foundry than West's, but nothing known guards it.

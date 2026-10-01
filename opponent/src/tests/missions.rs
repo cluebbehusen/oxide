@@ -670,6 +670,31 @@ fn a_bastion_among_guns_the_garrison_cannot_beat_is_left_to_production() {
 }
 
 #[test]
+fn a_bastion_is_left_alone_while_the_army_that_could_beat_it_is_away_fighting() {
+    let (scenario, state) = bastion(false);
+    let garrison: Vec<UnitId> = GARRISON.iter().map(|(x, y)| at(&state, *x, *y)).collect();
+    let mut json = serde_json::to_value(seat(&scenario, 0).checkpoint()).unwrap();
+    json["missions"] = serde_json::json!({
+        "next": 1,
+        "list": [{
+            "id": 0,
+            "task": {
+                "task": "attack",
+                "target": {"owner": 1, "building": "foundry", "anchor": {"x": 43, "y": 11}},
+                "phase": {"engage": {"focus": null}},
+            },
+            "since": state.current_tick(),
+            "units": garrison,
+            "goal": {"x": 11, "y": 11},
+        }],
+    });
+    let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
+    let mut opponent = Opponent::restore(&checkpoint, &scenario, &state, map(&scenario)).unwrap();
+    let commands = opponent.act(&state, &mut OwnEvents::default());
+    assert!(!sent_beside_the_bastion(&commands), "{commands:?}");
+}
+
+#[test]
 fn an_upgraded_building_is_worth_every_tier_it_paid_for() {
     let mut scenario = field();
     scenario.units.push(unit(0, UnitKind::Kestrel, 20, 11));
