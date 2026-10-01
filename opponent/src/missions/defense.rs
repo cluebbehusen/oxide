@@ -5,7 +5,7 @@
 //! known enemy building send ground fighters beside it, and shells from a gun
 //! out of sight send them toward where it probably stands.
 
-use super::attack::defense;
+use super::attack::{defense, defense_around};
 use super::{
     DefendPhase, MISSION_CAP, Mission, Missions, Task, UNIT_CAP, hits, hunt, insert, mine, value,
 };
@@ -77,10 +77,12 @@ impl Missions {
                     matches!(mission.task, Task::Defend { asset, .. } if asset == foundry.id)
                 })
                 .flat_map(|mission| mission.units.iter().copied());
-            let force: u64 = lendable
-                .iter()
-                .copied()
-                .chain(defenders)
+            // A recovering defense lends its units, so they may be in both.
+            let mut pool: Vec<UnitId> = lendable.iter().copied().chain(defenders).collect();
+            pool.sort_unstable();
+            pool.dedup();
+            let force: u64 = pool
+                .into_iter()
                 .filter(|id| !ledger.stuck(*id))
                 .filter_map(|id| mine(observation, id))
                 .filter(|unit| hits(unit, Domain::Ground))
@@ -157,11 +159,8 @@ impl Missions {
                     * 3
                     / 2
             });
-            let guns = siege
-                .batteries
-                .iter()
-                .map(|(_, beside)| defense(observation, memory, *beside))
-                .sum::<u64>()
+            let besides: Vec<TilePos> = siege.batteries.iter().map(|(_, beside)| *beside).collect();
+            let guns = defense_around(observation, memory, &besides)
                 + siege.unseen.map_or(0, |_| gun_value());
             let need = [pressing[0] + guns * 3 / 2, pressing[1]];
             let index = self.list.iter().position(

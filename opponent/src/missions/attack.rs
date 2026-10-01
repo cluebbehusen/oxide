@@ -797,18 +797,32 @@ impl<'a> Plan<'a> {
 /// The known ground defense around `tile`: remembered armed enemy units by
 /// confidence, and known enemy buildings that fire on ground by health.
 pub(super) fn defense(observation: &ObservationData, memory: &Memory, tile: TilePos) -> u64 {
+    defense_around(observation, memory, &[tile])
+}
+
+/// The known ground defense around any of `tiles`, each defender counted
+/// once.
+pub(super) fn defense_around(
+    observation: &ObservationData,
+    memory: &Memory,
+    tiles: &[TilePos],
+) -> u64 {
     let now = observation.tick;
     let units: u64 = memory
         .units()
         .iter()
         .filter(|unit| !unit.kind.stats().weapons.is_empty())
-        .filter(|unit| unit.tile.chebyshev(tile) <= DEFENSE_TILES)
+        .filter(|unit| {
+            tiles
+                .iter()
+                .any(|tile| unit.tile.chebyshev(*tile) <= DEFENSE_TILES)
+        })
         .map(|unit| unit.value(now))
         .sum();
     let buildings: u64 = observation
         .enemy_buildings
         .iter()
-        .filter(|building| guards(building, tile))
+        .filter(|building| tiles.iter().any(|tile| guards(building, *tile)))
         .map(building_value)
         .sum();
     units + buildings
@@ -959,5 +973,32 @@ pub(crate) fn margin(difficulty: BotDifficulty) -> u64 {
         BotDifficulty::Standard => 2_000,
         BotDifficulty::Veteran => 1_750,
         BotDifficulty::Prime => 1_500,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxide_sim::{PlayerId, Scenario};
+
+    #[test]
+    fn defenders_around_several_tiles_count_once() {
+        let state = Scenario::skirmish().build().unwrap();
+        let mut observation = ObservationData::fog_honest(&state, PlayerId(0));
+        let turret = BuildingObs {
+            player: PlayerId(1),
+            kind: BuildingKind::Turret,
+            anchor: TilePos::new(20, 10),
+            hp: BuildingKind::Turret.base_stats().max_hp,
+            built: true,
+            ..observation.my_buildings[0].clone()
+        };
+        observation.enemy_buildings = vec![turret];
+        let memory = Memory::default();
+        let (a, b) = (TilePos::new(18, 10), TilePos::new(22, 10));
+        let one = defense(&observation, &memory, a);
+        assert_eq!(one, 100, "premise: the Turret guards each tile");
+        assert_eq!(defense(&observation, &memory, b), one);
+        assert_eq!(defense_around(&observation, &memory, &[a, b]), one);
     }
 }

@@ -14,32 +14,32 @@ A seat with no worker alive or queued queues a Harvester even behind other work,
 from protected scrap if it must. A live known scrap node's route is the shortest
 ground route from the seat's start, followed back until it comes home to one of
 the seat's Foundries; it is clear while it crosses neither the reach of known
-enemy weapons nor the surroundings of an enemy Foundry, known or presumed. Each
-node with a clear route belongs to the nearest built Foundry whose ground
-reaches it, and is worked when a Harvester hauling from there repays its price
-within a horizon: three minutes for Turtle, two for Balanced and one and a half
-for Aggressive, stretched by up to half again the greedier the seat is. A worked
-node wants as many Harvesters as free tiles beside it hold and its remaining
-scrap repays, all of them for Turtle and three quarters for Balanced and half
-for Aggressive, more the greedier the seat is, and ready Foundries train workers
-until every worked node has its crew. Until the army reaches the stance's
-minimum, workers that would cost more than the army wait for army production and
-take only the Foundries it leaves. A producer is ready when its queue would run
-out before the next decision, so it queues its next unit as the last one
-finishes rather than after it stands empty. Once a Fabricator stands, an
-Excavator, worth two Harvesters, fills two open places when the seat can pay for
-it with scrap to spare, less the greedier it is. A harvesting or idle worker
-away from home runs back beside the nearest Foundry once known enemy fire
-reaches it. Paid sites nobody is building get the nearest free worker. While no
-armed enemy in sight stands near it and the seat has scrap to pay, each damaged
-building nobody welds yet gets the nearest free worker, most missing value
-first. Idle workers go to the reachable worked node with the most places open,
-or with none worked to the nearest node with a clear route, never one inside the
-reach of known enemy weapons; with neither they wait at home. A worker
-harvesting a node whose route has turned dangerous is sent elsewhere the same
-way, or home. Every ready producer then trains toward the army's needs.
-Difficulty caps the unit orders one decision issues; purchases do not count
-against that allowance.
+enemy weapons (a site in sight cannot fire yet) nor the surroundings of an enemy
+Foundry, known or presumed. Each node with a clear route belongs to the nearest
+built Foundry whose ground reaches it, and is worked when a Harvester hauling
+from there repays its price within a horizon: three minutes for Turtle, two for
+Balanced and one and a half for Aggressive, stretched by up to half again the
+greedier the seat is. A worked node wants as many Harvesters as free tiles
+beside it hold and its remaining scrap repays, all of them for Turtle and three
+quarters for Balanced and half for Aggressive, more the greedier the seat is,
+and ready Foundries train workers until every worked node has its crew. Until
+the army reaches the stance's minimum, workers that would cost more than the
+army wait for army production and take only the Foundries it leaves. A producer
+is ready when its queue would run out before the next decision, so it queues its
+next unit as the last one finishes rather than after it stands empty. Once a
+Fabricator stands, an Excavator, worth two Harvesters, fills two open places
+when the seat can pay for it with scrap to spare, less the greedier it is. A
+harvesting or idle worker away from home runs back beside the nearest Foundry
+once known enemy fire reaches it. Paid sites nobody is building get the nearest
+free worker. While no armed enemy in sight stands near it and the seat has scrap
+to pay, each damaged building nobody welds yet gets the nearest free worker,
+most missing value first. Idle workers go to the reachable worked node with the
+most places open, or with none worked to the nearest node with a clear route,
+never one inside the reach of known enemy weapons; with neither they wait at
+home. A worker harvesting a node whose route has turned dangerous is sent
+elsewhere the same way, or home. Every ready producer then trains toward the
+army's needs. Difficulty caps the unit orders one decision issues; purchases do
+not count against that allowance.
 
 ## Defense
 

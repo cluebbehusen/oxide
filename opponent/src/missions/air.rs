@@ -112,6 +112,8 @@ pub(super) fn route(
 
 /// Known enemies that fire at `domain`: remembered units by confidence and
 /// known buildings by health, each reaching its weapon range plus clearance.
+/// A site in sight cannot fire yet; a remembered one may have been finished
+/// since it was seen.
 pub(crate) fn hazards(
     observation: &ObservationData,
     memory: &Memory,
@@ -134,6 +136,9 @@ pub(crate) fn hazards(
         })
     });
     let buildings = observation.enemy_buildings.iter().filter_map(|building| {
+        if !building.built && building.seen {
+            return None;
+        }
         let range = reach(building.kind.tier_stats(building.tier).weapons)?;
         let (width, height) = building.kind.base_stats().size;
         Some(Hazard {
