@@ -352,9 +352,10 @@ pub(crate) fn decide(
     persistent
         .missions
         .prune(observation, &mut persistent.memory);
-    let short = persistent
-        .missions
-        .defend(observation, map, frame, &mut ledger);
+    let short =
+        persistent
+            .missions
+            .defend(observation, map, frame, &persistent.memory, &mut ledger);
     scratch.rival = persistent
         .missions
         .rival(&scratch, observation, map, profile.traits);

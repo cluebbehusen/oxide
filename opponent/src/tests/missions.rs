@@ -611,6 +611,86 @@ fn shells_from_a_gun_out_of_sight_send_fighters_toward_it() {
     );
 }
 
+/// The field with West's garrison and picket, an East Bastion shelling the
+/// picket with a Kestrel spotting for it, East Turrets around the Bastion
+/// when `guarded`, and a West Kestrel that has seen them all; played until
+/// the shells come.
+fn bastion(guarded: bool) -> (Scenario, State) {
+    let mut scenario = field();
+    for spot in GARRISON.into_iter().chain([PICKET]) {
+        scenario
+            .units
+            .push(unit(0, UnitKind::Sentinel, spot.0, spot.1));
+    }
+    scenario
+        .units
+        .push(unit(1, UnitKind::Kestrel, SPOTTER.0, SPOTTER.1));
+    scenario.units.push(unit(0, UnitKind::Kestrel, 15, 17));
+    scenario.buildings.push(BuildingSpec {
+        player: 1,
+        kind: BuildingKind::Bastion,
+        x: 16,
+        y: 11,
+    });
+    if guarded {
+        for (x, y) in [(19, 10), (19, 13), (19, 11)] {
+            scenario.buildings.push(BuildingSpec {
+                player: 1,
+                kind: BuildingKind::Turret,
+                x,
+                y,
+            });
+        }
+    }
+    let mut state = scenario.build().unwrap();
+    until_shells_come(&scenario, &mut state, &[0]);
+    (scenario, state)
+}
+
+/// Whether `commands` send units beside the staged Bastion.
+fn sent_beside_the_bastion(commands: &[PlayerCommand]) -> bool {
+    let bastion = TilePos::new(16, 11);
+    hunts(commands)
+        .iter()
+        .any(|(_, goal)| crate::frame::gap(bastion, (2, 2), *goal, (1, 1)) <= 1)
+}
+
+#[test]
+fn a_lone_bastion_shelling_the_base_is_answered_beside_it() {
+    let (scenario, state) = bastion(false);
+    let commands = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
+    assert!(sent_beside_the_bastion(&commands), "{commands:?}");
+}
+
+#[test]
+fn a_bastion_among_guns_the_garrison_cannot_beat_is_left_to_production() {
+    let (scenario, state) = bastion(true);
+    let commands = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
+    assert!(!sent_beside_the_bastion(&commands), "{commands:?}");
+}
+
+#[test]
+fn an_upgraded_building_is_worth_every_tier_it_paid_for() {
+    let mut scenario = field();
+    scenario.units.push(unit(0, UnitKind::Kestrel, 20, 11));
+    scenario.buildings.push(BuildingSpec {
+        player: 1,
+        kind: BuildingKind::Turret,
+        x: 22,
+        y: 11,
+    });
+    let state = scenario.build().unwrap();
+    let observation = ObservationData::fog_honest(&state, PlayerId(0));
+    let mut turret = observation.enemy_buildings[0].clone();
+    assert_eq!(crate::missions::building_value(&turret), 100);
+    turret.tier = 2;
+    turret.hp = 900;
+    let paid = [100, 150, 300].iter().sum::<u64>();
+    assert_eq!(crate::missions::building_value(&turret), paid);
+    turret.hp = 450;
+    assert_eq!(crate::missions::building_value(&turret), paid / 2);
+}
+
 #[test]
 fn a_gun_in_sight_shelling_the_base_is_defended_against_where_it_stands() {
     let mut scenario = shelling(&[0]);

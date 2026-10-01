@@ -808,25 +808,34 @@ pub(super) fn defense(observation: &ObservationData, memory: &Memory, tile: Tile
     let buildings: u64 = observation
         .enemy_buildings
         .iter()
-        .filter(|building| {
-            building
-                .kind
-                .base_stats()
-                .weapons
-                .iter()
-                .any(|weapon| weapon.targets.ground)
-        })
-        .filter(|building| {
-            gap(
-                building.anchor,
-                building.kind.base_stats().size,
-                tile,
-                (1, 1),
-            ) < DEFENSE_TILES
-        })
+        .filter(|building| guards(building, tile))
         .map(building_value)
         .sum();
     units + buildings
+}
+
+/// Whether a known enemy building that fires on ground stands around `tile`.
+pub(super) fn fortified(observation: &ObservationData, tile: TilePos) -> bool {
+    observation
+        .enemy_buildings
+        .iter()
+        .any(|building| guards(building, tile))
+}
+
+/// Whether `building` fires on ground and stands around `tile`.
+fn guards(building: &BuildingObs, tile: TilePos) -> bool {
+    building
+        .kind
+        .base_stats()
+        .weapons
+        .iter()
+        .any(|weapon| weapon.targets.ground)
+        && gap(
+            building.anchor,
+            building.kind.base_stats().size,
+            tile,
+            (1, 1),
+        ) < DEFENSE_TILES
 }
 
 /// Whether any visible armed enemy or seen enemy building is within contact
@@ -854,14 +863,18 @@ pub(super) fn contact(observation: &ObservationData, members: &[&UnitObs]) -> bo
         })
 }
 
-/// A known building's price, discounted by its missing health.
-pub(super) fn building_value(building: &BuildingObs) -> u64 {
-    let stats = building.kind.base_stats();
-    let cost = stats
-        .construction
-        .as_ref()
-        .map_or(0, |construction| construction.cost);
-    u64::from(cost) * u64::from(building.hp) / u64::from(stats.max_hp.max(1))
+/// A known building's price with every upgrade it reached, discounted by its
+/// missing health at that tier.
+pub(crate) fn building_value(building: &BuildingObs) -> u64 {
+    let tiers = building.kind.tiers();
+    let reached = usize::from(building.tier).min(tiers.len() - 1);
+    let paid: u64 = tiers[..=reached]
+        .iter()
+        .filter_map(|stats| stats.construction.as_ref())
+        .map(|construction| u64::from(construction.cost))
+        .sum();
+    let max_hp = building.kind.tier_stats(building.tier).max_hp;
+    paid * u64::from(building.hp) / u64::from(max_hp.max(1))
 }
 
 /// Units nearest `rally` first until their value reaches `need`, at most

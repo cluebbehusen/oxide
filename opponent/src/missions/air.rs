@@ -134,9 +134,8 @@ pub(crate) fn hazards(
         })
     });
     let buildings = observation.enemy_buildings.iter().filter_map(|building| {
-        let stats = building.kind.base_stats();
-        let range = reach(stats.weapons)?;
-        let (width, height) = stats.size;
+        let range = reach(building.kind.tier_stats(building.tier).weapons)?;
+        let (width, height) = building.kind.base_stats().size;
         Some(Hazard {
             centre: footprint_centre(building.kind, building.anchor),
             reach: i64::from(2 * (range + CLEARANCE) + width.max(height)),

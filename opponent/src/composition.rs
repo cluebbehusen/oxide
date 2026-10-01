@@ -112,14 +112,7 @@ impl Enemy {
                 enemy.air += 200;
             }
             if DEFENSES.contains(&building.kind) {
-                enemy.defenses += u64::from(
-                    building
-                        .kind
-                        .base_stats()
-                        .construction
-                        .as_ref()
-                        .map_or(0, |construction| construction.cost),
-                );
+                enemy.defenses += crate::missions::building_value(building);
             }
         }
         // The most recently seen units stand in for the rest: a computation
