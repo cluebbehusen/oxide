@@ -165,10 +165,10 @@ When the seat knows of enemy buildings or hostile starts and ground reaches none
 of them, and the seat has at least the stance's minimum army to carry beyond the
 home reserve, it needs lift. The Airworks then scores higher while the seat has
 none, and production keeps enough Skyhooks, alive and queued, to carry what the
-best landing needs, or the stance's minimum while none is known, but no more
-than the riders at home fill. While an idle Airworks waits for the scrap to
-train one and those riders already fill every carrier, other production waits
-too, unless a defense is short.
+best landing needs, or the stance's minimum while none is known, with the free
+riders at home packed as a lift would pack them, but no more than those riders
+fill. While an idle Airworks waits for the scrap to train one and some of those
+riders have no room, other production waits too, unless a defense is short.
 
 A lift forms only from carriers and passengers that exist: free carriers that
 are idle, empty and over open home ground, and free line and siege units at half
@@ -193,11 +193,12 @@ straight line crosses it. Each sets its riders down at the landing once there,
 as the decision's orders allow, and emptied carriers fly home together the same
 way. Riders still walking are stopped and let go; with less than half aboard the
 lift sets everyone down and disbands. Landed riders hunt the target and, once no
-one is aboard, fight on to the next target on the same island. Nothing brings
-them home. A carrier that comes home still loaded sets its riders down and lets
-them go. A target the lift lost its units to, or stood idle beside, is skipped
-for a while. One lift runs at a time, and a defense may take its units only
-while they board.
+one is aboard and every emptied carrier is on its way home, fight on to the next
+target on the same island. Nothing brings them home. A carrier that comes home
+still loaded sets its riders down and lets them go. A target the lift lost its
+units to, or stood idle beside, is skipped for a while. One lift runs at a time,
+it never grows past the mission member cap, and a defense may take its units
+only while they board.
 
 ## Strikes
 

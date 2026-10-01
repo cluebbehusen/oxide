@@ -135,11 +135,9 @@ impl Spare {
             .collect()
     }
 
-    /// A lift's payload of value against ground and transport slots, cut to
-    /// what may leave.
-    fn payload(&self, (value, slots): (u64, u64)) -> (u64, u64) {
-        let kept = value.min(self.left[0]);
-        (kept, (slots * kept).checked_div(value).unwrap_or(slots))
+    /// A lift's payload of value against ground, cut to what may leave.
+    fn payload(&self, value: u64) -> u64 {
+        value.min(self.left[0])
     }
 }
 
@@ -194,8 +192,8 @@ impl Missions {
         observation: &ObservationData,
         map: &MapModel,
         reserve: [u64; 2],
-        payload: (u64, u64),
-    ) -> (u64, u64) {
+        payload: u64,
+    ) -> u64 {
         self.spare(observation, map, reserve).payload(payload)
     }
 }
