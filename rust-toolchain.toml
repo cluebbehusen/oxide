@@ -1,0 +1,8 @@
+# The compiler for local work and CI alike, so a new Rust release cannot
+# break the gates by itself. Raise it on purpose, together with the
+# toolchain inputs in .github/workflows/ci.yml, and fix what the new
+# release flags in the same change.
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy", "llvm-tools-preview"]
+profile = "minimal"

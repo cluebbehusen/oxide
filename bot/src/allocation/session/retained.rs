@@ -673,17 +673,15 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                     self.context.home,
                     self.context.public_map,
                 );
-            for (sequence, amount) in [(1, opening_bootstrap)] {
-                if amount > 0 {
-                    push_clamped_current_reserve(
-                        &mut obligations.obligations,
-                        self.context.observation.scrap,
-                        self.context.observation.tick,
-                        self.context.observation.tick,
-                        ObligationKey::OpeningCore { sequence },
-                        amount,
-                    );
-                }
+            if opening_bootstrap > 0 {
+                push_clamped_current_reserve(
+                    &mut obligations.obligations,
+                    self.context.observation.scrap,
+                    self.context.observation.tick,
+                    self.context.observation.tick,
+                    ObligationKey::OpeningCore { sequence: 1 },
+                    opening_bootstrap,
+                );
             }
         }
         let voluntary_scrap_guard = if claims.opening_core.ready {

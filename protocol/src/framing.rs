@@ -141,11 +141,14 @@ struct Slot(Arc<AtomicUsize>);
 
 impl Slot {
     fn claim(live: &Arc<AtomicUsize>, max: usize) -> Option<Self> {
-        live.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-            (n < max).then_some(n + 1)
-        })
-        .ok()?;
-        Some(Self(Arc::clone(live)))
+        let mut n = live.load(Ordering::SeqCst);
+        while n < max {
+            match live.compare_exchange_weak(n, n + 1, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => return Some(Self(Arc::clone(live))),
+                Err(current) => n = current,
+            }
+        }
+        None
     }
 }
 
