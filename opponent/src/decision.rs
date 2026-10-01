@@ -433,7 +433,7 @@ pub(crate) fn decide(
     }
     persistent
         .missions
-        .focus(observation, frame, profile.difficulty, &mut ledger);
+        .focus(observation, map, frame, profile.difficulty, &mut ledger);
     persistent
         .missions
         .tend(observation, map, frame, &mut ledger);
