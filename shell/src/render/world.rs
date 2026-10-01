@@ -536,9 +536,10 @@ pub(crate) fn draw_tiles(game: &crate::game::Scene<'_>, sprites: &Sprites) {
             // Position hashes drive all variety: deterministic, no state.
             let h = (x.wrapping_mul(31).wrapping_add(y.wrapping_mul(17))) as usize;
             // A linear hash repeats ground art along diagonals and in a fixed
-            // lattice, so ground variety mixes every coordinate bit.
+            // lattice. FNV's low bit tracks coordinate parity, so an even
+            // variant count must read the well-mixed high bits instead.
             let ground = coordinate_hash(x, y, 0x4752_4e44) as usize;
-            let variant = ground % 6;
+            let variant = (ground >> 16) % 6;
             let next = game
                 .presentation
                 .camera
