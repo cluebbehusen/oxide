@@ -23,6 +23,12 @@ fn leg_open(unit: &Unit, waypoint: TilePos, terrain: &GroundTerrain) -> bool {
     let here = TilePos::containing(unit.pos);
     if here.chebyshev(waypoint) <= 1 {
         super::early_advance_safe(here, waypoint, terrain)
+            || (!terrain.open(here)
+                && terrain.contact_clear(
+                    unit.pos,
+                    waypoint.center(),
+                    crate::tick::brain::contact::collision_radius(unit),
+                ))
     } else {
         !chassis::path::swept_line_blocked(
             unit.pos,
@@ -30,6 +36,15 @@ fn leg_open(unit: &Unit, waypoint: TilePos, terrain: &GroundTerrain) -> bool {
             unit.kind.stats().radius,
             |tile| terrain.open(tile),
         )
+    }
+}
+
+pub(super) fn path_point(path: &crate::state::PathFollow, index: usize) -> Vec2Fx {
+    if index + 1 == path.waypoints.len() {
+        path.final_point
+            .unwrap_or_else(|| path.waypoints[index].center())
+    } else {
+        path.waypoints[index].center()
     }
 }
 
@@ -49,6 +64,7 @@ fn route_target(
     parked: &ParkedBodies,
 ) -> Option<(Vec2Fx, usize, bool)> {
     let radius = unit.kind.stats().radius;
+    let contact_radius = crate::tick::brain::contact::collision_radius(unit);
     loop {
         let path = unit.path.as_ref()?;
         let Some(&waypoint) = path.waypoints.get(path.next as usize) else {
@@ -75,7 +91,7 @@ fn route_target(
         // toward it now and finds the longer leg once under way; steering
         // for a farther target from rest would pivot first.
         let facing = unit.drive_speed == Fx::ZERO && {
-            let bearing = heading_of(waypoint.center() - unit.pos);
+            let bearing = heading_of(path_point(path, path.next as usize) - unit.pos);
             bearing
                 .wrapping_sub(unit.heading)
                 .cast_signed()
@@ -91,11 +107,22 @@ fn route_target(
             && target < cursor + ROUTE_LOOKAHEAD
             && let Some(&candidate) = path.waypoints.get(target + 1)
             && clear(candidate)
-            && !chassis::path::swept_line_blocked(unit.pos, candidate.center(), radius, clear)
+            && !chassis::path::swept_line_blocked(
+                unit.pos,
+                path_point(path, target + 1),
+                radius,
+                clear,
+            )
         {
             target += 1;
         }
-        let point = path.waypoints[target].center();
+        let mut point = path_point(path, target);
+        if target + 1 == path.waypoints.len()
+            && TilePos::containing(point) != path.goal
+            && !terrain.contact_clear(unit.pos, point, contact_radius)
+        {
+            point = path.goal.center();
+        }
         // Waypoints the straight leg has already carried the body past are
         // reached: the cursor never trails behind the hull's own plane.
         let ahead = point - unit.pos;
@@ -106,7 +133,7 @@ fn route_target(
             }
             path.next += 1;
         }
-        let final_point = path.waypoints.len() == target + 1;
+        let final_point = path.waypoints.len() == target + 1 && point == path_point(path, target);
         return Some((point, target, final_point));
     }
 }
@@ -197,7 +224,13 @@ pub(super) fn advance(unit: &mut Unit, terrain: &GroundTerrain, parked: &ParkedB
     // a blocked flank runs within a hull radius of it, which the swept leg
     // test already refuses. Only an off-bearing arc step, or ground that
     // closed this tick, stops the motor here.
-    if there == here || (terrain.open(there) && super::early_advance_safe(here, there, terrain)) {
+    let contact_radius = crate::tick::brain::contact::collision_radius(unit);
+    let allowed = if terrain.at_contact(unit.pos, contact_radius) {
+        terrain.contact_clear(unit.pos, proposed, contact_radius)
+    } else {
+        there == here || (terrain.open(there) && super::early_advance_safe(here, there, terrain))
+    };
+    if allowed {
         unit.pos = proposed;
     } else {
         unit.drive_speed = Fx::ZERO;
@@ -209,7 +242,7 @@ pub(super) fn advance(unit: &mut Unit, terrain: &GroundTerrain, parked: &ParkedB
             unit.path = None;
             unit.drive_speed = Fx::ZERO;
         } else if let Some(path) = unit.path.as_mut() {
-            path.next = index as u32 + 1;
+            path.next = (index + 1).min(path.waypoints.len() - 1) as u32;
         }
     }
 }
@@ -269,6 +302,7 @@ mod tests {
 
     fn route(unit: &mut Unit, waypoints: Vec<TilePos>) {
         unit.path = Some(PathFollow {
+            final_point: None,
             goal: *waypoints.last().expect("a route has a goal"),
             waypoints,
             next: 0,

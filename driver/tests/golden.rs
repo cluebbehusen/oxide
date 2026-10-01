@@ -39,6 +39,7 @@ fn golden_check(name: &str, state: &oxide_sim::State) {
         let actual_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../target")
             .join(format!("golden-actual-{name}.png"));
+        std::fs::create_dir_all(actual_path.parent().unwrap()).unwrap();
         std::fs::write(&actual_path, &actual).unwrap();
         panic!(
             "golden mismatch for {name}: inspect {} vs {}, re-bless if the change is intended",
@@ -118,7 +119,7 @@ const FIGHT_TICKS: u64 = 24;
 
 /// Total ticks. Sized so the worked node lands in the renderer's
 /// depleted tint without mining out.
-const SHOWCASE_TICKS: u64 = 540;
+const SHOWCASE_TICKS: u64 = 1200;
 
 /// The crew steps off the node before the picture is taken — eight
 /// harvesters ringing a tile would hide the very thing they mined.
@@ -458,19 +459,6 @@ fn opening_orders(cast: &Cast) -> Vec<PlayerCommand> {
             queue: false,
         },
     }];
-    // Seat 0's Foundry expansion: the 0.15 buildable base, founded by a
-    // crew harvester behind the standing Fabricator's tech gate. Its
-    // builder stays on the site, so it renders as attended construction.
-    commands.push(PlayerCommand {
-        player: PlayerId(0),
-        command: Command::Build {
-            units: vec![cast.crew[1]],
-            kind: BuildingKind::Foundry,
-            anchor: TilePos::new(9, 5),
-            queue: false,
-            defer: false,
-        },
-    });
     let (w, e) = (&cast.west, &cast.east);
     // Every machine that must show a health bar gets a shooter one slot
     // away that covers its movement domain; the harvesters take fire and
@@ -584,18 +572,46 @@ fn showcase_state() -> State {
     state = serde_json::from_value(staged).unwrap();
     let mut avalanches_withdrew = false;
     let mut bombards_withdrew = false;
+    let mut crew_withdrew = false;
     for tick in 0..SHOWCASE_TICKS {
         let mut commands = match tick {
             0 => opening_orders(&cast),
             t if t == YARD_FOUNDS => {
                 let mut commands = yard_orders(&cast);
                 commands.extend(field_kit_orders(&cast));
+                commands.push(PlayerCommand {
+                    player: PlayerId(0),
+                    command: Command::Build {
+                        units: vec![cast.crew[1]],
+                        kind: BuildingKind::Foundry,
+                        anchor: TilePos::new(9, 5),
+                        queue: false,
+                        defer: false,
+                    },
+                });
+
                 commands
             }
             t if t == FIGHT_TICKS => disengage(&cast),
-            t if t == CREW_STEPS_OFF => vec![walk(0, cast.crew.clone(), 2, 6)],
             _ => Vec::new(),
         };
+        if !crew_withdrew
+            && (state.map().scrap_at(WORKED_NODE) <= oxide_sim::stats::SCRAP_NODE_AMOUNT / 3
+                || tick == CREW_STEPS_OFF)
+        {
+            let workers = cast
+                .crew
+                .iter()
+                .copied()
+                .filter(|id| {
+                    state
+                        .unit(*id)
+                        .is_some_and(|unit| matches!(unit.order, oxide_sim::Order::Harvest { .. }))
+                })
+                .collect();
+            commands.push(walk(0, workers, 2, 6));
+            crew_withdrew = true;
+        }
         if !avalanches_withdrew
             && [cast.avalanches.0, cast.avalanches.1].iter().all(|id| {
                 state

@@ -102,6 +102,7 @@ pub(super) fn board(
         Some((goal, waypoints)) => {
             let unit = state.unit_mut(id).expect("caller checked");
             unit.path = Some(PathFollow {
+                final_point: None,
                 goal,
                 waypoints,
                 next: 0,
@@ -213,6 +214,7 @@ pub(in crate::tick) fn resolve(state: &mut State, mut pending: Pending, events: 
         rider.drive_speed = chassis::fx::Fx::ZERO;
         rider.stall_ticks = 0;
         rider.progress = 0;
+        rider.unloading = None;
         rider.pos = carrier_pos;
         let carrier = state.unit_mut(transport).expect("just seen");
         carrier.cargo.push(rider);

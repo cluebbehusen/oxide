@@ -148,6 +148,10 @@ pub enum Event {
     },
     /// A harvester delivered its load.
     ScrapDeposited {
+        /// Worker releasing its load.
+        unit: UnitId,
+        /// Foundry receiving the cargo.
+        foundry: BuildingId,
         /// The receiving player.
         player: PlayerId,
         /// Scrap added to the bank.

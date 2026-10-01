@@ -903,7 +903,7 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
                 Event::ChargeDetonated { .. } => {
                     window_combat += 1;
                 }
-                Event::ScrapDeposited { player, amount } => {
+                Event::ScrapDeposited { player, amount, .. } => {
                     windows[player.0 as usize].hauled += u64::from(*amount);
                 }
                 Event::CommandRejected { player, reason } => {

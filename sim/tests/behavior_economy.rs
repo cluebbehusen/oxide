@@ -33,13 +33,13 @@ fn harvester_gathers_and_deposits() {
                 event,
                 Event::ScrapDeposited {
                     player: PlayerId(0),
-                    amount
+                    amount, ..
                 } if *amount > 0
             )
         })
     });
     assert!(events.iter().any(
-        |e| matches!(e, Event::ScrapDeposited { player: PlayerId(0), amount } if *amount > 0)
+        |e| matches!(e, Event::ScrapDeposited { player: PlayerId(0), amount, .. } if *amount > 0)
     ));
     // Still on the job: the node isn't empty, so back to work.
     assert!(matches!(
@@ -400,7 +400,7 @@ fn a_real_harvester_deposit_rearms_one_future_recovery_cycle() {
                 event,
                 Event::ScrapDeposited {
                     player: PlayerId(0),
-                    amount
+                    amount, ..
                 } if *amount > 0
             )
         })
@@ -422,7 +422,7 @@ fn a_real_harvester_deposit_rearms_one_future_recovery_cycle() {
     );
     assert_eq!(
         u32::from(state.player(PlayerId(0)).recovery_allowance),
-        FOUNDRY_RECOVERY_RESERVE - bank
+        FOUNDRY_RECOVERY_RESERVE - state.player(PlayerId(0)).scrap
     );
     run_until(&mut state, 20, |state, _| {
         state.player(PlayerId(0)).scrap > bank

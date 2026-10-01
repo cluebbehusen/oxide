@@ -151,3 +151,86 @@ pub fn rect_approach_origin_for_map(
         if flip_y { map_size.1 - 1 } else { 0 },
     )
 }
+
+/// Nearest point on the closed rectangle occupied by a footprint.
+pub fn footprint_contact(
+    pos: chassis::fx::Vec2Fx,
+    anchor: TilePos,
+    size: (i32, i32),
+) -> chassis::fx::Vec2Fx {
+    use chassis::fx::{Fx, HALF, Vec2Fx};
+    let min = anchor.center() - Vec2Fx::new(HALF, HALF);
+    let max = min + Vec2Fx::new(Fx::from_num(size.0), Fx::from_num(size.1));
+    Vec2Fx::new(pos.x.clamp(min.x, max.x), pos.y.clamp(min.y, max.y))
+}
+
+/// Center clearance at a work position; the chassis nose may overhang the tile margin.
+pub fn work_approach_distance(radius: chassis::fx::Fx) -> chassis::fx::Fx {
+    (radius - crate::stats::WORK_FOOTPRINT_OVERHANG).max(chassis::fx::Fx::ZERO)
+        + crate::stats::WORK_FOOTPRINT_GAP
+}
+
+/// Work position on the chosen doorstep, preserving its approach side.
+pub fn work_approach_point(
+    goal: TilePos,
+    anchor: TilePos,
+    size: (i32, i32),
+    radius: chassis::fx::Fx,
+) -> chassis::fx::Vec2Fx {
+    let contact = footprint_contact(goal.center(), anchor, size);
+    let outward = goal.center() - contact;
+    contact + outward * (work_approach_distance(radius) / outward.length())
+}
+
+/// Whether a chassis circle fits the adjacent passable tiles.
+pub fn circle_clear(
+    point: chassis::fx::Vec2Fx,
+    radius: chassis::fx::Fx,
+    open: impl Fn(TilePos) -> bool,
+) -> bool {
+    let tile = TilePos::containing(point);
+    let reach = radius.ceil().to_num::<i32>();
+    (-reach..=reach).all(|dy| {
+        (-reach..=reach).all(|dx| {
+            let at = tile.offset(dx, dy);
+            open(at) || point.dist_sq(footprint_contact(point, at, (1, 1))) >= radius * radius
+        })
+    })
+}
+
+/// Candidate centers around a work footprint with mirrored face offsets.
+pub fn work_positions(
+    anchor: TilePos,
+    size: (i32, i32),
+    clearance: chassis::fx::Fx,
+    pitch: chassis::fx::Fx,
+) -> Vec<chassis::fx::Vec2Fx> {
+    use chassis::fx::{Fx, Vec2Fx};
+    let x = Fx::from_num(anchor.x);
+    let y = Fx::from_num(anchor.y);
+    let w = Fx::from_num(size.0);
+    let h = Fx::from_num(size.1);
+    let inset = Fx::lit("0.02");
+    let mut points = Vec::new();
+    for (span, horizontal) in [(w, true), (h, false)] {
+        let divisions = (span / pitch).floor().to_num::<i32>().max(1);
+        for i in 0..=divisions + i32::from(divisions % 2 != 0) {
+            // Mirrored offsets share the same division rounding.
+            let offset = if i > divisions {
+                span / Fx::from_num(2)
+            } else {
+                span / Fx::from_num(2)
+                    + (span - inset * Fx::from_num(2)) * Fx::from_num(2 * i - divisions)
+                        / Fx::from_num(2 * divisions)
+            };
+            if horizontal {
+                points.push(Vec2Fx::new(x + offset, y - clearance));
+                points.push(Vec2Fx::new(x + offset, y + h + clearance));
+            } else {
+                points.push(Vec2Fx::new(x - clearance, y + offset));
+                points.push(Vec2Fx::new(x + w + clearance, y + offset));
+            }
+        }
+    }
+    points
+}

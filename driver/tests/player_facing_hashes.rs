@@ -234,6 +234,7 @@ fn harvesting() -> BTreeMap<String, String> {
             if let Event::ScrapDeposited {
                 player: PlayerId(0),
                 amount,
+                ..
             } = event
             {
                 assert!(amount > 0);

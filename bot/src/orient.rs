@@ -75,6 +75,22 @@ impl Orientation {
         )
     }
 
+    pub(crate) fn position(&self, point: chassis::fx::Vec2Fx) -> chassis::fx::Vec2Fx {
+        use chassis::fx::{Fx, Vec2Fx};
+        Vec2Fx::new(
+            if self.flip_x {
+                Fx::from_num(self.width) - point.x
+            } else {
+                point.x
+            },
+            if self.flip_y {
+                Fx::from_num(self.height) - point.y
+            } else {
+                point.y
+            },
+        )
+    }
+
     /// Maps a footprint anchor (top-left) of a `size` building: flipping
     /// a span moves its anchor to what was its far corner.
     pub fn anchor(&self, a: TilePos, size: (i32, i32)) -> TilePos {

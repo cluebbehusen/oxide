@@ -30,6 +30,16 @@ fn bot_sends_a_relief_builder_to_an_orphaned_site() {
             defer: false,
         },
     )]);
+    for _ in 0..100 {
+        if state
+            .buildings()
+            .iter()
+            .any(|b| b.anchor == anchor && b.progress > 0)
+        {
+            break;
+        }
+        state.tick(&[]);
+    }
     state.tick(&[cmd(
         1,
         Command::Stop {

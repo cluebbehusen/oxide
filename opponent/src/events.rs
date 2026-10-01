@@ -121,6 +121,8 @@ mod tests {
                 rejected(0, RejectReason::NotEnoughScrap),
                 stalled(1, 7),
                 Event::ScrapDeposited {
+                    unit: oxide_sim::UnitId(0),
+                    foundry: oxide_sim::BuildingId(0),
                     player: PlayerId(1),
                     amount: 5,
                 },

@@ -577,7 +577,8 @@ fn unit_work_facing(
         UnitWorkState::Harvesting { target, .. }
         | UnitWorkState::Constructing { target, .. }
         | UnitWorkState::Repairing { target, .. }
-        | UnitWorkState::Salvaging { target, .. } => target,
+        | UnitWorkState::Salvaging { target, .. }
+        | UnitWorkState::Unloading { target, .. } => target,
         UnitWorkState::Idle => return None,
     };
     let to_screen_space =

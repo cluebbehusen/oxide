@@ -116,6 +116,8 @@ pub(crate) enum UnitWorkState {
     Repairing { target: Vec2Fx, cycle: f32 },
     /// A scrap worker is actively stripping a friendly structure for scrap.
     Salvaging { target: Vec2Fx, cycle: f32 },
+    /// Cargo remains aboard during the stationary release interval.
+    Unloading { target: Vec2Fx, progress: f32 },
 }
 
 /// The visible fill of a scrap worker's internal cargo bay.
@@ -213,12 +215,21 @@ enum UnitWorkFact {
     Constructing(BuildingId, Vec2Fx),
     Repairing(Vec2Fx),
     Salvaging(Vec2Fx),
+    Unloading(Vec2Fx, u8),
 }
 
 impl UnitAnimationFacts {
     /// Reads the unit's visible mechanisms from the post-tick world.
     pub(crate) fn capture(state: &State, unit: &Unit, moved: bool) -> Self {
-        let work = if let Some(target) = active_harvesting(state, unit) {
+        let unloading = unit.unloading.and_then(|release| {
+            state
+                .building(release.foundry)
+                .filter(|b| unit.work_stopped() && state.in_building_work_reach(unit, b.id))
+                .map(|b| (b.center(), release.elapsed))
+        });
+        let work = if let Some((target, elapsed)) = unloading {
+            UnitWorkFact::Unloading(target, elapsed)
+        } else if let Some(target) = active_harvesting(state, unit) {
             UnitWorkFact::Harvesting(target)
         } else if let Some((site, target)) = active_unit_construction(state, unit) {
             UnitWorkFact::Constructing(site, target)
@@ -487,6 +498,13 @@ impl AnimationController {
             UnitWorkFact::Salvaging(target) => UnitWorkState::Salvaging {
                 target,
                 cycle: clock.cycle(facts.id.0, HARVEST_PERIOD, options.reduced_motion),
+            },
+            UnitWorkFact::Unloading(target, elapsed) => UnitWorkState::Unloading {
+                target,
+                progress: ratio(
+                    u32::from(elapsed),
+                    u32::from(oxide_sim::stats::UNLOAD_TICKS),
+                ),
             },
         };
         let cargo = facts.kind.stats().harvest.map(|harvest| CargoState {
@@ -865,15 +883,11 @@ fn active_harvesting(state: &State, unit: &Unit) -> Option<Vec2Fx> {
     else {
         return None;
     };
-    if unit.carrying >= harvest.capacity {
+    if unit.carrying >= harvest.capacity || unit.unloading.is_some() || !unit.work_stopped() {
         return None;
     }
-    let tile = unit.tile();
-    let active = if state.map().scrap_at(node) > 0 {
-        unit.in_harvest_reach(node, (1, 1))
-    } else {
-        state.map().wreck_at(node) > 0 && tile == node
-    };
+    let active = (state.map().scrap_at(node) > 0 || state.map().wreck_at(node) > 0)
+        && unit.in_work_reach(node, (1, 1));
     active.then_some(node.center())
 }
 
@@ -886,13 +900,14 @@ fn active_unit_construction(state: &State, unit: &Unit) -> Option<(BuildingId, V
             && building.progress > 0
             && building.player == unit.player
             && unit.kind.stats().harvest.is_some()
-            && tile_adjacent_to_building(unit.tile(), building))
+            && unit.work_stopped()
+            && state.in_building_work_reach(unit, building.id))
         .then_some((site, building.center()))
     })
 }
 
 fn active_unit_repair(state: &State, unit: &Unit) -> Option<Vec2Fx> {
-    if !unit.kind.stats().welder || unit.progress == 0 || unit.path.is_some() {
+    if !unit.kind.stats().welder || unit.progress == 0 || !unit.work_stopped() {
         return None;
     }
     match unit.order {
@@ -901,7 +916,7 @@ fn active_unit_repair(state: &State, unit: &Unit) -> Option<Vec2Fx> {
                 && patient.built
                 && patient.hp > 0
                 && patient.hp < patient.stats().max_hp
-                && tile_adjacent_to_building(unit.tile(), patient))
+                && state.in_building_work_reach(unit, patient.id))
             .then_some(patient.center())
         }),
         Order::RepairUnit { unit: patient } => state.unit(patient).and_then(|patient| {
@@ -911,16 +926,16 @@ fn active_unit_repair(state: &State, unit: &Unit) -> Option<Vec2Fx> {
                 && patient.hp < patient.kind.stats().max_hp
                 && patient.path.is_none()
                 && !matches!(patient.order, Order::Found { .. })
-                && unit.pos.dist_sq(patient.pos)
-                    <= oxide_sim::stats::REPAIR_REACH * oxide_sim::stats::REPAIR_REACH)
-                .then_some(patient.pos)
+                && patient.drive_speed == chassis::fx::Fx::ZERO
+                && unit.in_repair_reach(patient))
+            .then_some(patient.pos)
         }),
         _ => None,
     }
 }
 
 fn active_unit_salvage(state: &State, unit: &Unit) -> Option<Vec2Fx> {
-    if unit.kind.stats().harvest.is_none() || unit.progress == 0 || unit.path.is_some() {
+    if unit.kind.stats().harvest.is_none() || unit.progress == 0 || !unit.work_stopped() {
         return None;
     }
     let Order::Salvage { building } = unit.order else {
@@ -931,7 +946,7 @@ fn active_unit_salvage(state: &State, unit: &Unit) -> Option<Vec2Fx> {
             && target.built
             && target.hp > 0
             && target.kind != BuildingKind::Foundry
-            && tile_adjacent_to_building(unit.tile(), target))
+            && state.in_building_work_reach(unit, target.id))
         .then_some(target.center())
     })
 }
@@ -948,22 +963,9 @@ fn active_site_construction(state: &State, building: &Building) -> bool {
             unit.player == building.player
                 && unit.kind.stats().harvest.is_some()
                 && matches!(unit.order, Order::Build { site } if site == building.id)
-                && tile_adjacent_to_building(unit.tile(), building)
+                && unit.work_stopped()
+                && state.in_building_work_reach(unit, building.id)
         })
-}
-
-fn tile_adjacent_to_building(tile: chassis::grid::TilePos, building: &Building) -> bool {
-    let (width, height) = building.stats().size;
-    let anchor = building.anchor;
-    let inside = tile.x >= anchor.x
-        && tile.y >= anchor.y
-        && tile.x < anchor.x + width
-        && tile.y < anchor.y + height;
-    !inside
-        && tile.x >= anchor.x - 1
-        && tile.y >= anchor.y - 1
-        && tile.x <= anchor.x + width
-        && tile.y <= anchor.y + height
 }
 
 #[cfg(test)]
@@ -1355,7 +1357,12 @@ mod tests {
             anchor: Some(node),
             retiring: false,
         };
-        unit.pos = node.offset(-1, 0).center();
+        unit.pos = oxide_sim::geometry::work_approach_point(
+            node.offset(-1, 0),
+            node,
+            (1, 1),
+            unit.kind.stats().radius,
+        );
         unit.carrying = 5;
         unit.progress = 1;
         let facts = UnitAnimationFacts::capture(&state, &unit, false);
@@ -1421,7 +1428,16 @@ mod tests {
             queue: false,
             defer: false,
         })]);
-        state.tick(&[]);
+        for _ in 0..100 {
+            if state
+                .buildings()
+                .iter()
+                .any(|b| b.anchor == anchor && b.progress > 0)
+            {
+                break;
+            }
+            state.tick(&[]);
+        }
 
         let site = state
             .buildings()
@@ -1504,9 +1520,15 @@ mod tests {
             id: UnitId(2),
             player: PlayerId(0),
             kind: UnitKind::Harvester,
-            pos: TilePos::new(9, 10).center(),
+            pos: oxide_sim::geometry::work_approach_point(
+                site.anchor.offset(-1, 0),
+                site.anchor,
+                site.stats().size,
+                UnitKind::Harvester.stats().radius,
+            ),
             hp: UnitKind::Harvester.stats().max_hp,
             carrying: 0,
+            unloading: None,
             cooldowns: [0; MAX_WEAPONS],
             brace_ticks: 0,
             turret_heading: None,
@@ -1523,10 +1545,10 @@ mod tests {
             cargo: Vec::new(),
             landed: false,
         };
-        assert!(tile_adjacent_to_building(builder.tile(), &site));
+        assert!(builder.in_work_reach(site.anchor, site.stats().size));
         assert!(matches!(builder.order, Order::Build { site: id } if id == site.id));
         builder.pos = TilePos::new(1, 1).center();
-        assert!(!tile_adjacent_to_building(builder.tile(), &site));
+        assert!(!builder.in_work_reach(site.anchor, site.stats().size));
     }
 
     #[test]

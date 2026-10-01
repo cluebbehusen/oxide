@@ -21,6 +21,8 @@ an ordinary command source rather than a separate ruleset.
   memory. It owns information access, not controller policy or navigation
   caches.
 - `geometry` shares canonical command and production tie rules with predictors.
+- `building_contact` owns fixed approximate building surfaces for local
+  interaction.
 - `vision` provides visibility and explored-world state.
 
 Queued construction pays for one site immediately. Fogged footprints remain
@@ -46,13 +48,15 @@ mutually exclusive. Completed Repair Bays automatically heal nearby owned units
 before completed buildings, use the ordinary player bank, and skip structures
 with active or queued salvage commitments.
 
-Outcome-relevant geometry is also fair under a map half-turn. Fixed-point vector
-scaling, equal-cost paths, group-goal snapping and spreading, footprint
-doorsteps, ground-production spawns, autonomous harvest replacement, and
-perfectly stacked collision separation use owner-local ranks and query-,
-footprint-, or map-relative frames instead of global entity ids or an absolute
-screen corner. Airworks aircraft spawn at the authoritative center of the open
-roof bay, then obey their ordinary orders from there.
+Tile routing and geometric tie rules are also fair under a map half-turn.
+Building contact follows the fixed artwork, so asymmetric outlines can have
+different frontage after a map half-turn. Fixed-point vector scaling, equal-cost
+paths, group-goal snapping and spreading, footprint doorsteps, ground-production
+spawns, autonomous harvest replacement, and perfectly stacked collision
+separation use owner-local ranks and query-, footprint-, or map-relative frames
+instead of global entity ids or an absolute screen corner. Airworks aircraft
+spawn at the authoritative center of the open roof bay, then obey their ordinary
+orders from there.
 
 ## Development
 
