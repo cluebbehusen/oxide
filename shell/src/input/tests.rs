@@ -5543,6 +5543,72 @@ fn a_landing_that_took_over_a_walk_draws_at_its_click() {
 }
 
 #[test]
+fn an_attack_on_an_even_footprint_draws_at_its_center() {
+    let scenario = oxide_sim::Scenario::from_json(
+        &serde_json::json!({
+            "name": "Even footprint",
+            "seed": 5,
+            "players": [
+                {"name": "Raider", "faction": "ferrous", "scrap": 0, "bot": false},
+                {"name": "Target", "faction": "cupric", "scrap": 0, "bot": true}
+            ],
+            "map": [
+                "########################",
+                "#1.....................#",
+                "#......................#",
+                "#......................#",
+                "#......................#",
+                "#......................#",
+                "#......................#",
+                "#...................2..#",
+                "#......................#",
+                "########################"
+            ],
+            "units": [{"player": 0, "kind": "sentinel", "x": 14, "y": 3}],
+            "buildings": [{"player": 1, "kind": "fabricator", "x": 17, "y": 2}]
+        })
+        .to_string(),
+    )
+    .expect("even footprint parses");
+    let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("builds");
+    let human = game.presentation.human;
+    let raider = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == human)
+        .unwrap()
+        .id;
+    let fabricator = game
+        .state
+        .buildings_at(TilePos::new(17, 2))
+        .next()
+        .unwrap()
+        .id;
+    game.presentation.selection.units = vec![raider];
+    game.state.tick(&[PlayerCommand {
+        player: human,
+        command: Command::Attack {
+            units: vec![raider],
+            target: oxide_sim::Target::Building(fabricator).into(),
+            queue: false,
+        },
+    }]);
+    let unit = game.state.unit(raider).unwrap();
+    assert!(matches!(unit.order, oxide_sim::Order::Attack { .. }));
+    let points: Vec<_> = crumbs(&game, unit)
+        .into_iter()
+        .map(|(index, point, _)| (index, point))
+        .collect();
+    let center = game.presentation.camera.to_screen(vec2(18.0, 3.0));
+    assert_eq!(
+        points,
+        vec![(0, center)],
+        "the marker sits where the footprint's four tiles meet"
+    );
+}
+
+#[test]
 fn the_docks_subject_always_draws_its_trail() {
     // Twelve older harvesters ahead of thirteen newer sentinels: the
     // majority-kind subject sits past the decor cap in raw selection
