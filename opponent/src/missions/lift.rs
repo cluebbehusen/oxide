@@ -262,10 +262,7 @@ impl Missions {
         if have < carry(minimum) {
             return Some(!full);
         }
-        let need = lifting
-            .best_drop()
-            .map_or(minimum, |drop| lifting.need(drop.landing));
-        (have < carry(need)).then_some(!full)
+        (have < carry(lifting.rough_need())).then_some(!full)
     }
 
     fn advance_lift(
@@ -609,6 +606,26 @@ impl<'a> Lifting<'a> {
         })
     }
 
+    /// Army value the lift [`best_drop`](Self::best_drop) would choose needs,
+    /// with the defense around its target standing in for its landing's so no
+    /// landing is ranked.
+    fn rough_need(&self) -> u64 {
+        targets(
+            self.objectives,
+            self.observation,
+            self.map,
+            self.frame,
+            self.memory,
+        )
+        .into_iter()
+        .find(|target| self.landings(*target).next().is_some())
+        .map_or(0, |target| {
+            defense(self.observation, self.memory, target.anchor) * margin(self.profile.difficulty)
+                / 1_000
+        })
+        .max(minimum(self.profile.stance))
+    }
+
     /// Army value a lift to `landing` needs: its known ground defense times
     /// the margin, and never under the stance minimum.
     fn need(&self, landing: TilePos) -> u64 {
@@ -621,39 +638,44 @@ impl<'a> Lifting<'a> {
     /// one reachability check: every ground tile riders could be set down on
     /// lies on the target's island, so none land across a chasm.
     fn landing(&self, target: Objective) -> Option<TilePos> {
+        let size = target.building.base_stats().size;
+        self.landings(target).min_by_key(|tile| {
+            let point = doubled(*tile);
+            let exposure: u64 = self
+                .air
+                .iter()
+                .chain(self.ground)
+                .filter(|hazard| hazard.covers(point))
+                .map(|hazard| hazard.value)
+                .sum();
+            (
+                exposure,
+                (gap(target.anchor, size, *tile, (1, 1)) - LANDING_GAP).abs(),
+                self.frame.rank(self.frame.home, point),
+            )
+        })
+    }
+
+    /// Every tile a lift to `target` could land on.
+    fn landings(&self, target: Objective) -> impl Iterator<Item = TilePos> {
         let map = self.map;
         let size = target.building.base_stats().size;
-        let island = map.component(target.anchor)?;
-        let spread_ok = |tile: TilePos| {
+        let island = map.component(target.anchor);
+        let spread_ok = move |tile: TilePos| {
             (-SPREAD..=SPREAD).all(|dy| {
                 (-SPREAD..=SPREAD).all(|dx| {
                     let near = tile.offset(dx, dy);
                     map.component(near)
-                        .is_none_or(|component| component == island)
+                        .is_none_or(|component| Some(component) == island)
                 })
             })
         };
         (-LANDING_REACH..size.1 + LANDING_REACH)
-            .flat_map(|dy| {
+            .flat_map(move |dy| {
                 (-LANDING_REACH..size.0 + LANDING_REACH).map(move |dx| target.anchor.offset(dx, dy))
             })
-            .filter(|tile| self.open(*tile, island))
-            .filter(|tile| gap(target.anchor, size, *tile, (1, 1)) >= 1 && spread_ok(*tile))
-            .min_by_key(|tile| {
-                let point = doubled(*tile);
-                let exposure: u64 = self
-                    .air
-                    .iter()
-                    .chain(self.ground)
-                    .filter(|hazard| hazard.covers(point))
-                    .map(|hazard| hazard.value)
-                    .sum();
-                (
-                    exposure,
-                    (gap(target.anchor, size, *tile, (1, 1)) - LANDING_GAP).abs(),
-                    self.frame.rank(self.frame.home, point),
-                )
-            })
+            .filter(move |tile| island.is_some_and(|island| self.open(*tile, island)))
+            .filter(move |tile| gap(target.anchor, size, *tile, (1, 1)) >= 1 && spread_ok(*tile))
     }
 
     /// Whether a ground unit could stand on `tile` of `island` as far as the
