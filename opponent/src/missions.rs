@@ -29,10 +29,11 @@ mod strike;
 mod support;
 
 pub(crate) use air::{Hazard, hazards};
-pub(crate) use attack::{SAPPERS, minimum};
+pub(crate) use attack::{margin, minimum};
 pub(crate) use lift::{carrier, carriers_wanted, payload};
 pub(crate) use scouting::points;
 pub(crate) use strike::strike_need;
+pub(crate) use support::{per_tender, wounds};
 
 /// Missions the seat runs at once: a computation bound on the missions each
 /// decision advances, which normal play stays under.

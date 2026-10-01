@@ -1,5 +1,6 @@
-//! Tenders: free ones weld wounded free units on their ground, and the one
-//! an attack takes along welds its members while the army regroups.
+//! Tenders: free ones weld wounded free units on their ground, and those an
+//! attack takes along weld its members while the army regroups. How many a
+//! seat or an attack wants follows the missing health they answer for.
 
 use super::{Missions, mine};
 use crate::decision::Ledger;
@@ -12,6 +13,31 @@ use std::cmp::Reverse;
 
 /// Per mille of its health a unit must miss before a Tender welds it.
 const WELD_DAMAGE: u64 = 100;
+
+/// Scrap of missing health among armed ground units one Tender answers for
+/// at middling support.
+const WOUNDS_PER_TENDER: u64 = 500;
+
+/// Scrap of missing health among the armed ground units of `units`.
+pub(crate) fn wounds<'a>(units: impl Iterator<Item = &'a UnitObs>) -> u64 {
+    units
+        .filter(|unit| {
+            let stats = unit.kind.stats();
+            stats.domain == Domain::Ground && !stats.weapons.is_empty()
+        })
+        .map(|unit| {
+            let stats = unit.kind.stats();
+            let max = u64::from(stats.max_hp.max(1));
+            u64::from(stats.cost) * max.saturating_sub(u64::from(unit.hp)) / max
+        })
+        .sum()
+}
+
+/// Missing health one Tender answers for: less the more the seat leans on
+/// support.
+pub(crate) fn per_tender(support: u8) -> u64 {
+    WOUNDS_PER_TENDER * 1_000 / crate::composition::weight(support)
+}
 
 impl Missions {
     /// Has each idle free Tender weld the free wounded ground unit on its

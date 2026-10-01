@@ -12,17 +12,15 @@ use crate::investments::Investment;
 use crate::map::MapModel;
 use crate::memory::Memory;
 use crate::placement;
-use crate::profile::PersonalityTraits;
+use crate::profile::{PersonalityTraits, ResolvedProfile};
 use crate::workers;
 use chassis::grid::TilePos;
-use oxide_sim::BuildingKind;
 use oxide_sim::observation::{BuildingObs, ObservationData};
-use oxide_sim::stats::{BuildingStats, Domain, FOUNDRY_REPAIR_PRICE, REPAIR_BAY_RADIUS, UnitStats};
+use oxide_sim::stats::{BuildingStats, Domain, FOUNDRY_REPAIR_PRICE, REPAIR_BAY_RADIUS};
+use oxide_sim::{BuildingKind, UnitKind};
+use std::cell::OnceCell;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
-
-/// Buildings worth guarding, most valuable first, at most this many.
-const ASSETS: usize = 6;
 
 /// What one of several Foundries is worth guarding; a lone Foundry is worth
 /// more, and nothing else is worth as much.
@@ -61,9 +59,6 @@ const BAY_WOUNDS: u64 = 300;
 /// Divides a Repair Bay's worth into investment points.
 const BAY_POINTS: u64 = 2;
 
-/// Guarded buildings, most valuable first, a Repair Bay may stand beside.
-const BAY_ASSETS: usize = 2;
-
 /// Divides a defense's worth into investment points.
 const POINTS: u64 = 48;
 
@@ -77,6 +72,40 @@ const UPGRADE_CLEARANCE: i32 = 3;
 /// Ticks after which the opening economy counts as up even if harvesting is
 /// not yet saturated.
 pub(crate) const SETTLE_TICKS: u64 = 600;
+
+/// Tiles around the nearest known enemy on an approach inside which its
+/// companions count toward the threat along it.
+const GROUP_TILES: i64 = 10;
+
+/// What a seat's defenses must stand up to: at least an army at the stance's
+/// minimum along any approach, and the per-mille margin an attack brings over
+/// a defense it means to beat, so guns worth a threat divided by it hold that
+/// threat off.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Stakes {
+    pub(crate) minimum: u64,
+    pub(crate) margin: u64,
+}
+
+impl Stakes {
+    pub(crate) fn of(profile: &ResolvedProfile) -> Self {
+        Stakes {
+            minimum: crate::missions::minimum(profile.stance),
+            margin: crate::missions::margin(profile.difficulty),
+        }
+    }
+}
+
+#[cfg(test)]
+impl Default for Stakes {
+    /// A Standard, Balanced seat's.
+    fn default() -> Self {
+        Stakes {
+            minimum: crate::missions::minimum(oxide_sim::scenario::BotStance::Balanced),
+            margin: crate::missions::margin(oxide_sim::scenario::BotDifficulty::Standard),
+        }
+    }
+}
 
 /// Tiles from a building inside which visible attackers call for an
 /// emergency defense.
@@ -111,8 +140,9 @@ impl Evidence {
 struct Approach {
     /// Points along the way in, in doubled coordinates.
     samples: Vec<(i64, i64)>,
-    /// For each sample, what one more weapon covering it adds: two where
-    /// none covers it yet, one where only one does.
+    /// For each sample, in thousandths, how far own weapons covering it fall
+    /// short of holding off the threat along the way: two thousand where none
+    /// covers it, none once they hold.
     open: Vec<u64>,
     /// For each sample, whether own buildings see it.
     spotted: Vec<bool>,
@@ -147,6 +177,8 @@ impl Asset {
 #[derive(Clone, Copy)]
 struct Cover {
     centre: (i64, i64),
+    /// What the weapon cost.
+    value: u64,
     /// Squared doubled reach, and squared doubled minimum range.
     reach2: i64,
     min2: i64,
@@ -158,6 +190,11 @@ impl Cover {
     fn of(stats: &BuildingStats, kind: BuildingKind, anchor: TilePos) -> Option<Self> {
         let mut cover = Cover {
             centre: footprint_centre(kind, anchor),
+            value: kind
+                .base_stats()
+                .construction
+                .as_ref()
+                .map_or(0, |construction| u64::from(construction.cost)),
             reach2: 0,
             min2: i64::MAX,
             ground: false,
@@ -211,6 +248,7 @@ impl<'a> Guard<'a> {
         memory: &'a Memory,
         settled: bool,
         exposed: bool,
+        stakes: Stakes,
     ) -> Option<Self> {
         let frame = HomeFrame::of(observation, map)?;
         let covers: Vec<Cover> = observation
@@ -248,16 +286,33 @@ impl<'a> Guard<'a> {
                 .iter()
                 .any(|(centre, reach2)| distance2(*centre, point) <= *reach2)
         };
+        let current = in_sight(observation, map);
         let mut assets = assets(observation, frame);
+        let mut walkers: Vec<Walkers> = Vec::new();
+        for asset in &assets {
+            let around = grounds(map, asset.anchor, asset.size);
+            if !walkers.iter().any(|walkers| walkers.grounds == around) {
+                walkers.push(Walkers {
+                    grounds: around,
+                    at: OnceCell::new(),
+                });
+            }
+        }
+        let known = Known {
+            observation,
+            map,
+            memory,
+            frame,
+            exposed,
+            current: &current,
+            bases: OnceCell::new(),
+            aircraft: OnceCell::new(),
+            walkers,
+        };
+        // Many buildings share a threat's source.
+        let mut threats: Vec<((i64, i64), Domain, u64)> = Vec::new();
         for asset in &mut assets {
             let centre = asset.centre;
-            let known = Known {
-                observation,
-                map,
-                memory,
-                frame,
-                exposed,
-            };
             asset.ground = approach(&known, asset, Domain::Ground);
             asset.air = approach(&known, asset, Domain::Air);
             for (domain, approach) in [
@@ -267,19 +322,28 @@ impl<'a> Guard<'a> {
                 let Some(approach) = approach else {
                     continue;
                 };
+                let known = threats
+                    .iter()
+                    .find(|(source, of, _)| *source == approach.source && *of == domain)
+                    .map(|(_, _, value)| *value);
+                let value = known.unwrap_or_else(|| {
+                    let value = threat(memory, observation.tick, approach.source, domain, stakes);
+                    threats.push((approach.source, domain, value));
+                    value
+                });
+                let need = value * 1_000 / stakes.margin.max(1);
                 approach.open = approach
                     .samples
                     .iter()
                     .map(|point| {
-                        match covers
+                        let covered: u64 = covers
                             .iter()
                             .filter(|cover: &&Cover| cover.covers(domain, *point))
-                            .count()
-                        {
-                            0 => 2,
-                            1 => 1,
-                            _ => 0,
-                        }
+                            .map(|cover| cover.value)
+                            .sum();
+                        (2_000 * need.saturating_sub(covered))
+                            .checked_div(need)
+                            .unwrap_or(0)
                     })
                     .collect();
                 approach.spotted = approach.samples.iter().map(|point| seen(*point)).collect();
@@ -329,12 +393,12 @@ impl<'a> Guard<'a> {
             .count()
     }
 
-    /// What a defense of `kind` at `anchor` adds to `asset`'s approach: two
-    /// for each sample nothing covers yet, one for each only one weapon
-    /// covers. A Bastion counts only samples its owner's or an ally's
-    /// buildings see, since it fires no further than something spots for it.
-    /// An Array adds two for each point further along the way in that nothing
-    /// sees yet.
+    /// What a defense of `kind` at `anchor` adds to `asset`'s approach, in
+    /// thousandths: how far the samples it covers still fall short of the
+    /// threat along the way. A Bastion counts only samples its owner's or an
+    /// ally's buildings see, since it fires no further than something spots
+    /// for it. An Array adds two thousand for each point further along the way
+    /// in that nothing sees yet.
     fn gain(
         &self,
         asset: &Asset,
@@ -344,9 +408,10 @@ impl<'a> Guard<'a> {
     ) -> u64 {
         if kind == BuildingKind::Array {
             let centre = footprint_centre(kind, anchor);
-            return 2 * self.watched(asset, |point, seen| {
-                !seen && distance2(centre, point) <= 4 * RADAR * RADAR
-            });
+            return 2_000
+                * self.watched(asset, |point, seen| {
+                    !seen && distance2(centre, point) <= 4 * RADAR * RADAR
+                });
         }
         let Some(reach) = reach else {
             return 0;
@@ -477,8 +542,8 @@ impl<'a> Guard<'a> {
         })
     }
 
-    /// The best spot for a Repair Bay beside one of the most valuable
-    /// buildings: where its aura reaches the most missing value among the
+    /// The best spot for a Repair Bay beside a guarded building: where its
+    /// aura reaches the most missing value among the
     /// seat's wounded ground units and damaged buildings that no Repair Bay
     /// reaches yet, as its anchor and that value.
     fn bay(&self) -> Option<(TilePos, u64)> {
@@ -536,10 +601,24 @@ impl<'a> Guard<'a> {
             return None;
         }
         let mut sites = Vec::new();
-        for asset in self.assets.iter().take(BAY_ASSETS) {
+        let margin = 2 * i64::from(STANDOFF[1] + size.0.max(size.1));
+        for asset in &self.assets {
+            // Every site around the asset lies within this span.
+            let span = Span::of(asset.size, asset.anchor);
+            let around = Span {
+                x: (span.x.0 - margin, span.x.1 + margin),
+                y: (span.y.0 - margin, span.y.1 + margin),
+            };
+            let near: Vec<&(Span, u64)> = wounds
+                .iter()
+                .filter(|(span, _)| around.aura(*span))
+                .collect();
+            if near.iter().map(|(_, missing)| missing).sum::<u64>() < BAY_WOUNDS {
+                continue;
+            }
             for anchor in sites_around(asset, size) {
                 let bay = Span::of(size, anchor);
-                let reached: u64 = wounds
+                let reached: u64 = near
                     .iter()
                     .filter(|(span, _)| bay.aura(*span))
                     .map(|(_, missing)| missing)
@@ -586,7 +665,9 @@ impl<'a> Guard<'a> {
         let size = kind.base_stats().size;
         let reach = Cover::of(kind.base_stats(), kind, TilePos::new(0, 0));
         let bastion = kind == BuildingKind::Bastion;
-        let mut sites = Vec::new();
+        // Each asset with the most any site beside it could be worth: every
+        // sample still open, or every far point nobody sees.
+        let mut candidates: Vec<(u64, &Asset, &Approach)> = Vec::new();
         for asset in self.assets.iter().filter(|asset| guarded(asset)) {
             // Radar watches for aircraft as well as ground units, so an
             // Array faces the air approach where no ground one is known.
@@ -596,17 +677,36 @@ impl<'a> Guard<'a> {
             let Some(approach) = approach else {
                 continue;
             };
-            let open = if kind == BuildingKind::Array {
-                self.watched(asset, |_, seen| !seen) > 0
+            let most = if kind == BuildingKind::Array {
+                2_000 * self.watched(asset, |_, seen| !seen)
             } else {
                 approach
                     .open
                     .iter()
                     .zip(&approach.spotted)
-                    .any(|(open, spotted)| *open > 0 && (!bastion || *spotted))
+                    .filter(|(_, spotted)| !bastion || **spotted)
+                    .map(|(open, _)| *open)
+                    .sum()
             };
-            if !self.usable(approach) || !open {
+            if !self.usable(approach) || most == 0 {
                 continue;
+            }
+            let bound = asset.value * most * self.weight(approach, kind) / 1_000;
+            candidates.push((bound, asset, approach));
+        }
+        candidates.sort_by_key(|(bound, _, _)| Reverse(*bound));
+        // Sites best worth first, then by rank. Once the best placeable one
+        // is worth more than any asset still to come could offer, it wins.
+        let mut sites: BinaryHeap<Reverse<(Reverse<u64>, _, TilePos)>> = BinaryHeap::new();
+        for (bound, asset, approach) in candidates {
+            while let Some(Reverse((Reverse(worth), _, anchor))) = sites.peek() {
+                if !self.placeable(kind, *anchor) {
+                    sites.pop();
+                } else if *worth > bound {
+                    return Some((*anchor, *worth));
+                } else {
+                    break;
+                }
             }
             for anchor in sites_around(asset, size) {
                 let centre = footprint_centre(kind, anchor);
@@ -618,18 +718,24 @@ impl<'a> Guard<'a> {
                 }
                 let worth = asset.value
                     * self.gain(asset, kind, anchor, reach)
-                    * self.weight(approach, kind);
+                    * self.weight(approach, kind)
+                    / 1_000;
                 if worth > 0 {
                     let toward = match approach.evidence {
                         Evidence::Landing | Evidence::Prior => asset.centre,
                         Evidence::Remembered | Evidence::Current => approach.source,
                     };
                     let rank = self.frame.rank(toward, centre);
-                    sites.push((worth, rank, anchor));
+                    sites.push(Reverse((Reverse(worth), rank, anchor)));
                 }
             }
         }
-        first_placeable(sites, |anchor| self.placeable(kind, anchor))
+        while let Some(Reverse((Reverse(worth), _, anchor))) = sites.pop() {
+            if self.placeable(kind, anchor) {
+                return Some((anchor, worth));
+            }
+        }
+        None
     }
 }
 
@@ -664,8 +770,9 @@ pub(crate) fn investments(
     traits: PersonalityTraits,
     settled: bool,
     exposed: bool,
+    stakes: Stakes,
 ) -> Vec<(Investment, u32)> {
-    let Some(guard) = Guard::new(observation, map, memory, settled, exposed) else {
+    let Some(guard) = Guard::new(observation, map, memory, settled, exposed, stakes) else {
         return Vec::new();
     };
     let fortification = u64::from(traits.fortification);
@@ -784,12 +891,17 @@ fn upgrade(guard: &Guard<'_>, building: &BuildingObs, weight: u64) -> Option<(In
                 .into_iter()
                 .filter_map(|domain| Some((domain, asset.approach(domain)?)))
                 .map(|(domain, approach)| {
-                    let covered = approach
+                    // How far the samples it covers still fall short of
+                    // holding: toward two each where it stands alone, none
+                    // once they hold.
+                    let short: u64 = approach
                         .samples
                         .iter()
-                        .filter(|point| cover.covers(domain, **point))
-                        .count() as u64;
-                    asset.value * covered * approach.evidence.weight()
+                        .zip(&approach.open)
+                        .filter(|(point, _)| cover.covers(domain, **point))
+                        .map(|(_, open)| *open)
+                        .sum();
+                    asset.value * short * approach.evidence.weight() / 1_000
                 })
                 .sum::<u64>(),
             None => {
@@ -817,31 +929,34 @@ fn upgrade(guard: &Guard<'_>, building: &BuildingObs, weight: u64) -> Option<(In
     })
 }
 
-/// Buys one defense now beside a valuable building whose approach visible
+/// Buys a defense now beside each valuable building whose approach visible
 /// attackers near it find uncovered: a Turret against ground attackers, a
-/// Flak Turret against aircraft. Only one such defense stands unfinished at
-/// a time.
+/// Flak Turret against aircraft. Each such building has one standing
+/// unfinished at a time.
 pub(crate) fn emergency(
     observation: &ObservationData,
     map: &MapModel,
     frame: HomeFrame,
     memory: &Memory,
+    stakes: Stakes,
     ledger: &mut Ledger,
 ) {
-    let Some(guard) = Guard::new(observation, map, memory, true, true) else {
+    let Some(guard) = Guard::new(observation, map, memory, true, true, stakes) else {
         return;
     };
     for (domain, kind) in [
         (Domain::Ground, BuildingKind::Turret),
         (Domain::Air, BuildingKind::FlakTurret),
     ] {
-        let unfinished = observation
-            .my_buildings
-            .iter()
-            .any(|building| building.kind == kind && !building.built);
-        if unfinished {
-            continue;
-        }
+        let size = kind.base_stats().size;
+        // An unfinished one beside the building already answers it.
+        let unanswered = |asset: &Asset| {
+            !observation.my_buildings.iter().any(|building| {
+                building.kind == kind
+                    && !building.built
+                    && gap(asset.anchor, asset.size, building.anchor, size) <= STANDOFF[1]
+            })
+        };
         let pressed = |asset: &Asset| {
             asset.approach(domain).is_some_and(|approach| {
                 approach.evidence == Evidence::Current
@@ -852,29 +967,97 @@ pub(crate) fn emergency(
                         .all(|point| guard.covered(domain, *point) == 0)
             })
         };
-        if !guard.assets.iter().any(pressed) {
-            continue;
-        }
         let price = kind
             .base_stats()
             .construction
             .as_ref()
             .map_or(u32::MAX, |construction| construction.cost);
-        let Some((anchor, _)) = guard.best_where(kind, pressed) else {
-            continue;
-        };
-        let Ok(allowed) = placement::check(observation, kind, anchor, ledger.planned()) else {
-            continue;
-        };
-        let centre = footprint_centre(kind, anchor);
-        if ledger.spendable() < price {
-            return;
-        }
-        if let Some(builder) = workers::builder(observation, map, frame, anchor, centre, ledger) {
-            ledger.build(builder, kind, anchor, allowed.defer, price);
-            return;
+        for asset in guard
+            .assets
+            .iter()
+            .filter(|asset| pressed(asset) && unanswered(asset))
+        {
+            let Some((anchor, _)) = guard.best_where(kind, |other| other.anchor == asset.anchor)
+            else {
+                continue;
+            };
+            let Ok(allowed) = placement::check(observation, kind, anchor, ledger.planned()) else {
+                continue;
+            };
+            let centre = footprint_centre(kind, anchor);
+            if ledger.spendable() < price {
+                return;
+            }
+            if let Some(builder) = workers::builder(observation, map, frame, anchor, centre, ledger)
+            {
+                ledger.build(builder, kind, anchor, allowed.defer, price);
+            }
         }
     }
+}
+
+/// The value of the armed enemies in `domain` the seat remembers near
+/// `source`, by how sure it is they are still there, and at least an army at
+/// the stance's minimum.
+fn threat(memory: &Memory, now: u64, source: (i64, i64), domain: Domain, stakes: Stakes) -> u64 {
+    let near: u64 = memory
+        .units()
+        .iter()
+        .filter(|unit| {
+            let stats = unit.kind.stats();
+            !stats.weapons.is_empty()
+                && stats.domain == domain
+                && chebyshev(doubled(unit.tile), source) <= 2 * GROUP_TILES
+        })
+        .map(|unit| unit.value(now))
+        .sum();
+    near.max(stakes.minimum)
+}
+
+/// An enemy unit in sight that fights or carries others.
+struct Enemy {
+    at: (i64, i64),
+    domain: Domain,
+    /// Ground beside a ground unit. Few units are in sight, and every guarded
+    /// building asks about each of them.
+    grounds: Vec<u32>,
+}
+
+/// The enemy units in sight that fight or carry others.
+fn in_sight(observation: &ObservationData, map: &MapModel) -> Vec<Enemy> {
+    observation
+        .enemy_units
+        .iter()
+        .filter(|unit| attacker(unit.kind))
+        .map(|unit| {
+            let domain = unit.kind.stats().domain;
+            let grounds = match domain {
+                Domain::Ground => grounds(map, unit.tile, (1, 1)),
+                Domain::Air => Vec::new(),
+            };
+            Enemy {
+                at: doubled(unit.tile),
+                domain,
+                grounds,
+            }
+        })
+        .collect()
+}
+
+/// Whether `kind` fights or carries others.
+fn attacker(kind: UnitKind) -> bool {
+    let stats = kind.stats();
+    !stats.weapons.is_empty() || stats.transport_capacity > 0
+}
+
+/// The ground around a `size` footprint at `anchor`.
+fn grounds(map: &MapModel, anchor: TilePos, size: (i32, i32)) -> Vec<u32> {
+    let mut grounds: Vec<u32> = ring(anchor, size)
+        .filter_map(|tile| map.component(tile))
+        .collect();
+    grounds.sort_unstable();
+    grounds.dedup();
+    grounds
 }
 
 /// The seat's built buildings worth guarding, most valuable first: its
@@ -922,7 +1105,6 @@ fn assets(observation: &ObservationData, frame: HomeFrame) -> Vec<Asset> {
         })
         .collect();
     assets.sort_by_key(|asset| (Reverse(asset.value), frame.rank(frame.home, asset.centre)));
-    assets.truncate(ASSETS);
     assets
 }
 
@@ -934,6 +1116,82 @@ struct Known<'a> {
     frame: HomeFrame,
     /// Whether the seat has no army to speak of.
     exposed: bool,
+    current: &'a [Enemy],
+    /// What an approach falls back on, worked out when one first does, since
+    /// many buildings share it: known enemy buildings and hostile starts,
+    /// where remembered enemy aircraft were, and where remembered enemy
+    /// ground units were beside each ground the seat's buildings stand by.
+    bases: OnceCell<Vec<Base>>,
+    aircraft: OnceCell<Vec<(i64, i64)>>,
+    walkers: Vec<Walkers>,
+}
+
+/// Where remembered enemy ground units beside `grounds` were last seen.
+struct Walkers {
+    grounds: Vec<u32>,
+    at: OnceCell<Vec<(i64, i64)>>,
+}
+
+impl Known<'_> {
+    /// Where remembered enemies that fight or carry others in `domain` were
+    /// last seen, in doubled coordinates: aircraft anywhere, ground units
+    /// beside `grounds`.
+    fn remembered(&self, domain: Domain, grounds: &[u32]) -> &[(i64, i64)] {
+        let attackers = |keep: &dyn Fn(TilePos) -> bool| {
+            self.memory
+                .units()
+                .iter()
+                .filter(|unit| {
+                    attacker(unit.kind) && unit.kind.stats().domain == domain && keep(unit.tile)
+                })
+                .map(|unit| doubled(unit.tile))
+                .collect()
+        };
+        match domain {
+            Domain::Air => self.aircraft.get_or_init(|| attackers(&|_| true)),
+            Domain::Ground => self
+                .walkers
+                .iter()
+                .find(|walkers| walkers.grounds == grounds)
+                .map_or(&[], |walkers| {
+                    walkers.at.get_or_init(|| {
+                        attackers(&|tile| {
+                            ring(tile, (1, 1)).any(|tile| {
+                                self.map
+                                    .component(tile)
+                                    .is_some_and(|component| grounds.contains(&component))
+                            })
+                        })
+                    })
+                }),
+        }
+    }
+
+    fn bases(&self) -> &[Base] {
+        self.bases.get_or_init(|| {
+            self.observation
+                .enemy_buildings
+                .iter()
+                .map(|building| (building.kind, building.anchor))
+                .chain(
+                    self.map
+                        .hostiles(self.observation.me)
+                        .filter_map(|owner| self.map.start(owner))
+                        .map(|anchor| (BuildingKind::Foundry, anchor)),
+                )
+                .map(|(kind, anchor)| Base {
+                    centre: footprint_centre(kind, anchor),
+                    grounds: grounds(self.map, anchor, kind.base_stats().size),
+                })
+                .collect()
+        })
+    }
+}
+
+/// A known enemy building or hostile start.
+struct Base {
+    centre: (i64, i64),
+    grounds: Vec<u32>,
 }
 
 /// Where `asset` is attacked from in `domain`, and the samples along the
@@ -949,63 +1207,34 @@ fn approach(known: &Known<'_>, asset: &Asset, domain: Domain) -> Option<Approach
     let Known {
         observation,
         map,
-        memory,
         frame,
         exposed,
+        current,
+        ..
     } = *known;
     let centre = asset.centre;
-    let grounds: Vec<u32> = ring(asset.anchor, asset.size)
-        .filter_map(|tile| map.component(tile))
-        .collect();
-    let walkable = |anchor: TilePos, size: (i32, i32)| {
-        ring(anchor, size).any(|tile| {
-            map.component(tile)
-                .is_some_and(|component| grounds.contains(&component))
-        })
-    };
-    let threatens = |stats: &UnitStats, tile: TilePos| {
-        stats.domain == domain
-            && (!stats.weapons.is_empty() || stats.transport_capacity > 0)
-            && (domain == Domain::Air || walkable(tile, (1, 1)))
-    };
+    let grounds = grounds(map, asset.anchor, asset.size);
+    let beside = |others: &[u32]| others.iter().any(|component| grounds.contains(component));
     let nearest = |points: &mut dyn Iterator<Item = (i64, i64)>| {
         points.min_by_key(|point| (chebyshev(*point, centre), frame.rank(centre, *point)))
     };
     let current = nearest(
-        &mut observation
-            .enemy_units
+        &mut current
             .iter()
-            .filter(|enemy| threatens(enemy.kind.stats(), enemy.tile))
-            .map(|enemy| doubled(enemy.tile)),
+            .filter(|enemy| {
+                enemy.domain == domain && (domain == Domain::Air || beside(&enemy.grounds))
+            })
+            .map(|enemy| enemy.at),
     );
-    let remembered = || {
-        nearest(
-            &mut memory
-                .units()
-                .iter()
-                .filter(|unit| threatens(unit.kind.stats(), unit.tile))
-                .map(|unit| doubled(unit.tile)),
-        )
-    };
+    let remembered = || nearest(&mut known.remembered(domain, &grounds).iter().copied());
     let prior = || match domain {
         Domain::Ground => {
-            let known: Vec<(BuildingKind, TilePos)> = observation
-                .enemy_buildings
-                .iter()
-                .map(|building| (building.kind, building.anchor))
-                .chain(
-                    map.hostiles(observation.me)
-                        .filter_map(|owner| map.start(owner))
-                        .map(|anchor| (BuildingKind::Foundry, anchor)),
-                )
-                .collect();
             let centres = |walk: bool| {
                 known
+                    .bases()
                     .iter()
-                    .filter(move |(kind, anchor)| {
-                        !walk || walkable(*anchor, kind.base_stats().size)
-                    })
-                    .map(|(kind, anchor)| footprint_centre(*kind, *anchor))
+                    .filter(move |base| !walk || beside(&base.grounds))
+                    .map(|base| base.centre)
             };
             nearest(&mut centres(true))
                 .map(|source| (source, Evidence::Prior))

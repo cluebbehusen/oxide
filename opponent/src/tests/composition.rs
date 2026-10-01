@@ -1,4 +1,5 @@
 use super::*;
+use crate::defenses;
 use crate::investments::{self, Investment, Situation};
 use crate::memory::Memory;
 use crate::{PersonalityTraits, composition};
@@ -180,6 +181,7 @@ fn working_producers_ask_for_another_while_unspent_income_and_need_last() {
             depletion: 0,
             pull: Vec::new(),
             exposed: false,
+            stakes: defenses::Stakes::default(),
             wanted,
         })
         .into_iter()
@@ -362,6 +364,7 @@ fn a_working_foundry_or_crucible_asks_for_another_at_home() {
             depletion: 0,
             pull: Vec::new(),
             exposed: false,
+            stakes: defenses::Stakes::default(),
             wanted,
         })
         .into_iter()

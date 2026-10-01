@@ -95,7 +95,7 @@ the running total and mission state.
   sends.
 - Missions recruit from available units in a fixed order (defend, lift, attack,
   raid), and each takes only the roles it uses: attack takes line, siege and
-  anti-air units, with a Tender and Sappers in support; raid takes Scuttlers,
+  anti-air units, with Tenders and Sappers in support; raid takes Scuttlers,
   Sappers, or ground-attack aircraft too few for a strike; lift takes carriers
   and a payload.
 - Several missions of a kind may run at once on distinct targets, each sized to
@@ -183,11 +183,12 @@ Each behavior is proven by a staged scenario test.
 
 It also covers scouting with a re-scout after unexplained losses, Scuttler
 raids, harvest-line harassment by air, team relief, escorts, repair, harvester
-evacuation, emergency and voluntary static defense, Extractor restoration,
-expansion timing, tech prerequisites, memory of failed objectives, a response to
-stalled production, focus fire at Veteran and Prime, and pulling wounded units
-back between fights. It does no other per-unit micro. It builds every building
-kind, reaches every upgrade tier, and trains every unit its faction fields.
+evacuation, emergency and voluntary static defense sized to hold off the known
+threat, Extractor restoration, expansion timing, tech prerequisites, memory of
+failed objectives, a response to stalled production, focus fire at Veteran and
+Prime, and pulling wounded units back between fights. It does no other per-unit
+micro. It builds every building kind, reaches every upgrade tier, and trains
+every unit its faction fields.
 
 ## Difficulty, stance and personality
 

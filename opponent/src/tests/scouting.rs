@@ -38,6 +38,72 @@ fn a_stale_hostile_start_draws_the_scout() {
     );
 }
 
+/// Three starts: West at (3, 2) and two seats far to the east, out of its
+/// sight.
+const FAR_PAIR: [&str; 16] = [
+    "########################################",
+    "#......................................#",
+    "#..1...............................2...#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#..................................3...#",
+    "#......................................#",
+    "########################################",
+];
+
+/// Three seats without teams on `FAR_PAIR` at tick `STALE`, West holding
+/// `scrap` and `units`: two stale hostile starts.
+fn stale_trio(units: Vec<UnitSpec>, scrap: u32) -> (Scenario, State) {
+    let mut scenario = super::teams::trio([None; 3]);
+    scenario.map = FAR_PAIR.map(str::to_owned).to_vec();
+    scenario.units = units;
+    scenario.players[0].scrap = scrap;
+    let mut state = scenario.build().unwrap();
+    advance_to(&mut state, STALE, &[]);
+    (scenario, state)
+}
+
+#[test]
+fn each_stale_start_draws_its_own_scout() {
+    let kestrel = oxide_sim::stats::Role::Scout.unit_for(Faction::Ferrous);
+    let (scenario, state) = stale_trio(vec![unit(0, kestrel, 8, 9), unit(0, kestrel, 9, 9)], 0);
+    let (commands, trace) = seat(&scenario, 0).act_traced(&state, &mut OwnEvents::default());
+    let missions = scouts(&trace.unwrap().missions);
+    let [first, second] = missions[..] else {
+        panic!("a scout for each start: {missions:?}");
+    };
+    assert_ne!(first.kind, second.kind, "two distinct points");
+    let sent = runs(&commands);
+    for mission in [first, second] {
+        assert!(
+            sent.iter()
+                .any(|(units, goal)| units.len() == 1 && *goal == mission.goal),
+            "{sent:?}"
+        );
+    }
+}
+
+#[test]
+fn a_stale_start_no_scout_holds_trains_another() {
+    let (scenario, state) = stale_trio(vec![unit(0, UnitKind::Scuttler, 8, 9)], 1_000);
+    let foundry = foundries(&state, PlayerId(0))[0];
+    let (commands, trace) = seat(&scenario, 0).act_traced(&state, &mut OwnEvents::default());
+    let missions = scouts(&trace.unwrap().missions);
+    assert_eq!(missions.len(), 1, "premise: {missions:?}");
+    assert!(
+        trains(&commands).contains(&(foundry, UnitKind::Scuttler)),
+        "{commands:?}"
+    );
+}
+
 #[test]
 fn a_seen_point_waits_until_stale() {
     let (scenario, state) = scouting(3_600);

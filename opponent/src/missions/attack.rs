@@ -30,9 +30,6 @@ const CONTACT_TILES: i32 = 8;
 /// Tiles around a target inside which known enemies defend it.
 const DEFENSE_TILES: i32 = 10;
 
-/// Sappers an attack takes along, at most.
-pub(crate) const SAPPERS: usize = 3;
-
 /// Ground distance from the seat's start, in tenths of a tile, inside which
 /// the army gathers.
 const RALLY_REACH: u16 = 80;
@@ -105,6 +102,8 @@ struct Plan<'a> {
     rival: Option<PlayerId>,
     /// Targets another attack holds or this decision gave up on.
     held: Vec<Objective>,
+    /// Missing health among members one Tender answers for.
+    per_tender: u64,
 }
 
 impl Mission {
@@ -154,6 +153,7 @@ impl Missions {
             sappers: Vec::new(),
             rival: scratch.rival,
             held: Vec::new(),
+            per_tender: super::support::per_tender(profile.traits.support),
         };
         let mut given_up: Vec<Objective> = Vec::new();
         for id in self.ids(attacking) {
@@ -199,6 +199,43 @@ impl Missions {
             .into_iter()
             .map(|target| (target.building, target.anchor))
             .collect()
+    }
+
+    /// Sappers the seat's attacks want: one for each known enemy defense
+    /// around the targets of attacks under way and around the best target no
+    /// attack holds yet.
+    pub(crate) fn sappers_wanted(
+        &self,
+        observation: &ObservationData,
+        map: &MapModel,
+        profile: &ResolvedProfile,
+        memory: &Memory,
+        scratch: &Scratch,
+    ) -> usize {
+        let attacking: fn(&Task) -> bool = |task| matches!(task, Task::Attack { .. });
+        let held = self.held(attacking, None, &[]);
+        let plan = Plan {
+            observation,
+            map,
+            frame: scratch.frame,
+            memory,
+            minimum: minimum(profile.stance),
+            margin: margin(profile.difficulty),
+            tenders: Vec::new(),
+            sappers: Vec::new(),
+            rival: scratch.rival,
+            held: held.clone(),
+            per_tender: super::support::per_tender(profile.traits.support),
+        };
+        let mut defenses: Vec<oxide_sim::BuildingId> = held
+            .iter()
+            .filter_map(|target| plan.target(target.owner, target.building, target.anchor))
+            .chain(plan.best(None))
+            .flat_map(|target| plan.defenses(target).map(|building| building.id))
+            .collect();
+        defenses.sort_unstable();
+        defenses.dedup();
+        defenses.len()
     }
 
     /// The free army beyond the home reserve fit to fight, farthest from home
@@ -382,19 +419,29 @@ impl Missions {
                         insert(&mut mission.units, *id);
                     }
                 }
-                let tended = members.iter().any(|unit| unit.kind == UnitKind::Tender);
-                if !tended
-                    && mission.units.len() < UNIT_CAP
-                    && let Some(tender) = plan.tender(rally, component)
-                    && ledger.order(run(vec![tender], rally))
-                {
-                    insert(&mut mission.units, tender);
+                let tending = members
+                    .iter()
+                    .filter(|unit| unit.kind == UnitKind::Tender)
+                    .count();
+                let wanted =
+                    (super::support::wounds(members.iter().copied()) / plan.per_tender).max(1);
+                let room = (wanted as usize)
+                    .saturating_sub(tending)
+                    .min(UNIT_CAP.saturating_sub(mission.units.len()));
+                let tenders = plan.nearest_tenders(rally, component, room);
+                if !tenders.is_empty() && ledger.order(run(tenders.clone(), rally)) {
+                    for tender in tenders {
+                        insert(&mut mission.units, tender);
+                    }
                 }
                 let sapping = members
                     .iter()
                     .filter(|unit| unit.kind == UnitKind::Sapper)
                     .count();
-                let room = SAPPERS
+                // A Sapper for each known defense around the target.
+                let room = plan
+                    .defenses(target)
+                    .count()
                     .saturating_sub(sapping)
                     .min(UNIT_CAP.saturating_sub(mission.units.len()));
                 let sappers = plan.sappers(target, rally, component, room);
@@ -576,14 +623,19 @@ impl<'a> Plan<'a> {
             })
     }
 
-    /// The idle free Tender nearest `rally` that can get to a target whose
-    /// approach lies in `component`.
-    fn tender(&self, rally: TilePos, component: Option<u32>) -> Option<UnitId> {
-        self.tenders
+    /// Idle free Tenders nearest `rally`, at most `room`, that can get to a
+    /// target whose approach lies in `component`.
+    fn nearest_tenders(&self, rally: TilePos, component: Option<u32>, room: usize) -> Vec<UnitId> {
+        let mut tenders: Vec<&UnitObs> = self
+            .tenders
             .iter()
+            .copied()
             .filter(|unit| reaches(self.map, unit, component))
-            .min_by_key(|unit| (self.frame.rank(doubled(rally), doubled(unit.tile)), unit.id))
-            .map(|unit| unit.id)
+            .collect();
+        tenders.sort_by_key(|unit| (self.frame.rank(doubled(rally), doubled(unit.tile)), unit.id));
+        let mut ids: Vec<UnitId> = tenders.iter().take(room).map(|unit| unit.id).collect();
+        ids.sort_unstable();
+        ids
     }
 
     /// The best target other than `skip`, or `None`. Known enemy buildings
@@ -860,7 +912,7 @@ pub(crate) fn minimum(stance: BotStance) -> u64 {
 }
 
 /// Per mille of a target's known defense the army must bring.
-pub(super) fn margin(difficulty: BotDifficulty) -> u64 {
+pub(crate) fn margin(difficulty: BotDifficulty) -> u64 {
     match difficulty {
         BotDifficulty::Scrapheap => 2_500,
         BotDifficulty::Standard => 2_000,

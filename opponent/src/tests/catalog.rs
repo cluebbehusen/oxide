@@ -3,6 +3,7 @@
 //! them gets its turn; the rest are here.
 
 use super::*;
+use crate::defenses;
 use crate::investments::{ADOPT, Investment, Situation, candidates};
 use crate::memory::Memory;
 use crate::profile::PersonalityTraits;
@@ -38,6 +39,7 @@ fn offered(scenario: &Scenario, state: &State, tick: u64) -> Vec<Investment> {
         depletion: 0,
         pull: Vec::new(),
         exposed: true,
+        stakes: defenses::Stakes::default(),
         wanted: vec![
             crate::composition::Role::Line,
             crate::composition::Role::Siege,

@@ -1,6 +1,6 @@
-//! Scouting: one scout at a time looks at the most valuable place the seat
-//! has not seen for a while, hostile starts first. With no scout it asks
-//! production for one.
+//! Scouting: a scout looks at each place the seat has not seen for a while,
+//! the most valuable first, hostile starts first. For places no scout can
+//! take it asks production for more.
 
 use super::Scratch;
 use super::air::{self, Hazard};
@@ -13,6 +13,7 @@ use chassis::grid::TilePos;
 use oxide_sim::observation::{ObservationData, UnitObs};
 use oxide_sim::stats::{Domain, Role};
 use oxide_sim::{BuildingKind, Command, PlayerId, UnitKind};
+use std::cell::OnceCell;
 
 /// Ticks a point may go unseen before it is worth a look.
 const STALE_TICKS: u64 = 1_800;
@@ -57,8 +58,9 @@ pub(crate) fn points(map: &MapModel, me: PlayerId) -> Vec<Point> {
 }
 
 impl Missions {
-    /// Keeps one scout looking at stale places. Returns whether the seat
-    /// wants a scout it does not have, which production then trains.
+    /// Keeps a scout looking at each stale place, no two at one place.
+    /// Returns how many stale places no scout holds or could take, which
+    /// production trains scouts for.
     pub(crate) fn scout(
         &mut self,
         observation: &ObservationData,
@@ -67,9 +69,17 @@ impl Missions {
         memory: &mut Memory,
         scratch: &Scratch,
         ledger: &mut Ledger,
-    ) -> bool {
+    ) -> usize {
         let now = observation.tick;
         let points = points(map, observation.me);
+        let goals = Goals {
+            observation,
+            map,
+            frame,
+            points: &points,
+            ground: OnceCell::new(),
+            air: OnceCell::new(),
+        };
         let hazards = &scratch.air;
         let scouted = memory.scouted(points.len());
         for (point, seen) in points.iter().zip(scouted.iter_mut()) {
@@ -81,11 +91,22 @@ impl Missions {
             }
         }
 
-        let index = self
-            .list
-            .iter()
-            .position(|mission| matches!(mission.task, Task::Scout { .. }));
-        if let Some(index) = index {
+        let scouting: fn(&Task) -> bool = |task| matches!(task, Task::Scout { .. });
+        let held = |missions: &Self, except: Option<u64>| -> Vec<u16> {
+            missions
+                .list
+                .iter()
+                .filter(|mission| Some(mission.id) != except)
+                .filter_map(|mission| match mission.task {
+                    Task::Scout { point } => Some(point),
+                    _ => None,
+                })
+                .collect()
+        };
+        for id in self.ids(scouting) {
+            let Some(index) = self.index_of(id) else {
+                continue;
+            };
             let mission = &self.list[index];
             let Task::Scout { point } = mission.task else {
                 unreachable!("the scout mission's kind");
@@ -94,13 +115,14 @@ impl Missions {
             let arrived = scouted[point] == now;
             let late = now >= mission.since + TRAVEL_TICKS;
             if !(arrived || late) {
-                return false;
+                continue;
             }
             scouted[point] = now;
             let Some(scout) = mine(observation, mission.units[0]) else {
-                return false;
+                continue;
             };
-            match best(observation, map, frame, &points, scouted, scout) {
+            let others = held(self, Some(id));
+            match best(now, frame, &points, scouted, &others, goals.of(scout)) {
                 Some((next, goal)) => {
                     if send(observation, frame, hazards, scout, goal, ledger) {
                         let mission = &mut self.list[index];
@@ -113,13 +135,8 @@ impl Missions {
                     self.list.remove(index);
                 }
             }
-            return false;
         }
 
-        let stale = scouted.iter().any(|seen| now - seen >= STALE_TICKS);
-        if !stale || self.list.len() >= MISSION_CAP {
-            return false;
-        }
         let home = map
             .start(observation.me)
             .and_then(|start| map.component(start));
@@ -139,23 +156,37 @@ impl Missions {
                 unit.id,
             )
         });
-        let chosen = scouts.into_iter().find_map(|scout| {
-            best(observation, map, frame, &points, scouted, scout).map(|best| (scout, best))
-        });
-        if let Some((scout, (point, goal))) = chosen {
-            if send(observation, frame, hazards, scout, goal, ledger) {
-                self.list.push(Mission {
-                    id: self.next,
-                    since: now,
-                    units: vec![scout.id],
-                    goal,
-                    task: Task::Scout { point },
-                });
-                self.next += 1;
+        while self.list.len() < MISSION_CAP {
+            let taken = held(self, None);
+            let chosen = scouts.iter().enumerate().find_map(|(index, scout)| {
+                best(now, frame, &points, scouted, &taken, goals.of(scout))
+                    .map(|best| (index, best))
+            });
+            let Some((index, (point, goal))) = chosen else {
+                break;
+            };
+            let scout = scouts.remove(index);
+            if !send(observation, frame, hazards, scout, goal, ledger) {
+                break;
             }
-            return false;
+            self.list.push(Mission {
+                id: self.next,
+                since: now,
+                units: vec![scout.id],
+                goal,
+                task: Task::Scout { point },
+            });
+            self.next += 1;
         }
-        true
+        let taken = held(self, None);
+        scouted
+            .iter()
+            .enumerate()
+            .filter(|(index, seen)| {
+                now - **seen >= STALE_TICKS
+                    && u16::try_from(*index).is_ok_and(|point| !taken.contains(&point))
+            })
+            .count()
     }
 }
 
@@ -187,40 +218,73 @@ fn send(
     })
 }
 
-/// The stale point `scout` should look at next and where to send it, with
-/// the point's index.
+/// Where a scout goes to see each point, on foot or in the air. A goal does
+/// not depend on which scout goes, so each is worked out once per decision,
+/// when first wanted.
+struct Goals<'a> {
+    observation: &'a ObservationData,
+    map: &'a MapModel,
+    frame: HomeFrame,
+    points: &'a [Point],
+    ground: OnceCell<Vec<Option<TilePos>>>,
+    air: OnceCell<Vec<Option<TilePos>>>,
+}
+
+impl Goals<'_> {
+    /// Each point's goal for `scout`, `None` where it cannot go.
+    fn of(&self, scout: &UnitObs) -> &[Option<TilePos>] {
+        let frame = self.frame;
+        if scout.kind.stats().domain == Domain::Air {
+            self.air.get_or_init(|| {
+                let (width, height) = BuildingKind::Foundry.base_stats().size;
+                self.points
+                    .iter()
+                    .map(|point| {
+                        (0..height)
+                            .flat_map(|dy| (0..width).map(move |dx| point.anchor.offset(dx, dy)))
+                            .min_by_key(|tile| frame.rank(frame.home, doubled(*tile)))
+                    })
+                    .collect()
+            })
+        } else {
+            self.ground.get_or_init(|| {
+                self.points
+                    .iter()
+                    .map(|point| {
+                        approach(
+                            self.map,
+                            self.observation.me,
+                            frame,
+                            BuildingKind::Foundry,
+                            point.anchor,
+                        )
+                    })
+                    .collect()
+            })
+        }
+    }
+}
+
+/// The stale point no other scout holds that a scout with `goals` should look
+/// at next and where to send it, with the point's index.
 fn best(
-    observation: &ObservationData,
-    map: &MapModel,
+    now: u64,
     frame: HomeFrame,
     points: &[Point],
     scouted: &[u64],
-    scout: &UnitObs,
+    held: &[u16],
+    goals: &[Option<TilePos>],
 ) -> Option<(u16, TilePos)> {
-    let now = observation.tick;
-    let flies = scout.kind.stats().domain == Domain::Air;
     points
         .iter()
         .zip(scouted)
+        .zip(goals)
         .enumerate()
-        .filter(|(_, (_, seen))| now - **seen >= STALE_TICKS)
-        .filter_map(|(index, (point, seen))| {
-            let goal = if flies {
-                let (width, height) = BuildingKind::Foundry.base_stats().size;
-                (0..height)
-                    .flat_map(|dy| (0..width).map(move |dx| point.anchor.offset(dx, dy)))
-                    .min_by_key(|tile| frame.rank(frame.home, doubled(*tile)))
-            } else {
-                approach(
-                    map,
-                    observation.me,
-                    frame,
-                    BuildingKind::Foundry,
-                    point.anchor,
-                )
-            }?;
+        .filter(|(_, ((_, seen), _))| now - **seen >= STALE_TICKS)
+        .filter(|(index, _)| u16::try_from(*index).is_ok_and(|point| !held.contains(&point)))
+        .filter_map(|(index, ((point, seen), goal))| {
             let score = (now - seen).min(AGE_CAP) * point.value;
-            Some((index, goal, score))
+            Some((index, (*goal)?, score))
         })
         .max_by_key(|(_, goal, score)| {
             (
