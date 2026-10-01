@@ -744,6 +744,11 @@ pub(crate) fn unit_body_pose(
             {
                 *pose = motion::HarvesterPose::Idle;
             }
+            motion::UnitFrame::Excavator { pose, .. }
+                if matches!(pose, motion::ExcavatorPose::Moving(_)) =>
+            {
+                *pose = motion::ExcavatorPose::Idle;
+            }
             _ => {}
         }
     }
@@ -888,10 +893,12 @@ pub(crate) fn unit_body_pose(
         (source, accent, rotation)
     };
     let worker_phase = match animation.locomotion {
-        crate::presentation_animation::LocomotionState::Rest => 0,
-        crate::presentation_animation::LocomotionState::Moving { cycle } => {
+        crate::presentation_animation::LocomotionState::Moving { cycle }
+            if !tracks::supported(unit.kind) =>
+        {
             motion::tread_phase(cycle)
         }
+        _ => 0,
     };
     let worker_body = sprites.worker_body(
         unit.kind,
