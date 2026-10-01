@@ -328,7 +328,9 @@ enemies, affordability at the seat's income, variety (a kind that already makes
 up most of its role counts for less, so every kind of a role gets its turn), and
 personality. Scouts, carriers, Tenders, Scuttlers and Sappers are bought only
 for scouting, lift, support and raids. A role it needs but cannot train at all
-adds to the investment score of the cheapest building that would let it.
+adds to the investment score of the cheapest building that would let it, and a
+role it can train adds to a producer it lacks whose unit would suit it better,
+as much as saving for that unit is worth.
 
 ## Investments and saving
 

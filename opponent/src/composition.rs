@@ -307,16 +307,70 @@ impl Needs {
             if cost <= spendable || !cheaper {
                 continue;
             }
-            let lacking = u64::try_from(self.need[role as usize].max(0)).unwrap_or(0);
-            let pair = 2 * u64::from(cost);
-            let score = self.weight[role as usize] * lacking.min(pair) / pair;
-            let score = u32::try_from(score).unwrap_or(u32::MAX);
+            let score = self.worth(role, best);
             match premium.iter_mut().find(|(kind, _)| *kind == best) {
                 Some((_, kept)) => *kept = (*kept).max(score),
                 None => premium.push((best, score)),
             }
         }
         premium
+    }
+
+    /// The producer the seat lacks whose best unit for `role` suits it better
+    /// than any unit it can train now, with what saving for that unit is
+    /// worth.
+    fn better_producer(
+        &self,
+        observation: &ObservationData,
+        role: Role,
+    ) -> Option<(BuildingKind, u32)> {
+        let rank = |kind: UnitKind| (self.suitability(kind, role), Reverse(kind.stats().cost));
+        let now = BuildingKind::ALL
+            .into_iter()
+            .filter(|building| {
+                observation
+                    .my_buildings
+                    .iter()
+                    .any(|own| own.kind == *building && own.built)
+            })
+            .flat_map(|building| producible(observation, building))
+            .filter(|kind| self::role(*kind) == Some(role))
+            .map(rank)
+            .max()?;
+        BuildingKind::ALL
+            .into_iter()
+            .filter(|building| building.base_stats().construction.is_some())
+            .filter(|building| {
+                !observation
+                    .my_buildings
+                    .iter()
+                    .any(|own| own.kind == *building)
+            })
+            .flat_map(|building| {
+                building
+                    .base_stats()
+                    .produces
+                    .iter()
+                    .copied()
+                    .filter(move |kind| {
+                        self::role(*kind) == Some(role)
+                            && legal(observation, *kind)
+                            && kind.stats().requires.is_empty()
+                    })
+                    .map(move |kind| (rank(kind), building, kind))
+            })
+            .filter(|(ranked, _, _)| *ranked > now)
+            .max_by_key(|(ranked, _, _)| *ranked)
+            .map(|(_, building, kind)| (building, self.worth(role, kind)))
+    }
+
+    /// How much the seat wants `kind` for `role`: the role's weight, scaled
+    /// by how much of two of it the role lacks.
+    fn worth(&self, role: Role, kind: UnitKind) -> u32 {
+        let lacking = u64::try_from(self.need[role as usize].max(0)).unwrap_or(0);
+        let pair = 2 * u64::from(kind.stats().cost.max(1));
+        let score = self.weight[role as usize] * lacking.min(pair) / pair;
+        u32::try_from(score).unwrap_or(u32::MAX)
     }
 
     /// Counts a unit queued this decision against its role's deficit.
@@ -394,12 +448,17 @@ impl Needs {
     }
 
     /// For each role the seat needs but cannot train at all, the cheapest
-    /// building that would let it, with what that adds to the building's
-    /// investment score.
+    /// building that would let it; for each it can, the producer it lacks
+    /// whose unit would suit the role better than any it can train now. Each
+    /// comes with what it adds to the building's investment score.
     pub(crate) fn pull(&self, observation: &ObservationData) -> Vec<(BuildingKind, u32)> {
         let mut pull = Vec::new();
         for role in ROLES {
-            if self.need[role as usize] <= 0 || trainable(observation, role) {
+            if self.need[role as usize] <= 0 {
+                continue;
+            }
+            if trainable(observation, role) {
+                pull.extend(self.better_producer(observation, role));
                 continue;
             }
             let cheapest = BuildingKind::ALL
@@ -586,6 +645,47 @@ mod tests {
         );
         needs.need[Role::Siege as usize] = 0;
         assert!(needs.premium(&observation, 150).is_empty(), "not wanted");
+    }
+
+    #[test]
+    fn a_short_role_whose_best_unit_needs_a_crucible_pulls_toward_one() {
+        use oxide_sim::observation::BuildingObs;
+        use oxide_sim::{BuildingId, PlayerId, Scenario};
+        let state = Scenario::skirmish().build().unwrap();
+        let mut observation = ObservationData::fog_honest(&state, PlayerId(0));
+        let template = observation.my_buildings[0].clone();
+        observation.my_buildings.push(BuildingObs {
+            id: BuildingId(900),
+            kind: BuildingKind::Fabricator,
+            built: true,
+            ..template.clone()
+        });
+        let mut needs = needs(None, false);
+        needs.income = 3_000;
+        needs.need[Role::Siege as usize] = 2_000;
+        // Lancers and Bombards already make up the siege.
+        for (kind, count) in [(UnitKind::Lancer, 6), (UnitKind::Bombard, 4)] {
+            needs.kinds[index(kind)] = count;
+        }
+        let crucible = |pull: &[(BuildingKind, u32)]| {
+            pull.iter()
+                .find(|(building, _)| *building == BuildingKind::Crucible)
+                .map(|(_, score)| *score)
+        };
+        assert_eq!(
+            crucible(&needs.pull(&observation)),
+            Some(needs.worth(Role::Siege, UnitKind::Avalanche))
+        );
+        observation.my_buildings.push(BuildingObs {
+            id: BuildingId(901),
+            kind: BuildingKind::Crucible,
+            built: false,
+            ..template.clone()
+        });
+        assert_eq!(crucible(&needs.pull(&observation)), None, "one is coming");
+        observation.my_buildings.pop();
+        needs.need[Role::Siege as usize] = 0;
+        assert_eq!(crucible(&needs.pull(&observation)), None, "not wanted");
     }
 
     #[test]
