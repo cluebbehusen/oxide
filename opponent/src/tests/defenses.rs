@@ -733,6 +733,14 @@ fn scuttle_charges_mine_the_way_in_apart_from_each_other() {
 /// The Scuttle Charges West lays where offered, one at a time, until none
 /// is, against `stakes` and what `memory` holds.
 fn minefield(stakes: defenses::Stakes, memory: &Memory) -> Vec<TilePos> {
+    minefield_scored(stakes, memory)
+        .into_iter()
+        .map(|(anchor, _)| anchor)
+        .collect()
+}
+
+/// The charges `minefield` lays, each with the score it was offered at.
+fn minefield_scored(stakes: defenses::Stakes, memory: &Memory) -> Vec<(TilePos, u32)> {
     let mut scenario = settled(0);
     scenario
         .buildings
@@ -741,10 +749,10 @@ fn minefield(stakes: defenses::Stakes, memory: &Memory) -> Vec<TilePos> {
     for _ in 0..32 {
         let state = scenario.build().unwrap();
         let offered = wanted_at(0, true, &scenario, &state, memory, 85, stakes);
-        let Some((anchor, _)) = offer(&offered, BuildingKind::ScuttleCharge) else {
+        let Some((anchor, score)) = offer(&offered, BuildingKind::ScuttleCharge) else {
             return laid;
         };
-        laid.push(anchor);
+        laid.push((anchor, score));
         scenario
             .buildings
             .push(building(0, BuildingKind::ScuttleCharge, anchor.x, anchor.y));
@@ -766,25 +774,57 @@ fn a_minefield_grows_with_the_threat_along_the_way_in() {
     );
 
     let quiet = minefield(defenses::Stakes::default(), &Memory::default());
-    let army: Vec<serde_json::Value> = (0..12)
+    let massed = minefield(defenses::Stakes::default(), &remembered("sentinel", 12));
+    assert!(massed.len() > quiet.len(), "{massed:?} against {quiet:?}");
+}
+
+/// A memory of `count` armed East units of `kind` gathered near East's
+/// start.
+fn remembered(kind: &str, count: usize) -> Memory {
+    let army: Vec<serde_json::Value> = (0..count)
         .map(|index| {
             serde_json::json!({
                 "id": 1_000 + index,
-                "kind": "sentinel",
+                "kind": kind,
                 "tile": {"x": 17 + index % 3, "y": 3 + index / 3},
                 "seen": 0,
             })
         })
         .collect();
-    let memory: Memory = serde_json::from_value(serde_json::json!({
+    serde_json::from_value(serde_json::json!({
         "units": army,
         "failures": [],
         "abandoned": [],
         "scouted": [],
     }))
-    .unwrap();
-    let massed = minefield(defenses::Stakes::default(), &memory);
-    assert!(massed.len() > quiet.len(), "{massed:?} against {quiet:?}");
+    .unwrap()
+}
+
+#[test]
+fn a_light_unit_takes_a_whole_blast() {
+    // Equal health in all: six Sentinels at a blast each, nine Scuttlers at
+    // two thirds of one.
+    let stakes = defenses::Stakes::default();
+    let sentinels = minefield(stakes, &remembered("sentinel", 6));
+    let scuttlers = minefield(stakes, &remembered("scuttler", 9));
+    assert!(
+        scuttlers.len() > sentinels.len(),
+        "{scuttlers:?} against {sentinels:?}"
+    );
+}
+
+#[test]
+fn every_charge_a_field_still_needs_is_worth_saving_for() {
+    let laid = minefield_scored(defenses::Stakes::default(), &remembered("sentinel", 12));
+    let (_, first) = laid[0];
+    assert!(
+        first >= ADOPT,
+        "premise: the field is worth starting: {laid:?}"
+    );
+    assert!(
+        laid.iter().all(|(_, score)| *score >= ADOPT),
+        "saving adopts each charge only at ADOPT or more: {laid:?}"
+    );
 }
 
 #[test]

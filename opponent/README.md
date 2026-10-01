@@ -129,9 +129,8 @@ Foundry: a band about a blast wide, filled from a few tiles out toward the
 threat and spread so one blast does not set off the next. A field holds enough
 charges to deal the health of the threat along the way divided by the margin,
 one body to a blast, the threat counting at least an army of Sentinels at the
-stance's minimum; each further charge is worth the share of that still missing.
-Fortification weighs Barricades; fortification and guile weigh Arrays and
-charges.
+stance's minimum. Fortification weighs Barricades; fortification and guile weigh
+Arrays and charges.
 
 A Repair Bay goes up beside a guarded building where its aura reaches the most
 missing value among the seat's wounded ground units and damaged buildings that

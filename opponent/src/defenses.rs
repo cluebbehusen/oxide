@@ -514,7 +514,7 @@ impl<'a> Guard<'a> {
     /// Foundry whose field still falls short of its threat, nearest the
     /// Foundry, clear of other own charges. A field holds enough charges to
     /// deal the health of the threat along the way divided by the margin, one
-    /// body to a blast; each spot is worth the share of that still missing.
+    /// body to a blast; every spot is worth the same until it does.
     fn charge(&self) -> Option<(TilePos, u64)> {
         let observation = self.observation;
         let charges: Vec<TilePos> = observation
@@ -546,11 +546,7 @@ impl<'a> Guard<'a> {
             if laid >= need {
                 continue;
             }
-            let worth = asset.value
-                * 2
-                * self.weight(approach, BuildingKind::ScuttleCharge)
-                * (need - laid)
-                / need;
+            let worth = asset.value * 2 * self.weight(approach, BuildingKind::ScuttleCharge);
             let Some((row, tile)) = field.first(
                 |tile| {
                     charges
@@ -1036,11 +1032,15 @@ fn threat(memory: &Memory, now: u64, source: (i64, i64), domain: Domain, stakes:
 }
 
 /// The health of the armed ground enemies the seat remembers near `source`,
-/// by how sure it is they are still there, and at least an army of Sentinels
-/// at the stance's minimum.
+/// each rounded up to whole Scuttle Charge blasts since a blast hits one
+/// body, by how sure the seat is they are still there, and at least an army
+/// of Sentinels at the stance's minimum.
 fn health(memory: &Memory, now: u64, source: (i64, i64), stakes: Stakes) -> u64 {
     let near: u64 = armed_near(memory, source, Domain::Ground)
-        .map(|unit| u64::from(unit.kind.stats().max_hp) * u64::from(unit.confidence(now)) / 1_000)
+        .map(|unit| {
+            let blasts = unit.kind.stats().max_hp.div_ceil(CHARGE_DAMAGE);
+            u64::from(blasts * CHARGE_DAMAGE) * u64::from(unit.confidence(now)) / 1_000
+        })
         .sum();
     let sentinel = UnitKind::Sentinel.stats();
     near.max(stakes.minimum * u64::from(sentinel.max_hp) / u64::from(sentinel.cost))
