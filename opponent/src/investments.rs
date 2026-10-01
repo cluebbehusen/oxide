@@ -150,9 +150,12 @@ pub(crate) fn candidates(situation: &Situation<'_>) -> Vec<Candidate> {
             + situation.depletion * 400 / 1_000
             + 300 * u32::from(stranded);
         let reclaimers = u32::try_from(owned(BuildingKind::Reclaimer)).unwrap_or(u32::MAX);
+        // Each Reclaimer owned cuts the next one's score, less as the scrap
+        // around home runs out and Reclaimers replace what it gave.
+        let cut = 100 + 300 * (1_000 - situation.depletion.min(1_000)) / 1_000;
         list.push((
             Investment::Reclaimer,
-            base * 1_000 / (1_000 + 400 * reclaimers),
+            base * 1_000 / (1_000_u32.saturating_add(cut.saturating_mul(reclaimers))),
         ));
         let unupgraded = observation.my_buildings.iter().find(|building| {
             building.kind == BuildingKind::Reclaimer && building.built && building.tier == 0

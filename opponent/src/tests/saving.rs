@@ -1,6 +1,6 @@
 use super::*;
 use crate::defenses;
-use crate::investments::{self, Candidate, Investment, Situation};
+use crate::investments::{self, ADOPT, Candidate, Investment, Situation};
 use crate::memory::Memory;
 use crate::saving::Saving;
 use crate::{PersonalityTraits, Step};
@@ -366,6 +366,48 @@ fn reclaimers_wait_for_the_drip_and_refineries_need_a_fabricator() {
         ),
         Some((Step::Build(BuildingKind::Fabricator), 120))
     );
+}
+
+#[test]
+fn reclaimers_keep_coming_once_the_home_scrap_is_mined_out() {
+    let mut scenario = saturated(200);
+    for x in 6..12 {
+        scenario.buildings.push(BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Reclaimer,
+            x,
+            y: 8,
+        });
+    }
+    let state = scenario.build().unwrap();
+    let mut observation = ObservationData::fog_honest(&state, PlayerId(0));
+    observation.tick = 2_400;
+    let model = map(&scenario);
+    let memory = Memory::default();
+    let score = |depletion: u32| {
+        investments::candidates(&Situation {
+            observation: &observation,
+            map: &model,
+            memory: &memory,
+            traits: traits(),
+            saturation: 1_000,
+            income: 400,
+            depletion,
+            pull: Vec::new(),
+            exposed: false,
+            stakes: defenses::Stakes::default(),
+            severed: false,
+            wanted: Vec::new(),
+        })
+        .into_iter()
+        .find(|candidate| candidate.investment == Investment::Reclaimer)
+        .map_or(0, |candidate| candidate.score)
+    };
+    assert!(
+        score(0) < ADOPT,
+        "six Reclaimers are plenty beside full nodes"
+    );
+    assert!(score(1_000) >= ADOPT, "but not once the nodes are gone");
 }
 
 #[test]
