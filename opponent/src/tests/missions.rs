@@ -436,7 +436,8 @@ fn checkpoints_reject_impossible_missions() {
     );
     assert_eq!(
         with(&|missions| {
-            let list: Vec<serde_json::Value> = (0..17)
+            let over = crate::missions::MISSION_CAP + 1;
+            let list: Vec<serde_json::Value> = (0..over)
                 .map(|id| {
                     let mut copy = mission.clone();
                     copy["id"] = id.into();
@@ -444,7 +445,7 @@ fn checkpoints_reject_impossible_missions() {
                 })
                 .collect();
             missions["list"] = list.into();
-            missions["next"] = 17.into();
+            missions["next"] = over.into();
         }),
         "checkpoint holds too many missions"
     );
