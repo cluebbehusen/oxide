@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 mod batch;
 mod failures;
 mod income;
+mod reactivity;
 pub use batch::{EvaluationBatchOptions, EvaluationBatchResult, evaluate_batch};
 pub use failures::{
     DELIVERY_TICKS, Deliveries, ENGAGE_MARGIN, EXEMPT_STALL_REASON, FAILURE_WINDOW_TICKS,
@@ -29,6 +30,11 @@ pub use failures::{
 pub use income::{
     HARVESTERS_PER_NODE, INCOME_CHECKPOINTS, INCOME_WINDOW_TICKS, IncomeSample, NODES_PER_FOUNDRY,
     saturation_per_minute,
+};
+pub use reactivity::{
+    ANTI_AIR_TICKS, ARTILLERY_TICKS, CLEAR_TILES, DAMAGED, DEFENSE_TICKS, EVACUATE_TICKS,
+    HOME_TILES, PRESS_TILES, RELIEF_TICKS, REPAIR_TICKS, RESTORE_TICKS, RUN_TILES, Reactions,
+    SCOUT_TICKS, STALE_TICKS, SeatReactivity,
 };
 
 const MAX_CANDIDATE_LEN: usize = 128;
@@ -472,6 +478,9 @@ pub struct SeatEvidence {
     pub deliveries: Option<Deliveries>,
     /// Actual income against a saturation estimate at each checkpoint reached.
     pub income: Vec<IncomeSample>,
+    /// Situations the seat met and how it answered them; absent for seats
+    /// without a controller.
+    pub reactivity: Option<SeatReactivity>,
 }
 
 impl SeatEvidence {
@@ -489,6 +498,7 @@ impl SeatEvidence {
             idle_producers: Vec::new(),
             deliveries: None,
             income: Vec::new(),
+            reactivity: None,
         }
     }
 
@@ -726,6 +736,7 @@ fn evaluate_plan_artifact_impl(
     let mut trace_count = 0_u64;
     let watched: Vec<bool> = plan.controllers.iter().map(Option::is_some).collect();
     let mut failures = failures::FailureDetectors::new(watched.iter().copied());
+    let mut reactions = reactivity::ReactivityDetectors::new(watched.iter().copied());
     let mut income = income::IncomeTracker::new(&state, watched);
 
     let mut stall_loop = None;
@@ -751,6 +762,7 @@ fn evaluate_plan_artifact_impl(
         };
         let tick = state.current_tick();
         failures.observe_events(&state, &report.events, tick);
+        reactions.observe_events(&state, &report.events, tick);
         for event in &report.events {
             let Some(sample) = record_evidence_event(&mut evidence, event) else {
                 continue;
@@ -775,16 +787,20 @@ fn evaluate_plan_artifact_impl(
                 if let SeatController::Opponent { controller, .. } = bot
                     && state.accepts_commands(controller.player())
                 {
-                    failures.check_missions(controller.player().0, tick, &controller.missions());
+                    let missions = controller.missions();
+                    failures.check_missions(controller.player().0, tick, &missions);
+                    reactions.check_missions(controller.player().0, tick, &missions);
                 }
             }
             failures.check(&state, tick, &protected);
+            reactions.check(&state, tick);
         }
     }
-    for (seat, ((evidence, report), income)) in evidence
+    for (seat, (((evidence, report), income), reactivity)) in evidence
         .iter_mut()
         .zip(failures.finish())
         .zip(income.finish())
+        .zip(reactions.finish())
         .enumerate()
     {
         evidence.eliminated_at = state.players()[seat].eliminated_at;
@@ -792,6 +808,7 @@ fn evaluate_plan_artifact_impl(
         evidence.idle_producers = report.idle_producers;
         evidence.deliveries = report.deliveries;
         evidence.income = income;
+        evidence.reactivity = reactivity;
     }
 
     replay.meta.ticks = Some(state.current_tick());

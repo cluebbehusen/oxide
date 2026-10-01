@@ -344,7 +344,7 @@ impl Watch {
 
 /// Whether `player` owns anti-air: a unit whose role is to shoot aircraft,
 /// or a completed Flak Turret.
-fn owns_anti_air(state: &State, player: PlayerId) -> bool {
+pub(crate) fn owns_anti_air(state: &State, player: PlayerId) -> bool {
     let unit = state.units().iter().any(|unit| {
         unit.player == player
             && unit.hp > 0
