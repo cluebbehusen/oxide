@@ -564,12 +564,21 @@ visuals cannot reveal unseen events. Authoritative crash trajectories and impact
 timing remain simulation-owned; rendering observes them without adding damage
 rules.
 
-Direct-fire building reports extend their cosmetic trajectory to the solid
-pixels of the rendered body frame. Compact contact regions derive from atlas
-alpha at load time and are shared by all instances. Reports retain visible
-building facts through lethal hits; live targets use their current animation
-frame. Simulation footprint targeting, damage, shell arrivals, and splash
-centers remain authoritative and unchanged.
+Direct-fire reports resolve cosmetic contact against solid rendered body pixels.
+Units use their drawn frame, rotation, interpolation and aircraft lift; visible
+body-frame selection survives lethal removal. Reported unit strikes stay
+anchored to the hit-tick pose while the target moves. Compact contact regions
+derive from atlas alpha at load time and are shared by all instances. Projectile
+launch history retains recorded flight duration and identified targets through
+arrival. When launch history is absent after checkpoint restoration, payload
+recipients are reconstructed from visible world bodies at the fixed impact
+point; landing reports can also use pre-removal bodies. No historical ticks are
+executed. Unguided unit contacts stay on the original course and require the
+nominal impact to overlap the body; bomb spread and ground misses retain their
+positions. Surface flashes, fragments, dust and scorch marks share the cosmetic
+contact point. Weapon and recipient profiles distinguish rail, orb, mortar,
+shell, rocket and bomb contacts. Simulation targeting, damage, shell arrivals
+and splash centers remain unchanged.
 
 `assets` loads the generated sprite atlas. Its manifest covers every resolved
 sprite key; the renderer does not load individual sprite textures. Optional rigs

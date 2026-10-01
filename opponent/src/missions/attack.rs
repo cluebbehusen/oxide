@@ -30,9 +30,6 @@ const CONTACT_TILES: i32 = 8;
 /// Tiles around a target inside which known enemies defend it.
 const DEFENSE_TILES: i32 = 10;
 
-/// Sappers an attack takes along, at most.
-pub(crate) const SAPPERS: usize = 3;
-
 /// Ground distance from the seat's start, in tenths of a tile, inside which
 /// the army gathers.
 const RALLY_REACH: u16 = 80;
@@ -103,6 +100,10 @@ struct Plan<'a> {
     sappers: Vec<&'a UnitObs>,
     /// The enemy to go after first, when there are several.
     rival: Option<PlayerId>,
+    /// Targets another attack holds or this decision gave up on.
+    held: Vec<Objective>,
+    /// Missing health among members one Tender answers for.
+    per_tender: u64,
 }
 
 impl Mission {
@@ -127,46 +128,46 @@ impl Mission {
 }
 
 impl Missions {
-    /// Launches an attack when the free army can beat a target's known
-    /// defense now, or advances the one under way.
+    /// Advances every attack under way, then launches another while the free
+    /// army beyond the home reserve can beat the known defense of a target no
+    /// attack holds. Returns the targets given up on.
     pub(crate) fn attack(
         &mut self,
         observation: &ObservationData,
         map: &MapModel,
         profile: &ResolvedProfile,
-        memory: &mut Memory,
+        memory: &Memory,
         scratch: &Scratch,
         ledger: &mut Ledger,
-    ) {
-        let frame = scratch.frame;
+    ) -> Vec<(BuildingKind, TilePos)> {
         let now = observation.tick;
-        let minimum = minimum(profile.stance);
-        let free: Vec<&UnitObs> = self
-            .available(observation, false)
-            .into_iter()
-            .filter_map(|id| mine(observation, id))
-            .collect();
-        let fit: Vec<&UnitObs> = free
-            .iter()
-            .copied()
-            .filter(|unit| eligible(unit, FIT))
-            .collect();
-        let fit = self
-            .spare(observation, map, scratch.reserve)
-            .outermost(map, frame, fit);
-        let spare = |kind: UnitKind| -> Vec<&UnitObs> {
-            free.iter()
-                .copied()
-                .filter(|unit| unit.kind == kind && unit.idle)
-                .collect()
+        let attacking: fn(&Task) -> bool = |task| matches!(task, Task::Attack { .. });
+        let mut plan = Plan {
+            observation,
+            map,
+            frame: scratch.frame,
+            memory,
+            minimum: minimum(profile.stance),
+            margin: margin(profile.difficulty),
+            tenders: Vec::new(),
+            sappers: Vec::new(),
+            rival: scratch.rival,
+            held: Vec::new(),
+            per_tender: super::support::per_tender(profile.traits.support),
         };
-        let tenders = spare(UnitKind::Tender);
-        let sappers = spare(UnitKind::Sapper);
-        let rival = self.rival(scratch, observation, map, profile.traits);
-        let index = self
-            .list
-            .iter()
-            .position(|mission| matches!(mission.task, Task::Attack { .. }));
+        let mut given_up: Vec<Objective> = Vec::new();
+        for id in self.ids(attacking) {
+            let Some(index) = self.index_of(id) else {
+                continue;
+            };
+            let fit = self.refresh(&mut plan, scratch);
+            plan.held = self.held(attacking, Some(id), &given_up);
+            if let Some(failed) = self.advance(index, &plan, &fit, ledger) {
+                given_up.push(failed);
+            }
+        }
+
+        let mut fit = self.refresh(&mut plan, scratch);
         let free: u64 = fit.iter().map(|unit| value(unit)).sum();
         let mut producers = observation
             .my_buildings
@@ -177,45 +178,109 @@ impl Missions {
             })
             .peekable();
         let idle = producers.peek().is_some() && producers.all(|(_, queue)| queue.is_empty());
-        if index.is_some() || !(free >= minimum || idle) {
-            self.waiting = None;
-        } else {
+        if free >= plan.minimum || idle {
             self.waiting.get_or_insert(now);
+        } else {
+            self.waiting = None;
         }
         let waited = self.waiting.map_or(0, |since| (now - since) / WAIT_STEP);
-        let margin = margin(profile.difficulty)
+        plan.margin = plan
+            .margin
             .saturating_sub(waited * WAIT_RELIEF)
             .max(MARGIN_FLOOR);
+        loop {
+            plan.held = self.held(attacking, None, &given_up);
+            if !self.launch(&plan, &fit, ledger) {
+                break;
+            }
+            fit = self.refresh(&mut plan, scratch);
+        }
+        given_up
+            .into_iter()
+            .map(|target| (target.building, target.anchor))
+            .collect()
+    }
+
+    /// Sappers the seat's attacks want: one for each known enemy defense
+    /// around the targets of attacks under way and around the best target no
+    /// attack holds yet.
+    pub(crate) fn sappers_wanted(
+        &self,
+        observation: &ObservationData,
+        map: &MapModel,
+        profile: &ResolvedProfile,
+        memory: &Memory,
+        scratch: &Scratch,
+    ) -> usize {
+        let attacking: fn(&Task) -> bool = |task| matches!(task, Task::Attack { .. });
+        let held = self.held(attacking, None, &[]);
         let plan = Plan {
             observation,
             map,
-            frame,
+            frame: scratch.frame,
             memory,
-            minimum,
-            margin,
-            tenders,
-            sappers,
-            rival,
+            minimum: minimum(profile.stance),
+            margin: margin(profile.difficulty),
+            tenders: Vec::new(),
+            sappers: Vec::new(),
+            rival: scratch.rival,
+            held: held.clone(),
+            per_tender: super::support::per_tender(profile.traits.support),
         };
-        match index {
-            None => self.launch(&plan, &fit, ledger),
-            Some(index) => {
-                if let Some(failed) = self.advance(index, &plan, &fit, ledger) {
-                    memory.abandon(failed.0, failed.1, now);
-                }
-            }
-        }
+        // Remembered buildings share one id, so a defense is told apart by
+        // where it stands.
+        let mut defenses: Vec<_> = held
+            .iter()
+            .filter_map(|target| plan.target(target.owner, target.building, target.anchor))
+            .chain(plan.best(None))
+            .flat_map(|target| {
+                plan.defenses(target)
+                    .map(|building| (building.player, building.kind, building.anchor))
+            })
+            .collect();
+        defenses.sort_unstable();
+        defenses.dedup();
+        defenses.len()
     }
 
-    fn launch(&mut self, plan: &Plan<'_>, fit: &[&UnitObs], ledger: &mut Ledger) {
+    /// The free army beyond the home reserve fit to fight, farthest from home
+    /// first, and the idle free Tenders and Sappers into `plan`, as earlier
+    /// missions of this decision left them.
+    fn refresh<'a>(&self, plan: &mut Plan<'a>, scratch: &Scratch) -> Vec<&'a UnitObs> {
+        let (observation, map) = (plan.observation, plan.map);
+        let free: Vec<&UnitObs> = self
+            .available(observation, false)
+            .into_iter()
+            .filter_map(|id| mine(observation, id))
+            .collect();
+        let idle = |kind: UnitKind| -> Vec<&'a UnitObs> {
+            free.iter()
+                .copied()
+                .filter(|unit| unit.kind == kind && unit.idle)
+                .collect()
+        };
+        plan.tenders = idle(UnitKind::Tender);
+        plan.sappers = idle(UnitKind::Sapper);
+        let fit: Vec<&UnitObs> = free
+            .iter()
+            .copied()
+            .filter(|unit| eligible(unit, FIT))
+            .collect();
+        self.spare(observation, map, scratch.reserve)
+            .outermost(map, scratch.frame, fit)
+    }
+
+    /// Launches an attack on the best target no other attack holds when the
+    /// free army can beat its known defense. Returns whether one launched.
+    fn launch(&mut self, plan: &Plan<'_>, fit: &[&UnitObs], ledger: &mut Ledger) -> bool {
         if self.list.len() >= MISSION_CAP {
-            return;
+            return false;
         }
         let Some(target) = plan.best(None) else {
-            return;
+            return false;
         };
         let Some(rally) = plan.rally(target.owner) else {
-            return;
+            return false;
         };
         let need = plan.need(target);
         let component = plan.map.component(target.approach);
@@ -225,37 +290,40 @@ impl Missions {
             .filter(|unit| reaches(plan.map, unit, component))
             .collect();
         if fit.iter().map(|unit| striking(unit)).sum::<u64>() < need {
-            return;
+            return false;
         }
         let recruits = recruit(plan.frame, &fit, rally, need, UNIT_CAP);
-        if ledger.order(hunt(recruits.clone(), rally)) {
-            self.list.push(Mission {
-                id: self.next,
-                since: plan.observation.tick,
-                units: recruits,
-                goal: rally,
-                task: Task::Attack {
-                    target: target.objective(),
-                    phase: AttackPhase::Gather,
-                },
-            });
-            self.next += 1;
-            self.waiting = None;
+        if recruits.is_empty() || !ledger.order(hunt(recruits.clone(), rally)) {
+            return false;
         }
+        self.list.push(Mission {
+            id: self.next,
+            since: plan.observation.tick,
+            units: recruits,
+            goal: rally,
+            task: Task::Attack {
+                target: target.objective(),
+                phase: AttackPhase::Gather,
+            },
+        });
+        self.next += 1;
+        self.waiting = None;
+        true
     }
 
-    /// Moves the attack at `index` through its phases. Returns the target's
-    /// kind and anchor when the attack gave up on it.
+    /// Moves the attack at `index` through its phases. Returns the target
+    /// when the attack gave up on it.
     fn advance(
         &mut self,
         index: usize,
         plan: &Plan<'_>,
         fit: &[&UnitObs],
         ledger: &mut Ledger,
-    ) -> Option<(BuildingKind, TilePos)> {
+    ) -> Option<Objective> {
         let observation = plan.observation;
         let now = observation.tick;
         let mission = &self.list[index];
+        let id = mission.id;
         let Task::Attack {
             target:
                 Objective {
@@ -281,19 +349,9 @@ impl Missions {
                 .collect();
             if !wounded.is_empty() && ledger.order(run(wounded.clone(), rally)) {
                 self.release(&wounded);
-                if !self
-                    .list
-                    .iter()
-                    .any(|mission| matches!(mission.task, Task::Attack { .. }))
-                {
-                    return None;
-                }
             }
         }
-        let index = self
-            .list
-            .iter()
-            .position(|mission| matches!(mission.task, Task::Attack { .. }))?;
+        let index = self.index_of(id)?;
 
         let current = plan.target(owner, building, anchor);
         let target = if regrouping {
@@ -366,19 +424,29 @@ impl Missions {
                         insert(&mut mission.units, *id);
                     }
                 }
-                let tended = members.iter().any(|unit| unit.kind == UnitKind::Tender);
-                if !tended
-                    && mission.units.len() < UNIT_CAP
-                    && let Some(tender) = plan.tender(rally, component)
-                    && ledger.order(run(vec![tender], rally))
-                {
-                    insert(&mut mission.units, tender);
+                let tending = members
+                    .iter()
+                    .filter(|unit| unit.kind == UnitKind::Tender)
+                    .count();
+                let wanted =
+                    (super::support::wounds(members.iter().copied()) / plan.per_tender).max(1);
+                let room = (wanted as usize)
+                    .saturating_sub(tending)
+                    .min(UNIT_CAP.saturating_sub(mission.units.len()));
+                let tenders = plan.nearest_tenders(rally, component, room);
+                if !tenders.is_empty() && ledger.order(run(tenders.clone(), rally)) {
+                    for tender in tenders {
+                        insert(&mut mission.units, tender);
+                    }
                 }
                 let sapping = members
                     .iter()
                     .filter(|unit| unit.kind == UnitKind::Sapper)
                     .count();
-                let room = SAPPERS
+                // A Sapper for each known defense around the target.
+                let room = plan
+                    .defenses(target)
+                    .count()
                     .saturating_sub(sapping)
                     .min(UNIT_CAP.saturating_sub(mission.units.len()));
                 let sappers = plan.sappers(target, rally, component, room);
@@ -423,7 +491,7 @@ impl Missions {
                     && ledger.order(run(mission.units.clone(), rally))
                 {
                     mission.attack_phase(target, AttackPhase::Recover, now, Some(rally));
-                    return Some((target.building, target.anchor));
+                    return Some(target.objective());
                 }
                 None
             }
@@ -450,7 +518,7 @@ impl Missions {
                 if strength < plan.opposition(&members) {
                     if ledger.order(run(army.clone(), rally)) {
                         mission.attack_phase(target, AttackPhase::Withdraw, now, Some(rally));
-                        return Some((target.building, target.anchor));
+                        return Some(target.objective());
                     }
                     return None;
                 }
@@ -472,7 +540,7 @@ impl Missions {
                 if ledger.order(run(army, rally)) {
                     mission.attack_phase(target, AttackPhase::Recover, now, Some(rally));
                     if standing {
-                        return Some((target.building, target.anchor));
+                        return Some(target.objective());
                     }
                 }
                 None
@@ -560,14 +628,19 @@ impl<'a> Plan<'a> {
             })
     }
 
-    /// The idle free Tender nearest `rally` that can get to a target whose
-    /// approach lies in `component`.
-    fn tender(&self, rally: TilePos, component: Option<u32>) -> Option<UnitId> {
-        self.tenders
+    /// Idle free Tenders nearest `rally`, at most `room`, that can get to a
+    /// target whose approach lies in `component`.
+    fn nearest_tenders(&self, rally: TilePos, component: Option<u32>, room: usize) -> Vec<UnitId> {
+        let mut tenders: Vec<&UnitObs> = self
+            .tenders
             .iter()
+            .copied()
             .filter(|unit| reaches(self.map, unit, component))
-            .min_by_key(|unit| (self.frame.rank(doubled(rally), doubled(unit.tile)), unit.id))
-            .map(|unit| unit.id)
+            .collect();
+        tenders.sort_by_key(|unit| (self.frame.rank(doubled(rally), doubled(unit.tile)), unit.id));
+        let mut ids: Vec<UnitId> = tenders.iter().take(room).map(|unit| unit.id).collect();
+        ids.sort_unstable();
+        ids
     }
 
     /// The best target other than `skip`, or `None`. Known enemy buildings
@@ -585,6 +658,7 @@ impl<'a> Plan<'a> {
             targets
                 .into_iter()
                 .filter(differs)
+                .filter(|target| !self.held.contains(&target.objective()))
                 .filter(|target| !self.memory.abandoned(target.building, target.anchor, now))
                 .max_by_key(|target| {
                     (
@@ -843,7 +917,7 @@ pub(crate) fn minimum(stance: BotStance) -> u64 {
 }
 
 /// Per mille of a target's known defense the army must bring.
-pub(super) fn margin(difficulty: BotDifficulty) -> u64 {
+pub(crate) fn margin(difficulty: BotDifficulty) -> u64 {
     match difficulty {
         BotDifficulty::Scrapheap => 2_500,
         BotDifficulty::Standard => 2_000,

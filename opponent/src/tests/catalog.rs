@@ -3,6 +3,7 @@
 //! them gets its turn; the rest are here.
 
 use super::*;
+use crate::defenses;
 use crate::investments::{ADOPT, Investment, Situation, candidates};
 use crate::memory::Memory;
 use crate::profile::PersonalityTraits;
@@ -38,6 +39,14 @@ fn offered(scenario: &Scenario, state: &State, tick: u64) -> Vec<Investment> {
         depletion: 0,
         pull: Vec::new(),
         exposed: true,
+        stakes: defenses::Stakes::default(),
+        severed: false,
+        wanted: vec![
+            crate::composition::Role::Line,
+            crate::composition::Role::Siege,
+            crate::composition::Role::AntiAir,
+            crate::composition::Role::AirStrike,
+        ],
     };
     candidates(&situation)
         .into_iter()
@@ -173,12 +182,12 @@ fn every_building_and_upgrade_is_bought_somewhere() {
 fn every_unit_outside_the_army_is_trained_somewhere() {
     let mut rows: Vec<(UnitKind, bool)> = Vec::new();
 
-    rows.push((
-        UnitKind::Harvester,
-        trained(&arena(200), 0, UnitKind::Harvester),
-    ));
+    let mut armed = arena(200);
+    armed.units.extend(standing_army(0));
+    rows.push((UnitKind::Harvester, trained(&armed, 0, UnitKind::Harvester)));
 
     let mut excavating = arena(1_000);
+    excavating.units.extend(standing_army(0));
     excavating
         .buildings
         .push(building(0, BuildingKind::Fabricator, 3, 1));

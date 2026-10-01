@@ -7,7 +7,7 @@
 
 use super::Scratch;
 use super::air::{self, Hazard};
-use super::attack::{FIT, defense, healthy, minimum, striking};
+use super::attack::{FIT, defense, healthy, margin, minimum, striking};
 use super::{
     MISSION_CAP, Mission, Missions, Objective, RaidPhase, Task, approach, hunt, mine, run,
     standing, value,
@@ -21,15 +21,9 @@ use crate::profile::ResolvedProfile;
 use chassis::grid::TilePos;
 
 use oxide_sim::observation::{BuildingObs, ObservationData, UnitObs};
+use oxide_sim::stats::SAPPER_STRUCTURE_DAMAGE;
 use oxide_sim::{AttackTarget, BuildingKind, Command, RememberedBuilding, UnitId, UnitKind};
 use std::cmp::Reverse;
-
-/// Raiders a raid starts with, at least. A Scuttler or bomber raid turns
-/// back once it has fewer.
-const RAIDERS: usize = 2;
-
-/// Scuttlers or Sappers one raid takes, at most.
-const RAIDER_CAP: usize = 4;
 
 /// Health, per mille, under which a Scuttler or bomber raid turns back.
 const WOUNDED: u32 = 500;
@@ -81,13 +75,17 @@ struct Foray<'a> {
     air: &'a [Hazard],
     /// What offense leaves at home.
     reserve: [u64; 2],
+    /// Targets another raid holds or this decision is done with.
+    held: Vec<Objective>,
+    /// Per mille of a target's known guard a raid must bring.
+    margin: u64,
 }
 
 impl Missions {
-    /// Sends free raiders at an enemy harvest line or lightly defended
-    /// building while no defense is under way, or advances the raid under way.
-    /// Returns a target the raid is done with, so the seat leaves it for a
-    /// while.
+    /// Advances every raid under way, then, while no defense is under way,
+    /// sends more free raiders at enemy harvest lines or lightly defended
+    /// buildings no raid holds. Returns the targets raids are done with, so
+    /// the seat leaves them for a while.
     pub(crate) fn raid(
         &mut self,
         observation: &ObservationData,
@@ -96,26 +94,22 @@ impl Missions {
         memory: &Memory,
         scratch: &Scratch,
         ledger: &mut Ledger,
-    ) -> Option<(BuildingKind, TilePos)> {
+    ) -> Vec<(BuildingKind, TilePos)> {
         let frame = scratch.frame;
         let raiding = self
             .list
             .iter()
             .any(|mission| matches!(mission.task, Task::Raid { .. }));
-        let free = self.available(observation, false);
-        let ready = [Raider::Sapper, Raider::Scuttler, Raider::Bomber]
+        let ready = self
+            .available(observation, false)
             .into_iter()
-            .any(|kind| {
-                free.iter()
-                    .filter_map(|id| mine(observation, *id))
-                    .filter(|unit| raider(unit.kind) == Some(kind))
-                    .count()
-                    >= RAIDERS
-            });
+            .filter_map(|id| mine(observation, id))
+            .any(|unit| raider(unit.kind).is_some());
         if !raiding && !ready {
-            return None;
+            return Vec::new();
         }
-        let foray = Foray {
+        let raiding_kind: fn(&Task) -> bool = |task| matches!(task, Task::Raid { .. });
+        let mut foray = Foray {
             observation,
             map,
             frame,
@@ -123,28 +117,69 @@ impl Missions {
             ground: &scratch.ground,
             air: &scratch.air,
             reserve: scratch.reserve,
+            held: Vec::new(),
+            margin: margin(profile.difficulty),
         };
-        match self
-            .list
-            .iter()
-            .position(|mission| matches!(mission.task, Task::Raid { .. }))
-        {
-            None => {
-                self.form_raid(&foray, minimum(profile.stance), ledger);
-                None
+        let mut done: Vec<Objective> = Vec::new();
+        for id in self.ids(raiding_kind) {
+            let Some(index) = self.index_of(id) else {
+                continue;
+            };
+            foray.held = self.held(raiding_kind, Some(id), &done);
+            if let Some(target) = self.advance_raid(index, &foray, ledger) {
+                done.push(target);
             }
-            Some(index) => self.advance_raid(index, &foray, ledger),
         }
+        loop {
+            foray.held = self.held(raiding_kind, None, &done);
+            if !self.form_raid(&foray, minimum(profile.stance), ledger) {
+                break;
+            }
+        }
+        done.into_iter()
+            .map(|target| (target.building, target.anchor))
+            .collect()
     }
 
-    fn form_raid(&mut self, foray: &Foray<'_>, minimum: u64, ledger: &mut Ledger) {
+    /// Scuttlers a raid on the least guarded known harvest line not raided
+    /// lately needs: its known guard by the margin, at least one. None
+    /// while no such line is known.
+    pub(crate) fn raid_squad(
+        &self,
+        observation: &ObservationData,
+        map: &MapModel,
+        profile: &ResolvedProfile,
+        memory: &Memory,
+        scratch: &Scratch,
+    ) -> usize {
+        let foray = Foray {
+            observation,
+            map,
+            frame: scratch.frame,
+            memory,
+            ground: &scratch.ground,
+            air: &scratch.air,
+            reserve: scratch.reserve,
+            held: Vec::new(),
+            margin: margin(profile.difficulty),
+        };
+        foray
+            .target(Raider::Scuttler, u64::MAX)
+            .map_or(0, |(_, _, need)| {
+                need.div_ceil(u64::from(UnitKind::Scuttler.stats().cost)) as usize
+            })
+    }
+
+    /// Sends the first raider kind with a squad beyond the reserve at a target
+    /// no raid holds. Returns whether a raid formed.
+    fn form_raid(&mut self, foray: &Foray<'_>, minimum: u64, ledger: &mut Ledger) -> bool {
         let observation = foray.observation;
         let defending = self
             .list
             .iter()
             .any(|mission| matches!(mission.task, Task::Defend { .. }));
         if self.list.len() >= MISSION_CAP || defending {
-            return;
+            return false;
         }
         let free: Vec<&UnitObs> = self
             .available(observation, false)
@@ -163,19 +198,25 @@ impl Missions {
             let strength: u64 = squad.iter().map(|unit| value(unit)).sum();
             // Bombers enough for a strike are the strike's.
             let striking: u64 = squad.iter().map(|unit| striking(unit)).sum();
-            if squad.len() < RAIDERS || (kind == Raider::Bomber && striking >= minimum) {
+            if squad.is_empty() || (kind == Raider::Bomber && striking >= minimum) {
                 continue;
             }
-            let Some((target, goal)) = foray.target(kind, strength) else {
+            let Some((target, goal, need)) = foray.target(kind, strength) else {
                 continue;
             };
+            // The raiders nearest the goal until they are worth its need.
             let mut squad = squad;
             squad
                 .sort_by_key(|unit| (foray.frame.rank(doubled(goal), doubled(unit.tile)), unit.id));
-            if kind != Raider::Bomber {
-                squad.truncate(RAIDER_CAP);
+            let mut have = 0;
+            let mut units: Vec<UnitId> = Vec::new();
+            for unit in squad {
+                if have >= need {
+                    break;
+                }
+                have += value(unit);
+                units.push(unit.id);
             }
-            let mut units: Vec<UnitId> = squad.iter().map(|unit| unit.id).collect();
             units.sort_unstable();
             let sent = match kind {
                 Raider::Sapper => foray
@@ -197,8 +238,9 @@ impl Missions {
                 });
                 self.next += 1;
             }
-            return;
+            return sent;
         }
+        false
     }
 
     /// Moves the raid at `index` through its phases. Returns its target once
@@ -208,7 +250,7 @@ impl Missions {
         index: usize,
         foray: &Foray<'_>,
         ledger: &mut Ledger,
-    ) -> Option<(BuildingKind, TilePos)> {
+    ) -> Option<Objective> {
         let observation = foray.observation;
         let now = observation.tick;
         let mission = &self.list[index];
@@ -229,11 +271,10 @@ impl Missions {
         let home = air::pad(observation, foray.map, foray.frame, centre)?;
         // Sappers spend themselves, so only a raid of fighters counts its
         // losses and wounds.
-        let spent = kind != Raider::Sapper
-            && (members.len() < RAIDERS || members.iter().any(|unit| !healthy(unit, WOUNDED)));
+        let spent = kind != Raider::Sapper && members.iter().any(|unit| !healthy(unit, WOUNDED));
         let strength: u64 = members.iter().map(|unit| value(unit)).sum();
         let outweighed = foray.opposition(kind, &members) > strength;
-        let lost = (target.building, target.anchor);
+        let lost = target;
         let withdraw = |missions: &mut Self, ledger: &mut Ledger| {
             let turned = ledger.order(run(units.clone(), home));
             if turned {
@@ -291,7 +332,7 @@ impl Foray<'_> {
     /// Extractor or Foundry with the least known defense, nearest first.
     /// Targets recently raided are skipped, and ground raiders need a ground
     /// route.
-    fn target(&self, kind: Raider, strength: u64) -> Option<(Objective, TilePos)> {
+    fn target(&self, kind: Raider, strength: u64) -> Option<(Objective, TilePos, u64)> {
         let observation = self.observation;
         let now = observation.tick;
         let start = self.map.start(observation.me)?;
@@ -305,6 +346,7 @@ impl Foray<'_> {
                 building: building.kind,
                 anchor: building.anchor,
             })
+            .filter(|target| !self.held.contains(target))
             .filter(|target| !self.memory.raided(target.building, target.anchor, now))
             .filter_map(|target| {
                 let goal = match kind {
@@ -339,7 +381,21 @@ impl Foray<'_> {
         match kind {
             Raider::Sapper => candidates
                 .filter(|(_, goal)| defense(observation, self.memory, *goal) <= LIGHT_DEFENSE)
-                .max_by_key(|(target, _)| {
+                .filter_map(|(target, goal)| {
+                    // Enough blasts for what is left of the building.
+                    let hp = observation
+                        .enemy_buildings
+                        .iter()
+                        .find(|building| {
+                            (building.player, building.kind, building.anchor)
+                                == (target.owner, target.building, target.anchor)
+                        })
+                        .map_or(1, |building| building.hp);
+                    let blasts = u64::from(hp.div_ceil(SAPPER_STRUCTURE_DAMAGE).max(1));
+                    let need = blasts * u64::from(UnitKind::Sapper.stats().cost);
+                    (need <= strength).then_some((target, goal, need))
+                })
+                .max_by_key(|(target, _, _)| {
                     let cost = target
                         .building
                         .base_stats()
@@ -370,10 +426,11 @@ impl Foray<'_> {
                         }
                         _ => defense(observation, self.memory, goal),
                     };
-                    (guarded < strength).then_some((guarded, target, goal))
+                    let need = (guarded * self.margin / 1_000).max(1);
+                    (need <= strength).then_some((guarded, target, goal, need))
                 })
-                .min_by_key(|(guarded, target, _)| (*guarded, distance(target), rank(target)))
-                .map(|(_, target, goal)| (target, goal)),
+                .min_by_key(|(guarded, target, _, _)| (*guarded, distance(target), rank(target)))
+                .map(|(_, target, goal, need)| (target, goal, need)),
         }
     }
 

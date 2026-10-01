@@ -11,20 +11,29 @@ and other emergencies, then an affordable saving target, then workers, then
 lifts, attacks and strikes, focus fire and scouting, then production. Missions
 only give orders; what they need, such as a scout or carriers, production buys.
 A seat with no worker alive or queued queues a Harvester even behind other work,
-from protected scrap if it must. Each built Foundry works the four nearest live
-known scrap nodes its ground can reach within twelve tiles, none shared with
-another Foundry, and idle Foundries train workers until there are two
-Harvesters' worth per worked node. Once a Fabricator stands, an Excavator, worth
-two Harvesters, fills two open places when the seat can pay for it with scrap to
-spare, less the greedier it is. A harvesting or idle worker away from home runs
-back beside the nearest Foundry once known enemy fire reaches it. Paid sites
-nobody is building get the nearest free worker. While no armed enemy in sight
-stands near it and the seat has scrap to pay, the damaged building missing the
-most value gets a free worker to weld it, two at most at once. Idle workers go
-to the reachable worked node with the fewest workers, never one inside the reach
-of known enemy weapons. Every idle producer then trains toward the army's needs.
-Difficulty caps the unit orders one decision issues; purchases do not count
-against that allowance.
+from protected scrap if it must. Each live known scrap node belongs to the
+nearest built Foundry whose ground reaches it, unless an enemy building or
+hostile start is as near, and is worked when a Harvester hauling from there
+repays its price within a horizon: three minutes for Turtle, two for Balanced
+and one and a half for Aggressive, stretched by up to half again the greedier
+the seat is. A worked node wants as many Harvesters as free tiles beside it hold
+and its remaining scrap repays, all of them for Turtle and three quarters for
+Balanced and half for Aggressive, more the greedier the seat is, and ready
+Foundries train workers until every worked node has its crew. Until the army
+reaches the stance's minimum, workers that would cost more than the army wait
+for army production and take only the Foundries it leaves. A producer is ready
+when its queue would run out before the next decision, so it queues its next
+unit as the last one finishes rather than after it stands empty. Once a
+Fabricator stands, an Excavator, worth two Harvesters, fills two open places
+when the seat can pay for it with scrap to spare, less the greedier it is. A
+harvesting or idle worker away from home runs back beside the nearest Foundry
+once known enemy fire reaches it. Paid sites nobody is building get the nearest
+free worker. While no armed enemy in sight stands near it and the seat has scrap
+to pay, each damaged building nobody welds yet gets the nearest free worker,
+most missing value first. Idle workers go to the reachable worked node with the
+most places open, never one inside the reach of known enemy weapons. Every ready
+producer then trains toward the army's needs. Difficulty caps the unit orders
+one decision issues; purchases do not count against that allowance.
 
 ## Defense
 
@@ -84,7 +93,7 @@ regardless.
 
 ## Static defense
 
-The seat guards its most valuable buildings (Foundries first, then tech and
+The seat guards its valuable buildings (Foundries first, then tech and
 production buildings, Extractors and Reclaimers) with Turrets, Bastions and Flak
 Turrets a short gap from the building, on the side its threat comes from:
 enemies in sight, else enemies it remembers, else known enemy buildings or the
@@ -92,22 +101,29 @@ nearest hostile start. Ground threats count only where ground connects them to
 the building, except that a seat under the stance's minimum army also puts up a
 Turret against enemy buildings and starts across a chasm, whose units could
 land. Flak Turrets answer seen or remembered enemy aircraft or a known enemy
-Airworks. Each site is an investment worth the approach it covers that no other
-own weapon covers yet, by the building's value, by how sure the seat is of the
+Airworks. Guns hold a threat once they are worth it, with every upgrade they
+have had, divided by the margin an attack brings over a defense; the threat is
+the armed enemies known behind the approach, on ground connected to the building
+unless they could only land, and at least an army at the stance's minimum. Each
+site is an investment worth how far the guns covering the approach it covers
+fall short of that, by the building's value, by how sure the seat is of the
 threat, and by personality: fortification for Turrets and Bastions,
-fortification and support for Flak Turrets. A Bastion counts only ground the
-seat's or an ally's buildings see. When the threat is only a guess from public
-facts, equal sites go to the one nearest the building; otherwise to the one
-nearest the threat. Sites go only on ground where one of the seat's Harvesters
-stands to build them, and a site the simulation refused is skipped for a while.
+fortification and support for Flak Turrets. A seat under the stance's minimum
+army with no Turret puts one up before any tech, whatever its fortification: one
+gun holds an early rush that a tech building still going up would not. A Bastion
+counts only ground the seat's or an ally's buildings see. When the threat is
+only a guess from public facts, equal sites go to the one nearest the building;
+otherwise to the one nearest the threat. Sites go only on ground where one of
+the seat's Harvesters stands to build them, and a site the simulation refused is
+skipped for a while.
 
 Once the opening economy is up, a seat whose army is still under the stance's
 minimum weighs a hostile start nearly like seen enemies, so most seats put up an
 early Turret and fortified ones follow with a Bastion; otherwise public facts
 alone move only very fortified seats. A defense that cannot recruit enough also
-buys an emergency Turret, or Flak Turret against aircraft, beside a building
+buys an emergency Turret, or Flak Turret against aircraft, beside each building
 whose approach nothing covers when attackers stand near it, one unfinished at a
-time.
+time beside each.
 
 Arrays watch the far part of those approaches: a site is worth the points out
 there that nothing the seat owns sees yet, and its radar lets Bastions fire that
@@ -119,18 +135,24 @@ straight way in to a Foundry, spread so one blast does not set off the next.
 Fortification weighs Barricades; fortification and guile weigh Arrays and
 charges.
 
-A Repair Bay goes up beside one of the two most valuable buildings where its
-aura reaches the most missing value among the seat's wounded ground units and
-damaged buildings that no Repair Bay reaches yet, weighted by support.
+A Repair Bay goes up beside a guarded building where its aura reaches the most
+missing value among the seat's wounded ground units and damaged buildings that
+no Repair Bay reaches yet, weighted by support.
 
 Defenses upgrade like Reclaimers do (Heavy Turret, Bulwark, Burst Flak, Deep
-Array) once the next tier's prerequisite stands, worth the approach they cover,
-or for an Array the far points it watches, by how sure the seat is of its threat
-and weighted by fortification and greed, and never while an enemy in sight could
-hit it, from its own reach or the defense's, while it is down at a fifth of its
-health.
+Array) once the next tier's prerequisite stands, worth how far the approach they
+cover still falls short of holding, or for an Array the far points it watches,
+by how sure the seat is of its threat and weighted by fortification and greed,
+and never while an enemy in sight could hit it, from its own reach or the
+defense's, while it is down at a fifth of its health.
 
 ## Attack
+
+Attacks, lifts, strikes and raids each run side by side: each decision advances
+every mission of a kind, oldest first, then forms another while the free units
+beyond the home reserve meet the need of the best target no mission of that kind
+holds. Each takes only the force its own target needs, and missions of different
+kinds may still go after one target.
 
 An attack forms from the free line, siege and anti-air units at half health or
 better beyond the home reserve when those that can hit ground are worth at least
@@ -147,16 +169,18 @@ strong enough for it. A target it withdrew from, could not reach, lost its army
 to, or stood idle beside is skipped for a while. With several enemies, attacks
 and strikes go after one rival's buildings first: the enemy pressing the seat
 hardest, then the nearest, less the army it shows, with guile favoring a small
-economy and a bonus for the owner of the current target so the seat does not
-flip between enemies.
+economy and a bonus for the owner of the oldest attack or strike's target so the
+seat does not flip between enemies. The rival is chosen once per decision, after
+defense.
 
 Members under 35 percent health leave between fights and run to the rally, and a
-defense may take the attack's units in any phase but a fight. While an army that
-could attack does not, or every producer sits idle, the margin falls step by
-step toward even.
+defense may take the attack's units in any phase but a fight. While a free army
+that could attack does not, or every producer sits idle, the margin for the next
+attack falls step by step toward even.
 
-A free Tender joins an attack while it gathers or recovers, welds its wounded
-while the army regroups there, and follows it otherwise.
+Free Tenders join an attack while it gathers or recovers, one for so much
+missing health among its members and at least one, weld its wounded while the
+army regroups there, and follow it otherwise.
 
 At Veteran and Prime, an engaged mission focuses its fire: when every member
 that can hit an enemy near it already reaches that enemy, they shoot the weakest
@@ -171,7 +195,7 @@ home reserve, it needs lift. The Airworks then scores higher while the seat has
 none, and production keeps enough Skyhooks, alive and queued, to carry what the
 best landing needs, or the stance's minimum while none is known, with the free
 riders at home packed as a lift would pack them, but no more than those riders
-fill. While an idle Airworks waits for the scrap to train one and some of those
+fill. While a ready Airworks waits for the scrap to train one and some of those
 riders have no room, other production waits too, unless a defense is short.
 
 A lift forms only from carriers and passengers that exist: free carriers that
@@ -200,9 +224,8 @@ lift sets everyone down and disbands. Landed riders hunt the target and, once no
 one is aboard and every emptied carrier is on its way home, fight on to the next
 target on the same island. Nothing brings them home. A carrier that comes home
 still loaded sets its riders down and lets them go. A target the lift lost its
-units to, or stood idle beside, is skipped for a while. One lift runs at a time,
-it never grows past the mission member cap, and a defense may take its units
-only while they board.
+units to, or stood idle beside, is skipped for a while. A lift never grows past
+the mission member cap, and a defense may take its units only while they board.
 
 ## Strikes
 
@@ -214,80 +237,92 @@ target by the attack margin. They gather beside home on the side facing the
 target, fly at it around known anti-air, and fight; having taken it they go on
 to the next target they can, and otherwise fly home. They withdraw once the
 known anti-air reaching them outweighs them. A target a strike withdrew from,
-lost its aircraft to, or stood idle beside is skipped for a while. One strike
-runs at a time, and a defense may take its aircraft while they gather or
-withdraw.
+lost its aircraft to, or stood idle beside is skipped for a while. A defense may
+take a strike's aircraft while they gather or withdraw.
 
 ## Raids
 
-While no defense is under way, two or more free raiders of one kind at half
-health or better beyond the home reserve set out on a raid. Scuttlers, up to
-four, and ground-attack aircraft too few for a strike go after the enemy
-Extractor or Foundry whose known defense they outweigh, least defended and then
-nearest first, the aircraft flying around known anti-air. Sappers, up to four,
-go after the most valuable known enemy building for its distance with little
-known defense and blow it up. Scuttlers and aircraft turn back once one is lost
-or badly hurt, once the known fire reaching them outweighs them, or once they
-have been at the target a while; Sappers turn back only when outweighed on the
-way. Raids skip a raided target for a while, which spaces them out, while
-attacks, lifts and strikes may still go after it; one raid runs at a time.
+While no defense is under way, free raiders of one kind at half health or better
+beyond the home reserve set out on a raid, those nearest the target until they
+are worth what it needs. Scuttlers and ground-attack aircraft too few for a
+strike go after the enemy Extractor or Foundry whose known defense they outweigh
+by the attack margin, least defended and then nearest first, the aircraft flying
+around known anti-air. Sappers go after the most valuable known enemy building
+for its distance with little known defense that they are enough to blow up.
+Scuttlers and aircraft turn back once one is badly hurt, once the known fire
+reaching them outweighs them, or once they have been at the target a while;
+Sappers turn back only when outweighed on the way. Raids skip a raided target
+for a while, which spaces them out, while attacks, lifts and strikes may still
+go after it.
 
-The seat keeps two Scuttlers, alive or queued, once its income reaches a level
-that falls with guile, and a Sapper for each known enemy defense that can hit
-ground, up to three, once it has scrap to spare, less the more it leans on
-siege. An attack on a target with such defenses takes free Sappers along while
-it gathers or recovers, and once it fights sends each at the nearest such
-defense on its ground, leaving them to it when the rest of the army moves on.
+Once its income reaches a level that falls with guile, the seat keeps the
+Scuttlers, alive or queued and out on no other mission, that a raid on the least
+defended known harvest line needs. Once it has scrap to spare, less the more it
+leans on siege, it keeps a Sapper for each known enemy defense, in sight or
+remembered, that can hit ground around the targets of attacks under way and of
+the next attack. An attack on a target with such defenses takes a free Sapper
+along for each while it gathers or recovers, and once it fights sends each at
+the nearest such defense on its ground, leaving them to it when the rest of the
+army moves on.
 
 ## Scouting
 
 The seat keeps its hostile starts and expansion sites as scouting points and
-remembers when it last saw each. Once one has gone unseen for a while, one scout
-goes to the most valuable stale point, hostile starts first and then sites
-nearer an enemy than home, and moves on to the next when it sees it. The scout
-is a free Kestrel or Gnat, or else a Scuttler that can walk there. A seat
-without either trains one: its air scout once it has an Airworks, a Scuttler
-before. An air scout flies around known anti-air when the straight line crosses
-it, and a point whose scout was lost on the way counts as seen, so the next
-scout waits until it is stale again.
+remembers when it last saw each. Each point unseen for a while draws its own
+scout, the most valuable first: hostile starts, then sites nearer an enemy than
+home. A scout moves on to the next point no other scout holds when it sees its
+own. Scouts are free Kestrels or Gnats, or else Scuttlers that can walk there.
+For each stale point no scout could take, the seat trains one that could reach
+it: its air scout once it has an Airworks, a Scuttler before. It trains none
+while no mission could take another. An air scout flies around known anti-air
+when the straight line crosses it, and a point whose scout was lost on the way
+counts as seen, so the next scout waits until it is stale again.
 
 ## Support
 
 The seat keeps a Tender, alive or queued, for so much missing health among its
-armed ground units, more the more it leans on support, up to two. A free idle
-Tender welds the free wounded ground unit on its ground missing the most value;
-one decision sends no two Tenders to the same patient.
+armed ground units, more the more it leans on support. A free idle Tender welds
+the free wounded ground unit on its ground missing the most value; one decision
+sends no two Tenders to the same patient.
 
 ## Army composition
 
-The seat remembers enemy units it has seen for 600 ticks, trusting them less as
-they age and forgetting one when its last spot is in sight and empty. Enemy
-buildings need no memory of its own: the observation keeps their ghosts.
+The seat remembers every enemy unit it has seen for 600 ticks, trusting them
+less as they age and forgetting one when its last spot is in sight and empty.
+Enemy buildings need no memory of its own: the observation keeps their ghosts.
 
 From that knowledge and its own army, alive and queued, it sets a deficit for
 each role: line fighters to match three quarters of the enemy's ground army or
 two fifths of its own, siege for known enemy defenses and by preference,
 anti-air to answer three quarters of the enemy air it has seen (a seen enemy
 Airworks counts as air), and air strikes by preference once it has an Airworks.
-Each idle producer trains for the most wanted role it can serve, or line units
-when nothing is wanted, choosing the unit it can afford now by coarse
-suitability: reach against the enemy's usual reach, durability for the price,
-covering both enemy domains, splash against clustered enemies, affordability at
-the seat's income, variety (a kind that already makes up most of its role counts
-for less, so every kind of a role gets its turn), and personality. Scouts,
-carriers, Tenders, Scuttlers and Sappers are bought only for scouting, lift,
-support and raids. A role it needs but cannot train at all adds to the
-investment score of the cheapest building that would let it.
+Ground units count only while they can reach an enemy, by ground or by lift once
+an Airworks stands; before then, known enemy ground units on the seat's own
+ground still call for line units worth three quarters of them. While ground
+reaches no enemy, air strikes are wanted with or without an Airworks, at least
+what a strike needs against the easiest known target the seat has not given up
+on. The most wanted role goes first to the nearest ready producer that can
+afford a unit for it, then the next; ready producers left with nothing wanted
+train line units while ground units can reach an enemy. Each chooses the unit it
+can afford now by coarse suitability: reach against the enemy's usual reach,
+durability for the price, covering both enemy domains, splash against clustered
+enemies, affordability at the seat's income, variety (a kind that already makes
+up most of its role counts for less, so every kind of a role gets its turn), and
+personality. Scouts, carriers, Tenders, Scuttlers and Sappers are bought only
+for scouting, lift, support and raids. A role it needs but cannot train at all
+adds to the investment score of the cheapest building that would let it.
 
 ## Investments and saving
 
 Each decision scores its investments: a first Fabricator, Airworks and Crucible,
-another Fabricator or Airworks when all of that kind are busy and income could
-keep one more working, an expansion Foundry at a scrap field away from every
-start, an Extractor on a free frame on its home ground, more Reclaimers (worth
-more with no expansion left), static defenses, Repair Bays, and upgrades.
-Saturated harvesting, time, income, home depletion, army needs, a needed lift
-and personality set the scores.
+another Fabricator, Airworks, Crucible or home Foundry when every one of that
+kind is working, an army role it trains is still wanted, and the income the
+working producers leave unspent could keep one more as busy (carriers, Tenders,
+Scuttlers and Sappers never call for one), an expansion Foundry at a scrap field
+away from every start, an Extractor on a free frame on its home ground, more
+Reclaimers (worth more with no expansion left), static defenses, Repair Bays,
+and upgrades. Saturated harvesting, time, income, home depletion, army needs, a
+needed lift and personality set the scores.
 
 An expansion site's value weighs the scrap it still holds and its free frames,
 up with greed, against its ground distance from home, how much nearer a hostile
@@ -359,13 +394,13 @@ headless, saved and recovered sessions build it from the same scenario data.
 enemy units, footprints it recently failed to claim, enemy buildings it recently
 gave up attacking, lifting to or striking, its income sample, and its saving
 target with the protected amount and any purchase awaiting confirmation, its
-missions with their phases, members, goals and focus, since when it has gone
-without attacking, and when it last saw each scouting point. The host saves the
-seat's `OwnEvents` beside it. Restoring it checks that the seat is a configured
-`oxide-opponent` bot in the bound scenario and world and that nothing it
-remembers is from a later tick or off the map, rebuilds the profile and decision
-interval from the scenario, and takes the map model built from it. A saved
-buffer over the cap does not load.
+missions with their phases, members, goals and focus, since when a free army
+that could attack has not, and when it last saw each scouting point. The host
+saves the seat's `OwnEvents` beside it. Restoring it checks that the seat is a
+configured `oxide-opponent` bot in the bound scenario and world and that nothing
+it remembers is from a later tick or off the map, rebuilds the profile and
+decision interval from the scenario, and takes the map model built from it. A
+saved buffer over the cap does not load.
 
 `Opponent::act_traced` returns a `Trace` of the decision's tick, seat, bank,
 received own events, committed spending, purchases, unit-order count, allowance,

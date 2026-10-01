@@ -146,7 +146,7 @@ impl Opponent {
 }
 
 /// Ticks between decisions. Scrapheap decides half as often as the other rungs.
-fn decision_interval(difficulty: BotDifficulty) -> u64 {
+pub(crate) fn decision_interval(difficulty: BotDifficulty) -> u64 {
     match difficulty {
         BotDifficulty::Scrapheap => 24,
         BotDifficulty::Standard | BotDifficulty::Veteran | BotDifficulty::Prime => 12,

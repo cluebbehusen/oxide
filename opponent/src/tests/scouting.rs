@@ -38,6 +38,72 @@ fn a_stale_hostile_start_draws_the_scout() {
     );
 }
 
+/// Three starts: West at (3, 2) and two seats far to the east, out of its
+/// sight.
+const FAR_PAIR: [&str; 16] = [
+    "########################################",
+    "#......................................#",
+    "#..1...............................2...#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#..................................3...#",
+    "#......................................#",
+    "########################################",
+];
+
+/// Three seats without teams on `FAR_PAIR` at tick `STALE`, West holding
+/// `scrap` and `units`: two stale hostile starts.
+fn stale_trio(units: Vec<UnitSpec>, scrap: u32) -> (Scenario, State) {
+    let mut scenario = super::teams::trio([None; 3]);
+    scenario.map = FAR_PAIR.map(str::to_owned).to_vec();
+    scenario.units = units;
+    scenario.players[0].scrap = scrap;
+    let mut state = scenario.build().unwrap();
+    advance_to(&mut state, STALE, &[]);
+    (scenario, state)
+}
+
+#[test]
+fn each_stale_start_draws_its_own_scout() {
+    let kestrel = oxide_sim::stats::Role::Scout.unit_for(Faction::Ferrous);
+    let (scenario, state) = stale_trio(vec![unit(0, kestrel, 8, 9), unit(0, kestrel, 9, 9)], 0);
+    let (commands, trace) = seat(&scenario, 0).act_traced(&state, &mut OwnEvents::default());
+    let missions = scouts(&trace.unwrap().missions);
+    let [first, second] = missions[..] else {
+        panic!("a scout for each start: {missions:?}");
+    };
+    assert_ne!(first.kind, second.kind, "two distinct points");
+    let sent = runs(&commands);
+    for mission in [first, second] {
+        assert!(
+            sent.iter()
+                .any(|(units, goal)| units.len() == 1 && *goal == mission.goal),
+            "{sent:?}"
+        );
+    }
+}
+
+#[test]
+fn a_stale_start_no_scout_holds_trains_another() {
+    let (scenario, state) = stale_trio(vec![unit(0, UnitKind::Scuttler, 8, 9)], 1_000);
+    let foundry = foundries(&state, PlayerId(0))[0];
+    let (commands, trace) = seat(&scenario, 0).act_traced(&state, &mut OwnEvents::default());
+    let missions = scouts(&trace.unwrap().missions);
+    assert_eq!(missions.len(), 1, "premise: {missions:?}");
+    assert!(
+        trains(&commands).contains(&(foundry, UnitKind::Scuttler)),
+        "{commands:?}"
+    );
+}
+
 #[test]
 fn a_seen_point_waits_until_stale() {
     let (scenario, state) = scouting(3_600);
@@ -309,36 +375,81 @@ fn an_air_scout_replaces_a_scuttler_that_cannot_reach() {
 
 #[test]
 fn the_mission_cap_holds_back_a_scout() {
+    let cap = crate::missions::MISSION_CAP;
     let mut scenario = field();
+    scenario.players[0].scrap = 1_000;
     scenario.units.push(unit(0, UnitKind::Scuttler, 6, 9));
-    for index in 0..16 {
-        scenario
-            .units
-            .push(unit(0, UnitKind::Sentinel, 6 + index % 8, 14 + index / 8));
+    for index in 0..cap {
+        let (x, y) = cap_spot(index);
+        scenario.units.push(unit(0, UnitKind::Sentinel, x, y));
     }
     let mut state = scenario.build().unwrap();
     advance_to(&mut state, STALE, &[]);
     let home = foundries(&state, PlayerId(0))[0];
-    let list: Vec<serde_json::Value> = (0..16)
-        .map(|index: i32| {
+    let list: Vec<serde_json::Value> = (0..cap)
+        .map(|index| {
+            let (x, y) = cap_spot(index);
             serde_json::json!({
                 "id": index,
                 "task": {"task": "defend", "asset": home.0, "phase": {"engage": {"focus": null}}},
                 "since": STALE,
-                "units": [at(&state, 6 + index % 8, 14 + index / 8)],
+                "units": [at(&state, x, y)],
                 "goal": {"x": 6, "y": 11},
             })
         })
         .collect();
     let mut json = serde_json::to_value(seat(&scenario, 0).checkpoint()).unwrap();
-    json["missions"] = serde_json::json!({"next": 16, "list": list, "waiting": null});
+    json["missions"] = serde_json::json!({"next": cap, "list": list, "waiting": null});
+    let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
+    let mut opponent = Opponent::restore(&checkpoint, &scenario, &state, map(&scenario)).unwrap();
+    let (commands, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
+    let missions = trace.unwrap().missions;
+    assert_eq!(missions.len(), cap);
+    assert!(scouts(&missions).is_empty());
+    assert!(
+        trains(&commands)
+            .iter()
+            .all(|(_, kind)| *kind != UnitKind::Scuttler),
+        "a scout no mission could take is not trained: {commands:?}"
+    );
+    assert!(Opponent::restore(&opponent.checkpoint(), &scenario, &state, map(&scenario)).is_ok());
+}
+
+#[test]
+fn a_scout_at_many_points_leaves_room_to_defend() {
+    let scouting = 16;
+    let mut scenario = field();
+    garrison(&mut scenario);
+    for index in 0..scouting {
+        scenario
+            .units
+            .push(unit(0, UnitKind::Kestrel, 20 + index % 8, 2 + index / 8));
+    }
+    scenario.units.push(unit(1, UnitKind::Sentinel, 8, 11));
+    let state = scenario.build().unwrap();
+    let list: Vec<serde_json::Value> = (0..scouting)
+        .map(|index: i32| {
+            serde_json::json!({
+                "id": index,
+                "task": {"task": "scout", "point": 0},
+                "since": 0,
+                "units": [at(&state, 20 + index % 8, 2 + index / 8)],
+                "goal": {"x": 42, "y": 11},
+            })
+        })
+        .collect();
+    let mut json = serde_json::to_value(seat(&scenario, 0).checkpoint()).unwrap();
+    json["missions"] = serde_json::json!({"next": scouting, "list": list, "waiting": null});
     let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
     let mut opponent = Opponent::restore(&checkpoint, &scenario, &state, map(&scenario)).unwrap();
     let (_, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
     let missions = trace.unwrap().missions;
-    assert_eq!(missions.len(), 16);
-    assert!(scouts(&missions).is_empty());
-    assert!(Opponent::restore(&opponent.checkpoint(), &scenario, &state, map(&scenario)).is_ok());
+    assert!(
+        missions
+            .iter()
+            .any(|mission| matches!(mission.kind, MissionKind::Defend { .. })),
+        "{missions:?}"
+    );
 }
 
 /// The field with two West Kestrels and East Flakhounds across the middle,
@@ -440,5 +551,28 @@ fn an_air_scout_flies_around_remembered_anti_air() {
     assert!(
         (via.y - 11).abs() > 7,
         "the detour passes the Flakhounds out of reach: {via:?}"
+    );
+}
+
+#[test]
+fn no_scuttler_is_trained_for_a_point_across_a_chasm() {
+    let mut scenario = field();
+    scenario.players[0].scrap = 1_000;
+    for row in &mut scenario.map[1..23] {
+        row.replace_range(16..32, &"~".repeat(16));
+    }
+    scenario.units.push(unit(0, UnitKind::Scuttler, 6, 9));
+    let mut state = scenario.build().unwrap();
+    advance_to(&mut state, STALE, &[]);
+    let (commands, trace) = seat(&scenario, 0).act_traced(&state, &mut OwnEvents::default());
+    assert!(
+        scouts(&trace.unwrap().missions).is_empty(),
+        "premise: the Scuttler cannot go"
+    );
+    assert!(
+        trains(&commands)
+            .iter()
+            .all(|(_, kind)| *kind != UnitKind::Scuttler),
+        "another could not go either: {commands:?}"
     );
 }

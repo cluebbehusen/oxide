@@ -56,8 +56,15 @@ fn building_at(state: &State, anchor: TilePos) -> BuildingId {
         .id
 }
 
+/// The single staged raider an unguarded target needs, sent to `goal`.
+fn one_raider(state: &State, sent: &[(Vec<UnitId>, TilePos)], goal: TilePos) -> bool {
+    matches!(sent, [(units, to)] if units.len() == 1
+        && raiders(state).contains(&units[0])
+        && *to == goal)
+}
+
 #[test]
-fn two_idle_scuttlers_raid_a_harvest_line_nobody_guards() {
+fn one_of_two_idle_scuttlers_raids_a_harvest_line_nobody_guards() {
     let scenario = outpost(UnitKind::Scuttler, BuildingKind::Foundry);
     let state = scenario.build().unwrap();
     let (commands, trace) = seat(&scenario, 0).act_traced(&state, &mut OwnEvents::default());
@@ -71,7 +78,11 @@ fn two_idle_scuttlers_raid_a_harvest_line_nobody_guards() {
         }
     );
     assert_eq!(mission.phase, Phase::Travel);
-    assert_eq!(hunts(&commands), [(raiders(&state), mission.goal)]);
+    let sent = hunts(&commands);
+    assert!(
+        one_raider(&state, &sent, mission.goal),
+        "an unguarded line needs one raider: {sent:?}"
+    );
 }
 
 #[test]
@@ -105,7 +116,8 @@ fn an_outweighed_raid_turns_back_and_leaves_its_target_alone() {
     let (commands, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
     let mission = raid(&trace.unwrap().missions).expect("the raid is still under way");
     assert_eq!(mission.phase, Phase::Withdraw);
-    assert_eq!(runs(&commands), [(raiders(&state), mission.goal)]);
+    let sent = runs(&commands);
+    assert!(one_raider(&state, &sent, mission.goal), "{sent:?}");
     let json = serde_json::to_value(opponent.checkpoint()).unwrap();
     let raided = json["memory"]["raided"].to_string();
     assert!(raided.contains("\"x\":22"), "{raided}");
@@ -187,45 +199,70 @@ fn bombers_too_few_for_a_strike_harry_a_harvest_line() {
         "premise: {missions:?}"
     );
     let mission = raid(&missions).expect("a raid forms");
-    assert_eq!(hunts(&commands), [(raiders(&state), mission.goal)]);
+    let sent = hunts(&commands);
+    assert!(one_raider(&state, &sent, mission.goal), "{sent:?}");
 }
 
 /// An attack on the East start with eight West Sentinels, one still walking
 /// in so the army keeps regrouping, a free Sapper, and a known East Turret
-/// beside the target when `defended`. The attack is in `phase`.
+/// beside the target. The attack is in `phase`, with the Sapper a member
+/// when `member`.
 fn sapping(
     phase: serde_json::Value,
     member: bool,
     since: u64,
 ) -> (State, Opponent, UnitId, Option<BuildingId>) {
+    let (state, opponent, sappers, turrets) =
+        besieging(phase, member, since, &[(40, 10)], &[(10, 12)], |_| {});
+    (state, opponent, sappers[0], turrets.first().copied())
+}
+
+/// An attack on the East start with eight West Sentinels, one still walking
+/// in so the army keeps regrouping, West Sappers on `sappers` (members when
+/// `member`), known East Turrets on `turrets`, and `stage` applied to the
+/// scenario. The attack is in `phase`. Returns the Sappers and Turrets.
+fn besieging(
+    phase: serde_json::Value,
+    member: bool,
+    since: u64,
+    turrets: &[(i32, i32)],
+    sappers: &[(i32, i32)],
+    stage: impl FnOnce(&mut Scenario),
+) -> (State, Opponent, Vec<UnitId>, Vec<BuildingId>) {
     let mut scenario = field();
     let west: Vec<(i32, i32)> = (6..10).flat_map(|x| [(x, 9), (x, 10)]).collect();
     for (x, y) in &west {
         scenario.units.push(unit(0, UnitKind::Sentinel, *x, *y));
     }
-    scenario.units.push(unit(0, UnitKind::Sapper, 10, 12));
-    scenario.buildings.push(BuildingSpec {
-        player: 1,
-        kind: BuildingKind::Turret,
-        x: 40,
-        y: 10,
-    });
+    for (x, y) in sappers {
+        scenario.units.push(unit(0, UnitKind::Sapper, *x, *y));
+    }
+    for (x, y) in turrets {
+        scenario.buildings.push(BuildingSpec {
+            player: 1,
+            kind: BuildingKind::Turret,
+            x: *x,
+            y: *y,
+        });
+    }
     scenario.units.push(unit(0, UnitKind::Kestrel, 40, 12));
+    stage(&mut scenario);
     let mut state = scenario.build().unwrap();
     let sentinels: Vec<UnitId> = west.iter().map(|(x, y)| at(&state, *x, *y)).collect();
-    let sapper = at(&state, 10, 12);
-    let turret = state
+    let sappers: Vec<UnitId> = sappers.iter().map(|(x, y)| at(&state, *x, *y)).collect();
+    let turrets: Vec<BuildingId> = state
         .buildings()
         .iter()
-        .find(|building| building.kind == BuildingKind::Turret)
-        .map(|building| building.id);
+        .filter(|building| building.kind == BuildingKind::Turret)
+        .map(|building| building.id)
+        .collect();
     state.tick(&[run(0, vec![sentinels[7]], 6, 14)]);
     while state.current_tick() < 12 {
         state.tick(&[]);
     }
     let mut members = sentinels;
     if member {
-        members.push(sapper);
+        members.extend(&sappers);
     }
     members.sort_unstable();
     let mut json = serde_json::to_value(seat(&scenario, 0).checkpoint()).unwrap();
@@ -245,7 +282,103 @@ fn sapping(
     });
     let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
     let opponent = Opponent::restore(&checkpoint, &scenario, &state, map(&scenario)).unwrap();
-    (state, opponent, sapper, turret)
+    (state, opponent, sappers, turrets)
+}
+
+/// Four East Turrets around the East start, in sight of the West Kestrel.
+const RING: [(i32, i32); 4] = [(40, 10), (40, 14), (45, 8), (46, 15)];
+
+#[test]
+fn an_attack_takes_a_sapper_for_each_known_defense_around_its_target() {
+    let spots: Vec<(i32, i32)> = (10..15).map(|x| (x, 12)).collect();
+    let (state, mut opponent, sappers, _) = besieging(
+        serde_json::json!("recover"),
+        false,
+        12,
+        &RING,
+        &spots,
+        |_| {},
+    );
+    let commands = opponent.act(&state, &mut OwnEvents::default());
+    let taken: Vec<UnitId> = runs(&commands)
+        .into_iter()
+        .flat_map(|(units, _)| units)
+        .filter(|unit| sappers.contains(unit))
+        .collect();
+    assert_eq!(taken.len(), RING.len(), "{commands:?}");
+}
+
+#[test]
+fn more_known_defenses_around_an_attack_s_target_train_more_sappers() {
+    let trained = |turrets: &[(i32, i32)]| {
+        let spots: Vec<(i32, i32)> = (10..13).map(|x| (x, 12)).collect();
+        let (state, mut opponent, _, _) = besieging(
+            serde_json::json!("recover"),
+            true,
+            12,
+            turrets,
+            &spots,
+            |scenario| {
+                scenario.players[0].scrap = 1_000;
+                scenario.buildings.push(BuildingSpec {
+                    player: 0,
+                    kind: BuildingKind::Fabricator,
+                    x: 3,
+                    y: 14,
+                });
+            },
+        );
+        trains(&opponent.act(&state, &mut OwnEvents::default()))
+            .iter()
+            .any(|(_, kind)| *kind == UnitKind::Sapper)
+    };
+    assert!(!trained(&RING[..3]), "three Sappers answer three Turrets");
+    assert!(trained(&RING), "a fourth Turret wants a fourth Sapper");
+}
+
+#[test]
+fn a_line_guarded_beyond_the_raiders_by_the_margin_draws_no_raid() {
+    let raided = |guard: bool| {
+        let mut scenario = outpost(UnitKind::Scuttler, BuildingKind::Foundry);
+        scenario.units.push(unit(0, UnitKind::Scuttler, 18, 11));
+        if guard {
+            scenario.units.push(unit(1, UnitKind::Sentinel, 24, 11));
+        }
+        let state = scenario.build().unwrap();
+        let (_, trace) = seat(&scenario, 0).act_traced(&state, &mut OwnEvents::default());
+        raid(&trace.unwrap().missions).is_some()
+    };
+    assert!(raided(false), "premise: an unguarded line draws a raid");
+    assert!(
+        !raided(true),
+        "three Scuttlers outweigh a Sentinel, but not by the margin"
+    );
+}
+
+#[test]
+fn a_raid_sends_only_the_raiders_its_target_needs() {
+    let spots = [(17, 10), (17, 11), (17, 12), (18, 11)];
+    let mut scenario = outpost(UnitKind::Scuttler, BuildingKind::Foundry);
+    for (x, y) in spots {
+        scenario.units.push(unit(0, UnitKind::Scuttler, x, y));
+    }
+    scenario.units.push(unit(1, UnitKind::Sentinel, 24, 11));
+    let state = scenario.build().unwrap();
+    let (commands, trace) = seat(&scenario, 0).act_traced(&state, &mut OwnEvents::default());
+    let mission = raid(&trace.unwrap().missions).expect("a raid forms");
+    let [(sent, goal)] = &hunts(&commands)[..] else {
+        panic!("{commands:?}");
+    };
+    assert_eq!(*goal, mission.goal);
+    let worth = |count: usize| count as u64 * u64::from(UnitKind::Scuttler.stats().cost);
+    assert!(
+        worth(sent.len()) > u64::from(UnitKind::Sentinel.stats().cost),
+        "the squad outweighs the guard: {sent:?}"
+    );
+    assert!(
+        sent.len() < RAIDERS.len() + spots.len(),
+        "the rest stay home: {sent:?}"
+    );
 }
 
 #[test]
@@ -308,16 +441,27 @@ fn checkpoints_reject_impossible_raids() {
     let mut off_map = json.clone();
     off_map["missions"]["list"][0]["task"]["target"]["anchor"]["x"] = 99.into();
     assert!(restore(off_map).is_err());
-    let mut twice = json.clone();
-    let mut second = twice["missions"]["list"][0].clone();
-    second["id"] = 1.into();
-    second["units"] = serde_json::json!([]);
-    twice["missions"]["list"]
-        .as_array_mut()
-        .unwrap()
-        .push(second);
-    twice["missions"]["next"] = 2.into();
-    assert!(restore(twice).is_err());
+    let twice = |units: serde_json::Value| {
+        let mut twice = json.clone();
+        let mut second = twice["missions"]["list"][0].clone();
+        second["id"] = 1.into();
+        second["units"] = units;
+        twice["missions"]["list"]
+            .as_array_mut()
+            .unwrap()
+            .push(second);
+        twice["missions"]["next"] = 2.into();
+        restore(twice)
+    };
+    assert!(twice(serde_json::json!([])).is_err());
+    assert!(
+        twice(json["missions"]["list"][0]["units"].clone()).is_err(),
+        "two raids never share a unit"
+    );
+    assert!(
+        twice(serde_json::json!([9_999])).is_ok(),
+        "raids run side by side"
+    );
 }
 
 #[test]
@@ -344,4 +488,116 @@ fn mirrored_seats_raid_alike() {
     let east = seat(&scenario, 1).act(&state, &mut OwnEvents::default());
     assert!(!hunts(&west).is_empty(), "premise: {west:?}");
     assert_eq!(mirror(&state, west), east);
+}
+
+#[test]
+fn raiders_of_two_kinds_raid_distinct_targets_at_once() {
+    let mut scenario = outpost(UnitKind::Scuttler, BuildingKind::Foundry);
+    for (x, y) in [(17, 10), (17, 12)] {
+        scenario.units.push(unit(0, UnitKind::Sapper, x, y));
+    }
+    scenario.buildings.push(BuildingSpec {
+        player: 1,
+        kind: BuildingKind::Foundry,
+        x: OUTPOST.x,
+        y: OUTPOST.y + 4,
+    });
+    let state = scenario.build().unwrap();
+    let trace = seat(&scenario, 0)
+        .act_traced(&state, &mut OwnEvents::default())
+        .1
+        .unwrap();
+    let raids: Vec<MissionStatus> = trace
+        .missions
+        .into_iter()
+        .filter(|mission| matches!(mission.kind, MissionKind::Raid { .. }))
+        .collect();
+    let [first, second] = raids[..] else {
+        panic!("{raids:?}");
+    };
+    assert_ne!(first.kind, second.kind, "each goes after its own target");
+}
+
+#[test]
+fn defenses_remembered_out_of_sight_each_want_a_sapper() {
+    let spots: Vec<(i32, i32)> = (10..13).map(|x| (x, 12)).collect();
+    let (mut state, mut opponent, _, _) = besieging(
+        serde_json::json!("recover"),
+        true,
+        12,
+        &RING,
+        &spots,
+        |scenario| {
+            scenario.players[0].scrap = 1_000;
+            scenario.buildings.push(BuildingSpec {
+                player: 0,
+                kind: BuildingKind::Fabricator,
+                x: 3,
+                y: 14,
+            });
+        },
+    );
+    let kestrel = state
+        .units()
+        .iter()
+        .find(|unit| unit.player == PlayerId(0) && unit.kind == UnitKind::Kestrel)
+        .unwrap()
+        .id;
+    state.tick(&[run(0, vec![kestrel], 3, 3)]);
+    let remembered = |state: &State| {
+        ObservationData::fog_honest(state, PlayerId(0))
+            .enemy_buildings
+            .iter()
+            .filter(|building| building.kind == BuildingKind::Turret && !building.seen)
+            .count()
+    };
+    while remembered(&state) < RING.len() || !opponent.decision_due(&state) {
+        assert!(
+            state.current_tick() < 600,
+            "premise: the Turrets drop out of sight"
+        );
+        state.tick(&[]);
+    }
+    let commands = opponent.act(&state, &mut OwnEvents::default());
+    assert!(
+        trains(&commands)
+            .iter()
+            .any(|(_, kind)| *kind == UnitKind::Sapper),
+        "four remembered Turrets want a fourth Sapper"
+    );
+}
+
+#[test]
+fn a_scuttler_out_scouting_leaves_the_raid_stock_short() {
+    let mut scenario = outpost(UnitKind::Scuttler, BuildingKind::Foundry);
+    scenario.units.retain(|unit| (unit.x, unit.y) != RAIDERS[1]);
+    scenario.units.push(harvester(0, 2, 2));
+    scenario.players[0].scrap = 1_000;
+    let mut state = scenario.build().unwrap();
+    let scout = at(&state, RAIDERS[0].0, RAIDERS[0].1);
+    advance_to(&mut state, 120, &[]);
+    let mut json = serde_json::to_value(seat(&scenario, 0).checkpoint()).unwrap();
+    // Income enough to raid, and the one Scuttler holding the one scouting
+    // point.
+    json["income"] = serde_json::json!({"previous": null, "per_minute": 2_000});
+    json["missions"] = serde_json::json!({
+        "next": 1,
+        "list": [{
+            "id": 0,
+            "task": {"task": "scout", "point": 0},
+            "since": 100,
+            "units": [scout],
+            "goal": {"x": 40, "y": 11},
+        }],
+        "waiting": null,
+    });
+    let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
+    let mut opponent = Opponent::restore(&checkpoint, &scenario, &state, map(&scenario)).unwrap();
+    let commands = opponent.act(&state, &mut OwnEvents::default());
+    assert!(
+        trains(&commands)
+            .iter()
+            .any(|(_, kind)| *kind == UnitKind::Scuttler),
+        "{commands:?}"
+    );
 }

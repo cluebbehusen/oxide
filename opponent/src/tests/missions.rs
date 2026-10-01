@@ -275,11 +275,16 @@ fn defense_outranks_workers_under_a_small_allowance() {
 fn a_short_defense_defers_the_saving_target_and_spends_protected_scrap() {
     let threatened = |scrap: u32| {
         let mut scenario = arena(scrap);
-        scenario.units.extend([
-            harvester(0, 5, 7),
-            harvester(0, 4, 7),
-            unit(1, UnitKind::Sentinel, 9, 5),
-        ]);
+        scenario.units.extend(workforce(0));
+        // A Turret out on the field: the seat has one, but it guards nothing
+        // near home.
+        scenario.buildings.push(BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Turret,
+            x: 13,
+            y: 9,
+        });
+        scenario.units.push(unit(1, UnitKind::Sentinel, 9, 5));
         scenario
     };
     let scenario = threatened(400);
@@ -431,7 +436,8 @@ fn checkpoints_reject_impossible_missions() {
     );
     assert_eq!(
         with(&|missions| {
-            let list: Vec<serde_json::Value> = (0..17)
+            let over = crate::missions::MISSION_CAP + 1;
+            let list: Vec<serde_json::Value> = (0..over)
                 .map(|id| {
                     let mut copy = mission.clone();
                     copy["id"] = id.into();
@@ -439,7 +445,7 @@ fn checkpoints_reject_impossible_missions() {
                 })
                 .collect();
             missions["list"] = list.into();
-            missions["next"] = 17.into();
+            missions["next"] = over.into();
         }),
         "checkpoint holds too many missions"
     );

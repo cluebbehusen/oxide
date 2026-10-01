@@ -51,7 +51,11 @@ selects actions in precedence order:
 
 1. emergency defense and recovery;
 2. the saving target, when it is affordable and can be placed;
-3. workers, to keep harvesting saturated;
+3. workers, to keep harvesting saturated: every known node whose trip repays a
+   Harvester within a stance and greed horizon, filled as stance and greed
+   choose; until the army reaches the stance minimum, workers that would cost
+   more than the army wait for army production, and a seat that exposed puts up
+   a Turret before any tech;
 4. missions, advancing their phases and recruiting as needed;
 5. production toward composition needs, from scrap not protected for saving.
 
@@ -66,7 +70,10 @@ the running total and mission state.
 - Each decision scores concrete investments: production capacity, tech
   buildings, an expansion Foundry at a specific site, a defense at a specific
   spot, upgrades. Needs, capability needs, personality and situation set the
-  scores.
+  scores. Production capacity comes from the income working producers leave
+  unspent while their army roles have need, and producers queue far enough to
+  stay busy until the next decision. Small stocks such as carriers, Tenders and
+  Sappers draw on the producers the army leaves, and never add one.
 - The top investment is funded through its next purchasable step. The bot keeps
   one optional saving target with its price, reason and cancel conditions.
 - Income is not observed directly. The bot estimates it from the change in bank
@@ -90,9 +97,11 @@ the running total and mission state.
   sends.
 - Missions recruit from available units in a fixed order (defend, lift, attack,
   raid), and each takes only the roles it uses: attack takes line, siege and
-  anti-air units, with a Tender and Sappers in support; raid takes Scuttlers,
+  anti-air units, with Tenders and Sappers in support; raid takes Scuttlers,
   Sappers, or ground-attack aircraft too few for a strike; lift takes carriers
   and a payload.
+- Several missions of a kind may run at once on distinct targets, each sized to
+  its own target's need.
 - A mission takes only the force it needs, keeps it while its purpose holds, and
   releases it when the purpose disappears or recovery finishes. At a safe
   transition it can yield suitable units to an emergency; loaded passengers are
@@ -176,11 +185,12 @@ Each behavior is proven by a staged scenario test.
 
 It also covers scouting with a re-scout after unexplained losses, Scuttler
 raids, harvest-line harassment by air, team relief, escorts, repair, harvester
-evacuation, emergency and voluntary static defense, Extractor restoration,
-expansion timing, tech prerequisites, memory of failed objectives, a response to
-stalled production, focus fire at Veteran and Prime, and pulling wounded units
-back between fights. It does no other per-unit micro. It builds every building
-kind, reaches every upgrade tier, and trains every unit its faction fields.
+evacuation, emergency and voluntary static defense sized to hold off the known
+threat, Extractor restoration, expansion timing, tech prerequisites, memory of
+failed objectives, a response to stalled production, focus fire at Veteran and
+Prime, and pulling wounded units back between fights. It does no other per-unit
+micro. It builds every building kind, reaches every upgrade tier, and trains
+every unit its faction fields.
 
 ## Difficulty, stance and personality
 

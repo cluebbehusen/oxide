@@ -448,6 +448,22 @@ fn the_carrier_stock_counts_riders_as_they_pack() {
 }
 
 #[test]
+fn a_seat_needing_no_lift_leaves_its_carriers_where_they_hover() {
+    let mut scenario = field();
+    garrison(&mut scenario);
+    scenario.units.push(unit(0, UnitKind::Skyhook, 4, 12));
+    let state = scenario.build().unwrap();
+    let hook = at(&state, 4, 12);
+    let commands = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
+    assert!(
+        runs(&commands)
+            .iter()
+            .all(|(units, _)| !units.contains(&hook)),
+        "{commands:?}"
+    );
+}
+
+#[test]
 fn an_army_no_lift_could_carry_buys_no_carriers() {
     let mut scenario = strait();
     scenario.players[0].scrap = 1_000;
@@ -733,9 +749,14 @@ fn emptied_carriers_short_of_orders_fly_home_before_the_lift_fights() {
         );
         state.tick(&commands);
     }
-    assert_eq!(home_runs.len(), 2, "around the anti-air: {home_runs:?}");
     let model = map(&landed);
     let home = model.component(TilePos::new(3, 11));
+    assert!(
+        home_runs
+            .iter()
+            .any(|(_, goal)| model.component(*goal) != home),
+        "around the anti-air: {home_runs:?}"
+    );
     for hook in skyhooks(&state, 0) {
         assert_eq!(model.component(hook.tile()), home, "{:?}", hook.tile());
     }
@@ -770,9 +791,11 @@ fn a_lift_at_the_member_cap_boards_no_more_and_still_restores() {
     json["missions"]["list"][0]["units"] = (first..first + 255).collect::<Vec<u32>>().into();
     let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
     let mut opponent = Opponent::restore(&checkpoint, &scenario, &state, map(&scenario)).unwrap();
-    let commands = opponent.act(&state, &mut OwnEvents::default());
-    assert!(loads(&commands).is_empty(), "{commands:?}");
-    assert!(Opponent::restore(&opponent.checkpoint(), &scenario, &state, map(&scenario)).is_ok());
+    opponent.act(&state, &mut OwnEvents::default());
+    assert!(
+        Opponent::restore(&opponent.checkpoint(), &scenario, &state, map(&scenario)).is_ok(),
+        "no lift grew past the cap"
+    );
 }
 
 #[test]
@@ -926,16 +949,25 @@ fn checkpoints_reject_impossible_lifts() {
         edit(&mut json["missions"]);
         restore(&json).err().unwrap()
     };
+    let second = |units: serde_json::Value| {
+        let mut json = json.clone();
+        let missions = &mut json["missions"];
+        let mut copy = missions["list"][0].clone();
+        copy["id"] = 1.into();
+        copy["units"] = units;
+        missions["list"].as_array_mut().unwrap().push(copy);
+        missions["next"] = 2.into();
+        restore(&json)
+    };
+    assert!(
+        second(serde_json::json!([9_999])).is_ok(),
+        "lifts run side by side"
+    );
     assert_eq!(
-        with(&|missions| {
-            let mut copy = missions["list"][0].clone();
-            copy["id"] = 1.into();
-            copy["units"] = serde_json::json!([]);
-            missions["list"].as_array_mut().unwrap().push(copy);
-            missions["next"] = 2.into();
-        }),
-        "checkpoint mission could not have been recorded",
-        "one lift at a time"
+        second(json["missions"]["list"][0]["units"].clone())
+            .err()
+            .unwrap(),
+        "checkpoint missions share a unit"
     );
     assert_eq!(
         with(&|missions| {
@@ -1084,5 +1116,238 @@ fn a_short_defense_buys_its_army_before_a_carrier() {
             .iter()
             .any(|(_, kind)| !matches!(kind, UnitKind::Harvester | UnitKind::Skyhook)),
         "premise: the emergency buys an army: {trained:?}"
+    );
+}
+
+#[test]
+fn a_severed_seat_without_an_airworks_trains_line_units_against_enemies_on_its_ground() {
+    let staged = |east: &[(i32, i32)]| {
+        let mut scenario = strait();
+        scenario.units.clear();
+        scenario
+            .buildings
+            .retain(|building| building.kind != BuildingKind::Airworks);
+        for player in &mut scenario.players {
+            player.scrap = 400;
+        }
+        for (x, y) in east {
+            scenario.units.push(unit(1, UnitKind::Sentinel, *x, *y));
+        }
+        scenario
+    };
+    let line = |state: &State, commands: &[PlayerCommand]| {
+        army(state, commands)
+            .iter()
+            .filter(|(_, kind)| {
+                crate::composition::role(*kind) == Some(crate::composition::Role::Line)
+            })
+            .count()
+    };
+
+    let alone = staged(&[]);
+    let state = alone.build().unwrap();
+    let commands = seat(&alone, 0).act(&state, &mut OwnEvents::default());
+    assert_eq!(line(&state, &commands), 0, "premise: nothing to fight");
+
+    let across: Vec<(i32, i32)> = (9..=13).map(|y| (30, y)).collect();
+    let far = staged(&across);
+    let state = far.build().unwrap();
+    let remembered: Vec<(UnitId, &str, TilePos)> = across
+        .iter()
+        .map(|&(x, y)| (at(&state, x, y), "sentinel", TilePos::new(x, y)))
+        .collect();
+    let mut opponent = remembering(&seat(&far, 0), &far, &state, &remembered);
+    let commands = opponent.act(&state, &mut OwnEvents::default());
+    assert_eq!(
+        line(&state, &commands),
+        0,
+        "an army across the strait is no reason for line units"
+    );
+
+    let landed: Vec<(i32, i32)> = (9..=13).map(|y| (6, y)).collect();
+    let invaded = staged(&landed);
+    let state = invaded.build().unwrap();
+    let commands = seat(&invaded, 0).act(&state, &mut OwnEvents::default());
+    assert!(
+        line(&state, &commands) > 0,
+        "invaders on its own ground are: {commands:?}"
+    );
+}
+
+/// The strait with West's tech and a Harvester but no army, and `scrap` for
+/// both seats.
+fn bare_strait(scrap: u32) -> Scenario {
+    let mut scenario = strait();
+    scenario.units.retain(|unit| unit.player != 0);
+    scenario.units.push(harvester(0, 5, 5));
+    for player in &mut scenario.players {
+        player.scrap = scrap;
+    }
+    scenario
+}
+
+fn army(state: &State, commands: &[PlayerCommand]) -> Vec<(BuildingKind, UnitKind)> {
+    trains(commands)
+        .into_iter()
+        .filter(|(_, kind)| crate::composition::role(*kind).is_some())
+        .map(|(at, kind)| {
+            let building = state.buildings().iter().find(|b| b.id == at).unwrap();
+            (building.kind, kind)
+        })
+        .collect()
+}
+
+#[test]
+fn a_severed_seat_without_an_airworks_saves_for_one_instead_of_line_units() {
+    let mut scenario = bare_strait(300);
+    scenario
+        .buildings
+        .retain(|building| building.kind != BuildingKind::Airworks);
+    // A Turret already guards home, so the seat saves for tech.
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Turret,
+        x: 6,
+        y: 14,
+    });
+    let decide = |scenario: &Scenario| {
+        let state = scenario.build().unwrap();
+        let (commands, trace) = seat(scenario, 0).act_traced(&state, &mut OwnEvents::default());
+        (army(&state, &commands), trace.unwrap())
+    };
+    let (trained, trace) = decide(&scenario);
+    assert!(
+        trained.is_empty(),
+        "no ground unit could reach anyone: {trained:?}"
+    );
+    assert_eq!(
+        trace.target.map(|target| target.investment),
+        Some(Investment::Tech(BuildingKind::Airworks))
+    );
+
+    let mut connected = scenario.clone();
+    connected.map = FIELD.map(str::to_owned).to_vec();
+    let (trained, _) = decide(&connected);
+    assert!(
+        trained.iter().any(
+            |(_, kind)| crate::composition::role(*kind) == Some(crate::composition::Role::Line)
+        ),
+        "premise: idle time becomes line units where they can walk: {trained:?}"
+    );
+}
+
+#[test]
+fn a_seat_that_gave_up_on_every_target_wants_no_strike_force() {
+    let mut scenario = bare_strait(1_000);
+    scenario.units.push(unit(0, UnitKind::Kestrel, 5, 5));
+    let state = scenario.build().unwrap();
+    let mut opponent = seat(&scenario, 0);
+    opponent.act(&state, &mut OwnEvents::default());
+    let mut json = serde_json::to_value(opponent.checkpoint()).unwrap();
+    json["memory"]["abandoned"] = serde_json::json!([
+        {"kind": "foundry", "anchor": {"x": EAST_START.x, "y": EAST_START.y}, "at": 0}
+    ]);
+    let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
+    let mut opponent = Opponent::restore(&checkpoint, &scenario, &state, map(&scenario)).unwrap();
+    let commands = opponent.act(&state, &mut OwnEvents::default());
+    let trained = army(&state, &commands);
+    assert!(
+        trained.iter().all(|(_, kind)| {
+            crate::composition::role(*kind) != Some(crate::composition::Role::AirStrike)
+        }),
+        "{trained:?}"
+    );
+}
+
+#[test]
+fn a_severed_seat_with_an_airworks_trains_air_strikes_before_it_has_an_army() {
+    let mut scenario = bare_strait(1_000);
+    // A scout already, so the Airworks is free for the army.
+    scenario.units.push(unit(0, UnitKind::Kestrel, 5, 5));
+    let state = scenario.build().unwrap();
+    let commands = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
+    let trained = army(&state, &commands);
+    assert!(
+        trained.iter().any(|(at, kind)| {
+            *at == BuildingKind::Airworks
+                && crate::composition::role(*kind) == Some(crate::composition::Role::AirStrike)
+        }),
+        "{trained:?}"
+    );
+}
+
+#[test]
+fn a_payload_worth_two_lifts_flies_both_to_distinct_targets() {
+    let mut scenario = crowded(&MORE_SKYHOOKS);
+    // A Kestrel over the strait shows an East outpost on the far shore.
+    scenario.units.push(unit(0, UnitKind::Kestrel, 20, 5));
+    scenario.buildings.push(BuildingSpec {
+        player: 1,
+        kind: BuildingKind::Fabricator,
+        x: 28,
+        y: 4,
+    });
+    let state = scenario.build().unwrap();
+    let trace = seat(&scenario, 0)
+        .act_traced(&state, &mut OwnEvents::default())
+        .1
+        .unwrap();
+    let lifts: Vec<MissionStatus> = trace
+        .missions
+        .into_iter()
+        .filter(|mission| matches!(mission.kind, MissionKind::Lift { .. }))
+        .collect();
+    let [first, second] = lifts[..] else {
+        panic!("{lifts:?}");
+    };
+    assert_ne!(first.kind, second.kind, "each goes after its own target");
+}
+
+/// West's ground cut off from East's start by a wall, East's start in a
+/// walled corner.
+const WALLED: [&str; 24] = [
+    "########################################",
+    "#..............................#.......#",
+    "#..............................#.......#",
+    "#..............................#.......#",
+    "#.........s....................#..2....#",
+    "#..............................#.......#",
+    "#..ss..........................#.......#",
+    "#..s...........................#.......#",
+    "#..............................#.......#",
+    "#..............................#########",
+    "#....1.................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#..ss..................................#",
+    "#..s...................................#",
+    "#......................................#",
+    "#.........s............................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "########################################",
+];
+
+#[test]
+fn a_severed_seat_short_of_an_army_does_not_hold_its_tech_for_a_turret() {
+    let mut scenario = field();
+    scenario.map = WALLED.map(str::to_owned).to_vec();
+    scenario.players[0].scrap = 300;
+    for y in 9..=12 {
+        scenario.units.push(harvester(0, 8, y));
+    }
+    for y in [10, 11] {
+        scenario.units.push(unit(0, UnitKind::Sentinel, 10, y));
+    }
+    let state = scenario.build().unwrap();
+    let (_, trace) = seat(&scenario, 0).act_traced(&state, &mut OwnEvents::default());
+    assert_eq!(
+        trace.unwrap().target.map(|target| target.investment),
+        Some(Investment::Tech(BuildingKind::Airworks)),
+        "its army reaches the enemy only once an Airworks stands"
     );
 }

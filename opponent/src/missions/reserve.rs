@@ -8,10 +8,10 @@ use super::{Missions, Task, carrier, hits, mine, value};
 use crate::frame::{HomeFrame, doubled};
 use crate::map::{MapModel, UNREACHABLE};
 use crate::memory::{Memory, SeenUnit};
-use oxide_sim::BuildingKind;
 use oxide_sim::observation::{ObservationData, UnitObs};
 use oxide_sim::scenario::BotStance;
 use oxide_sim::stats::Domain;
+use oxide_sim::{BuildingKind, PlayerId};
 use std::cmp::Reverse;
 
 /// The body domains a reserve covers, in the order its values keep.
@@ -58,14 +58,7 @@ pub(super) fn reserve(
             return 0;
         }
         let domain = DOMAINS[index];
-        let threat: u64 = memory
-            .units()
-            .iter()
-            .filter(armed)
-            .filter(|unit| unit.kind.stats().domain == domain)
-            .filter(|unit| domain == Domain::Air || map.distance(me, unit.tile) != UNREACHABLE)
-            .map(|unit| unit.value(now))
-            .sum();
+        let threat = threat(map, memory, me, now, domain);
         let standing: u64 = observation
             .my_buildings
             .iter()
@@ -82,6 +75,26 @@ pub(super) fn reserve(
             .sum();
         floor.max(threat * share / 1_000).saturating_sub(standing)
     })
+}
+
+/// Value of the armed enemy units of `domain` the seat remembers that could
+/// come at home: aircraft anywhere, ground units only on ground connected to
+/// its start.
+pub(crate) fn threat(
+    map: &MapModel,
+    memory: &Memory,
+    me: PlayerId,
+    now: u64,
+    domain: Domain,
+) -> u64 {
+    memory
+        .units()
+        .iter()
+        .filter(|unit| !unit.kind.stats().weapons.is_empty())
+        .filter(|unit| unit.kind.stats().domain == domain)
+        .filter(|unit| domain == Domain::Air || map.distance(me, unit.tile) != UNREACHABLE)
+        .map(|unit| unit.value(now))
+        .sum()
 }
 
 /// What free units at home may still take away on offense: their value
@@ -152,6 +165,22 @@ impl Missions {
         map: &MapModel,
         reserve: [u64; 2],
     ) -> Spare {
+        let (home, free, defending) = self.at_home(observation, map);
+        Spare {
+            home,
+            left: std::array::from_fn(|index| {
+                free[index].saturating_sub(reserve[index].saturating_sub(defending[index]))
+            }),
+        }
+    }
+
+    /// The start's ground, and the value against each domain of the free
+    /// units at home and of the units out defending.
+    fn at_home(
+        &self,
+        observation: &ObservationData,
+        map: &MapModel,
+    ) -> (Option<u32>, [u64; 2], [u64; 2]) {
         let home = map
             .start(observation.me)
             .and_then(|start| map.component(start));
@@ -177,13 +206,7 @@ impl Missions {
             .filter_map(|id| mine(observation, id))
             .filter(|unit| at_home(map, home, unit))
             .collect();
-        let (defending, free) = (worth(&defending), worth(&free));
-        Spare {
-            home,
-            left: std::array::from_fn(|index| {
-                free[index].saturating_sub(reserve[index].saturating_sub(defending[index]))
-            }),
-        }
+        (home, worth(&free), worth(&defending))
     }
 
     /// The home `payload` a lift could take, cut to what the reserve lets

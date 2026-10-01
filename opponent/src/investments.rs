@@ -1,6 +1,7 @@
 //! What the seat could invest in, how much it wants each, and the next
 //! purchase toward it. The list is recomputed every decision.
 
+use crate::composition::{self, Role};
 use crate::defenses;
 use crate::expansion;
 use crate::frame::{HomeFrame, footprint_centre};
@@ -8,8 +9,8 @@ use crate::map::MapModel;
 use crate::memory::Memory;
 use crate::profile::PersonalityTraits;
 use chassis::grid::TilePos;
-use oxide_sim::observation::ObservationData;
-use oxide_sim::{BuildingId, BuildingKind, PlayerId};
+use oxide_sim::observation::{BuildingObs, ObservationData};
+use oxide_sim::{BuildingId, BuildingKind, PlayerId, TICKS_PER_SECOND, UnitKind};
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 
@@ -80,6 +81,12 @@ pub(crate) struct Situation<'a> {
     pub(crate) pull: Vec<(BuildingKind, u32)>,
     /// Whether the seat's army is under the stance's minimum.
     pub(crate) exposed: bool,
+    /// Whether the seat knows of targets and ground reaches none of them.
+    pub(crate) severed: bool,
+    /// The army roles with a deficit.
+    pub(crate) wanted: Vec<Role>,
+    /// What the seat's defenses must stand up to.
+    pub(crate) stakes: defenses::Stakes,
 }
 
 /// Every investment the seat wants at all, most wanted first.
@@ -113,8 +120,13 @@ pub(crate) fn candidates(situation: &Situation<'_>) -> Vec<Candidate> {
         let score = full * situation.income.min(360) / 360 + pull(BuildingKind::Crucible);
         list.push((Investment::Tech(BuildingKind::Crucible), score));
     }
-    for kind in [BuildingKind::Fabricator, BuildingKind::Airworks] {
-        if busy(situation, kind) {
+    for kind in [
+        BuildingKind::Foundry,
+        BuildingKind::Fabricator,
+        BuildingKind::Airworks,
+        BuildingKind::Crucible,
+    ] {
+        if another(situation, kind) {
             list.push((
                 Investment::Capacity(kind),
                 400 + 2 * u32::from(traits.greed),
@@ -153,14 +165,53 @@ pub(crate) fn candidates(situation: &Situation<'_>) -> Vec<Candidate> {
             list.push((refinery, base * 7 / 5));
         }
     }
+    let settled = saturated || observation.tick >= defenses::SETTLE_TICKS;
     list.extend(defenses::investments(
         observation,
         situation.map,
         situation.memory,
         traits,
-        saturated || observation.tick >= defenses::SETTLE_TICKS,
+        settled,
         situation.exposed,
+        situation.stakes,
     ));
+    // A seat without an army to speak of puts up a Turret before any tech:
+    // one gun holds an early rush that a tech building still going up would
+    // not. It leads the best tech by the margin that switches a saving target.
+    if situation.exposed && owned(BuildingKind::Turret) == 0 {
+        let tech = list
+            .iter()
+            .filter(|(investment, _)| matches!(investment, Investment::Tech(_)))
+            .map(|(_, score)| *score)
+            .max()
+            .unwrap_or(0);
+        let lead = (tech + (tech / 4).max(150) + 1).max(ADOPT);
+        let mut offered = false;
+        for (investment, score) in &mut list {
+            if matches!(
+                investment,
+                Investment::Defense {
+                    kind: BuildingKind::Turret,
+                    ..
+                }
+            ) {
+                *score = (*score).max(lead);
+                offered = true;
+            }
+        }
+        // No Turret is offered against a threat known only from public facts
+        // until the opening settles, so tech waits for that Turret. Holding
+        // tech just under adoption keeps a target already being saved for. A
+        // severed seat is exempt: its tech is how its army reaches anyone, and
+        // a rush can only come by landing.
+        if !settled && !offered && !situation.severed {
+            for (investment, score) in &mut list {
+                if matches!(investment, Investment::Tech(_)) {
+                    *score = (*score).min(ADOPT - 1);
+                }
+            }
+        }
+    }
     let mut list: Vec<Candidate> = list
         .into_iter()
         .filter(|(_, score)| *score > 0)
@@ -293,21 +344,50 @@ fn requirement_step(
     build_step(observation, missing, depth - 1)
 }
 
-/// Whether every built producer of `kind` was busy when the decision began
-/// and income could keep one more working at 300 a minute each. A producer
-/// already being built answers the need.
-fn busy(situation: &Situation<'_>, kind: BuildingKind) -> bool {
+/// Whether the seat wants another producer of `kind`: every one it has was
+/// working when the decision began, a role it trains is wanted, and the
+/// income the working producers leave unspent could keep one more of `kind`
+/// as busy as those it has. A producer already being built answers the need.
+fn another(situation: &Situation<'_>, kind: BuildingKind) -> bool {
     let observation = situation.observation;
-    let producers: Vec<bool> = observation
+    let producers: Vec<(&BuildingObs, &Vec<UnitKind>)> = observation
         .my_buildings
         .iter()
         .zip(&observation.my_queues)
         .filter(|(building, _)| building.kind == kind)
-        .map(|(building, queue)| building.built && !queue.is_empty())
         .collect();
-    !producers.is_empty()
-        && producers.iter().all(|busy| *busy)
-        && situation.income >= 300 * (producers.len() as u32 + 1)
+    let working = producers
+        .iter()
+        .all(|(building, queue)| building.built && !queue.is_empty());
+    let needed = situation
+        .wanted
+        .iter()
+        .any(|role| composition::serves(observation, kind, *role));
+    if producers.is_empty() || !working || !needed {
+        return false;
+    }
+    let spent: u64 = observation
+        .my_buildings
+        .iter()
+        .zip(&observation.my_queues)
+        .filter(|(building, _)| building.built)
+        .map(|(_, queue)| spending(queue))
+        .sum();
+    let each = producers
+        .iter()
+        .map(|(_, queue)| spending(queue))
+        .sum::<u64>()
+        / producers.len() as u64;
+    u64::from(situation.income).saturating_sub(spent) >= each
+}
+
+/// Scrap a minute a producer spends on the unit at the front of `queue`.
+fn spending(queue: &[UnitKind]) -> u64 {
+    queue.first().map_or(0, |kind| {
+        let stats = kind.stats();
+        u64::from(stats.cost) * u64::from(TICKS_PER_SECOND) * 60
+            / u64::from(stats.train_ticks.max(1))
+    })
 }
 
 /// Own buildings of `kind`, built or not.

@@ -122,6 +122,8 @@ impl Enemy {
                 );
             }
         }
+        // The most recently seen units stand in for the rest: a computation
+        // bound on a pairwise check, not a limit on what the seat knows.
         let mut recent: Vec<_> = memory.units().iter().collect();
         recent.sort_by_key(|unit| (Reverse(unit.seen), unit.id));
         recent.truncate(32);
@@ -140,6 +142,9 @@ impl Enemy {
 pub(crate) struct Needs {
     need: [i64; 4],
     weight: [u64; 4],
+    /// Whether ground units can reach an enemy: a building or start, or
+    /// invaders on the seat's own ground.
+    ground: bool,
     enemy: Enemy,
     traits: PersonalityTraits,
     income: u32,
@@ -153,14 +158,31 @@ pub(crate) fn weight(trait_value: u8) -> u64 {
     750 + 5 * u64::from(trait_value)
 }
 
-/// Needs from what the seat has seen and owns. Air strikes are needed only
-/// once the seat has or is saving for an Airworks.
+/// Where the seat's army can go.
+pub(crate) struct Outlet {
+    /// Ground units can reach an enemy building or start: by ground, or by
+    /// lift once an Airworks stands.
+    pub(crate) ground: bool,
+    /// Value of the known enemy ground units on the seat's own ground, which
+    /// its ground units reach even where they reach no enemy building.
+    pub(crate) invaders: u64,
+    /// Air strikes are wanted: an Airworks stands, or ground reaches no enemy.
+    pub(crate) air_strikes: bool,
+    /// Air strike value wanted at the least: while ground reaches no enemy,
+    /// what a strike needs against the easiest known target.
+    pub(crate) strike: u64,
+}
+
+/// Needs from what the seat has seen and owns and where its army can go.
+/// Ground roles are wanted only while ground units can reach an enemy
+/// building or start; until then line units are wanted only against
+/// invaders on the seat's own ground.
 pub(crate) fn needs(
     observation: &ObservationData,
     memory: &Memory,
     traits: PersonalityTraits,
     income: u32,
-    air_strikes: bool,
+    outlet: Outlet,
 ) -> Needs {
     let enemy = Enemy::of(observation, memory);
     let mut own = [0_i64; 4];
@@ -182,16 +204,23 @@ pub(crate) fn needs(
     let ground = enemy.ground as i64;
     let defenses = enemy.defenses as i64;
     let mut need = [0_i64; 4];
-    need[Role::Line as usize] = (3 * ground / 4).max(2 * army / 5) - own[Role::Line as usize];
-    need[Role::Siege as usize] =
-        defenses / 2 + army * i64::from(traits.siege) / 400 - own[Role::Siege as usize];
+    if outlet.ground {
+        need[Role::Line as usize] = (3 * ground / 4).max(2 * army / 5) - own[Role::Line as usize];
+        need[Role::Siege as usize] =
+            defenses / 2 + army * i64::from(traits.siege) / 400 - own[Role::Siege as usize];
+    } else {
+        let invaders = i64::try_from(outlet.invaders).unwrap_or(i64::MAX);
+        need[Role::Line as usize] = 3 * invaders / 4 - own[Role::Line as usize];
+    }
     need[Role::AntiAir as usize] = 3 * air / 4 - own[Role::AntiAir as usize];
-    if air_strikes {
+    if outlet.air_strikes {
+        let strike = i64::try_from(outlet.strike).unwrap_or(i64::MAX);
         need[Role::AirStrike as usize] =
-            army * i64::from(traits.air) / 400 - own[Role::AirStrike as usize];
+            (army * i64::from(traits.air) / 400).max(strike) - own[Role::AirStrike as usize];
     }
     Needs {
         need,
+        ground: outlet.ground || outlet.invaders > 0,
         weight: [
             1_000,
             weight(traits.siege),
@@ -214,33 +243,35 @@ fn index(kind: UnitKind) -> usize {
 }
 
 impl Needs {
-    /// The most wanted role among `roles`. With nothing wanted, unprotected
-    /// scrap still becomes line units.
-    fn pick(&self, roles: impl Iterator<Item = Role> + Clone) -> Option<Role> {
-        roles
-            .clone()
+    /// Roles with a deficit, most wanted first.
+    pub(crate) fn wanted(&self) -> Vec<Role> {
+        let mut wanted: Vec<Role> = ROLES
+            .into_iter()
             .filter(|role| self.need[*role as usize] > 0)
-            .max_by_key(|role| self.need[*role as usize] * self.weight[*role as usize] as i64)
-            .or_else(|| roles.into_iter().find(|role| *role == Role::Line))
+            .collect();
+        wanted.sort_by_key(|role| {
+            Reverse(self.need[*role as usize] * self.weight[*role as usize] as i64)
+        });
+        wanted
     }
 
-    /// The best unit `producer` can train now for its most wanted role within
-    /// `budget`. A better unit it cannot afford yet gives way to the best one
-    /// it can, since other producers spend the scrap meanwhile.
-    pub(crate) fn choose(
+    /// Whether an idle producer with no wanted role still trains line units:
+    /// only while ground units can reach an enemy.
+    pub(crate) fn fallback(&self) -> bool {
+        self.ground
+    }
+
+    /// The best unit `producer` can train now for `role` within `budget`. A
+    /// better unit it cannot afford yet gives way to the best one it can,
+    /// since other producers spend the scrap meanwhile.
+    pub(crate) fn unit(
         &self,
         observation: &ObservationData,
         producer: BuildingKind,
+        role: Role,
         budget: u32,
     ) -> Option<UnitKind> {
-        let options: Vec<UnitKind> = producible(observation, producer).collect();
-        let role = self.pick(
-            ROLES
-                .into_iter()
-                .filter(|role| options.iter().any(|kind| self::role(*kind) == Some(*role))),
-        )?;
-        options
-            .into_iter()
+        producible(observation, producer)
             .filter(|kind| self::role(*kind) == Some(role) && kind.stats().cost <= budget)
             .max_by_key(|kind| (self.suitability(*kind, role), Reverse(kind.stats().cost)))
     }
@@ -350,6 +381,11 @@ impl Needs {
     }
 }
 
+/// Whether `producer` can train a unit in `role` for the seat now.
+pub(crate) fn serves(observation: &ObservationData, producer: BuildingKind, role: Role) -> bool {
+    producible(observation, producer).any(|kind| self::role(kind) == Some(role))
+}
+
 /// Whether any built producer of the seat can train a unit in `role`.
 fn trainable(observation: &ObservationData, role: Role) -> bool {
     observation
@@ -396,6 +432,7 @@ mod tests {
         Needs {
             need: [0; 4],
             weight: [1_000; 4],
+            ground: true,
             enemy: Enemy {
                 air: 0,
                 ground: 1_000,
@@ -501,7 +538,7 @@ mod tests {
                     needs.need[role as usize] = 100_000;
                     for _ in 0..12 {
                         for producer in producers {
-                            if let Some(kind) = needs.choose(&observation, producer, 10_000) {
+                            if let Some(kind) = needs.unit(&observation, producer, role, 10_000) {
                                 trained.push(kind);
                                 needs.queued(kind);
                             }
