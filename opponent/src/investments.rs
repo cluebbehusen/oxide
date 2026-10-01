@@ -46,6 +46,8 @@ pub enum Investment {
     Expansion(u16),
     /// An Extractor on this frame.
     Extractor(TilePos),
+    /// A unit a wanted role prefers but the scrap on hand cannot buy.
+    Unit(UnitKind),
 }
 
 /// The next purchase toward an investment.
@@ -56,6 +58,8 @@ pub enum Step {
     Build(BuildingKind),
     /// Upgrading a building.
     Upgrade(BuildingId),
+    /// Training a unit.
+    Train(UnitKind),
 }
 
 /// An investment the seat wants now, with how much.
@@ -87,6 +91,12 @@ pub(crate) struct Situation<'a> {
     pub(crate) wanted: Vec<Role>,
     /// What the seat's defenses must stand up to.
     pub(crate) stakes: defenses::Stakes,
+    /// Units wanted roles prefer but the scrap on hand cannot buy, each with
+    /// how much the seat wants to save for it.
+    pub(crate) units: Vec<(UnitKind, u32)>,
+    /// The producer kind a unit the seat has saved enough for waits on,
+    /// because every producer that trains it is busy.
+    pub(crate) waiting: Option<BuildingKind>,
 }
 
 /// Every investment the seat wants at all, most wanted first.
@@ -132,6 +142,9 @@ pub(crate) fn candidates(situation: &Situation<'_>) -> Vec<Candidate> {
                 400 + 2 * u32::from(traits.greed),
             ));
         }
+    }
+    for (kind, score) in &situation.units {
+        list.push((Investment::Unit(*kind), *score));
     }
     let growth = expansion::candidates(
         observation,
@@ -251,7 +264,8 @@ fn location(map: &MapModel, me: PlayerId, investment: Investment) -> Option<(i64
         Investment::Tech(_)
         | Investment::Capacity(_)
         | Investment::Reclaimer
-        | Investment::Upgrade { .. } => None,
+        | Investment::Upgrade { .. }
+        | Investment::Unit(_) => None,
     }
 }
 
@@ -264,6 +278,9 @@ pub(crate) fn step(observation: &ObservationData, investment: Investment) -> Opt
         Investment::Expansion(_) => build_step(observation, BuildingKind::Foundry, 3),
         Investment::Extractor(_) => build_step(observation, BuildingKind::Extractor, 3),
         Investment::Defense { kind, .. } => build_step(observation, kind, 3),
+        Investment::Unit(kind) => producers_of(observation, kind)
+            .next()
+            .map(|_| (Step::Train(kind), kind.stats().cost)),
         Investment::Upgrade { building, tier } => {
             let building = observation.my_buildings.iter().find(|own| {
                 own.id == building && own.built && own.tier.checked_add(1) == Some(tier)
@@ -290,6 +307,7 @@ pub(crate) fn completes(investment: Investment, step: Step) -> bool {
         (Investment::Defense { kind, .. }, Step::Build(built)) => kind == built,
         (Investment::Expansion(_), Step::Build(built)) => built == BuildingKind::Foundry,
         (Investment::Extractor(_), Step::Build(built)) => built == BuildingKind::Extractor,
+        (Investment::Unit(kind), Step::Train(trained)) => kind == trained,
         _ => false,
     }
 }
@@ -347,10 +365,22 @@ fn requirement_step(
     build_step(observation, missing, depth - 1)
 }
 
+/// Built own producers that can train `kind` for the seat now.
+pub(crate) fn producers_of(
+    observation: &ObservationData,
+    kind: UnitKind,
+) -> impl Iterator<Item = &BuildingObs> {
+    observation.my_buildings.iter().filter(move |building| {
+        building.built
+            && composition::producible(observation, building.kind).any(|each| each == kind)
+    })
+}
+
 /// Whether the seat wants another producer of `kind`: every one it has was
-/// working when the decision began, a role it trains is wanted, and the
-/// income the working producers leave unspent could keep one more of `kind`
-/// as busy as those it has. A producer already being built answers the need.
+/// working when the decision began, and either a unit the seat has saved
+/// enough for waits on it, or a role it trains is wanted and the income the
+/// working producers leave unspent could keep one more of `kind` as busy as
+/// those it has. A producer already being built answers the need.
 fn another(situation: &Situation<'_>, kind: BuildingKind) -> bool {
     let observation = situation.observation;
     let producers: Vec<(&BuildingObs, &Vec<UnitKind>)> = observation
@@ -362,11 +392,17 @@ fn another(situation: &Situation<'_>, kind: BuildingKind) -> bool {
     let working = producers
         .iter()
         .all(|(building, queue)| building.built && !queue.is_empty());
+    if producers.is_empty() || !working {
+        return false;
+    }
+    if situation.waiting == Some(kind) {
+        return true;
+    }
     let needed = situation
         .wanted
         .iter()
         .any(|role| composition::serves(observation, kind, *role));
-    if producers.is_empty() || !working || !needed {
+    if !needed {
         return false;
     }
     let spent: u64 = observation

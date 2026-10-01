@@ -269,6 +269,56 @@ impl Needs {
             .max_by_key(|kind| (self.suitability(*kind, role), Reverse(kind.stats().cost)))
     }
 
+    /// For each wanted role, the unit any built producer could train that
+    /// suits it best, when it costs more than `spendable` and the role has a
+    /// cheaper unit production would buy instead, with how much the seat
+    /// wants to save for it: its role's weight, scaled by how much of two of
+    /// it the role lacks.
+    pub(crate) fn premium(
+        &self,
+        observation: &ObservationData,
+        spendable: u32,
+    ) -> Vec<(UnitKind, u32)> {
+        let producers: Vec<BuildingKind> = BuildingKind::ALL
+            .into_iter()
+            .filter(|kind| {
+                observation
+                    .my_buildings
+                    .iter()
+                    .any(|building| building.kind == *kind && building.built)
+            })
+            .collect();
+        let mut premium: Vec<(UnitKind, u32)> = Vec::new();
+        for role in self.wanted() {
+            let in_role: Vec<UnitKind> = producers
+                .iter()
+                .flat_map(|producer| producible(observation, *producer))
+                .filter(|kind| self::role(*kind) == Some(role))
+                .collect();
+            let Some(best) = in_role
+                .iter()
+                .copied()
+                .max_by_key(|kind| (self.suitability(*kind, role), Reverse(kind.stats().cost)))
+            else {
+                continue;
+            };
+            let cost = best.stats().cost;
+            let cheaper = in_role.iter().any(|kind| kind.stats().cost < cost);
+            if cost <= spendable || !cheaper {
+                continue;
+            }
+            let lacking = u64::try_from(self.need[role as usize].max(0)).unwrap_or(0);
+            let pair = 2 * u64::from(cost);
+            let score = self.weight[role as usize] * lacking.min(pair) / pair;
+            let score = u32::try_from(score).unwrap_or(u32::MAX);
+            match premium.iter_mut().find(|(kind, _)| *kind == best) {
+                Some((_, kept)) => *kept = (*kept).max(score),
+                None => premium.push((best, score)),
+            }
+        }
+        premium
+    }
+
     /// Counts a unit queued this decision against its role's deficit.
     pub(crate) fn queued(&mut self, kind: UnitKind) {
         if let Some(role) = role(kind) {
@@ -391,7 +441,7 @@ fn trainable(observation: &ObservationData, role: Role) -> bool {
 }
 
 /// Units `producer` can train for the seat now.
-fn producible(
+pub(crate) fn producible(
     observation: &ObservationData,
     producer: BuildingKind,
 ) -> impl Iterator<Item = UnitKind> + '_ {
@@ -497,6 +547,45 @@ mod tests {
             .collect();
         memory.observe(&observation);
         assert!(Enemy::of(&observation, &memory).clustered);
+    }
+
+    #[test]
+    fn a_dear_unit_the_role_prefers_is_worth_saving_for_while_a_cheaper_one_fits() {
+        use oxide_sim::observation::BuildingObs;
+        use oxide_sim::{BuildingId, PlayerId, Scenario};
+        let state = Scenario::skirmish().build().unwrap();
+        let mut observation = ObservationData::fog_honest(&state, PlayerId(0));
+        let template = observation.my_buildings[0].clone();
+        for (id, kind) in [
+            (900, BuildingKind::Fabricator),
+            (901, BuildingKind::Crucible),
+        ] {
+            observation.my_buildings.push(BuildingObs {
+                id: BuildingId(id),
+                kind,
+                built: true,
+                ..template.clone()
+            });
+        }
+        let mut needs = needs(None, false);
+        needs.income = 3_000;
+        needs.need[Role::Siege as usize] = 2_000;
+        // Lancers and Bombards already make up the siege.
+        for (kind, count) in [(UnitKind::Lancer, 6), (UnitKind::Bombard, 4)] {
+            needs.kinds[index(kind)] = count;
+        }
+        let premium = needs.premium(&observation, 150);
+        let [(kind, score)] = premium[..] else {
+            panic!("{premium:?}");
+        };
+        assert_eq!(kind, UnitKind::Avalanche);
+        assert_eq!(u64::from(score), needs.weight[Role::Siege as usize]);
+        assert!(
+            needs.premium(&observation, 10_000).is_empty(),
+            "affordable now"
+        );
+        needs.need[Role::Siege as usize] = 0;
+        assert!(needs.premium(&observation, 150).is_empty(), "not wanted");
     }
 
     #[test]

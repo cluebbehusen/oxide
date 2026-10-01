@@ -4,6 +4,7 @@ use crate::investments::{self, ADOPT, Candidate, Investment, Situation};
 use crate::memory::Memory;
 use crate::saving::Saving;
 use crate::{PersonalityTraits, Step};
+use oxide_sim::scenario::BotDifficulty;
 
 /// The arena with both seats' Harvesters saturating their nodes, so a
 /// Fabricator is worth saving for from the first decision.
@@ -337,6 +338,8 @@ fn reclaimers_wait_for_the_drip_and_refineries_need_a_fabricator() {
             stakes: defenses::Stakes::default(),
             severed: false,
             wanted: Vec::new(),
+            units: Vec::new(),
+            waiting: None,
         })
         .into_iter()
         .map(|candidate| candidate.investment)
@@ -398,6 +401,8 @@ fn reclaimers_keep_coming_once_the_home_scrap_is_mined_out() {
             stakes: defenses::Stakes::default(),
             severed: false,
             wanted: Vec::new(),
+            units: Vec::new(),
+            waiting: None,
         })
         .into_iter()
         .find(|candidate| candidate.investment == Investment::Reclaimer)
@@ -408,6 +413,120 @@ fn reclaimers_keep_coming_once_the_home_scrap_is_mined_out() {
         "six Reclaimers are plenty beside full nodes"
     );
     assert!(score(1_000) >= ADOPT, "but not once the nodes are gone");
+}
+
+/// The saturated arena with `scrap`, a West Crucible, and a West Kestrel in
+/// sight of East's army grown to outweigh West's line, out of reach of West's
+/// buildings.
+fn outlined(scrap: u32) -> Scenario {
+    let mut scenario = saturated(scrap);
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Crucible,
+        x: 5,
+        y: 7,
+    });
+    // West keeps just the Aggressive minimum army.
+    scenario
+        .units
+        .retain(|unit| !(unit.player == 0 && unit.kind == UnitKind::Sentinel && unit.x >= 8));
+    scenario.units.push(unit(0, UnitKind::Kestrel, 12, 6));
+    for x in 15..=20 {
+        for y in 3..=4 {
+            scenario.units.push(unit(1, UnitKind::Sentinel, x, y));
+        }
+    }
+    scenario
+}
+
+fn crucible(state: &State) -> BuildingId {
+    state
+        .buildings()
+        .iter()
+        .find(|building| building.kind == BuildingKind::Crucible)
+        .unwrap()
+        .id
+}
+
+#[test]
+fn a_seat_saves_for_the_dear_unit_its_line_prefers_and_trains_it() {
+    let scenario = outlined(800);
+    let state = scenario.build().unwrap();
+    let mut opponent = seat_with(&scenario, 0, thrifty());
+    let (commands, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
+    let trace = trace.unwrap();
+    assert_eq!(
+        trace.target.map(|target| target.investment),
+        Some(Investment::Unit(UnitKind::Breaker)),
+        "{trace:?}"
+    );
+    assert!(trace.protected > 0);
+    assert!(
+        !trains(&commands)
+            .iter()
+            .any(|(_, kind)| *kind == UnitKind::Breaker),
+        "premise: not yet affordable"
+    );
+    let json = serde_json::to_value(opponent.checkpoint()).unwrap();
+    assert_eq!(
+        json["saving"]["target"]["investment"],
+        serde_json::json!({"unit": "breaker"})
+    );
+    let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
+    let mut opponent = Opponent::restore(&checkpoint, &scenario, &state, map(&scenario)).unwrap();
+    let richer = outlined(1_400);
+    let mut state = richer.build().unwrap();
+    let interval = crate::decision_interval(BotDifficulty::Standard);
+    advance_to(&mut state, interval, &[]);
+    let (commands, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
+    assert!(
+        trains(&commands).contains(&(crucible(&state), UnitKind::Breaker)),
+        "{commands:?}"
+    );
+    assert_eq!(trace.unwrap().protected, 0, "the purchase spent it");
+}
+
+#[test]
+fn a_unit_saved_for_that_waits_on_busy_producers_wants_another() {
+    let scenario = outlined(1_400);
+    let mut state = scenario.build().unwrap();
+    state.tick(&[PlayerCommand {
+        player: PlayerId(0),
+        command: Command::Train {
+            building: crucible(&state),
+            kind: UnitKind::Avalanche,
+        },
+    }]);
+    let observation = ObservationData::fog_honest(&state, PlayerId(0));
+    let model = map(&scenario);
+    let memory = Memory::default();
+    let wants = |waiting: Option<BuildingKind>| {
+        investments::candidates(&Situation {
+            observation: &observation,
+            map: &model,
+            memory: &memory,
+            traits: traits(),
+            saturation: 1_000,
+            income: 400,
+            depletion: 0,
+            pull: Vec::new(),
+            exposed: false,
+            stakes: defenses::Stakes::default(),
+            severed: false,
+            wanted: Vec::new(),
+            units: Vec::new(),
+            waiting,
+        })
+        .into_iter()
+        .map(|candidate| candidate.investment)
+        .collect::<Vec<_>>()
+    };
+    let another = Investment::Capacity(BuildingKind::Crucible);
+    assert!(
+        !wants(None).contains(&another),
+        "premise: no role asks for it"
+    );
+    assert!(wants(Some(BuildingKind::Crucible)).contains(&another));
 }
 
 #[test]
@@ -601,6 +720,8 @@ fn mirrored_seats_rank_equal_extractor_frames_alike() {
             stakes: defenses::Stakes::default(),
             severed: false,
             wanted: Vec::new(),
+            units: Vec::new(),
+            waiting: None,
         })
         .into_iter()
         .find_map(|candidate| match candidate.investment {
