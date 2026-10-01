@@ -96,7 +96,7 @@ mod projectiles;
 pub(crate) mod projection;
 pub(crate) use projectiles::LaunchPose;
 
-pub(crate) use fx::{BuildingHit, HitSurface, UnitBody};
+pub(crate) use fx::{BuildingHit, HitSurface, UnitBody, UnitHit};
 pub use fx::{Effect, EffectKind, FlakYokeDelay, PingKind, ShotStyle, SoundKind};
 
 /// A transient HUD message (rejected orders, stalled units).

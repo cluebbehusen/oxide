@@ -96,16 +96,48 @@ impl BuildingHit {
 }
 
 #[derive(Clone, Copy)]
+pub(crate) struct UnitHit {
+    pub id: oxide_sim::UnitId,
+    pub body: UnitBody,
+    pub frame: crate::render::UnitSpriteFrame,
+    pub center: Vec2,
+    pub airborne: bool,
+}
+
+#[derive(Clone, Copy)]
 pub(crate) enum HitSurface {
     Building(BuildingHit),
-    Unit(UnitBody),
+    Unit(UnitHit),
+}
+
+impl HitSurface {
+    pub(crate) fn covers(self, at: Vec2) -> bool {
+        match self {
+            Self::Building(hit) => {
+                let (w, h) = hit.kind.tier_stats(hit.tier).size;
+                at.x >= hit.anchor.x
+                    && at.y >= hit.anchor.y
+                    && at.x <= hit.anchor.x + w as f32
+                    && at.y <= hit.anchor.y + h as f32
+            }
+            Self::Unit(hit) => {
+                hit.center.distance(at) <= hit.body.kind.stats().radius.to_num::<f32>()
+            }
+        }
+    }
 }
 
 #[derive(Default)]
 pub(super) struct PreviousEffects {
     buildings: Vec<(oxide_sim::BuildingId, Option<CollapseBody>, BuildingHit)>,
     shells: Vec<oxide_sim::state::Shell>,
-    units: Vec<(oxide_sim::UnitId, UnitBody, Vec2)>,
+    units: Vec<(
+        oxide_sim::UnitId,
+        UnitBody,
+        Vec2,
+        bool,
+        crate::render::UnitSpriteFrame,
+    )>,
     visible_crash_contacts: Vec<oxide_sim::UnitId>,
 }
 
@@ -163,6 +195,11 @@ impl PreviousEffects {
                         unit.id,
                         UnitBody::capture(game, state, unit, crate::render::reduced_motion()),
                         game.draw_pos(unit.id, unit.pos, 1.0),
+                        unit.domain() == oxide_sim::stats::Domain::Air,
+                        crate::render::UnitSpriteFrame::capture(
+                            unit.kind,
+                            crate::render::unit_animation(game, state, unit),
+                        ),
                     )
                 })
                 .collect(),
@@ -185,7 +222,8 @@ impl Effect {
     pub(crate) fn age_at(&self, completed_ticks: u64, tick_fraction: f32) -> f32 {
         match self.kind {
             EffectKind::DirectShot { completed_tick, .. }
-            | EffectKind::SapperDetonation { completed_tick, .. } => {
+            | EffectKind::SapperDetonation { completed_tick, .. }
+            | EffectKind::Impact { completed_tick, .. } => {
                 let whole = completed_ticks.saturating_sub(completed_tick) as f32;
                 (whole + tick_fraction.clamp(0.0, 1.0)) * super::TICK_DT + self.age
             }
@@ -333,6 +371,8 @@ pub enum ShotStyle {
     ForgeSpot,
     /// A short metal round, followed by a compact impact burst.
     Kinetic { heavy: bool },
+    /// A short cosmetic mortar report with a rupturing contact.
+    Mortar,
     /// The Lancer's brief discharge and fading rail trace.
     Rail,
     /// One logical anti-air burst, with one to three rounds from each yoke.
@@ -349,9 +389,10 @@ impl ShotStyle {
     pub fn life(self) -> f32 {
         match self {
             ShotStyle::Contact => 0.12,
-            ShotStyle::ForgeSpot => 0.20,
+            ShotStyle::ForgeSpot => 0.32,
             ShotStyle::Kinetic { heavy: false } => 0.18,
             ShotStyle::Kinetic { heavy: true } => 0.24,
+            ShotStyle::Mortar => 0.64,
             ShotStyle::Rail => 0.24,
             ShotStyle::FlakBurst {
                 yoke_delay: FlakYokeDelay::None,
@@ -370,9 +411,8 @@ fn unit_shot_style(kind: oxide_sim::UnitKind, weapon: usize) -> ShotStyle {
     }
     match (kind, weapon) {
         (UnitKind::Sentinel, _) => ShotStyle::Kinetic { heavy: false },
-        (UnitKind::Buzzard | UnitKind::Warden | UnitKind::Breaker, _) => {
-            ShotStyle::Kinetic { heavy: true }
-        }
+        (UnitKind::Buzzard | UnitKind::Warden, _) => ShotStyle::Kinetic { heavy: true },
+        (UnitKind::Breaker, _) => ShotStyle::Mortar,
         (UnitKind::Lancer, _) => ShotStyle::Rail,
         (UnitKind::Flakhound, _) => ShotStyle::FlakBurst {
             yoke_delay: FlakYokeDelay::OneTick,
@@ -430,7 +470,7 @@ fn unit_shot_origin(kind: oxide_sim::UnitKind, from: Vec2, to: Vec2) -> Vec2 {
         return from;
     }
     let mut origin = visual_shot_origin(from, to, unit_muzzle_reach(kind));
-    if kind == oxide_sim::UnitKind::Buzzard {
+    if kind.stats().domain == oxide_sim::stats::Domain::Air {
         origin.y -= crate::render::air_presentation(kind, 1.0).2;
     }
     origin
@@ -568,6 +608,9 @@ pub enum EffectKind {
         at: Vec2,
         radius: f32,
         payload: oxide_sim::ProjectileKind,
+        from: Vec2,
+        surface: Option<HitSurface>,
+        completed_tick: u64,
     },
     /// A death pop.
     Puff {
@@ -718,6 +761,7 @@ impl Presentation {
             match fx.kind {
                 EffectKind::DirectShot { .. }
                 | EffectKind::SapperDetonation { .. }
+                | EffectKind::Impact { .. }
                 | EffectKind::Falling { crash: Some(_), .. }
                     if terminal =>
                 {
@@ -725,6 +769,7 @@ impl Presentation {
                 }
                 EffectKind::DirectShot { .. }
                 | EffectKind::SapperDetonation { .. }
+                | EffectKind::Impact { .. }
                 | EffectKind::Falling { crash: Some(_), .. } => {}
                 _ => fx.age += dt,
             }
@@ -779,6 +824,130 @@ impl Presentation {
                     .iter()
                     .find(|(bid, _, _)| *bid == id)
                     .map(|(_, _, hit)| *hit)
+            })
+    }
+
+    pub(crate) fn hit_surface(
+        &self,
+        state: &State,
+        target: Option<oxide_sim::Target>,
+    ) -> Option<HitSurface> {
+        let target = target?;
+        if let oxide_sim::Target::Building(_) = target {
+            return self
+                .building_hit(state, Some(target))
+                .map(HitSurface::Building);
+        }
+        let oxide_sim::Target::Unit(id) = target else {
+            return None;
+        };
+        let (body, mut center, airborne, frame) = if let Some(unit) = state.unit(id) {
+            if !self.all_seeing()
+                && unit.player != self.human
+                && !state.vision(self.human).visible(unit.tile())
+            {
+                return None;
+            }
+            (
+                UnitBody::capture(self, state, unit, crate::render::reduced_motion()),
+                self.draw_pos(id, unit.pos, 1.0),
+                unit.domain() == oxide_sim::stats::Domain::Air,
+                crate::render::UnitSpriteFrame::capture(
+                    unit.kind,
+                    crate::render::unit_animation(self, state, unit),
+                ),
+            )
+        } else {
+            let (_, body, center, airborne, frame) =
+                self.fx_previous.units.iter().find(|(uid, ..)| *uid == id)?;
+            (*body, *center, *airborne, *frame)
+        };
+        if airborne {
+            center.y -= crate::render::air_presentation(body.kind, 1.0).2;
+        }
+        Some(HitSurface::Unit(UnitHit {
+            id,
+            body,
+            frame,
+            center,
+            airborne,
+        }))
+    }
+
+    pub(crate) fn payload_surface(
+        &self,
+        state: &State,
+        target: Option<oxide_sim::Target>,
+        player: oxide_sim::PlayerId,
+        at: Vec2,
+        targets: oxide_sim::stats::DomainMask,
+    ) -> Option<HitSurface> {
+        let covers = |surface: HitSurface| surface.covers(at);
+        let known = self
+            .hit_surface(state, target)
+            .filter(|surface| covers(*surface));
+        if target.is_some() {
+            return known;
+        }
+        known
+            .or_else(|| {
+                let mut units = state
+                    .units()
+                    .iter()
+                    .filter(|unit| {
+                        if !state.hostile(player, unit.player) || !targets.covers(unit.domain()) {
+                            return false;
+                        }
+                        let mut center = self.draw_pos(unit.id, unit.pos, 1.0);
+                        if unit.domain() == oxide_sim::stats::Domain::Air {
+                            center.y -= crate::render::air_presentation(unit.kind, 1.0).2;
+                        }
+                        center.distance(at) <= unit.kind.stats().radius.to_num::<f32>()
+                    })
+                    .map(|unit| unit.id)
+                    .chain(
+                        self.fx_previous
+                            .units
+                            .iter()
+                            .filter(|(id, body, _, airborne, _)| {
+                                state.unit(*id).is_none()
+                                    && state.hostile(player, body.player)
+                                    && if *airborne {
+                                        targets.air
+                                    } else {
+                                        targets.ground
+                                    }
+                            })
+                            .map(|(id, ..)| *id),
+                    );
+                units.find_map(|id| {
+                    self.hit_surface(state, Some(oxide_sim::Target::Unit(id)))
+                        .filter(|surface| covers(*surface))
+                })
+            })
+            .or_else(|| {
+                if !targets.ground {
+                    return None;
+                }
+                state
+                    .buildings()
+                    .iter()
+                    .filter(|building| state.hostile(player, building.player))
+                    .map(|building| building.id)
+                    .chain(
+                        self.fx_previous
+                            .buildings
+                            .iter()
+                            .filter(|(id, body, _)| {
+                                state.building(*id).is_none()
+                                    && body.is_some_and(|body| state.hostile(player, body.player))
+                            })
+                            .map(|(id, ..)| *id),
+                    )
+                    .find_map(|id| {
+                        self.hit_surface(state, Some(oxide_sim::Target::Building(id)))
+                            .filter(|surface| covers(*surface))
+                    })
             })
     }
 
@@ -885,28 +1054,34 @@ impl Presentation {
                             });
                         }
                     } else {
-                        let surface = self
-                            .building_hit(state, *target)
-                            .map(HitSurface::Building)
+                        let surface = self.hit_surface(state, *target);
+                        let mut origin = unit_shot_origin(
+                            *attacker_kind,
+                            world_vec(*attacker_pos),
+                            world_vec(*target_pos),
+                        );
+                        let airborne = state
+                            .unit(*attacker)
+                            .map(|unit| unit.domain() == oxide_sim::stats::Domain::Air)
                             .or_else(|| {
-                                attacker_kind.stats().contact_reach?;
-                                let oxide_sim::Target::Unit(id) = (*target)? else {
-                                    return None;
-                                };
                                 self.fx_previous
                                     .units
                                     .iter()
-                                    .find(|(uid, _, _)| *uid == id)
-                                    .map(|(_, body, _)| HitSurface::Unit(*body))
-                            });
+                                    .find(|(id, ..)| id == attacker)
+                                    .map(|(_, _, _, airborne, _)| *airborne)
+                            })
+                            .unwrap_or(
+                                attacker_kind.stats().domain == oxide_sim::stats::Domain::Air,
+                            );
+                        if attacker_kind.stats().domain == oxide_sim::stats::Domain::Air
+                            && !airborne
+                        {
+                            origin.y += crate::render::air_presentation(*attacker_kind, 1.0).2;
+                        }
                         let report = push_direct_report(
                             &mut self.fx,
                             unit_shot_style(*attacker_kind, *weapon),
-                            unit_shot_origin(
-                                *attacker_kind,
-                                world_vec(*attacker_pos),
-                                world_vec(*target_pos),
-                            ),
+                            origin,
                             world_vec(*target_pos),
                             splash,
                             state.current_tick(),
@@ -959,7 +1134,7 @@ impl Presentation {
                         };
                         self.sounds_pending.push((sound, Some(world_vec(at))));
                     }
-                    let building = self.building_hit(state, *target);
+                    let surface = self.hit_surface(state, *target);
                     push_direct_report(
                         &mut self.fx,
                         defense_shot_style(*kind, *tier),
@@ -971,7 +1146,7 @@ impl Presentation {
                         world_vec(*target_pos),
                         splash,
                         state.current_tick(),
-                        building.map(HitSurface::Building),
+                        surface,
                     );
                 }
                 Event::BuildingCompleted {
@@ -1013,8 +1188,8 @@ impl Presentation {
                         .fx_previous
                         .units
                         .iter()
-                        .find(|(id, _, _)| id == unit)
-                        .map(|(_, body, at)| (*body, *at));
+                        .find(|(id, ..)| id == unit)
+                        .map(|(_, body, at, ..)| (*body, *at));
                     let witnessed = *player == self.human
                         || sees(self, *pos)
                         || self.all_seeing()
@@ -1270,7 +1445,7 @@ impl Presentation {
                     }
                     self.sounds_pending
                         .push((impact_sound, Some(world_vec(*at))));
-                    let payload = self
+                    let arrived = self
                         .fx_previous
                         .shells
                         .iter()
@@ -1281,13 +1456,35 @@ impl Presentation {
                                 && shell.splash == *splash
                                 && shell.arrival < state.current_tick()
                         })
-                        .map(|index| self.fx_previous.shells.remove(index).kind)
-                        .unwrap_or(oxide_sim::ProjectileKind::Shell);
+                        .map(|index| {
+                            let target = self
+                                .projectile_releases
+                                .flight(&self.fx_previous.shells, index)
+                                .and_then(|flight| flight.target);
+                            let shell = self.fx_previous.shells.remove(index);
+                            (shell, target)
+                        });
+                    let payload = arrived
+                        .as_ref()
+                        .map_or(oxide_sim::ProjectileKind::Shell, |(shell, _)| shell.kind);
+                    let from = arrived
+                        .as_ref()
+                        .map_or(world, |(shell, _)| world_vec(shell.launch));
+                    let surface = self.payload_surface(
+                        state,
+                        arrived.and_then(|(_, target)| target),
+                        *player,
+                        world,
+                        *targets,
+                    );
                     self.fx.push(Effect {
                         kind: EffectKind::Impact {
                             at: world_vec(*at),
                             radius: splash.map_or(0.8, |r| r.to_num::<f32>()),
                             payload,
+                            from,
+                            surface,
+                            completed_tick: state.current_tick(),
                         },
                         age: 0.0,
                     });
@@ -1440,8 +1637,11 @@ mod tests {
             effect.kind,
             EffectKind::DirectShot {
                 style: ShotStyle::Contact,
-                surface: Some(HitSurface::Unit(UnitBody {
-                    kind: UnitKind::Harvester,
+                surface: Some(HitSurface::Unit(UnitHit {
+                    body: UnitBody {
+                        kind: UnitKind::Harvester,
+                        ..
+                    },
                     ..
                 })),
                 ..
@@ -1524,6 +1724,17 @@ mod tests {
         assert!(
             game.presentation
                 .building_hit(&game.state, Some(Target::Building(hidden.id)))
+                .is_none()
+        );
+        assert!(
+            game.presentation
+                .payload_surface(
+                    &game.state,
+                    None,
+                    game.presentation.human,
+                    world_vec(hidden.center()),
+                    oxide_sim::stats::DomainMask::GROUND,
+                )
                 .is_none()
         );
     }
@@ -2542,10 +2753,7 @@ mod tests {
             unit_shot_style(UnitKind::Warden, 0),
             ShotStyle::Kinetic { heavy: true }
         );
-        assert_eq!(
-            unit_shot_style(UnitKind::Breaker, 0),
-            ShotStyle::Kinetic { heavy: true }
-        );
+        assert_eq!(unit_shot_style(UnitKind::Breaker, 0), ShotStyle::Mortar);
         assert_eq!(
             unit_shot_style(UnitKind::Buzzard, 0),
             ShotStyle::Kinetic { heavy: true }
@@ -2871,6 +3079,18 @@ mod tests {
         assert!((origin.x - (from.x + buzzard_muzzle)).abs() < 1e-5);
         assert!((origin.y - (from.y - 0.18)).abs() < 1e-5);
         assert_eq!(unit_muzzle_reach(UnitKind::Darter), 0.32);
+        for kind in [
+            UnitKind::Darter,
+            UnitKind::Talon,
+            UnitKind::Wisp,
+            UnitKind::Shrike,
+            UnitKind::Sylph,
+        ] {
+            assert_eq!(
+                unit_shot_origin(kind, from, to).y,
+                from.y - crate::render::air_presentation(kind, 1.0).2
+            );
+        }
         let warden_muzzle = 46.0 / 128.0 * crate::render::unit_draw_scale(UnitKind::Warden);
         assert!((unit_muzzle_reach(UnitKind::Warden) - warden_muzzle).abs() < 0.002);
         assert_eq!(
@@ -3092,5 +3312,268 @@ mod tests {
                 .any(|e| matches!(e.kind, EffectKind::Falling { .. })),
             "no fall for a body already on the ground"
         );
+    }
+
+    #[test]
+    fn ranged_reports_retain_unit_contacts_through_lethal_hits() {
+        for kind in [
+            UnitKind::Sentinel,
+            UnitKind::Lancer,
+            UnitKind::Buzzard,
+            UnitKind::Warden,
+            UnitKind::Breaker,
+        ] {
+            let scenario = serde_json::from_value(serde_json::json!({
+                "name":"Unit impacts", "mode":"sandbox", "seed":42,
+                "map":vec![".............................."; 22],
+                "players":[
+                    {"name":"Local","faction":"ferrous","scrap":0,"bot":false},
+                    {"name":"Target","faction":"cupric","scrap":0,"bot":false}
+                ],
+                "units":[{"player":0,"kind":kind,"x":10,"y":10},{"player":1,"kind":"excavator","x":14,"y":10}]
+            })).unwrap();
+            let mut game = Game::with_viewport(scenario, Vec2::new(1280., 800.)).unwrap();
+            let mut wire = serde_json::to_value(&*game.state).unwrap();
+            wire["units"][1]["hp"] = serde_json::json!(1);
+            game.replace_state_after_jump(&serde_json::from_value(wire).unwrap());
+            game.pending.push(oxide_sim::PlayerCommand {
+                player: oxide_sim::PlayerId(0),
+                command: oxide_sim::Command::Attack {
+                    units: vec![UnitId(0)],
+                    target: Target::Unit(UnitId(1)).into(),
+                    queue: false,
+                },
+            });
+            for _ in 0..160 {
+                game.present_ticks(1);
+                if game.state.unit(UnitId(1)).is_none() {
+                    break;
+                }
+            }
+            assert!(
+                game.state.unit(UnitId(1)).is_none(),
+                "{kind:?} lands its hit"
+            );
+            assert!(
+                game.presentation.fx.iter().any(|effect| matches!(
+                    effect.kind,
+                    EffectKind::DirectShot {
+                        surface: Some(HitSurface::Unit(UnitHit { id: UnitId(1), .. })),
+                        ..
+                    }
+                )),
+                "{kind:?} retains the removed body's contact"
+            );
+        }
+    }
+
+    #[test]
+    fn bomb_contacts_preserve_ground_spread_and_use_simulation_time() {
+        let scenario = serde_json::from_value(serde_json::json!({
+            "name":"Bomb contacts", "mode":"sandbox", "seed":42,
+            "map":vec!["...................................."; 24],
+            "players":[
+                {"name":"Local","faction":"ferrous","scrap":0,"bot":false},
+                {"name":"Target","faction":"cupric","scrap":0,"bot":false}
+            ],
+            "units":[{"player":0,"kind":"moth","x":12,"y":11},{"player":0,"kind":"harvester","x":17,"y":15}],
+            "buildings":[{"player":1,"kind":"fabricator","x":17,"y":10}]
+        })).unwrap();
+        let mut game = Game::with_viewport(scenario, Vec2::new(1280., 800.)).unwrap();
+        game.pending.push(oxide_sim::PlayerCommand {
+            player: oxide_sim::PlayerId(0),
+            command: oxide_sim::Command::Attack {
+                units: vec![UnitId(0)],
+                target: Target::Building(BuildingId(0)).into(),
+                queue: false,
+            },
+        });
+        let mut arrivals = Vec::new();
+        for _ in 0..180 {
+            let events = game.present_ticks(1);
+            for event in events {
+                if let Event::ShellLanded { at, .. } = event {
+                    let at = world_vec(at);
+                    let effect = game
+                        .presentation
+                        .fx
+                        .iter()
+                        .rev()
+                        .find(|fx| matches!(fx.kind, EffectKind::Impact { at:p, .. } if p == at))
+                        .unwrap();
+                    let EffectKind::Impact {
+                        surface, payload, ..
+                    } = effect.kind
+                    else {
+                        unreachable!()
+                    };
+                    let inside = at.x >= 17. && at.x <= 19. && at.y >= 10. && at.y <= 12.;
+                    assert_eq!(
+                        surface.is_some(),
+                        inside,
+                        "a ground bomb cannot acquire building contact: {at:?}"
+                    );
+                    assert_eq!(payload, oxide_sim::ProjectileKind::Bomb);
+                    assert_eq!(effect.age_at(game.state.current_tick(), 0.), 0.);
+                    arrivals.push(at);
+                }
+            }
+            if arrivals.len() == 6 {
+                break;
+            }
+        }
+        assert_eq!(arrivals.len(), 6);
+        assert!(arrivals.iter().any(|at| at.x < 17.));
+        assert!(arrivals.iter().any(|at| at.x > 19.));
+        let tick = game.state.current_tick();
+        let before = game
+            .presentation
+            .fx
+            .iter()
+            .find(|fx| matches!(fx.kind, EffectKind::Impact { .. }))
+            .unwrap()
+            .age_at(tick, 0.);
+        game.update_fx(0.5);
+        let after = game
+            .presentation
+            .fx
+            .iter()
+            .find(|fx| matches!(fx.kind, EffectKind::Impact { .. }))
+            .unwrap()
+            .age_at(tick, 0.);
+        assert_eq!(before, after, "wall time cannot advance a paused impact");
+    }
+    #[test]
+    fn checkpoint_projectiles_recover_unit_contacts_without_launch_history() {
+        for kind in [
+            UnitKind::Bombard,
+            UnitKind::Avalanche,
+            UnitKind::Condor,
+            UnitKind::Moth,
+        ] {
+            let scenario = serde_json::from_value(serde_json::json!({
+                "name":"Restored contacts", "mode":"sandbox", "seed":42,
+                "map":vec!["...................................."; 24],
+                "players":[{"name":"Local","faction":"ferrous","scrap":0,"bot":false},
+                    {"name":"Target","faction":"cupric","scrap":0,"bot":false}],
+                "units":[{"player":0,"kind":kind,"x":12,"y":11},
+                    {"player":0,"kind":"harvester","x":17,"y":15},
+                    {"player":1,"kind":"excavator","x":17,"y":11}]
+            }))
+            .unwrap();
+            let mut game = Game::with_viewport(scenario, Vec2::new(1280., 800.)).unwrap();
+            game.pending.push(oxide_sim::PlayerCommand {
+                player: game.presentation.human,
+                command: oxide_sim::Command::Attack {
+                    units: vec![UnitId(0)],
+                    target: Target::Unit(UnitId(2)).into(),
+                    queue: false,
+                },
+            });
+            for _ in 0..200 {
+                game.present_ticks(1);
+                if !game.state.shells().is_empty() {
+                    break;
+                }
+            }
+            assert!(!game.state.shells().is_empty(), "{kind:?} launched");
+            let mut restored: Game =
+                serde_json::from_slice(&serde_json::to_vec(&game).unwrap()).unwrap();
+            assert_eq!(game.state.hash(), restored.state.hash());
+            assert_eq!(restored.recorder.start_tick(), game.state.current_tick());
+            assert!(restored.recorder.commands.is_empty());
+            assert!(
+                restored
+                    .presentation
+                    .projectile_releases
+                    .flight(restored.state.shells(), 0)
+                    .is_none()
+            );
+            let mut hit_unit = false;
+            for _ in 0..80 {
+                let before = game.present_ticks(1);
+                let after = restored.present_ticks(1);
+                assert_eq!(before, after);
+                assert_eq!(game.state.hash(), restored.state.hash());
+                for effect in &restored.presentation.fx {
+                    if let EffectKind::Impact {
+                        surface: Some(HitSurface::Unit(hit)),
+                        ..
+                    } = effect.kind
+                    {
+                        assert_eq!(hit.id, UnitId(2));
+                        hit_unit = true;
+                    }
+                }
+                if game.state.shells().is_empty() {
+                    break;
+                }
+            }
+            assert!(
+                hit_unit,
+                "{kind:?} restored landing retained a unit recipient"
+            );
+        }
+    }
+
+    #[test]
+    fn lethal_hit_retains_the_moving_body_frame() {
+        let scenario = serde_json::from_value(serde_json::json!({
+            "name":"Moving lethal contact", "mode":"sandbox", "seed":42,
+            "map":vec!["....................................";24],
+            "players":[{"name":"Local","faction":"ferrous","scrap":0,"bot":false},
+                {"name":"Target","faction":"cupric","scrap":0,"bot":false}],
+            "units":[{"player":0,"kind":"lancer","x":10,"y":10},
+                {"player":1,"kind":"scuttler","x":13,"y":10}]
+        }))
+        .unwrap();
+        let mut game = Game::with_viewport(scenario, Vec2::new(1280., 800.)).unwrap();
+        let mut wire = serde_json::to_value(&*game.state).unwrap();
+        wire["units"][1]["hp"] = serde_json::json!(1);
+        wire["units"][0]["cooldowns"][0] = serde_json::json!(10);
+        game.replace_state_after_jump(&serde_json::from_value(wire).unwrap());
+        game.pending.push(oxide_sim::PlayerCommand {
+            player: oxide_sim::PlayerId(1),
+            command: oxide_sim::Command::Run {
+                units: vec![UnitId(1)],
+                goal: chassis::grid::TilePos::new(25, 10),
+                queue: false,
+            },
+        });
+        game.present_ticks(6);
+        game.issue(oxide_sim::Command::Attack {
+            units: vec![UnitId(0)],
+            target: Target::Unit(UnitId(1)).into(),
+            queue: false,
+        });
+        for _ in 0..160 {
+            let unit = game.state.unit(UnitId(1)).unwrap();
+            let animation = crate::render::unit_animation(&game.presentation, &game.state, unit);
+            let expected = crate::render::UnitSpriteFrame::capture(unit.kind, animation);
+            let mut idle = animation;
+            idle.locomotion = crate::presentation_animation::LocomotionState::Rest;
+            game.present_ticks(1);
+            if game.state.unit(UnitId(1)).is_none() {
+                let hit = game
+                    .presentation
+                    .fx
+                    .iter()
+                    .find_map(|effect| match effect.kind {
+                        EffectKind::DirectShot {
+                            surface: Some(HitSurface::Unit(hit)),
+                            ..
+                        } if hit.id == UnitId(1) => Some(hit),
+                        _ => None,
+                    })
+                    .unwrap();
+                assert_eq!(hit.frame, expected);
+                assert_ne!(
+                    hit.frame,
+                    crate::render::UnitSpriteFrame::capture(UnitKind::Scuttler, idle)
+                );
+                return;
+            }
+        }
+        panic!("Lancer did not reach the moving target");
     }
 }
