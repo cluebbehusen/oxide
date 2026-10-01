@@ -81,6 +81,8 @@ pub(crate) struct Situation<'a> {
     pub(crate) pull: Vec<(BuildingKind, u32)>,
     /// Whether the seat's army is under the stance's minimum.
     pub(crate) exposed: bool,
+    /// Whether the seat knows of targets and ground reaches none of them.
+    pub(crate) severed: bool,
     /// The army roles with a deficit.
     pub(crate) wanted: Vec<Role>,
     /// What the seat's defenses must stand up to.
@@ -199,8 +201,10 @@ pub(crate) fn candidates(situation: &Situation<'_>) -> Vec<Candidate> {
         }
         // No Turret is offered against a threat known only from public facts
         // until the opening settles, so tech waits for that Turret. Holding
-        // tech just under adoption keeps a target already being saved for.
-        if !settled && !offered {
+        // tech just under adoption keeps a target already being saved for. A
+        // severed seat is exempt: its tech is how its army reaches anyone, and
+        // a rush can only come by landing.
+        if !settled && !offered && !situation.severed {
             for (investment, score) in &mut list {
                 if matches!(investment, Investment::Tech(_)) {
                     *score = (*score).min(ADOPT - 1);

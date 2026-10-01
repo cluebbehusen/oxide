@@ -287,6 +287,7 @@ pub(crate) fn decide(
         pull,
         exposed,
         stakes: defenses::Stakes::of(profile),
+        severed: scratch.severed,
     };
     let candidates = investments::candidates(&situation);
     let share = share(observation, profile);

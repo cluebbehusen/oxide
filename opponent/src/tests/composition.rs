@@ -189,6 +189,7 @@ fn working_producers_ask_for_another_while_unspent_income_and_need_last() {
             pull: Vec::new(),
             exposed: false,
             stakes: defenses::Stakes::default(),
+            severed: false,
             wanted,
         })
         .into_iter()
@@ -372,6 +373,7 @@ fn a_working_foundry_or_crucible_asks_for_another_at_home() {
             pull: Vec::new(),
             exposed: false,
             stakes: defenses::Stakes::default(),
+            severed: false,
             wanted,
         })
         .into_iter()
