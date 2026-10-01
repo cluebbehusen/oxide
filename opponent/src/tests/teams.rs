@@ -27,7 +27,7 @@ const TRIO: [&str; 16] = [
 ];
 
 /// The trio with each seat on the given team, and four West Sentinels.
-fn trio(teams: [Option<u8>; 3]) -> Scenario {
+pub(super) fn trio(teams: [Option<u8>; 3]) -> Scenario {
     let seat = |name: &str, faction, team| PlayerSpec {
         name: name.into(),
         faction,

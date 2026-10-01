@@ -415,17 +415,18 @@ fn a_failed_placement_does_not_spare_the_building_there() {
 
 #[test]
 fn the_mission_cap_holds_back_an_attack() {
+    let cap = crate::missions::MISSION_CAP;
     let mut scenario = armed(8, &[]);
-    for index in 0..16 {
-        scenario
-            .units
-            .push(unit(0, UnitKind::Sentinel, 6 + index % 8, 14 + index / 8));
+    for index in 0..cap {
+        let (x, y) = cap_spot(index);
+        scenario.units.push(unit(0, UnitKind::Sentinel, x, y));
     }
     let state = scenario.build().unwrap();
     let home = foundries(&state, PlayerId(0))[0];
-    let list: Vec<serde_json::Value> = (0..16)
-        .map(|index: i32| {
-            let id = at(&state, 6 + index % 8, 14 + index / 8);
+    let list: Vec<serde_json::Value> = (0..cap)
+        .map(|index| {
+            let (x, y) = cap_spot(index);
+            let id = at(&state, x, y);
             serde_json::json!({
                 "id": index,
                 "task": {"task": "defend", "asset": home.0, "phase": {"engage": {"focus": null}}},
@@ -435,10 +436,10 @@ fn the_mission_cap_holds_back_an_attack() {
             })
         })
         .collect();
-    let (state, mut opponent) = staged(&scenario, serde_json::json!({"next": 16, "list": list}));
+    let (state, mut opponent) = staged(&scenario, serde_json::json!({"next": cap, "list": list}));
     let (_, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
     let missions = trace.unwrap().missions;
-    assert_eq!(missions.len(), 16);
+    assert_eq!(missions.len(), cap);
     assert!(attack(&missions).is_none());
     let checkpoint = opponent.checkpoint();
     assert!(Opponent::restore(&checkpoint, &scenario, &state, map(&scenario)).is_ok());

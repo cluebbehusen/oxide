@@ -15,9 +15,9 @@ use crate::saving::Saving;
 use crate::trace::{NextPurchase, Purchase, SavingTarget};
 use crate::workers;
 use chassis::grid::TilePos;
-use oxide_sim::observation::{BuildingObs, ObservationData};
+use oxide_sim::observation::{BuildingObs, ObservationData, UnitObs};
 use oxide_sim::scenario::{BotDifficulty, BotStance};
-use oxide_sim::stats::{Domain, Role};
+use oxide_sim::stats::Role;
 use oxide_sim::{BuildingId, BuildingKind, Command, PlayerCommand, PlayerId, UnitId, UnitKind};
 
 /// What one decision emits.
@@ -286,6 +286,7 @@ pub(crate) fn decide(
         depletion: depletion(observation, map),
         pull,
         exposed,
+        stakes: defenses::Stakes::of(profile),
         severed: scratch.severed,
     };
     let candidates = investments::candidates(&situation);
@@ -319,7 +320,14 @@ pub(crate) fn decide(
     workers::recover(observation, &foundries, &mut ledger);
     if short {
         ledger.protected = 0;
-        defenses::emergency(observation, map, frame, &persistent.memory, &mut ledger);
+        defenses::emergency(
+            observation,
+            map,
+            frame,
+            &persistent.memory,
+            defenses::Stakes::of(profile),
+            &mut ledger,
+        );
     } else {
         buy(observation, map, frame, persistent, &mut ledger);
     }
@@ -396,7 +404,7 @@ pub(crate) fn decide(
     persistent
         .missions
         .tend(observation, map, frame, &mut ledger);
-    let scout = persistent.missions.scout(
+    let lacking = persistent.missions.scout(
         observation,
         map,
         frame,
@@ -416,12 +424,40 @@ pub(crate) fn decide(
             &mut ledger,
         );
     if !carrying {
-        if scout {
-            train_scout(observation, &producers, &mut ledger);
+        if lacking > 0 {
+            train_scout(observation, &producers, lacking, &mut ledger);
         }
         if !short {
             train_tenders(observation, profile, &producers, &mut ledger);
-            train_raiders(observation, profile, income, &producers, &mut ledger);
+            // Raiding waits for an economy that can spare it: a personality
+            // lever, sooner the more guile.
+            let raiding = income.saturating_add(4 * u32::from(profile.traits.guile)) >= RAID_INCOME;
+            let scuttlers = if raiding {
+                persistent.missions.raid_squad(
+                    observation,
+                    map,
+                    profile,
+                    &persistent.memory,
+                    &scratch,
+                )
+            } else {
+                0
+            };
+            let sappers = persistent.missions.sappers_wanted(
+                observation,
+                map,
+                profile,
+                &persistent.memory,
+                &scratch,
+            );
+            train_raiders(
+                observation,
+                profile,
+                (scuttlers, sappers),
+                &persistent.missions.held_outside_raids(),
+                &producers,
+                &mut ledger,
+            );
         }
         produce(observation, &producers, &mut needs, &mut ledger);
     }
@@ -607,11 +643,17 @@ fn train_carriers(
         .is_some_and(|airworks| !ledger.train(airworks.building.id, UnitKind::Skyhook) && waiting)
 }
 
-/// Trains the scout scouting wants unless the seat already has or is making
-/// one: the faction's air scout at a built Airworks, else a Scuttler at a
-/// Foundry. Once an air scout can be trained a Scuttler no longer counts,
-/// since one that could reach a stale point would already be scouting.
-fn train_scout(observation: &ObservationData, producers: &[Producer<'_>], ledger: &mut Ledger) {
+/// Trains a scout while fewer are in production than the `lacking` stale
+/// places no scout could take but the one it would train could reach: the
+/// faction's air scout at a built Airworks, else a Scuttler at a Foundry. Once an air scout can be trained a Scuttler
+/// no longer counts, since one that could reach a stale point would already
+/// be scouting.
+fn train_scout(
+    observation: &ObservationData,
+    producers: &[Producer<'_>],
+    lacking: usize,
+    ledger: &mut Ledger,
+) {
     let air = Role::Scout.unit_for(observation.faction);
     let airworks = producers
         .iter()
@@ -621,14 +663,14 @@ fn train_scout(observation: &ObservationData, producers: &[Producer<'_>], ledger
     } else {
         &[air, UnitKind::Scuttler]
     };
-    let have = observation
-        .my_units
+    let coming = observation
+        .my_queues
         .iter()
-        .map(|unit| unit.kind)
-        .chain(observation.my_queues.iter().flatten().copied())
-        .any(|kind| kinds.contains(&kind))
-        || kinds.iter().any(|kind| ledger.queued(*kind) > 0);
-    if have {
+        .flatten()
+        .filter(|kind| kinds.contains(kind))
+        .count()
+        + kinds.iter().map(|kind| ledger.queued(*kind)).sum::<usize>();
+    if coming >= lacking {
         return;
     }
     let (producer, kind) = match airworks {
@@ -647,29 +689,16 @@ fn train_scout(observation: &ObservationData, producers: &[Producer<'_>], ledger
 }
 
 /// Keeps a Tender, alive or queued, for so much missing health among the
-/// seat's armed ground units, more the more it leans on support, up to two,
-/// training one at a ready producer that can.
+/// seat's armed ground units, more the more it leans on support, training
+/// one at a ready producer that can.
 fn train_tenders(
     observation: &ObservationData,
     profile: &ResolvedProfile,
     producers: &[Producer<'_>],
     ledger: &mut Ledger,
 ) {
-    let wounds: u64 = observation
-        .my_units
-        .iter()
-        .filter(|unit| {
-            let stats = unit.kind.stats();
-            stats.domain == Domain::Ground && !stats.weapons.is_empty()
-        })
-        .map(|unit| {
-            let stats = unit.kind.stats();
-            let max = u64::from(stats.max_hp.max(1));
-            u64::from(stats.cost) * max.saturating_sub(u64::from(unit.hp)) / max
-        })
-        .sum();
-    let per = WOUNDS_PER_TENDER * 1_000 / composition::weight(profile.traits.support);
-    let wanted = (wounds / per).min(TENDERS);
+    let wanted = crate::missions::wounds(observation.my_units.iter())
+        / crate::missions::per_tender(profile.traits.support);
     let have = observation
         .my_units
         .iter()
@@ -696,44 +725,32 @@ fn train_tenders(
     }
 }
 
-/// Keeps two Scuttlers, alive or queued, for raiding once income reaches a
-/// level that falls with guile, and a Sapper for each known enemy defense
-/// that can hit ground, up to an attack's worth, once the seat has scrap to
+/// Keeps `scuttlers`, alive or queued and held by no mission but a raid, for
+/// raiding, and the `sappers` the seat's attacks want once it has scrap to
 /// spare, less the more it leans on siege. Each trains at a ready producer
-/// that can.
+/// that can. `elsewhere` lists the units missions other than raids hold.
 fn train_raiders(
     observation: &ObservationData,
     profile: &ResolvedProfile,
-    income: u32,
+    (scuttlers, sappers): (usize, usize),
+    elsewhere: &[UnitId],
     producers: &[Producer<'_>],
     ledger: &mut Ledger,
 ) {
-    let scuttlers = if income.saturating_add(4 * u32::from(profile.traits.guile)) >= RAID_INCOME {
-        SCUTTLERS
-    } else {
-        0
-    };
-    let defenses = observation
-        .enemy_buildings
-        .iter()
-        .filter(|building| {
-            building
-                .kind
-                .base_stats()
-                .weapons
-                .iter()
-                .any(|weapon| weapon.targets.ground)
-        })
-        .count();
-    let sappers = defenses.min(crate::missions::SAPPERS);
     let spare = 2 * (100 - u32::from(profile.traits.siege.min(100)));
     for (kind, wanted, spare) in [
         (UnitKind::Scuttler, scuttlers, 0),
         (UnitKind::Sapper, sappers, spare),
     ] {
+        // A Scuttler out scouting cannot raid; a Sapper in an attack is what
+        // the attack wanted it for.
+        let free = |unit: &&UnitObs| {
+            kind != UnitKind::Scuttler || elsewhere.binary_search(&unit.id).is_err()
+        };
         let have = observation
             .my_units
             .iter()
+            .filter(free)
             .map(|unit| unit.kind)
             .chain(observation.my_queues.iter().flatten().copied())
             .filter(|owned| *owned == kind)
@@ -924,16 +941,6 @@ fn depletion(observation: &ObservationData, map: &MapModel) -> u32 {
         .sum();
     (1_000 - left.min(initial) * 1_000 / initial) as u32
 }
-
-/// Scrap of missing health among the seat's armed ground units per Tender
-/// a seat of middling support keeps.
-const WOUNDS_PER_TENDER: u64 = 500;
-
-/// Tenders a seat keeps, at most.
-const TENDERS: u64 = 2;
-
-/// Scuttlers a seat keeps for raiding.
-const SCUTTLERS: usize = 2;
 
 /// Income per minute, less four for each point of guile, at which the seat
 /// starts keeping Scuttlers for raiding.

@@ -29,14 +29,16 @@ mod strike;
 mod support;
 
 pub(crate) use air::{Hazard, hazards};
-pub(crate) use attack::{SAPPERS, minimum};
+pub(crate) use attack::{margin, minimum};
 pub(crate) use lift::{carrier, payload};
 pub(crate) use scouting::points;
 pub(crate) use strike::strike_need;
+pub(crate) use support::{per_tender, wounds};
 
 /// Missions the seat runs at once: a computation bound on the missions each
-/// decision advances, which normal play stays under.
-const MISSION_CAP: usize = 16;
+/// decision advances, above a scout at every scouting point a map can hold
+/// together with the missions of every other kind in normal play.
+pub(crate) const MISSION_CAP: usize = 128;
 
 /// Units one mission holds: a computation bound on a mission's orders, which
 /// normal play stays under.
@@ -505,6 +507,18 @@ impl Missions {
                     | Task::Raid { .. } => true,
                 }
         });
+    }
+
+    /// Units a mission other than a raid holds, by id.
+    pub(crate) fn held_outside_raids(&self) -> Vec<UnitId> {
+        let mut held: Vec<UnitId> = self
+            .list
+            .iter()
+            .filter(|mission| !matches!(mission.task, Task::Raid { .. }))
+            .flat_map(|mission| mission.units.iter().copied())
+            .collect();
+        held.sort_unstable();
+        held
     }
 
     /// Units no mission holds, by id. A defense may also `borrow` units that

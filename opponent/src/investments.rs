@@ -85,6 +85,8 @@ pub(crate) struct Situation<'a> {
     pub(crate) severed: bool,
     /// The army roles with a deficit.
     pub(crate) wanted: Vec<Role>,
+    /// What the seat's defenses must stand up to.
+    pub(crate) stakes: defenses::Stakes,
 }
 
 /// Every investment the seat wants at all, most wanted first.
@@ -171,6 +173,7 @@ pub(crate) fn candidates(situation: &Situation<'_>) -> Vec<Candidate> {
         traits,
         settled,
         situation.exposed,
+        situation.stakes,
     ));
     // A seat without an army to speak of puts up a Turret before any tech:
     // one gun holds an early rush that a tech building still going up would

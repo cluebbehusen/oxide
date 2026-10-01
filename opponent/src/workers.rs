@@ -10,14 +10,12 @@ use crate::profile::ResolvedProfile;
 use chassis::fx::Fx;
 use chassis::grid::TilePos;
 use oxide_sim::TICKS_PER_SECOND;
+use oxide_sim::ids::Target;
 use oxide_sim::observation::{BuildingObs, ObservationData};
 use oxide_sim::scenario::BotStance;
 use oxide_sim::stats::FOUNDRY_REPAIR_PRICE;
 use oxide_sim::{BuildingKind, Command, UnitId, UnitKind};
 use std::cmp::Reverse;
-
-/// Workers welding buildings at once, at most.
-const WELDERS: usize = 2;
 
 /// Per mille of its health a building must miss before workers weld it.
 const WELD_DAMAGE: u32 = 100;
@@ -106,8 +104,8 @@ pub(crate) fn recover(
     }
 }
 
-/// Trains workers at ready Foundries up to two Harvesters' worth per worked
-/// node, spending at most `budget` on them.
+/// Trains workers at ready Foundries until the worked nodes' crews are full,
+/// counting those alive and queued, spending at most `budget` on them.
 pub(crate) fn train(
     observation: &ObservationData,
     foundries: &[Producer<'_>],
@@ -228,10 +226,9 @@ fn flee(
     }
 }
 
-/// Sends the nearest free worker to weld the damaged own building missing
-/// the most value, while no armed enemy in sight stands near it, no known
-/// enemy weapon reaches it, and the seat has scrap to pay for it, with at
-/// most two welding at a time.
+/// Sends the nearest free worker to weld each damaged own building nobody
+/// welds yet, most missing value first, while no armed enemy in sight stands
+/// near it, no known enemy weapon reaches it, and the seat has scrap to pay.
 fn weld(
     observation: &ObservationData,
     map: &MapModel,
@@ -239,18 +236,21 @@ fn weld(
     hazards: &[Hazard],
     ledger: &mut Ledger,
 ) {
-    let welding = observation
+    // Buildings a worker already welds.
+    let tended: Vec<oxide_sim::BuildingId> = observation
         .my_units
         .iter()
         .filter(|unit| worker(unit.kind) && unit.repairing)
-        .count();
-    if welding >= WELDERS || ledger.spendable() < WELD_FLOOR {
-        return;
-    }
-    let patient = observation
+        .filter_map(|unit| match observation.repair_target(unit.id)? {
+            Target::Building(building) => Some(building),
+            Target::Unit(_) => None,
+        })
+        .collect();
+    let mut patients: Vec<(u64, (i64, i64), &BuildingObs)> = observation
         .my_buildings
         .iter()
         .filter(|building| building.built && !building.provisional)
+        .filter(|building| !tended.contains(&building.id))
         .filter_map(|building| {
             let stats = building.kind.tier_stats(building.tier);
             let (hp, max) = (u64::from(building.hp), u64::from(stats.max_hp.max(1)));
@@ -275,24 +275,29 @@ fn weld(
             let missing = u64::from(price) * (max - hp) / max;
             Some((missing, centre, building))
         })
-        .max_by_key(|(missing, centre, building)| {
-            (
-                *missing,
-                Reverse(frame.rank(frame.home, *centre)),
-                Reverse(building.id),
-            )
-        });
-    let Some((_, centre, building)) = patient else {
-        return;
-    };
-    let Some(welder) = builder(observation, map, frame, building.anchor, centre, ledger) else {
-        return;
-    };
-    ledger.order(Command::Repair {
-        units: vec![welder],
-        building: building.id,
-        queue: false,
+        .collect();
+    patients.sort_by_key(|(missing, centre, building)| {
+        (
+            Reverse(*missing),
+            frame.rank(frame.home, *centre),
+            building.id,
+        )
     });
+    for (_, centre, building) in patients {
+        if ledger.spendable() < WELD_FLOOR {
+            return;
+        }
+        let Some(welder) = builder(observation, map, frame, building.anchor, centre, ledger) else {
+            continue;
+        };
+        if !ledger.order(Command::Repair {
+            units: vec![welder],
+            building: building.id,
+            queue: false,
+        }) {
+            return;
+        }
+    }
 }
 
 /// The nearest worker to `centre` that stands on the same ground as `site`,

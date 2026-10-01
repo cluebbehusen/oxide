@@ -125,6 +125,43 @@ fn workers_weld_a_damaged_building_unless_an_enemy_stands_near() {
 }
 
 #[test]
+fn each_damaged_building_gets_its_own_welder() {
+    let mut scenario = arena(400);
+    scenario.units.push(harvester(0, 5, 7));
+    scenario.buildings.extend([
+        building(0, BuildingKind::Fabricator, 3, 1),
+        building(0, BuildingKind::Turret, 10, 7),
+    ]);
+    let state = scenario.build().unwrap();
+    let own: Vec<BuildingId> = state
+        .buildings()
+        .iter()
+        .filter(|building| building.player == PlayerId(0))
+        .map(|building| building.id)
+        .collect();
+    assert_eq!(own.len(), 3, "premise");
+    let state = own.iter().fold(state, |state, id| {
+        let kind = state
+            .buildings()
+            .iter()
+            .find(|building| building.id == *id)
+            .unwrap()
+            .kind;
+        damaged(&state, *id, kind.base_stats().max_hp / 2)
+    });
+    let commands = seat_with(&scenario, 0, thrifty()).act(&state, &mut OwnEvents::default());
+    let mut patients: Vec<BuildingId> = repairs(&commands)
+        .into_iter()
+        .map(|(welders, patient)| {
+            assert_eq!(welders.len(), 1, "{commands:?}");
+            patient
+        })
+        .collect();
+    patients.sort_unstable();
+    assert_eq!(patients, own);
+}
+
+#[test]
 fn idle_workers_keep_off_a_node_in_known_danger() {
     let nodes = |raider: bool| {
         let mut scenario = arena(0);
@@ -201,6 +238,31 @@ fn a_wounded_army_brings_a_tender() {
     };
     assert_eq!(tenders(UnitKind::Sentinel.stats().max_hp), 0);
     assert_eq!(tenders(1), 1);
+}
+
+#[test]
+fn heavy_wounds_keep_more_than_two_tenders() {
+    let mut scenario = arena(400);
+    for (x, y) in SQUAD {
+        scenario.units.push(unit(0, UnitKind::Warden, x, y));
+    }
+    scenario.units.extend([
+        unit(0, UnitKind::Tender, 6, 8),
+        unit(0, UnitKind::Tender, 6, 10),
+    ]);
+    scenario
+        .buildings
+        .push(building(0, BuildingKind::Fabricator, 3, 1));
+    let state = scenario.build().unwrap();
+    let wardens: Vec<UnitId> = SQUAD.iter().map(|(x, y)| at(&state, *x, *y)).collect();
+    let state = all_wounded(&state, &wardens, 1);
+    let commands = seat_with(&scenario, 0, thrifty()).act(&state, &mut OwnEvents::default());
+    assert!(
+        trains(&commands)
+            .iter()
+            .any(|(_, kind)| *kind == UnitKind::Tender),
+        "{commands:?}"
+    );
 }
 
 #[test]
@@ -300,6 +362,7 @@ fn bay(scenario: &Scenario, state: &State) -> Option<TilePos> {
         traits(),
         true,
         false,
+        defenses::Stakes::default(),
     )
     .into_iter()
     .find_map(|(investment, _)| match investment {

@@ -1,4 +1,5 @@
 use super::*;
+use crate::defenses;
 use crate::investments::{self, Candidate, Investment, Situation};
 use crate::memory::Memory;
 use crate::saving::Saving;
@@ -333,6 +334,7 @@ fn reclaimers_wait_for_the_drip_and_refineries_need_a_fabricator() {
             depletion: 0,
             pull: Vec::new(),
             exposed: false,
+            stakes: defenses::Stakes::default(),
             severed: false,
             wanted: Vec::new(),
         })
@@ -554,6 +556,7 @@ fn mirrored_seats_rank_equal_extractor_frames_alike() {
             depletion: 0,
             pull: Vec::new(),
             exposed: false,
+            stakes: defenses::Stakes::default(),
             severed: false,
             wanted: Vec::new(),
         })
