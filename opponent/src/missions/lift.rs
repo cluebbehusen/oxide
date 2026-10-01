@@ -156,7 +156,7 @@ impl Missions {
     fn clear(&self, lifting: &Lifting<'_>, ledger: &mut Ledger) {
         let observation = lifting.observation;
         for unit in self
-            .available(observation, false)
+            .free(observation, ledger)
             .into_iter()
             .filter_map(|id| mine(observation, id))
             .filter(|unit| lifting.map.component(unit.tile) == Some(lifting.home))
@@ -178,7 +178,7 @@ impl Missions {
         if self.list.len() >= MISSION_CAP || !lifting.severed {
             return false;
         }
-        let loads = self.loads(lifting);
+        let loads = self.loads(lifting, ledger);
         let value = loads.iter().map(|(_, _, value)| value).sum::<u64>();
         if loads.is_empty() || value < minimum(lifting.profile.stance) {
             return false;
@@ -213,11 +213,11 @@ impl Missions {
     /// The free carriers and riders at home a lift could load now: riders
     /// packed into carriers over open ground strongest value per slot first,
     /// with each load's value.
-    fn loads(&self, lifting: &Lifting<'_>) -> Vec<(UnitId, Vec<UnitId>, u64)> {
+    fn loads(&self, lifting: &Lifting<'_>, ledger: &Ledger) -> Vec<(UnitId, Vec<UnitId>, u64)> {
         let observation = lifting.observation;
         let (map, frame) = (lifting.map, lifting.frame);
         let free: Vec<&UnitObs> = self
-            .available(observation, false)
+            .free(observation, ledger)
             .into_iter()
             .filter_map(|id| mine(observation, id))
             .filter(|unit| map.component(unit.tile) == Some(lifting.home))
@@ -336,7 +336,7 @@ impl Missions {
             .sum();
         let committed = flight.loaded + walking;
         if committed < need && flight.age < LOAD_TICKS {
-            let loads = self.loads(lifting);
+            let loads = self.loads(lifting, ledger);
             let (sent, _) = send(loads, need - committed, ledger);
             if !sent.is_empty() {
                 let units = &mut self.list[flight.index].units;

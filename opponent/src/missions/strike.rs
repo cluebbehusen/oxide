@@ -115,7 +115,7 @@ impl Missions {
             return false;
         }
         let fit: Vec<&UnitObs> = self
-            .available(observation, false)
+            .free(observation, ledger)
             .into_iter()
             .filter_map(|id| mine(observation, id))
             .filter(|unit| bomber(unit.kind) && healthy(unit, FIT))

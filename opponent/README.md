@@ -371,7 +371,7 @@ reason, or of a rejection for the same reason, replaces the earlier one in its
 place; a buffer holds at most 1,024 events and drops the oldest first. A tick
 without a decision leaves the buffer untouched. A rejection holds back that
 decision's income sample. A unit whose order stalled for want of a route sits
-out orders, and workers and defenses pick others, until it moves off where it
+out orders, and joins no new mission or work, until it moves off where it
 stopped or 600 ticks pass. The trace reports the events.
 
 ## Selection
