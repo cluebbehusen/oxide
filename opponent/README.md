@@ -183,9 +183,11 @@ missing health among its members and at least one, weld its wounded while the
 army regroups there and the seat has scrap to pay, and follow it otherwise.
 
 At Veteran and Prime, an engaged mission focuses its fire: when every member
-that can hit an enemy near it already reaches that enemy, they shoot the weakest
-such enemy together, and keep that focus while it stays in reach. Nobody chases
-a focus, and a member out of reach leaves the mission's fire unfocused.
+that can hit an enemy near it already reaches that enemy in a straight line that
+terrain does not stop, and every member on the ground stands on that enemy's
+ground, they shoot the weakest such enemy together, and keep that focus while it
+stays in reach. Nobody chases a focus or seeks a way round to it, and a member
+out of reach leaves the mission's fire unfocused.
 
 ## Lift
 
