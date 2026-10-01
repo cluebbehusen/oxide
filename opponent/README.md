@@ -296,12 +296,13 @@ adds to the investment score of the cheapest building that would let it.
 
 Each decision scores its investments: a first Fabricator, Airworks and Crucible,
 another Fabricator, Airworks, Crucible or home Foundry when every one of that
-kind is working, a role it trains is still wanted, and the income the working
-producers leave unspent could keep one more as busy, an expansion Foundry at a
-scrap field away from every start, an Extractor on a free frame on its home
-ground, more Reclaimers (worth more with no expansion left), static defenses,
-Repair Bays, and upgrades. Saturated harvesting, time, income, home depletion,
-army needs, a needed lift and personality set the scores.
+kind is working, an army role it trains is still wanted, and the income the
+working producers leave unspent could keep one more as busy (carriers, Tenders,
+Scuttlers and Sappers never call for one), an expansion Foundry at a scrap field
+away from every start, an Extractor on a free frame on its home ground, more
+Reclaimers (worth more with no expansion left), static defenses, Repair Bays,
+and upgrades. Saturated harvesting, time, income, home depletion, army needs, a
+needed lift and personality set the scores.
 
 An expansion site's value weighs the scrap it still holds and its free frames,
 up with greed, against its ground distance from home, how much nearer a hostile
