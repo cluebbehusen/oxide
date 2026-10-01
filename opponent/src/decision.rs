@@ -233,17 +233,30 @@ pub(crate) fn decide(
         profile.stance,
         &persistent.missions,
     );
-    let air_strikes = observation
+    let airworks = observation
         .my_buildings
         .iter()
         .any(|building| building.kind == BuildingKind::Airworks && building.built);
     let income = persistent.income.per_minute();
+    // A seat whose ground reaches no enemy delivers ground units only by
+    // lift, so until an Airworks stands its army is aircraft, and line units
+    // only against invaders already on its ground.
+    let outlet = composition::Outlet {
+        ground: !scratch.severed || airworks,
+        invaders: scratch.invaders,
+        air_strikes: airworks || scratch.severed,
+        strike: if scratch.severed {
+            crate::missions::strike_need(observation, &persistent.memory, profile, &scratch)
+        } else {
+            0
+        },
+    };
     let mut needs = composition::needs(
         observation,
         &persistent.memory,
         profile.traits,
         income,
-        air_strikes,
+        outlet,
     );
     // A lift carries at least the stance's minimum army, so until the seat has
     // that much a lift could take it neither pulls toward an Airworks nor holds
@@ -728,24 +741,58 @@ fn producers(observation: &ObservationData, frame: HomeFrame) -> Vec<Producer<'_
     producers
 }
 
-/// Has every idle producer queue the unit it can best train for the most
-/// wanted role, from unprotected scrap.
+/// Gives the most wanted role first claim on idle producers, from
+/// unprotected scrap: in turn, the nearest idle producer that can afford a
+/// unit for it queues the best one, and a role no idle producer can afford
+/// gives way to the next. Idle producers left with no wanted role train line
+/// units while ground units can reach an enemy.
 fn produce(
     observation: &ObservationData,
     producers: &[Producer<'_>],
     needs: &mut Needs,
     ledger: &mut Ledger,
 ) {
-    for producer in producers {
-        if !producer.idle || ledger.queued_at(producer.building.id) {
-            continue;
-        }
-        let Some(kind) = needs.choose(observation, producer.building.kind, ledger.spendable())
-        else {
-            continue;
-        };
+    let mut idle: Vec<&Producer<'_>> = producers
+        .iter()
+        .filter(|producer| producer.idle && !ledger.queued_at(producer.building.id))
+        .collect();
+    while let Some((index, kind)) = needs.wanted().into_iter().find_map(|role| {
+        idle.iter().enumerate().find_map(|(index, producer)| {
+            needs
+                .unit(
+                    observation,
+                    producer.building.kind,
+                    role,
+                    ledger.spendable(),
+                )
+                .map(|kind| (index, kind))
+        })
+    }) {
+        let producer = idle.remove(index);
         if ledger.train(producer.building.id, kind) {
             needs.queued(kind);
+        }
+    }
+    if !needs.fallback() {
+        return;
+    }
+    for producer in idle {
+        let kind = producer.building.kind;
+        let wanted = needs.wanted();
+        if wanted
+            .iter()
+            .any(|role| composition::serves(observation, kind, *role))
+        {
+            continue;
+        }
+        if let Some(unit) = needs.unit(
+            observation,
+            kind,
+            composition::Role::Line,
+            ledger.spendable(),
+        ) && ledger.train(producer.building.id, unit)
+        {
+            needs.queued(unit);
         }
     }
 }
