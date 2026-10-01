@@ -51,7 +51,7 @@ impl Missions {
         ledger: &mut Ledger,
     ) {
         let free: Vec<&UnitObs> = self
-            .available(observation, false)
+            .free(observation, ledger)
             .into_iter()
             .filter_map(|id| mine(observation, id))
             .collect();
@@ -60,6 +60,9 @@ impl Missions {
             .iter()
             .filter(|unit| unit.kind == UnitKind::Tender && unit.idle)
         {
+            if ledger.spendable() < crate::workers::WELD_FLOOR {
+                return;
+            }
             let patients: Vec<&UnitObs> = free
                 .iter()
                 .copied()

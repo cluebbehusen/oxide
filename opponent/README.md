@@ -180,7 +180,7 @@ attack falls step by step toward even.
 
 Free Tenders join an attack while it gathers or recovers, one for so much
 missing health among its members and at least one, weld its wounded while the
-army regroups there, and follow it otherwise.
+army regroups there and the seat has scrap to pay, and follow it otherwise.
 
 At Veteran and Prime, an engaged mission focuses its fire: when every member
 that can hit an enemy near it already reaches that enemy, they shoot the weakest
@@ -281,9 +281,10 @@ counts as seen, so the next scout waits until it is stale again.
 ## Support
 
 The seat keeps a Tender, alive or queued, for so much missing health among its
-armed ground units, more the more it leans on support. A free idle Tender welds
-the free wounded ground unit on its ground missing the most value; one decision
-sends no two Tenders to the same patient.
+armed ground units, more the more it leans on support. While the seat has scrap
+to pay for a weld, a free idle Tender welds the free wounded ground unit on its
+ground missing the most value; one decision sends no two Tenders to the same
+patient.
 
 ## Army composition
 
@@ -377,10 +378,13 @@ mirrored choices.
 Each decision also receives the seat's own `OrderStalled` and `CommandRejected`
 events since its previous decision, oldest first. `OwnEvents` holds them: the
 host keeps one per seat beside the controller and calls `record` after every
-tick, and a decision takes them all. A buffer holds at most 64 events and drops
-the oldest first. A tick without a decision leaves the buffer untouched. A
-rejection only holds back that decision's income sample; the trace reports the
-events.
+tick, and a decision takes them all. A repeat of a unit's stall for the same
+reason, or of a rejection for the same reason, replaces the earlier one in its
+place; a buffer holds at most 1,024 events and drops the oldest first. A tick
+without a decision leaves the buffer untouched. A rejection holds back that
+decision's income sample. A unit whose order stalled for want of a route sits
+out orders, and joins no new mission or work, until it moves off where it
+stopped or 600 ticks pass. The trace reports the events.
 
 ## Selection
 

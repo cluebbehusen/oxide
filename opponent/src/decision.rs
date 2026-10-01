@@ -3,6 +3,7 @@
 
 use crate::composition::{self, Needs};
 use crate::defenses;
+use crate::events::OwnEvent;
 use crate::frame::{HomeFrame, footprint_centre, gap};
 use crate::income::Income;
 use crate::investments::{self, Situation, Step};
@@ -48,6 +49,8 @@ pub(crate) struct Ledger {
     bank: u32,
     protected: u32,
     planned: Vec<(BuildingKind, TilePos)>,
+    /// Own units sitting out orders after stalling for want of a route, by id.
+    stuck: Vec<UnitId>,
     decision: Decision,
 }
 
@@ -58,6 +61,7 @@ impl Ledger {
             bank,
             protected: 0,
             planned: Vec::new(),
+            stuck: Vec::new(),
             decision: Decision {
                 allowance,
                 ..Decision::default()
@@ -125,15 +129,27 @@ impl Ledger {
         self.push(Command::UpgradeBuilding { building });
     }
 
-    /// Issues one unit order while the allowance lasts. Purchases never count
-    /// against it.
-    pub(crate) fn order(&mut self, command: Command) -> bool {
+    /// Issues one unit order while the allowance lasts, leaving out units
+    /// sitting out orders. An order left with no units issues nothing and
+    /// counts as given. Purchases never count against the allowance.
+    pub(crate) fn order(&mut self, mut command: Command) -> bool {
         if self.decision.unit_orders == self.decision.allowance {
             return false;
+        }
+        if let Some(units) = units_of(&mut command) {
+            units.retain(|unit| !self.stuck(*unit));
+            if units.is_empty() {
+                return true;
+            }
         }
         self.decision.unit_orders += 1;
         self.push(command);
         true
+    }
+
+    /// Whether `unit` sits out orders after stalling for want of a route.
+    pub(crate) fn stuck(&self, unit: UnitId) -> bool {
+        self.stuck.binary_search(&unit).is_ok()
     }
 
     /// Unit orders this decision may still issue.
@@ -186,6 +202,26 @@ impl Ledger {
     }
 }
 
+/// The units `command` orders, when it orders units.
+fn units_of(command: &mut Command) -> Option<&mut Vec<UnitId>> {
+    match command {
+        Command::Run { units, .. }
+        | Command::Attack { units, .. }
+        | Command::Hunt { units, .. }
+        | Command::Harvest { units, .. }
+        | Command::Patrol { units, .. }
+        | Command::Stop { units, .. }
+        | Command::Build { units, .. }
+        | Command::Repair { units, .. }
+        | Command::Salvage { units, .. }
+        | Command::RepairUnit { units, .. }
+        | Command::Advance { units, .. }
+        | Command::Load { units, .. }
+        | Command::ReturnCargo { units, .. } => Some(units),
+        _ => None,
+    }
+}
+
 /// A built own producer, and whether its queue runs out before the next
 /// decision, so a unit queued now keeps it working. Every unit trains for
 /// longer than a decision interval, so one unit a decision keeps a ready
@@ -203,16 +239,21 @@ pub(crate) struct Producer<'a> {
 /// scrap for this decision's production.
 pub(crate) fn decide(
     observation: &ObservationData,
-    rejected: bool,
+    events: &[OwnEvent],
     map: &MapModel,
     profile: &ResolvedProfile,
     persistent: &mut Persistent,
 ) -> Decision {
+    let rejected = events
+        .iter()
+        .any(|event| matches!(event, OwnEvent::CommandRejected { .. }));
+    persistent.memory.stalls(observation, events);
     let mut ledger = Ledger::new(
         observation.me,
         observation.scrap,
         allowance(profile.difficulty),
     );
+    ledger.stuck = persistent.memory.stuck();
     let Some(frame) = HomeFrame::of(observation, map) else {
         return ledger.decision;
     };

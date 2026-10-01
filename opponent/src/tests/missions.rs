@@ -644,6 +644,41 @@ fn a_checkpoint_while_answering_unseen_shelling_resumes_identically() {
 }
 
 #[test]
+fn a_defense_re_sends_only_members_that_found_a_route() {
+    let staged = |x: i32, y: i32, tick: u64| {
+        let scenario = raided(
+            &[(UnitKind::Sentinel, 5, 8), (UnitKind::Sentinel, 6, 8)],
+            &[(UnitKind::Warden, x, y)],
+        );
+        let mut state = scenario.build().unwrap();
+        if tick > 0 {
+            advance_to(&mut state, tick, &[]);
+        }
+        (scenario, state)
+    };
+    let (scenario, state) = staged(9, 4, 0);
+    let (stuck, free) = (at(&state, 5, 8), at(&state, 6, 8));
+    let mut opponent = seat(&scenario, 0);
+    let first = hunts(&opponent.act(&state, &mut OwnEvents::default()));
+    assert_eq!(first, [(vec![stuck, free], TilePos::new(9, 4))], "premise");
+    let (_, moved) = staged(12, 9, 24);
+    let mut events = OwnEvents::default();
+    events.record(
+        PlayerId(0),
+        &[oxide_sim::Event::OrderStalled {
+            unit: stuck,
+            player: PlayerId(0),
+            pos: moved.unit(stuck).unwrap().pos,
+            reason: oxide_sim::StallReason::NoRoute,
+        }],
+    );
+    assert_eq!(
+        hunts(&opponent.act(&moved, &mut events)),
+        [(vec![free], TilePos::new(12, 9))]
+    );
+}
+
+#[test]
 fn a_gun_out_of_sight_waits_while_raiders_in_sight_hold_the_foundry() {
     let mut scenario = shelling(&[0]);
     scenario.units.push(unit(1, UnitKind::Buzzard, 4, 5));

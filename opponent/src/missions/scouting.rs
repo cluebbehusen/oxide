@@ -150,7 +150,7 @@ impl Missions {
             .start(observation.me)
             .and_then(|start| map.component(start));
         let mut scouts: Vec<&UnitObs> = self
-            .available(observation, false)
+            .free(observation, ledger)
             .into_iter()
             .filter_map(|id| mine(observation, id))
             .filter(|unit| {

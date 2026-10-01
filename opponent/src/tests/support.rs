@@ -266,25 +266,34 @@ fn heavy_wounds_keep_more_than_two_tenders() {
 }
 
 #[test]
-fn a_free_tender_welds_the_most_wounded_free_unit() {
-    let mut scenario = arena(200);
-    scenario.units.extend([
-        unit(0, UnitKind::Tender, 5, 8),
-        unit(0, UnitKind::Sentinel, 3, 10),
-        unit(0, UnitKind::Sentinel, 4, 10),
-    ]);
-    let state = scenario.build().unwrap();
-    let (tender, grazed, mauled) = (at(&state, 5, 8), at(&state, 3, 10), at(&state, 4, 10));
-    let state = wounded(&wounded(&state, grazed, 40), mauled, 10);
-    let commands = seat_with(&scenario, 0, thrifty()).act(&state, &mut OwnEvents::default());
-    assert_eq!(welds(&commands), [(vec![tender], mauled)]);
+fn a_free_tender_welds_the_most_wounded_free_unit_while_scrap_pays() {
+    let welded = |scrap: u32| {
+        let mut scenario = arena(scrap);
+        scenario.units.extend([
+            unit(0, UnitKind::Tender, 5, 8),
+            unit(0, UnitKind::Sentinel, 3, 10),
+            unit(0, UnitKind::Sentinel, 4, 10),
+        ]);
+        let state = scenario.build().unwrap();
+        let (tender, grazed, mauled) = (at(&state, 5, 8), at(&state, 3, 10), at(&state, 4, 10));
+        let state = wounded(&wounded(&state, grazed, 40), mauled, 10);
+        let commands = seat_with(&scenario, 0, thrifty()).act(&state, &mut OwnEvents::default());
+        (tender, mauled, welds(&commands))
+    };
+    let (tender, mauled, paid) = welded(1_000);
+    assert_eq!(paid, [(vec![tender], mauled)]);
+    let (_, _, short) = welded(0);
+    assert!(
+        short.is_empty(),
+        "a weld would stall for want of scrap: {short:?}"
+    );
 }
 
 /// An attack regrouping at its rally with the arena's West squad (one of
 /// them still walking in), `tended` when a Tender already belongs to it, and
 /// the squad's ids.
-fn regrouping(tended: bool) -> (State, Opponent, Vec<UnitId>, UnitId) {
-    let (mut scenario, ids) = squad(0);
+fn regrouping(tended: bool, scrap: u32) -> (State, Opponent, Vec<UnitId>, UnitId) {
+    let (mut scenario, ids) = squad(scrap);
     scenario.units.push(unit(0, UnitKind::Tender, 6, 9));
     let mut state = scenario.build().unwrap();
     let squad = ids(&state);
@@ -321,7 +330,7 @@ fn regrouping(tended: bool) -> (State, Opponent, Vec<UnitId>, UnitId) {
 
 #[test]
 fn a_regrouping_attack_takes_a_free_tender_along() {
-    let (state, mut opponent, _, tender) = regrouping(false);
+    let (state, mut opponent, _, tender) = regrouping(false, 0);
     let commands = opponent.act(&state, &mut OwnEvents::default());
     assert!(
         runs(&commands).iter().any(|(units, _)| *units == [tender]),
@@ -333,12 +342,18 @@ fn a_regrouping_attack_takes_a_free_tender_along() {
 }
 
 #[test]
-fn a_tender_welds_its_attack_while_the_army_regroups() {
-    let (state, mut opponent, squad, tender) = regrouping(true);
-    let hurt = squad[0];
-    let state = wounded(&state, hurt, 30);
-    let commands = opponent.act(&state, &mut OwnEvents::default());
-    assert_eq!(welds(&commands), [(vec![tender], hurt)]);
+fn a_tender_welds_its_attack_while_the_army_regroups_and_scrap_pays() {
+    let welded = |scrap: u32| {
+        let (state, mut opponent, squad, tender) = regrouping(true, scrap);
+        let hurt = squad[0];
+        let state = wounded(&state, hurt, 30);
+        let commands = opponent.act(&state, &mut OwnEvents::default());
+        (tender, hurt, welds(&commands))
+    };
+    let (tender, hurt, paid) = welded(1_000);
+    assert_eq!(paid, [(vec![tender], hurt)]);
+    let (_, _, short) = welded(0);
+    assert!(short.is_empty(), "{short:?}");
 }
 
 fn traits() -> PersonalityTraits {

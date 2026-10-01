@@ -21,8 +21,8 @@ use std::cmp::Reverse;
 const WELD_DAMAGE: u32 = 100;
 
 /// Scrap the seat keeps spendable before starting a weld, which bills as it
-/// goes.
-const WELD_FLOOR: u32 = 100;
+/// goes: a weld started with less soon stalls for want of scrap.
+pub(crate) const WELD_FLOOR: u32 = 100;
 
 /// Empty tiles around a building inside which an armed enemy in sight keeps
 /// workers from welding it.
@@ -321,6 +321,7 @@ pub(crate) fn builder(
                 && !unit.repairing
                 && map.component(unit.tile) == Some(ground)
                 && !ledger.employs(unit.id)
+                && !ledger.stuck(unit.id)
         })
         .min_by_key(|unit| (frame.rank(centre, doubled(unit.tile)), unit.id))
         .map(|unit| unit.id)
@@ -530,7 +531,9 @@ fn assign_idle(
     let mut idle: Vec<_> = observation
         .my_units
         .iter()
-        .filter(|unit| unit.idle && worker(unit.kind) && !ledger.employs(unit.id))
+        .filter(|unit| {
+            unit.idle && worker(unit.kind) && !ledger.employs(unit.id) && !ledger.stuck(unit.id)
+        })
         .collect();
     idle.sort_by_key(|unit| (frame.rank(frame.home, doubled(unit.tile)), unit.id));
     let mut assignments: Vec<(TilePos, UnitId)> = Vec::new();

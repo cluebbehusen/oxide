@@ -143,7 +143,7 @@ impl Missions {
             let mut candidates: Vec<&UnitObs> = free
                 .iter()
                 .filter_map(|id| mine(observation, *id))
-                .filter(|unit| !members.contains(&unit.id))
+                .filter(|unit| !members.contains(&unit.id) && !ledger.stuck(unit.id))
                 .filter(|unit| {
                     [Domain::Ground, Domain::Air]
                         .into_iter()

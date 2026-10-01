@@ -6,8 +6,10 @@ use oxide_sim::{Event, PlayerId, StallReason, UnitId};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
-/// Events a buffer holds; beyond this the oldest are dropped first.
-const CAP: usize = 64;
+/// Events a buffer holds, the oldest dropped first beyond it: a computation
+/// bound that normal play stays under, since the buffer keeps one stall per
+/// unit and reason and one rejection per reason.
+const CAP: usize = 1_024;
 
 /// One of the seat's own order failures, as the simulation reported it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,6 +33,25 @@ pub enum OwnEvent {
 }
 
 impl OwnEvent {
+    /// Whether `other` reports the same failure again: the same unit stalling
+    /// for the same reason, or a rejection for the same reason.
+    fn repeats(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::OrderStalled { unit, reason, .. },
+                Self::OrderStalled {
+                    unit: again,
+                    reason: why,
+                    ..
+                },
+            ) => unit == again && reason == why,
+            (Self::CommandRejected { reason }, Self::CommandRejected { reason: why }) => {
+                reason == why
+            }
+            _ => false,
+        }
+    }
+
     fn of(player: PlayerId, event: &Event) -> Option<Self> {
         match *event {
             Event::OrderStalled {
@@ -57,12 +78,18 @@ pub struct OwnEvents(VecDeque<OwnEvent>);
 
 impl OwnEvents {
     /// Appends `player`'s own stalls and rejections from one tick's events,
-    /// in report order.
+    /// in report order. A repeat of a stall of the same unit for the same
+    /// reason, or of a rejection for the same reason, replaces the earlier
+    /// one in its place.
     pub fn record(&mut self, player: PlayerId, events: &[Event]) {
         for event in events
             .iter()
             .filter_map(|event| OwnEvent::of(player, event))
         {
+            if let Some(held) = self.0.iter_mut().find(|held| held.repeats(&event)) {
+                *held = event;
+                continue;
+            }
             if self.0.len() == CAP {
                 self.0.pop_front();
             }
@@ -148,6 +175,40 @@ mod tests {
             ]
         );
         assert_eq!(events, OwnEvents::default());
+    }
+
+    #[test]
+    fn repeats_of_one_failure_keep_its_first_place() {
+        let mut events = OwnEvents::default();
+        let mut tick: Vec<Event> = (0..40).map(|_| stalled(0, 7)).collect();
+        tick.insert(1, stalled(0, 8));
+        tick.extend([
+            rejected(0, RejectReason::BadSite),
+            rejected(0, RejectReason::QueueFull),
+            rejected(0, RejectReason::BadSite),
+        ]);
+        events.record(PlayerId(0), &tick);
+        let wide: Vec<Event> = (100..200).map(|unit| stalled(0, unit)).collect();
+        events.record(PlayerId(0), &wide);
+        let kept = events.take();
+        assert_eq!(kept.len(), 4 + wide.len(), "{kept:?}");
+        let stalled_unit = |event: &OwnEvent| match event {
+            OwnEvent::OrderStalled { unit, .. } => Some(unit.0),
+            OwnEvent::CommandRejected { .. } => None,
+        };
+        assert_eq!(stalled_unit(&kept[0]), Some(7));
+        assert_eq!(stalled_unit(&kept[1]), Some(8));
+        assert_eq!(
+            kept[2..4],
+            [
+                OwnEvent::CommandRejected {
+                    reason: RejectReason::BadSite
+                },
+                OwnEvent::CommandRejected {
+                    reason: RejectReason::QueueFull
+                },
+            ]
+        );
     }
 
     #[test]

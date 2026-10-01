@@ -101,7 +101,7 @@ impl Missions {
             .iter()
             .any(|mission| matches!(mission.task, Task::Raid { .. }));
         let ready = self
-            .available(observation, false)
+            .free(observation, ledger)
             .into_iter()
             .filter_map(|id| mine(observation, id))
             .any(|unit| raider(unit.kind).is_some());
@@ -182,7 +182,7 @@ impl Missions {
             return false;
         }
         let free: Vec<&UnitObs> = self
-            .available(observation, false)
+            .free(observation, ledger)
             .into_iter()
             .filter_map(|id| mine(observation, id))
             .filter(|unit| unit.idle && healthy(unit, FIT))

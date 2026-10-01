@@ -2,13 +2,15 @@
 //! confidence that fades until they are seen again; building footprints it
 //! failed to claim, so it tries somewhere else for a while; enemy buildings
 //! it gave up attacking, so it attacks something else for a while; enemy
-//! buildings it raided, so the next raid goes elsewhere; and when it last saw
-//! each of its scouting points. Enemy buildings need no other
-//! memory here: the observation keeps their ghosts.
+//! buildings it raided, so the next raid goes elsewhere; when it last saw
+//! each of its scouting points; and its own units whose orders stalled for
+//! want of a route, so they sit out orders for a while. Enemy buildings need
+//! no other memory here: the observation keeps their ghosts.
 
+use crate::events::OwnEvent;
 use chassis::grid::TilePos;
 use oxide_sim::observation::ObservationData;
-use oxide_sim::{BuildingKind, UnitId, UnitKind};
+use oxide_sim::{BuildingKind, StallReason, UnitId, UnitKind};
 use serde::{Deserialize, Serialize};
 
 /// Ticks a failed footprint stays skipped.
@@ -25,6 +27,14 @@ const UNIT_TICKS: u64 = 600;
 /// `UNIT_TICKS` ago are forgotten anyway.
 const UNIT_CAP: usize = 4_096;
 
+/// Ticks an own unit whose order stalled for want of a route sits out orders,
+/// unless it moves off where it stopped first.
+const STUCK_TICKS: u64 = 600;
+
+/// Stuck own units remembered at once, the oldest forgotten first: a
+/// computation bound that normal play stays under.
+const STUCK_CAP: usize = 1_024;
+
 /// The seat's memory: enemy units by id, failures oldest first.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -40,6 +50,19 @@ pub(crate) struct Memory {
     /// Tick each scouting point was last in sight, by point; empty before
     /// the first decision.
     scouted: Vec<u64>,
+    /// Own units whose orders stalled for want of a route, by id.
+    #[serde(default)]
+    stuck: Vec<Stuck>,
+}
+
+/// An own unit whose order stalled for want of a route: where it stopped,
+/// and when.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Stuck {
+    unit: UnitId,
+    tile: TilePos,
+    at: u64,
 }
 
 /// An enemy unit as last seen.
@@ -145,6 +168,56 @@ impl Memory {
         }
     }
 
+    /// Remembers the own units whose orders stalled for want of a route in
+    /// `events`, and forgets those that left where they stopped, are gone, or
+    /// sat out [`STUCK_TICKS`].
+    pub(crate) fn stalls(&mut self, observation: &ObservationData, events: &[OwnEvent]) {
+        let now = observation.tick;
+        for event in events {
+            if let OwnEvent::OrderStalled {
+                unit,
+                pos,
+                reason: StallReason::NoRoute,
+            } = *event
+            {
+                let stuck = Stuck {
+                    unit,
+                    tile: TilePos::containing(pos),
+                    at: now,
+                };
+                match self.stuck.binary_search_by_key(&unit, |held| held.unit) {
+                    Ok(index) => self.stuck[index] = stuck,
+                    Err(index) => self.stuck.insert(index, stuck),
+                }
+            }
+        }
+        if self.stuck.is_empty() {
+            return;
+        }
+        let tiles: std::collections::BTreeMap<UnitId, TilePos> = observation
+            .my_units
+            .iter()
+            .map(|unit| (unit.id, unit.tile))
+            .collect();
+        self.stuck.retain(|stuck| {
+            now < stuck.at + STUCK_TICKS && tiles.get(&stuck.unit) == Some(&stuck.tile)
+        });
+        while self.stuck.len() > STUCK_CAP {
+            let oldest = self
+                .stuck
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, stuck)| (stuck.at, stuck.unit))
+                .map_or(0, |(index, _)| index);
+            self.stuck.remove(oldest);
+        }
+    }
+
+    /// Own units sitting out orders, by id.
+    pub(crate) fn stuck(&self) -> Vec<UnitId> {
+        self.stuck.iter().map(|stuck| stuck.unit).collect()
+    }
+
     /// Forgets failures old enough to try again.
     pub(crate) fn forget(&mut self, now: u64) {
         self.failures
@@ -177,8 +250,20 @@ impl Memory {
             || full(&self.abandoned)
             || full(&self.raided)
             || self.units.len() > UNIT_CAP
+            || self.stuck.len() > STUCK_CAP
         {
             return Err("checkpoint remembers too much".into());
+        }
+        let stuck = self
+            .stuck
+            .windows(2)
+            .all(|pair| pair[0].unit < pair[1].unit)
+            && self
+                .stuck
+                .iter()
+                .all(|stuck| stuck.at <= now && on_map(stuck.tile));
+        if !stuck {
+            return Err("checkpoint stuck units are malformed".into());
         }
         let by_id = self.units.windows(2).all(|pair| pair[0].id < pair[1].id);
         if !by_id || self.units.iter().any(|unit| unit.seen > now) {

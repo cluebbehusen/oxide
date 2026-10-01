@@ -151,7 +151,7 @@ impl Missions {
     fn clear(&self, lifting: &Lifting<'_>, ledger: &mut Ledger) {
         let observation = lifting.observation;
         for unit in self
-            .available(observation, false)
+            .free(observation, ledger)
             .into_iter()
             .filter_map(|id| mine(observation, id))
             .filter(|unit| lifting.map.component(unit.tile) == Some(lifting.home))
@@ -173,7 +173,7 @@ impl Missions {
         if self.list.len() >= MISSION_CAP || !lifting.severed {
             return false;
         }
-        let loads = self.loads(lifting);
+        let loads = self.loads(lifting, ledger);
         let value = loads.iter().map(|(_, _, value)| value).sum::<u64>();
         if loads.is_empty() || value < minimum(lifting.profile.stance) {
             return false;
@@ -208,9 +208,9 @@ impl Missions {
     /// The free carriers and riders at home a lift could load now: riders
     /// packed into carriers over open ground strongest value per slot first,
     /// with each load's value.
-    fn loads(&self, lifting: &Lifting<'_>) -> Vec<(UnitId, Vec<UnitId>, u64)> {
+    fn loads(&self, lifting: &Lifting<'_>, ledger: &Ledger) -> Vec<(UnitId, Vec<UnitId>, u64)> {
         let frame = lifting.frame;
-        let free = self.free_at_home(lifting);
+        let free = at_home(lifting, self.free(lifting.observation, ledger));
         let rank = |unit: &&UnitObs| (frame.rank(frame.home, doubled(unit.tile)), unit.id);
         let mut carriers: Vec<&UnitObs> = free
             .iter()
@@ -256,16 +256,6 @@ impl Missions {
             .trim(lifting.map, riders)
     }
 
-    /// The seat's units no mission holds on its home ground.
-    fn free_at_home<'a>(&self, lifting: &Lifting<'a>) -> Vec<&'a UnitObs> {
-        let observation = lifting.observation;
-        self.available(observation, false)
-            .into_iter()
-            .filter_map(|id| mine(observation, id))
-            .filter(|unit| lifting.map.component(unit.tile) == Some(lifting.home))
-            .collect()
-    }
-
     /// Whether the seat's `have` carriers, alive and queued, fall short of
     /// lifting what the best landing no lift holds needs, or the stance
     /// minimum while none is known, with the free riders at home packed as a
@@ -282,7 +272,8 @@ impl Missions {
     ) -> Option<bool> {
         let mut lifting = Lifting::new(observation, map, profile, memory, scratch)?;
         lifting.held = self.held(|task| matches!(task, Task::Lift { .. }), None, &[]);
-        let riders = self.riders(&lifting, &self.free_at_home(&lifting));
+        let free = at_home(&lifting, self.available(observation, false));
+        let riders = self.riders(&lifting, &free);
         // Every carrier is a Skyhook and first fit opens a room only when no
         // earlier one fits, so the first k rooms are what k carriers load.
         let capacity = UnitKind::Skyhook.stats().transport_capacity;
@@ -380,7 +371,7 @@ impl Missions {
             .sum();
         let committed = flight.loaded + walking;
         if committed < need && flight.age < LOAD_TICKS {
-            let loads = self.loads(lifting);
+            let loads = self.loads(lifting, ledger);
             let room = UNIT_CAP.saturating_sub(self.list[flight.index].units.len());
             let (sent, _) = send(loads, need - committed, room, ledger);
             if !sent.is_empty() {
@@ -916,6 +907,15 @@ fn pack<'a>(carriers: &[(UnitId, u8)], riders: &[&'a UnitObs]) -> Vec<(UnitId, V
         .into_iter()
         .filter(|(_, _, riders)| !riders.is_empty())
         .map(|(id, _, riders)| (id, riders))
+        .collect()
+}
+
+/// The seat's units among `ids` on its home ground.
+fn at_home<'a>(lifting: &Lifting<'a>, ids: Vec<UnitId>) -> Vec<&'a UnitObs> {
+    let observation = lifting.observation;
+    ids.into_iter()
+        .filter_map(|id| mine(observation, id))
+        .filter(|unit| lifting.map.component(unit.tile) == Some(lifting.home))
         .collect()
 }
 

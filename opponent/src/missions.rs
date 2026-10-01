@@ -6,6 +6,7 @@
 //! lift, then attacks, strikes and raids, then scouting. Each takes from what
 //! [`Missions::available`] leaves free when it runs.
 
+use crate::decision::Ledger;
 use crate::frame::{HomeFrame, doubled, ring};
 use crate::map::{MapModel, UNREACHABLE};
 use crate::memory::Memory;
@@ -537,6 +538,15 @@ impl Missions {
             .map(|unit| unit.id)
             .filter(|id| owned.binary_search(id).is_err())
             .collect()
+    }
+
+    /// Units no mission holds that may take orders: a unit sitting out after
+    /// its order found no route joins no mission, since it would be sent
+    /// nowhere.
+    fn free(&self, observation: &ObservationData, ledger: &Ledger) -> Vec<UnitId> {
+        let mut free = self.available(observation, false);
+        free.retain(|unit| !ledger.stuck(*unit));
+        free
     }
 
     /// Takes `units` out of every mission, dropping missions left empty.
