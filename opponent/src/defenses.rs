@@ -16,7 +16,9 @@ use crate::profile::{PersonalityTraits, ResolvedProfile};
 use crate::workers;
 use chassis::grid::TilePos;
 use oxide_sim::observation::{BuildingObs, ObservationData};
-use oxide_sim::stats::{CHARGE_DAMAGE, Domain, FOUNDRY_REPAIR_PRICE, REPAIR_BAY_RADIUS};
+use oxide_sim::stats::{
+    BuildingStats, CHARGE_DAMAGE, Domain, FOUNDRY_REPAIR_PRICE, REPAIR_BAY_RADIUS, WeaponStats,
+};
 use oxide_sim::{BuildingKind, UnitKind};
 use std::cell::OnceCell;
 use std::cmp::Reverse;
@@ -65,6 +67,18 @@ const BAY_POINTS: u64 = 2;
 
 /// Divides a defense's worth into investment points.
 const POINTS: u64 = 48;
+
+/// Scrap a gun's worth is quoted per, so scores per scrap stay on the scale
+/// of the seat's other investments.
+const QUOTE: u64 = 100;
+
+/// Divides a gun's worth, the army scrap it holds off for each [`QUOTE`] of
+/// its price, into investment points.
+const GUN_POINTS: u64 = 5;
+
+/// Divides a gun upgrade's worth, measured as a gun's, into investment
+/// points.
+const GUN_UPGRADE_POINTS: u64 = 5;
 
 /// Divides an upgrade's worth into investment points.
 const UPGRADE_POINTS: u64 = 48;
@@ -156,6 +170,15 @@ struct Approach {
     evidence: Evidence,
     /// The threat the samples lead to.
     source: (i64, i64),
+    /// The cover that holds the threat off at a sample, in army scrap.
+    need: u64,
+}
+
+impl Approach {
+    /// The army scrap still missing at a sample `open` thousandths short.
+    fn shortfall(&self, open: u64) -> u64 {
+        self.need * open / 2_000
+    }
 }
 
 /// A building worth guarding.
@@ -185,7 +208,7 @@ type ThreatKey = ((i64, i64), Domain, Option<Vec<u32>>);
 #[derive(Clone, Copy)]
 struct Cover {
     centre: (i64, i64),
-    /// What the weapon cost, with every upgrade it has had.
+    /// What the weapon holds off, in army scrap: see [`strength`].
     value: u64,
     /// Squared doubled reach, and squared doubled minimum range.
     reach2: i64,
@@ -199,13 +222,7 @@ impl Cover {
         let stats = kind.tier_stats(tier);
         let mut cover = Cover {
             centre: footprint_centre(kind, anchor),
-            value: kind
-                .tiers()
-                .iter()
-                .take(usize::from(tier) + 1)
-                .filter_map(|stats| stats.construction.as_ref())
-                .map(|construction| u64::from(construction.cost))
-                .sum(),
+            value: strength(stats),
             reach2: 0,
             min2: i64::MAX,
             ground: false,
@@ -352,6 +369,7 @@ impl<'a> Guard<'a> {
                     value
                 });
                 let need = value * 1_000 / stakes.margin.max(1);
+                approach.need = need;
                 approach.open = approach
                     .samples
                     .iter()
@@ -414,9 +432,9 @@ impl<'a> Guard<'a> {
             .count()
     }
 
-    /// What a defense of `kind` at `anchor` adds to `asset`'s approach, in
-    /// thousandths: how far the samples it covers still fall short of the
-    /// threat along the way. A Bastion counts only samples its owner's or an
+    /// What a defense of `kind` at `anchor` adds to `asset`'s approach: for a
+    /// gun, the army scrap it closes of the shortfall against the threat
+    /// along the way at each sample it covers, at most its strength. A Bastion counts only samples its owner's or an
     /// ally's buildings see, since it fires no further than something spots
     /// for it. An Array adds two thousand for each point further along the way
     /// in that nothing sees yet.
@@ -454,7 +472,7 @@ impl<'a> Guard<'a> {
             .filter(|((point, _), spotted)| {
                 cover.covers(domain, **point) && (!bastion || **spotted)
             })
-            .map(|((_, open), _)| *open)
+            .map(|((_, open), _)| approach.shortfall(*open).min(cover.value))
             .sum()
     }
 
@@ -527,7 +545,8 @@ impl<'a> Guard<'a> {
     /// Foundry whose field still falls short of its threat, nearest the
     /// Foundry, clear of other own charges. A field holds enough charges to
     /// deal the health of the threat along the way divided by the margin, one
-    /// body to a blast; every spot is worth the same until it does.
+    /// body to a blast, in the share the guns covering the way leave open;
+    /// every spot is worth the same until it does.
     fn charge(&self) -> Option<(TilePos, u64)> {
         let observation = self.observation;
         let charges: Vec<TilePos> = observation
@@ -549,8 +568,10 @@ impl<'a> Guard<'a> {
                 continue;
             }
             let health = health(self.memory, observation.tick, approach.source, self.stakes);
-            let need =
-                (health * 1_000 / self.stakes.margin.max(1)).div_ceil(u64::from(CHARGE_DAMAGE));
+            // Only the share of the approach the guns leave open.
+            let open = approach.open.iter().sum::<u64>() / approach.open.len().max(1) as u64;
+            let need = (health * 1_000 / self.stakes.margin.max(1) * open / 2_000)
+                .div_ceil(u64::from(CHARGE_DAMAGE));
             let field = Field::of(asset.centre, approach.source);
             let laid = charges
                 .iter()
@@ -723,7 +744,7 @@ impl<'a> Guard<'a> {
                     .iter()
                     .zip(&approach.spotted)
                     .filter(|(_, spotted)| !bastion || **spotted)
-                    .map(|(open, _)| *open)
+                    .map(|(open, _)| approach.shortfall(*open))
                     .sum()
             };
             if !self.usable(approach) || most == 0 {
@@ -817,7 +838,7 @@ pub(crate) fn investments(
     let cunning = (fortification + u64::from(traits.guile)) / 2;
     let weights = [
         (BuildingKind::Turret, fortification),
-        (BuildingKind::Bastion, fortification * 6 / 5),
+        (BuildingKind::Bastion, fortification),
         (
             BuildingKind::FlakTurret,
             (fortification + u64::from(traits.support)) / 2,
@@ -828,10 +849,13 @@ pub(crate) fn investments(
         .into_iter()
         .filter_map(|(kind, weight)| {
             let (anchor, worth) = guard.best(kind)?;
-            Some((
-                Investment::Defense { kind, anchor },
-                points(worth * weight / POINTS),
-            ))
+            // Guns are weighed by what they hold off per scrap; an Array's
+            // radar is not a gun.
+            let score = match kind {
+                BuildingKind::Array => worth * weight / POINTS,
+                kind => worth * weight * QUOTE / (GUN_POINTS * price(kind.base_stats())),
+            };
+            Some((Investment::Defense { kind, anchor }, points(score)))
         })
         .collect();
     if let Some((anchor, worth)) = guard.barricade() {
@@ -869,8 +893,9 @@ pub(crate) fn investments(
     list
 }
 
-/// An upgrade for a built defense, worth the approach samples it covers, or
-/// for an Array the far points its radar watches, each by how sure the seat
+/// An upgrade for a built defense, worth what the strength it adds closes at
+/// the approach samples the next tier covers, per scrap, or for an Array the
+/// far points its radar watches, each by how sure the seat
 /// is of the threat, unless an enemy in sight could hit it while it is down,
 /// from the defense's reach or its own, or the next tier needs a building the
 /// seat has not built.
@@ -921,23 +946,27 @@ fn upgrade(guard: &Guard<'_>, building: &BuildingObs, weight: u64) -> Option<(In
         return None;
     }
     let centre = footprint_centre(building.kind, building.anchor);
+    // The next tier, where it reaches, and the strength it adds.
+    let raised = cover.map(|cover| {
+        let next = Cover::of(building.kind, building.tier + 1, building.anchor).unwrap_or(cover);
+        (next, next.value.saturating_sub(cover.value))
+    });
     let worth: u64 = guard
         .assets
         .iter()
-        .map(|asset| match cover {
-            Some(cover) => [Domain::Ground, Domain::Air]
+        .map(|asset| match raised {
+            Some((next, added)) => [Domain::Ground, Domain::Air]
                 .into_iter()
                 .filter_map(|domain| Some((domain, asset.approach(domain)?)))
                 .map(|(domain, approach)| {
-                    // How far the samples it covers still fall short of
-                    // holding: toward two each where it stands alone, none
-                    // once they hold.
+                    // The army scrap of the shortfall at the samples it
+                    // covers that the added strength closes.
                     let short: u64 = approach
                         .samples
                         .iter()
                         .zip(&approach.open)
-                        .filter(|(point, _)| cover.covers(domain, **point))
-                        .map(|(_, open)| *open)
+                        .filter(|(point, _)| next.covers(domain, **point))
+                        .map(|(_, open)| approach.shortfall(*open).min(added))
                         .sum();
                     asset.value * short * approach.evidence.weight() / 1_000
                 })
@@ -956,13 +985,19 @@ fn upgrade(guard: &Guard<'_>, building: &BuildingObs, weight: u64) -> Option<(In
             }
         })
         .sum();
+    // A gun's upgrade is weighed per scrap, as guns are; an Array's is not.
+    let score = if cover.is_some() {
+        worth * weight * QUOTE / (GUN_UPGRADE_POINTS * u64::from(next.cost).max(1))
+    } else {
+        worth * weight / UPGRADE_POINTS
+    };
     (worth > 0).then(|| {
         (
             Investment::Upgrade {
                 building: building.id,
                 tier: building.tier + 1,
             },
-            points(worth * weight / UPGRADE_POINTS),
+            points(score),
         )
     })
 }
@@ -1344,6 +1379,7 @@ fn approach(known: &Known<'_>, asset: &Asset, domain: Domain) -> Option<Approach
         far: Vec::new(),
         evidence,
         source,
+        need: 0,
     })
 }
 
@@ -1587,6 +1623,39 @@ fn chebyshev(a: (i64, i64), b: (i64, i64)) -> i64 {
     (a.0 - b.0).abs().max((a.1 - b.1).abs())
 }
 
+/// What a gun holds off, in army scrap: the price of the Sentinels that would
+/// match it under Lanchester's square law, from the product of its damage per
+/// tick and health against a Sentinel's. Splash is not counted.
+fn strength(stats: &BuildingStats) -> u64 {
+    // Damage per tick, in thousandths.
+    fn rate<'a>(weapons: impl Iterator<Item = &'a WeaponStats>) -> u64 {
+        weapons
+            .map(|weapon| {
+                u64::from(weapon.damage) * u64::from(weapon.salvo.max(1)) * 1_000
+                    / u64::from(weapon.cooldown_ticks.max(1))
+            })
+            .sum()
+    }
+    let sentinel = UnitKind::Sentinel.stats();
+    let reference = rate(
+        sentinel
+            .weapons
+            .iter()
+            .filter(|weapon| weapon.targets.ground),
+    ) * u64::from(sentinel.max_hp);
+    let gun = rate(stats.weapons.iter()) * u64::from(stats.max_hp);
+    let ratio = (gun * 1_000_000).checked_div(reference).unwrap_or(0);
+    u64::from(sentinel.cost) * ratio.isqrt() / 1_000
+}
+
+/// What a building costs to place.
+fn price(stats: &BuildingStats) -> u64 {
+    stats
+        .construction
+        .as_ref()
+        .map_or(QUOTE, |construction| u64::from(construction.cost).max(1))
+}
+
 fn points(worth: u64) -> u32 {
     u32::try_from(worth).unwrap_or(u32::MAX)
 }
@@ -1594,6 +1663,20 @@ fn points(worth: u64) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_gun_holds_off_what_its_firepower_and_health_match_not_its_price() {
+        let gun = |kind: BuildingKind, tier: u8| strength(kind.tier_stats(tier));
+        let turret = gun(BuildingKind::Turret, 0);
+        let bastion = gun(BuildingKind::Bastion, 0);
+        assert!(turret < bastion, "{turret} against {bastion}");
+        assert!(bastion < gun(BuildingKind::Turret, 1));
+        assert!(gun(BuildingKind::Turret, 1) < gun(BuildingKind::Turret, 2));
+        assert!(
+            bastion < 2 * turret,
+            "a Bastion costs over twice a Turret but does not hold twice as much"
+        );
+    }
 
     #[test]
     fn a_repair_bay_reaches_by_straight_distance_from_its_edges() {

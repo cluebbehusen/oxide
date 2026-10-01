@@ -109,12 +109,14 @@ nearest hostile start. Ground threats count only where ground connects them to
 the building, except that a seat under the stance's minimum army also puts up a
 Turret against enemy buildings and starts across a chasm, whose units could
 land. Flak Turrets answer seen or remembered enemy aircraft or a known enemy
-Airworks. Guns hold a threat once they are worth it, with every upgrade they
-have had, divided by the margin an attack brings over a defense; the threat is
-the armed enemies known behind the approach, on ground connected to the building
-unless they could only land, and at least an army at the stance's minimum. Each
-site is an investment worth how far the guns covering the approach it covers
-fall short of that, by the building's value, by how sure the seat is of the
+Airworks. A gun holds off the army scrap of Sentinels that would match its
+damage and health in a fight, at its current tier, and guns hold a threat once
+together they hold off its value divided by the margin an attack brings over a
+defense; the threat is the armed enemies known behind the approach, on ground
+connected to the building unless they could only land, and at least an army at
+the stance's minimum. Each site is an investment worth the shortfall it closes
+at the points of the approach it covers, at most what the gun holds off at each,
+per scrap of its price, by the building's value, by how sure the seat is of the
 threat, and by personality: fortification for Turrets and Bastions,
 fortification and support for Flak Turrets. A seat under the stance's minimum
 army with no Turret puts one up before any tech, whatever its fortification: one
@@ -127,11 +129,12 @@ skipped for a while.
 
 Once the opening economy is up, a seat whose army is still under the stance's
 minimum weighs a hostile start nearly like seen enemies, so most seats put up an
-early Turret and fortified ones follow with a Bastion; otherwise public facts
-alone move only very fortified seats. A defense that cannot recruit enough also
-buys an emergency Turret, or Flak Turret against aircraft, beside each building
-whose approach nothing covers when attackers stand near it, one unfinished at a
-time beside each.
+early Turret and fortified ones follow with more guns, Turrets near the building
+and Bastions once the near approach holds; otherwise public facts alone move
+only very fortified seats. A defense that cannot recruit enough also buys an
+emergency Turret, or Flak Turret against aircraft, beside each building whose
+approach nothing covers when attackers stand near it, one unfinished at a time
+beside each.
 
 Arrays watch the far part of those approaches: a site is worth the points out
 there that nothing the seat owns sees yet, and its radar lets Bastions fire that
@@ -141,10 +144,10 @@ off from a producer's exit, a worked scrap node or a hostile start on home
 ground. Once a Fabricator stands, Scuttle Charges mine the straight way in to a
 Foundry: a band about a blast wide, filled from a few tiles out toward the
 threat and spread so one blast does not set off the next. A field holds enough
-charges to deal the health of the threat along the way divided by the margin,
-one body to a blast, the threat counting at least an army of Sentinels at the
-stance's minimum. Fortification weighs Barricades; fortification and guile weigh
-Arrays and charges.
+charges to deal the health of the threat along the way divided by the margin, in
+the share of the approach the guns leave open, one body to a blast, the threat
+counting at least an army of Sentinels at the stance's minimum. Fortification
+weighs Barricades; fortification and guile weigh Arrays and charges.
 
 A Repair Bay goes up beside a guarded building where its aura reaches the most
 missing value among the seat's wounded ground units and damaged buildings that
