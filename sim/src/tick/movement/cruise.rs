@@ -20,7 +20,7 @@ fn clear_segment(map: &Map, from: Vec2Fx, to: Vec2Fx) -> bool {
 pub(super) fn advance(unit: &mut Unit, map: &Map) {
     let stats = unit.kind.stats();
     let rate = unit.kind.cruise_turn_rate();
-    let radius = stats.speed * Fx::lit("40.75") / Fx::from_num(rate);
+    let radius = stats.speed * const { Fx::lit("40.75") } / Fx::from_num(rate);
     loop {
         let Some(path) = &mut unit.path else {
             return;

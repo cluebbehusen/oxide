@@ -165,8 +165,18 @@ pub(super) fn run(
             state.unit(id).expect("live unit").order,
             Order::Idle | Order::Hunt { .. }
         );
+        let mut acquired = None;
         if automatic
-            && combat::automatic_radar(state, index, id, false, events, &mut hits, &mut launches)
+            && combat::automatic_radar(
+                state,
+                index,
+                id,
+                false,
+                events,
+                &mut hits,
+                &mut launches,
+                &mut acquired,
+            )
         {
             continue;
         }
@@ -188,7 +198,9 @@ pub(super) fn run(
         }
         let reported = events.len();
         match order {
-            Order::Idle => idle(state, index, id),
+            // An idle airframe stays parked and brace retraction moves
+            // nothing, so the radar check's acquisition still holds here.
+            Order::Idle => idle(state, index, id, acquired),
             Order::Run { .. } => {
                 if !land_at_destination(state, index, &mut reach, id, events) {
                     walk(state, index, &mut reach, id, events);

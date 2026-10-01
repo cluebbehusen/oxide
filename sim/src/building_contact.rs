@@ -165,7 +165,7 @@ impl State {
         let reach =
             unit.kind.stats().radius + crate::stats::WORK_FOOTPRINT_GAP + crate::stats::WORK_REACH
                 - crate::stats::WORK_APPROACH_GAP
-                + Fx::lit("0.04");
+                + const { Fx::lit("0.04") };
         let surface = self.contact_surface(b);
         unit.pos.dist_sq(surface.closest(unit.pos)) <= reach * reach
             && surface.clear(unit.pos, unit.pos, unit.kind.stats().radius)

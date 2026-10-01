@@ -508,12 +508,12 @@ impl ObservationData {
         for y in 0..state.map().height() {
             let (visible, explored, scrap_mem, wreck_mem) = vision.rows(y).expect("row in range");
             let tiles = state.map().grid().row(y).expect("row in range");
+            obs.visible.extend_from_slice(visible);
+            obs.explored.extend_from_slice(explored);
             for (x, tile) in tiles.iter().enumerate() {
                 let pos = TilePos::new(x as i32, y);
                 let seen = visible[x];
                 let known = explored[x];
-                obs.visible.push(seen);
-                obs.explored.push(known);
                 let amount = if seen { tile.scrap } else { scrap_mem[x] };
                 if amount > 0 {
                     obs.known_scrap.push((pos, amount));
