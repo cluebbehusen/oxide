@@ -53,12 +53,12 @@ which lends them back whenever the seat's own Foundries need them; an ally's
 shortfall is never the seat's emergency.
 
 A hostile shell landing near the seat's buildings that no enemy it knows of
-could have fired comes from a gun out of sight. The built Foundry nearest the
-impact then wants units that can hit ground worth half again one of the cheapest
-guns more, on top of any threats in sight, and once no grounded threat is left
-its defense goes toward where the gun probably stands: from the impact toward
-the nearest hostile start, as far as artillery reaches, on the Foundry's ground.
-Once the gun is in sight the ordinary defense takes over.
+could have fired comes from a gun out of sight. Once the built Foundry nearest
+the impact has no threat in sight, it gets a defend mission that sends units
+that can hit ground, worth half again one of the cheapest guns, toward where the
+gun probably stands: from the impact toward the nearest hostile start, as far as
+artillery reaches, on the Foundry's ground. Once the gun is in sight the
+ordinary defense takes over.
 
 A defense that cannot recruit enough makes the decision an emergency: it skips
 the saving purchase, trains no Harvesters beyond the one a seat without any
