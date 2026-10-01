@@ -1,47 +1,12 @@
 //! Bounded final approaches shared by building work and contact weapons.
 use super::locomotion::approach_rect;
 use super::*;
-use crate::geometry::{rect_adjacent_tiles, rect_approach_key_from};
+use crate::geometry::rect_approach_key_from;
 use crate::stats::Domain;
 use crate::tick::crowding;
 use crate::tick::route_for;
 use chassis::fx::{Fx, Vec2Fx};
 use chassis::grid::TilePos;
-
-pub(super) fn positions(
-    anchor: TilePos,
-    size: (i32, i32),
-    clearance: Fx,
-    pitch: Fx,
-) -> Vec<Vec2Fx> {
-    let x = Fx::from_num(anchor.x);
-    let y = Fx::from_num(anchor.y);
-    let w = Fx::from_num(size.0);
-    let h = Fx::from_num(size.1);
-    let inset = Fx::lit("0.02");
-    let mut points = Vec::new();
-    for (span, horizontal) in [(w, true), (h, false)] {
-        let divisions = (span / pitch).floor().to_num::<i32>().max(1);
-        for i in 0..=divisions + i32::from(divisions % 2 != 0) {
-            // Mirrored offsets share the same division rounding.
-            let offset = if i > divisions {
-                span / Fx::from_num(2)
-            } else {
-                span / Fx::from_num(2)
-                    + (span - inset * Fx::from_num(2)) * Fx::from_num(2 * i - divisions)
-                        / Fx::from_num(2 * divisions)
-            };
-            if horizontal {
-                points.push(Vec2Fx::new(x + offset, y - clearance));
-                points.push(Vec2Fx::new(x + offset, y + h + clearance));
-            } else {
-                points.push(Vec2Fx::new(x - clearance, y + offset));
-                points.push(Vec2Fx::new(x + w + clearance, y + offset));
-            }
-        }
-    }
-    points
-}
 
 pub(super) fn approach(state: &mut State, id: UnitId, building: BuildingId) -> bool {
     approach_building(state, id, building)
@@ -62,7 +27,7 @@ fn approach_building(state: &mut State, id: UnitId, building: BuildingId) -> boo
         return true;
     }
     let frame = crate::tick::rect_approach_origin(state, player, from, anchor, size);
-    let mut candidates: Vec<_> = positions(
+    let mut candidates: Vec<_> = crate::geometry::work_positions(
         anchor,
         size,
         clearance(unit),
@@ -94,9 +59,7 @@ fn approach_building(state: &mut State, id: UnitId, building: BuildingId) -> boo
         |tile| state.passable(tile),
         |goal| route_for(state, kind, from, goal),
     );
-    let reachable = path.is_some()
-        || rect_adjacent_tiles(anchor, size)
-            .any(|goal| route_for(state, kind, from, goal).is_some());
+    let reachable = path.is_some();
     state.unit_mut(id).expect("contact unit").path = path;
     reachable
 }

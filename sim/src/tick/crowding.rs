@@ -41,7 +41,7 @@ impl Pressure {
                 .filter(|other| {
                     other.id != id
                         && other.hp > 0
-                        && other.player == unit.player
+                        && !state.hostile(other.player, unit.player)
                         && other.domain() == unit.domain()
                 })
                 .map(|other| {
@@ -55,7 +55,7 @@ impl Pressure {
                         destination,
                         spacing: spacing(unit, other),
                         productive: productive(state, other),
-                        precedes: other.id < id,
+                        precedes: other.player != unit.player || other.id < id,
                     }
                 })
                 .collect(),
@@ -263,6 +263,62 @@ mod tests {
     use crate::state::PathFollow;
     use crate::{PlayerId, Scenario, UnitKind};
     use chassis::grid::TilePos;
+
+    #[test]
+    fn allied_arrivals_claim_positions_with_full_cross_owner_spacing() {
+        let mut state = Scenario::skirmish().build().unwrap();
+        state.units.clear();
+        state.players[1].team = state.players[0].team;
+        let point = TilePos::new(15, 8).center();
+        let id = state.spawn_unit(PlayerId(0), UnitKind::Harvester, point);
+        let ally = state.spawn_unit(
+            PlayerId(1),
+            UnitKind::Harvester,
+            point - Vec2Fx::new(Fx::lit("0.5"), Fx::ZERO),
+        );
+        state.unit_mut(ally).unwrap().path = Some(PathFollow {
+            goal: TilePos::new(15, 8),
+            final_point: Some(point),
+            waypoints: vec![TilePos::new(15, 8)],
+            next: 0,
+        });
+        assert!(claimed(&state, id, point, false));
+        assert!(claimed(&state, id, point, true));
+        assert_eq!(
+            Pressure::new(&state, id).neighbors[0].spacing,
+            UnitKind::Harvester.stats().radius * 2
+        );
+        state.players[1].team = state.players[0].team.wrapping_add(1);
+        assert!(!claimed(&state, id, point, false));
+    }
+
+    #[test]
+    fn same_owner_precedence_is_unchanged_by_enemy_id_interleaving() {
+        for enemy_count in [0, 7] {
+            let mut state = Scenario::skirmish().build().unwrap();
+            state.units.clear();
+            let point = TilePos::new(15, 8).center();
+            let first = state.spawn_unit(PlayerId(0), UnitKind::Harvester, point);
+            for _ in 0..enemy_count {
+                state.spawn_unit(
+                    PlayerId(1),
+                    UnitKind::Harvester,
+                    TilePos::new(20, 8).center(),
+                );
+            }
+            let second = state.spawn_unit(PlayerId(0), UnitKind::Harvester, point);
+            for id in [first, second] {
+                state.unit_mut(id).unwrap().path = Some(PathFollow {
+                    goal: TilePos::new(15, 8),
+                    final_point: Some(point),
+                    waypoints: vec![TilePos::new(15, 8)],
+                    next: 0,
+                });
+            }
+            assert!(!claimed(&state, first, point, true));
+            assert!(claimed(&state, second, point, true));
+        }
+    }
 
     #[test]
     fn only_nearby_arrivals_claim_a_position_across_body_sizes() {
