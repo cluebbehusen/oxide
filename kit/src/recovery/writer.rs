@@ -262,19 +262,19 @@ impl RecoveryWriter {
         if self.shared.stopped.load(Ordering::Acquire) {
             return false;
         }
-        if self
-            .shared
-            .pending
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |old| {
-                old.checked_add(bytes).filter(|n| *n <= QUEUE_BYTES)
-            })
-            .is_err()
-        {
-            self.shared
-                .fail("recovery queue is full; recording stopped at its intact prefix");
-            return false;
+        let pending = &self.shared.pending;
+        let mut old = pending.load(Ordering::Acquire);
+        loop {
+            let Some(new) = old.checked_add(bytes).filter(|n| *n <= QUEUE_BYTES) else {
+                self.shared
+                    .fail("recovery queue is full; recording stopped at its intact prefix");
+                return false;
+            };
+            match pending.compare_exchange_weak(old, new, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return true,
+                Err(current) => old = current,
+            }
         }
-        true
     }
     fn send(&self, queued: Queued) {
         if let Err(error) = self.sender.try_send(queued) {

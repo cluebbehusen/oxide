@@ -37,7 +37,8 @@ jobs:
       # exist): master HEAD as of 2026-07-16.
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master 2026-07-16
         with:
-          toolchain: stable
+          # Matches rust-toolchain.toml.
+          toolchain: "1.99.0"
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
@@ -113,7 +114,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master 2026-07-16
         with:
-          toolchain: stable
+          # Matches rust-toolchain.toml.
+          toolchain: "1.99.0"
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
@@ -153,6 +155,10 @@ jobs:
   # tests whether the complete test surface still compiles and links on it.
   msrv:
     runs-on: ubuntu-latest
+    # rust-toolchain.toml outranks the toolchain the action makes the
+    # default; only this variable outranks the file.
+    env:
+      RUSTUP_TOOLCHAIN: "1.93"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master 2026-07-16
