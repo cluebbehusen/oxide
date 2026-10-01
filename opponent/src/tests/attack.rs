@@ -344,15 +344,26 @@ fn checkpoints_reject_impossible_attacks() {
         "checkpoint mission could not have been recorded",
         "a target off the map"
     );
+    let second = |units: serde_json::Value| {
+        let mut json = json.clone();
+        let missions = &mut json["missions"];
+        let mut second = missions["list"][0].clone();
+        second["id"] = 1.into();
+        second["units"] = units;
+        missions["list"].as_array_mut().unwrap().push(second);
+        missions["next"] = 2.into();
+        let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
+        Opponent::restore(&checkpoint, &scenario, &state, map(&scenario)).map(|_| ())
+    };
+    assert!(
+        second(serde_json::json!([9_999])).is_ok(),
+        "attacks run side by side"
+    );
     assert_eq!(
-        rejected(&|missions| {
-            let mut second = missions["list"][0].clone();
-            second["id"] = 1.into();
-            second["units"] = serde_json::json!([9_999]);
-            missions["list"].as_array_mut().unwrap().push(second);
-            missions["next"] = 2.into();
-        }),
-        "checkpoint mission could not have been recorded"
+        second(json["missions"]["list"][0]["units"].clone())
+            .err()
+            .unwrap(),
+        "checkpoint missions share a unit"
     );
     let mut defend_gathering = json.clone();
     defend_gathering["missions"]["list"][0]["task"] =
@@ -606,4 +617,138 @@ fn defenders_out_count_toward_the_reserve_and_defense_takes_it_too() {
         attack(&missions).is_some(),
         "the defenders out keep the reserve, so the rest may attack: {missions:?}"
     );
+}
+
+/// Spots for a second West army row behind `WEST`.
+const REAR: [(i32, i32); 8] = [
+    (6, 7),
+    (7, 7),
+    (8, 7),
+    (9, 7),
+    (6, 8),
+    (7, 8),
+    (8, 8),
+    (9, 8),
+];
+
+/// Two unarmed East buildings in sight of West's army.
+const OUTPOSTS: [(i32, i32); 2] = [(13, 4), (13, 15)];
+
+/// The field with West's garrison and an army worth two attacks, and East's
+/// two outposts in its sight.
+fn doubled() -> Scenario {
+    let mut scenario = armed(8, &[]);
+    for (x, y) in REAR {
+        scenario.units.push(unit(0, UnitKind::Sentinel, x, y));
+    }
+    for (x, y) in OUTPOSTS {
+        scenario.buildings.push(BuildingSpec {
+            player: 1,
+            kind: BuildingKind::Fabricator,
+            x,
+            y,
+        });
+    }
+    scenario
+}
+
+#[test]
+fn an_army_worth_two_attacks_launches_both_on_distinct_targets() {
+    let scenario = doubled();
+    let state = scenario.build().unwrap();
+    let (commands, trace) = seat(&scenario, 0).act_traced(&state, &mut OwnEvents::default());
+    let attacks: Vec<MissionStatus> = trace
+        .unwrap()
+        .missions
+        .into_iter()
+        .filter(|mission| matches!(mission.kind, MissionKind::Attack { .. }))
+        .collect();
+    let [first, second] = attacks[..] else {
+        panic!("{attacks:?}");
+    };
+    assert_ne!(first.kind, second.kind, "each goes after its own target");
+    let sent = hunts(&commands);
+    let [(a, _), (b, _)] = &sent[..] else {
+        panic!("{sent:?}");
+    };
+    assert!(a.iter().all(|id| !b.contains(id)), "no unit in both");
+    assert!(
+        a.len() + b.len() < seat_units(&state, PlayerId(0)).len(),
+        "each takes only the force its target needs"
+    );
+}
+
+#[test]
+fn mirrored_seats_launch_mirrored_attacks() {
+    // Each seat's army worth two attacks, and a Kestrel spotting two enemy
+    // outposts far from either army, so no defense takes the army first.
+    let mut scenario = armed(8, &[]);
+    for (x, y) in REAR {
+        scenario.units.push(unit(0, UnitKind::Sentinel, x, y));
+    }
+    scenario.units.push(unit(0, UnitKind::Kestrel, 22, 10));
+    let (width, height) = (48, 24);
+    for (x, y) in GARRISON.into_iter().chain(WEST).chain(REAR) {
+        scenario
+            .units
+            .push(unit(1, UnitKind::Sentinel, width - 1 - x, height - 1 - y));
+    }
+    scenario
+        .units
+        .push(unit(1, UnitKind::Kestrel, width - 1 - 22, height - 1 - 10));
+    let (w, h) = BuildingKind::Fabricator.base_stats().size;
+    for (x, y) in [(28, 3), (28, 17)] {
+        scenario.buildings.push(BuildingSpec {
+            player: 1,
+            kind: BuildingKind::Fabricator,
+            x,
+            y,
+        });
+        scenario.buildings.push(BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Fabricator,
+            x: width - w - x,
+            y: height - h - y,
+        });
+    }
+    let state = scenario.build().unwrap();
+    let (west, trace) = seat(&scenario, 0).act_traced(&state, &mut OwnEvents::default());
+    let east = seat(&scenario, 1).act(&state, &mut OwnEvents::default());
+    let attacks = trace
+        .unwrap()
+        .missions
+        .iter()
+        .filter(|mission| matches!(mission.kind, MissionKind::Attack { .. }))
+        .count();
+    assert_eq!(attacks, 2, "premise: {west:?}");
+    assert_eq!(mirror(&state, west), east);
+}
+
+#[test]
+fn a_checkpoint_with_two_attacks_under_way_resumes_identically() {
+    let scenario = doubled();
+    let mut state = scenario.build().unwrap();
+    let mut opponent = seat(&scenario, 0);
+    let traces = play(&mut opponent, &mut state, 96, &[]);
+    let attacks = |trace: &Trace| {
+        trace
+            .missions
+            .iter()
+            .filter(|mission| matches!(mission.kind, MissionKind::Attack { .. }))
+            .count()
+    };
+    assert_eq!(
+        traces.last().map(attacks),
+        Some(2),
+        "premise: both under way"
+    );
+    let json = serde_json::to_string(&opponent.checkpoint()).unwrap();
+    let checkpoint: Checkpoint = serde_json::from_str(&json).unwrap();
+    let mut restored = Opponent::restore(&checkpoint, &scenario, &state, map(&scenario)).unwrap();
+    while state.current_tick() < 600 {
+        let commands = opponent.act(&state, &mut OwnEvents::default());
+        assert_eq!(restored.act(&state, &mut OwnEvents::default()), commands);
+        assert_eq!(restored.checkpoint(), opponent.checkpoint());
+        state.tick(&commands);
+    }
 }

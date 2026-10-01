@@ -308,16 +308,27 @@ fn checkpoints_reject_impossible_raids() {
     let mut off_map = json.clone();
     off_map["missions"]["list"][0]["task"]["target"]["anchor"]["x"] = 99.into();
     assert!(restore(off_map).is_err());
-    let mut twice = json.clone();
-    let mut second = twice["missions"]["list"][0].clone();
-    second["id"] = 1.into();
-    second["units"] = serde_json::json!([]);
-    twice["missions"]["list"]
-        .as_array_mut()
-        .unwrap()
-        .push(second);
-    twice["missions"]["next"] = 2.into();
-    assert!(restore(twice).is_err());
+    let twice = |units: serde_json::Value| {
+        let mut twice = json.clone();
+        let mut second = twice["missions"]["list"][0].clone();
+        second["id"] = 1.into();
+        second["units"] = units;
+        twice["missions"]["list"]
+            .as_array_mut()
+            .unwrap()
+            .push(second);
+        twice["missions"]["next"] = 2.into();
+        restore(twice)
+    };
+    assert!(twice(serde_json::json!([])).is_err());
+    assert!(
+        twice(json["missions"]["list"][0]["units"].clone()).is_err(),
+        "two raids never share a unit"
+    );
+    assert!(
+        twice(serde_json::json!([9_999])).is_ok(),
+        "raids run side by side"
+    );
 }
 
 #[test]
@@ -344,4 +355,32 @@ fn mirrored_seats_raid_alike() {
     let east = seat(&scenario, 1).act(&state, &mut OwnEvents::default());
     assert!(!hunts(&west).is_empty(), "premise: {west:?}");
     assert_eq!(mirror(&state, west), east);
+}
+
+#[test]
+fn raiders_of_two_kinds_raid_distinct_targets_at_once() {
+    let mut scenario = outpost(UnitKind::Scuttler, BuildingKind::Foundry);
+    for (x, y) in [(17, 10), (17, 12)] {
+        scenario.units.push(unit(0, UnitKind::Sapper, x, y));
+    }
+    scenario.buildings.push(BuildingSpec {
+        player: 1,
+        kind: BuildingKind::Foundry,
+        x: OUTPOST.x,
+        y: OUTPOST.y + 4,
+    });
+    let state = scenario.build().unwrap();
+    let trace = seat(&scenario, 0)
+        .act_traced(&state, &mut OwnEvents::default())
+        .1
+        .unwrap();
+    let raids: Vec<MissionStatus> = trace
+        .missions
+        .into_iter()
+        .filter(|mission| matches!(mission.kind, MissionKind::Raid { .. }))
+        .collect();
+    let [first, second] = raids[..] else {
+        panic!("{raids:?}");
+    };
+    assert_ne!(first.kind, second.kind, "each goes after its own target");
 }

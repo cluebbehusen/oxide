@@ -132,6 +132,12 @@ health.
 
 ## Attack
 
+Attacks, lifts, strikes and raids each run side by side: each decision advances
+every mission of a kind, oldest first, then forms another while the free units
+beyond the home reserve meet the need of the best target no mission of that kind
+holds. Each takes only the force its own target needs, and missions of different
+kinds may still go after one target.
+
 An attack forms from the free line, siege and anti-air units at half health or
 better beyond the home reserve when those that can hit ground are worth at least
 the stance's minimum army and outweigh a reachable target's known local defense
@@ -147,13 +153,14 @@ strong enough for it. A target it withdrew from, could not reach, lost its army
 to, or stood idle beside is skipped for a while. With several enemies, attacks
 and strikes go after one rival's buildings first: the enemy pressing the seat
 hardest, then the nearest, less the army it shows, with guile favoring a small
-economy and a bonus for the owner of the current target so the seat does not
-flip between enemies.
+economy and a bonus for the owner of the oldest attack or strike's target so the
+seat does not flip between enemies. The rival is chosen once per decision, after
+defense.
 
 Members under 35 percent health leave between fights and run to the rally, and a
-defense may take the attack's units in any phase but a fight. While an army that
-could attack does not, or every producer sits idle, the margin falls step by
-step toward even.
+defense may take the attack's units in any phase but a fight. While a free army
+that could attack does not, or every producer sits idle, the margin for the next
+attack falls step by step toward even.
 
 A free Tender joins an attack while it gathers or recovers, welds its wounded
 while the army regroups there, and follows it otherwise.
@@ -200,9 +207,8 @@ lift sets everyone down and disbands. Landed riders hunt the target and, once no
 one is aboard and every emptied carrier is on its way home, fight on to the next
 target on the same island. Nothing brings them home. A carrier that comes home
 still loaded sets its riders down and lets them go. A target the lift lost its
-units to, or stood idle beside, is skipped for a while. One lift runs at a time,
-it never grows past the mission member cap, and a defense may take its units
-only while they board.
+units to, or stood idle beside, is skipped for a while. A lift never grows past
+the mission member cap, and a defense may take its units only while they board.
 
 ## Strikes
 
@@ -214,9 +220,8 @@ target by the attack margin. They gather beside home on the side facing the
 target, fly at it around known anti-air, and fight; having taken it they go on
 to the next target they can, and otherwise fly home. They withdraw once the
 known anti-air reaching them outweighs them. A target a strike withdrew from,
-lost its aircraft to, or stood idle beside is skipped for a while. One strike
-runs at a time, and a defense may take its aircraft while they gather or
-withdraw.
+lost its aircraft to, or stood idle beside is skipped for a while. A defense may
+take a strike's aircraft while they gather or withdraw.
 
 ## Raids
 
@@ -230,7 +235,7 @@ known defense and blow it up. Scuttlers and aircraft turn back once one is lost
 or badly hurt, once the known fire reaching them outweighs them, or once they
 have been at the target a while; Sappers turn back only when outweighed on the
 way. Raids skip a raided target for a while, which spaces them out, while
-attacks, lifts and strikes may still go after it; one raid runs at a time.
+attacks, lifts and strikes may still go after it.
 
 The seat keeps two Scuttlers, alive or queued, once its income reaches a level
 that falls with guile, and a Sapper for each known enemy defense that can hit
@@ -365,13 +370,13 @@ headless, saved and recovered sessions build it from the same scenario data.
 enemy units, footprints it recently failed to claim, enemy buildings it recently
 gave up attacking, lifting to or striking, its income sample, and its saving
 target with the protected amount and any purchase awaiting confirmation, its
-missions with their phases, members, goals and focus, since when it has gone
-without attacking, and when it last saw each scouting point. The host saves the
-seat's `OwnEvents` beside it. Restoring it checks that the seat is a configured
-`oxide-opponent` bot in the bound scenario and world and that nothing it
-remembers is from a later tick or off the map, rebuilds the profile and decision
-interval from the scenario, and takes the map model built from it. A saved
-buffer over the cap does not load.
+missions with their phases, members, goals and focus, since when a free army
+that could attack has not, and when it last saw each scouting point. The host
+saves the seat's `OwnEvents` beside it. Restoring it checks that the seat is a
+configured `oxide-opponent` bot in the bound scenario and world and that nothing
+it remembers is from a later tick or off the map, rebuilds the profile and
+decision interval from the scenario, and takes the map model built from it. A
+saved buffer over the cap does not load.
 
 `Opponent::act_traced` returns a `Trace` of the decision's tick, seat, bank,
 received own events, committed spending, purchases, unit-order count, allowance,

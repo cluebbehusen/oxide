@@ -195,7 +195,7 @@ fn a_mid_strike_checkpoint_resumes_identically() {
 }
 
 #[test]
-fn checkpoints_reject_a_second_strike() {
+fn a_second_strike_restores_but_not_one_sharing_aircraft() {
     let scenario = winged();
     let state = scenario.build().unwrap();
     let mut opponent = seat(&scenario, 0);
@@ -209,11 +209,44 @@ fn checkpoints_reject_a_second_strike() {
     let missions = &mut json["missions"];
     let mut copy = missions["list"][0].clone();
     copy["id"] = 1.into();
-    copy["units"] = serde_json::json!([]);
     missions["list"].as_array_mut().unwrap().push(copy);
     missions["next"] = 2.into();
     assert_eq!(
         restore(&json).err().unwrap(),
-        "checkpoint mission could not have been recorded"
+        "checkpoint missions share a unit"
     );
+    json["missions"]["list"][1]["units"] = serde_json::json!([9_999]);
+    assert!(restore(&json).is_ok(), "strikes run side by side");
+}
+
+#[test]
+fn a_wing_worth_two_strikes_sends_both_at_distinct_targets() {
+    let mut scenario = winged();
+    for (x, y) in WING {
+        scenario.units.push(unit(0, UnitKind::Buzzard, x, y + 1));
+    }
+    // An East outpost in the wing's sight, beside the East start.
+    scenario.buildings.push(BuildingSpec {
+        player: 1,
+        kind: BuildingKind::Fabricator,
+        x: 15,
+        y: 17,
+    });
+    let state = scenario.build().unwrap();
+    let (commands, trace) = seat(&scenario, 0).act_traced(&state, &mut OwnEvents::default());
+    let strikes: Vec<MissionStatus> = trace
+        .unwrap()
+        .missions
+        .into_iter()
+        .filter(|mission| matches!(mission.kind, MissionKind::Strike { .. }))
+        .collect();
+    let [first, second] = strikes[..] else {
+        panic!("{strikes:?}");
+    };
+    assert_ne!(first.kind, second.kind, "each goes after its own target");
+    let sent = runs(&commands);
+    let [(a, _), (b, _)] = &sent[..] else {
+        panic!("{sent:?}");
+    };
+    assert!(a.iter().all(|id| !b.contains(id)), "no aircraft in both");
 }

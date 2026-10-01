@@ -34,10 +34,12 @@ pub(crate) use lift::{carrier, payload};
 pub(crate) use scouting::points;
 pub(crate) use strike::strike_need;
 
-/// Missions the seat runs at once.
+/// Missions the seat runs at once: a computation bound on the missions each
+/// decision advances, which normal play stays under.
 const MISSION_CAP: usize = 16;
 
-/// Units one mission holds.
+/// Units one mission holds: a computation bound on a mission's orders, which
+/// normal play stays under.
 const UNIT_CAP: usize = 256;
 
 /// The seat's missions, by id.
@@ -47,8 +49,8 @@ pub(crate) struct Missions {
     /// The id the next mission takes.
     next: u64,
     list: Vec<Mission>,
-    /// Since when an army that could attack has not, or production has sat
-    /// idle, with no attack under way.
+    /// Since when a free army that could attack has not, or production has
+    /// sat idle, with no attack launching.
     waiting: Option<u64>,
 }
 
@@ -92,6 +94,19 @@ enum Task {
         target: Objective,
         phase: RaidPhase,
     },
+}
+
+impl Task {
+    /// The objective an attack, lift, strike or raid goes after.
+    fn target(&self) -> Option<Objective> {
+        match *self {
+            Task::Attack { target, .. }
+            | Task::Lift { target, .. }
+            | Task::Strike { target, .. }
+            | Task::Raid { target, .. } => Some(target),
+            Task::Defend { .. } | Task::Scout { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -527,6 +542,36 @@ impl Missions {
         self.list.retain(|mission| !mission.units.is_empty());
     }
 
+    /// Where the mission `id` stands in the list, while it runs.
+    fn index_of(&self, id: u64) -> Option<usize> {
+        self.list.iter().position(|mission| mission.id == id)
+    }
+
+    /// The ids of the missions whose task is of `kind`, oldest first.
+    fn ids(&self, kind: fn(&Task) -> bool) -> Vec<u64> {
+        self.list
+            .iter()
+            .filter(|mission| kind(&mission.task))
+            .map(|mission| mission.id)
+            .collect()
+    }
+
+    /// The targets missions of `kind` other than `except` go after, and
+    /// `also`: what another mission of that kind may not take.
+    fn held(
+        &self,
+        kind: fn(&Task) -> bool,
+        except: Option<u64>,
+        also: &[Objective],
+    ) -> Vec<Objective> {
+        self.list
+            .iter()
+            .filter(|mission| kind(&mission.task) && Some(mission.id) != except)
+            .filter_map(|mission| mission.task.target())
+            .chain(also.iter().copied())
+            .collect()
+    }
+
     /// Rejects restored missions that could not have been recorded by `now`
     /// on a map of the given size with `points` scouting points.
     pub(crate) fn validate(
@@ -547,22 +592,7 @@ impl Missions {
         if !ordered || exhausted || self.list.last().is_some_and(|last| last.id >= self.next) {
             return Err("checkpoint mission ids are out of order".into());
         }
-        let count = |kind: fn(&Task) -> bool| {
-            self.list
-                .iter()
-                .filter(|mission| kind(&mission.task))
-                .count()
-        };
-        let attacks = count(|task| matches!(task, Task::Attack { .. }));
-        let lifts = count(|task| matches!(task, Task::Lift { .. }));
-        let strikes = count(|task| matches!(task, Task::Strike { .. }));
-        let raids = count(|task| matches!(task, Task::Raid { .. }));
-        if attacks > 1
-            || lifts > 1
-            || strikes > 1
-            || raids > 1
-            || self.waiting.is_some_and(|since| since > now)
-        {
+        if self.waiting.is_some_and(|since| since > now) {
             return Err("checkpoint mission could not have been recorded".into());
         }
         let on_map = |tile: TilePos| (0..width).contains(&tile.x) && (0..height).contains(&tile.y);
@@ -572,12 +602,8 @@ impl Missions {
                 return Err("checkpoint mission units are malformed".into());
             }
             let target_on_map = match mission.task {
-                Task::Attack { target, .. }
-                | Task::Lift { target, .. }
-                | Task::Strike { target, .. }
-                | Task::Raid { target, .. } => on_map(target.anchor),
                 Task::Scout { point } => usize::from(point) < points,
-                Task::Defend { .. } => true,
+                ref task => task.target().is_none_or(|target| on_map(target.anchor)),
             };
             if mission.since > now || !on_map(mission.goal) || !target_on_map {
                 return Err("checkpoint mission could not have been recorded".into());
@@ -659,6 +685,9 @@ pub(crate) struct Scratch {
     objectives: Vec<Objective>,
     /// Whether the seat knows of targets and ground reaches none of them.
     pub(crate) severed: bool,
+    /// The enemy attacks and strikes go after first, when there are several;
+    /// set once defense has taken its units.
+    pub(crate) rival: Option<PlayerId>,
     /// Value against ground and against aircraft that offense leaves home,
     /// before the units out defending count.
     pub(crate) reserve: [u64; 2],
@@ -699,6 +728,7 @@ impl Scratch {
             ground: hazards(observation, memory, Domain::Ground),
             objectives,
             severed,
+            rival: None,
             reserve,
             payload: missions.liftable(observation, map, reserve, payload(observation, map)),
             invaders: reserve::threat(

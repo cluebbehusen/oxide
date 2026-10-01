@@ -81,13 +81,15 @@ struct Foray<'a> {
     air: &'a [Hazard],
     /// What offense leaves at home.
     reserve: [u64; 2],
+    /// Targets another raid holds or this decision is done with.
+    held: Vec<Objective>,
 }
 
 impl Missions {
-    /// Sends free raiders at an enemy harvest line or lightly defended
-    /// building while no defense is under way, or advances the raid under way.
-    /// Returns a target the raid is done with, so the seat leaves it for a
-    /// while.
+    /// Advances every raid under way, then, while no defense is under way,
+    /// sends more free raiders at enemy harvest lines or lightly defended
+    /// buildings no raid holds. Returns the targets raids are done with, so
+    /// the seat leaves them for a while.
     pub(crate) fn raid(
         &mut self,
         observation: &ObservationData,
@@ -96,7 +98,7 @@ impl Missions {
         memory: &Memory,
         scratch: &Scratch,
         ledger: &mut Ledger,
-    ) -> Option<(BuildingKind, TilePos)> {
+    ) -> Vec<(BuildingKind, TilePos)> {
         let frame = scratch.frame;
         let raiding = self
             .list
@@ -113,9 +115,10 @@ impl Missions {
                     >= RAIDERS
             });
         if !raiding && !ready {
-            return None;
+            return Vec::new();
         }
-        let foray = Foray {
+        let raiding_kind: fn(&Task) -> bool = |task| matches!(task, Task::Raid { .. });
+        let mut foray = Foray {
             observation,
             map,
             frame,
@@ -123,28 +126,39 @@ impl Missions {
             ground: &scratch.ground,
             air: &scratch.air,
             reserve: scratch.reserve,
+            held: Vec::new(),
         };
-        match self
-            .list
-            .iter()
-            .position(|mission| matches!(mission.task, Task::Raid { .. }))
-        {
-            None => {
-                self.form_raid(&foray, minimum(profile.stance), ledger);
-                None
+        let mut done: Vec<Objective> = Vec::new();
+        for id in self.ids(raiding_kind) {
+            let Some(index) = self.index_of(id) else {
+                continue;
+            };
+            foray.held = self.held(raiding_kind, Some(id), &done);
+            if let Some(target) = self.advance_raid(index, &foray, ledger) {
+                done.push(target);
             }
-            Some(index) => self.advance_raid(index, &foray, ledger),
         }
+        loop {
+            foray.held = self.held(raiding_kind, None, &done);
+            if !self.form_raid(&foray, minimum(profile.stance), ledger) {
+                break;
+            }
+        }
+        done.into_iter()
+            .map(|target| (target.building, target.anchor))
+            .collect()
     }
 
-    fn form_raid(&mut self, foray: &Foray<'_>, minimum: u64, ledger: &mut Ledger) {
+    /// Sends the first raider kind with a squad beyond the reserve at a target
+    /// no raid holds. Returns whether a raid formed.
+    fn form_raid(&mut self, foray: &Foray<'_>, minimum: u64, ledger: &mut Ledger) -> bool {
         let observation = foray.observation;
         let defending = self
             .list
             .iter()
             .any(|mission| matches!(mission.task, Task::Defend { .. }));
         if self.list.len() >= MISSION_CAP || defending {
-            return;
+            return false;
         }
         let free: Vec<&UnitObs> = self
             .available(observation, false)
@@ -197,8 +211,9 @@ impl Missions {
                 });
                 self.next += 1;
             }
-            return;
+            return sent;
         }
+        false
     }
 
     /// Moves the raid at `index` through its phases. Returns its target once
@@ -208,7 +223,7 @@ impl Missions {
         index: usize,
         foray: &Foray<'_>,
         ledger: &mut Ledger,
-    ) -> Option<(BuildingKind, TilePos)> {
+    ) -> Option<Objective> {
         let observation = foray.observation;
         let now = observation.tick;
         let mission = &self.list[index];
@@ -233,7 +248,7 @@ impl Missions {
             && (members.len() < RAIDERS || members.iter().any(|unit| !healthy(unit, WOUNDED)));
         let strength: u64 = members.iter().map(|unit| value(unit)).sum();
         let outweighed = foray.opposition(kind, &members) > strength;
-        let lost = (target.building, target.anchor);
+        let lost = target;
         let withdraw = |missions: &mut Self, ledger: &mut Ledger| {
             let turned = ledger.order(run(units.clone(), home));
             if turned {
@@ -305,6 +320,7 @@ impl Foray<'_> {
                 building: building.kind,
                 anchor: building.anchor,
             })
+            .filter(|target| !self.held.contains(target))
             .filter(|target| !self.memory.raided(target.building, target.anchor, now))
             .filter_map(|target| {
                 let goal = match kind {

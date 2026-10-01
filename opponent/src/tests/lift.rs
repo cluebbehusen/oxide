@@ -448,6 +448,22 @@ fn the_carrier_stock_counts_riders_as_they_pack() {
 }
 
 #[test]
+fn a_seat_needing_no_lift_leaves_its_carriers_where_they_hover() {
+    let mut scenario = field();
+    garrison(&mut scenario);
+    scenario.units.push(unit(0, UnitKind::Skyhook, 4, 12));
+    let state = scenario.build().unwrap();
+    let hook = at(&state, 4, 12);
+    let commands = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
+    assert!(
+        runs(&commands)
+            .iter()
+            .all(|(units, _)| !units.contains(&hook)),
+        "{commands:?}"
+    );
+}
+
+#[test]
 fn an_army_no_lift_could_carry_buys_no_carriers() {
     let mut scenario = strait();
     scenario.players[0].scrap = 1_000;
@@ -733,9 +749,14 @@ fn emptied_carriers_short_of_orders_fly_home_before_the_lift_fights() {
         );
         state.tick(&commands);
     }
-    assert_eq!(home_runs.len(), 2, "around the anti-air: {home_runs:?}");
     let model = map(&landed);
     let home = model.component(TilePos::new(3, 11));
+    assert!(
+        home_runs
+            .iter()
+            .any(|(_, goal)| model.component(*goal) != home),
+        "around the anti-air: {home_runs:?}"
+    );
     for hook in skyhooks(&state, 0) {
         assert_eq!(model.component(hook.tile()), home, "{:?}", hook.tile());
     }
@@ -770,9 +791,11 @@ fn a_lift_at_the_member_cap_boards_no_more_and_still_restores() {
     json["missions"]["list"][0]["units"] = (first..first + 255).collect::<Vec<u32>>().into();
     let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
     let mut opponent = Opponent::restore(&checkpoint, &scenario, &state, map(&scenario)).unwrap();
-    let commands = opponent.act(&state, &mut OwnEvents::default());
-    assert!(loads(&commands).is_empty(), "{commands:?}");
-    assert!(Opponent::restore(&opponent.checkpoint(), &scenario, &state, map(&scenario)).is_ok());
+    opponent.act(&state, &mut OwnEvents::default());
+    assert!(
+        Opponent::restore(&opponent.checkpoint(), &scenario, &state, map(&scenario)).is_ok(),
+        "no lift grew past the cap"
+    );
 }
 
 #[test]
@@ -926,16 +949,25 @@ fn checkpoints_reject_impossible_lifts() {
         edit(&mut json["missions"]);
         restore(&json).err().unwrap()
     };
+    let second = |units: serde_json::Value| {
+        let mut json = json.clone();
+        let missions = &mut json["missions"];
+        let mut copy = missions["list"][0].clone();
+        copy["id"] = 1.into();
+        copy["units"] = units;
+        missions["list"].as_array_mut().unwrap().push(copy);
+        missions["next"] = 2.into();
+        restore(&json)
+    };
+    assert!(
+        second(serde_json::json!([9_999])).is_ok(),
+        "lifts run side by side"
+    );
     assert_eq!(
-        with(&|missions| {
-            let mut copy = missions["list"][0].clone();
-            copy["id"] = 1.into();
-            copy["units"] = serde_json::json!([]);
-            missions["list"].as_array_mut().unwrap().push(copy);
-            missions["next"] = 2.into();
-        }),
-        "checkpoint mission could not have been recorded",
-        "one lift at a time"
+        second(json["missions"]["list"][0]["units"].clone())
+            .err()
+            .unwrap(),
+        "checkpoint missions share a unit"
     );
     assert_eq!(
         with(&|missions| {
@@ -1235,4 +1267,31 @@ fn a_severed_seat_with_an_airworks_trains_air_strikes_before_it_has_an_army() {
         }),
         "{trained:?}"
     );
+}
+
+#[test]
+fn a_payload_worth_two_lifts_flies_both_to_distinct_targets() {
+    let mut scenario = crowded(&MORE_SKYHOOKS);
+    // A Kestrel over the strait shows an East outpost on the far shore.
+    scenario.units.push(unit(0, UnitKind::Kestrel, 20, 5));
+    scenario.buildings.push(BuildingSpec {
+        player: 1,
+        kind: BuildingKind::Fabricator,
+        x: 28,
+        y: 4,
+    });
+    let state = scenario.build().unwrap();
+    let trace = seat(&scenario, 0)
+        .act_traced(&state, &mut OwnEvents::default())
+        .1
+        .unwrap();
+    let lifts: Vec<MissionStatus> = trace
+        .missions
+        .into_iter()
+        .filter(|mission| matches!(mission.kind, MissionKind::Lift { .. }))
+        .collect();
+    let [first, second] = lifts[..] else {
+        panic!("{lifts:?}");
+    };
+    assert_ne!(first.kind, second.kind, "each goes after its own target");
 }

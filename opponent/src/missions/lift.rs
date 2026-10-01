@@ -58,7 +58,7 @@ struct Drop {
     landing: TilePos,
 }
 
-/// The lift under way, as this decision sees it.
+/// A lift under way, as this decision sees it.
 struct Flight<'a> {
     index: usize,
     target: Objective,
@@ -89,12 +89,15 @@ struct Lifting<'a> {
     severed: bool,
     /// What offense leaves at home.
     reserve: [u64; 2],
+    /// Targets another lift holds or this decision gave up on.
+    held: Vec<Objective>,
 }
 
 impl Missions {
-    /// Forms a lift when ground reaches no enemy target and the carriers and
-    /// payload the seat has can carry enough, or advances the one under way.
-    /// Returns a target the lift gave up on.
+    /// Advances every lift under way, then forms another while ground
+    /// reaches no enemy target and the free carriers and payload at home can
+    /// carry enough to a landing no lift holds. Returns the targets given up
+    /// on.
     pub(crate) fn lift(
         &mut self,
         observation: &ObservationData,
@@ -103,44 +106,88 @@ impl Missions {
         memory: &Memory,
         scratch: &Scratch,
         ledger: &mut Ledger,
-    ) -> Option<(BuildingKind, TilePos)> {
-        let lifting = Lifting::new(observation, map, profile, memory, scratch)?;
-        match self
-            .list
-            .iter()
-            .position(|mission| matches!(mission.task, Task::Lift { .. }))
-        {
-            None => {
-                self.form(&lifting, ledger);
-                None
+    ) -> Vec<(BuildingKind, TilePos)> {
+        let Some(mut lifting) = Lifting::new(observation, map, profile, memory, scratch) else {
+            return Vec::new();
+        };
+        let lifting_kind: fn(&Task) -> bool = |task| matches!(task, Task::Lift { .. });
+        let mut given_up: Vec<Objective> = Vec::new();
+        for id in self.ids(lifting_kind) {
+            let Some(index) = self.index_of(id) else {
+                continue;
+            };
+            lifting.held = self.held(lifting_kind, Some(id), &given_up);
+            if let Some(target) = self.advance_lift(index, &lifting, ledger) {
+                given_up.push(target);
             }
-            Some(index) => self.advance_lift(index, &lifting, ledger),
+        }
+        let loading = self.list.iter().any(|mission| {
+            matches!(
+                mission.task,
+                Task::Lift {
+                    phase: LiftPhase::Load,
+                    ..
+                }
+            )
+        });
+        if lifting.severed || loading {
+            self.clear(&lifting, ledger);
+        }
+        loop {
+            lifting.held = self.held(lifting_kind, None, &given_up);
+            if !self.form(&lifting, ledger) {
+                break;
+            }
+        }
+        given_up
+            .into_iter()
+            .map(|target| (target.building, target.anchor))
+            .collect()
+    }
+
+    /// Moves free carriers hovering where no rider could reach them, such as
+    /// over the Airworks that trained them, to open ground. Lifts under way
+    /// spend the decision's orders first.
+    fn clear(&self, lifting: &Lifting<'_>, ledger: &mut Ledger) {
+        let observation = lifting.observation;
+        for unit in self
+            .available(observation, false)
+            .into_iter()
+            .filter_map(|id| mine(observation, id))
+            .filter(|unit| lifting.map.component(unit.tile) == Some(lifting.home))
+            .filter(|unit| carrier(unit.kind) && unit.idle && unit.cargo == 0)
+            .filter(|unit| !lifting.open(unit.tile, lifting.home))
+        {
+            if let Some(tile) = lifting.clearing(unit) {
+                ledger.order(run(vec![unit.id], tile));
+            }
         }
     }
 
-    /// Forms a lift when every free carrier and rider at home together can
-    /// meet the best landing's need, sending as many loads as this decision's
-    /// orders allow; the rest board on later decisions.
-    fn form(&mut self, lifting: &Lifting<'_>, ledger: &mut Ledger) {
+    /// Forms a lift when the free carriers and riders at home together can
+    /// meet the need of the best landing no lift holds, sending as many loads
+    /// as this decision's orders allow; the rest board on later decisions.
+    /// Returns whether one formed.
+    fn form(&mut self, lifting: &Lifting<'_>, ledger: &mut Ledger) -> bool {
         let observation = lifting.observation;
         if self.list.len() >= MISSION_CAP || !lifting.severed {
-            return;
+            return false;
         }
-        let loads = self.loads(lifting, ledger);
+        let loads = self.loads(lifting);
         let value = loads.iter().map(|(_, _, value)| value).sum::<u64>();
         if loads.is_empty() || value < minimum(lifting.profile.stance) {
-            return;
+            return false;
         }
         let Some(drop) = lifting.best_drop() else {
-            return;
+            return false;
         };
         let need = lifting.need(drop.landing);
         if value < need {
-            return;
+            return false;
         }
         let (mut units, _) = send(loads, need, UNIT_CAP, ledger);
         if units.is_empty() {
-            return;
+            return false;
         }
         units.sort_unstable();
         self.list.push(Mission {
@@ -155,26 +202,22 @@ impl Missions {
         });
         self.next += 1;
         self.waiting = None;
+        true
     }
 
     /// The free carriers and riders at home a lift could load now: riders
-    /// packed into carriers strongest value per slot first, with each load's
-    /// value. Carriers over ground riders cannot stand beside move to a
-    /// clearing first.
-    fn loads(&self, lifting: &Lifting<'_>, ledger: &mut Ledger) -> Vec<(UnitId, Vec<UnitId>, u64)> {
+    /// packed into carriers over open ground strongest value per slot first,
+    /// with each load's value.
+    fn loads(&self, lifting: &Lifting<'_>) -> Vec<(UnitId, Vec<UnitId>, u64)> {
         let frame = lifting.frame;
         let free = self.free_at_home(lifting);
         let rank = |unit: &&UnitObs| (frame.rank(frame.home, doubled(unit.tile)), unit.id);
-        let (mut carriers, covered): (Vec<&UnitObs>, Vec<&UnitObs>) = free
+        let mut carriers: Vec<&UnitObs> = free
             .iter()
             .copied()
             .filter(|unit| carrier(unit.kind) && unit.idle && unit.cargo == 0)
-            .partition(|unit| lifting.open(unit.tile, lifting.home));
-        for unit in covered {
-            if let Some(tile) = lifting.clearing(unit) {
-                ledger.order(run(vec![unit.id], tile));
-            }
-        }
+            .filter(|unit| lifting.open(unit.tile, lifting.home))
+            .collect();
         carriers.sort_by_key(rank);
         let rooms: Vec<(UnitId, u8)> = carriers
             .iter()
@@ -224,10 +267,10 @@ impl Missions {
     }
 
     /// Whether the seat's `have` carriers, alive and queued, fall short of
-    /// lifting what the best landing needs, or the stance minimum while none
-    /// is known, with the free riders at home packed as a lift packs them:
-    /// `None` when they do not, and otherwise whether some of those riders
-    /// already have no room. A seat wants at least one carrier.
+    /// lifting what the best landing no lift holds needs, or the stance
+    /// minimum while none is known, with the free riders at home packed as a
+    /// lift packs them: `None` when they do not, and otherwise whether some of
+    /// those riders already have no room. A seat wants at least one carrier.
     pub(crate) fn carriers_short(
         &self,
         observation: &ObservationData,
@@ -237,7 +280,8 @@ impl Missions {
         scratch: &Scratch,
         have: u64,
     ) -> Option<bool> {
-        let lifting = Lifting::new(observation, map, profile, memory, scratch)?;
+        let mut lifting = Lifting::new(observation, map, profile, memory, scratch)?;
+        lifting.held = self.held(|task| matches!(task, Task::Lift { .. }), None, &[]);
         let riders = self.riders(&lifting, &self.free_at_home(&lifting));
         // Every carrier is a Skyhook and first fit opens a room only when no
         // earlier one fits, so the first k rooms are what k carriers load.
@@ -270,7 +314,7 @@ impl Missions {
         index: usize,
         lifting: &Lifting<'_>,
         ledger: &mut Ledger,
-    ) -> Option<(BuildingKind, TilePos)> {
+    ) -> Option<Objective> {
         let observation = lifting.observation;
         let mission = &self.list[index];
         let Task::Lift { target, phase } = mission.task else {
@@ -336,7 +380,7 @@ impl Missions {
             .sum();
         let committed = flight.loaded + walking;
         if committed < need && flight.age < LOAD_TICKS {
-            let loads = self.loads(lifting, ledger);
+            let loads = self.loads(lifting);
             let room = UNIT_CAP.saturating_sub(self.list[flight.index].units.len());
             let (sent, _) = send(loads, need - committed, room, ledger);
             if !sent.is_empty() {
@@ -502,7 +546,7 @@ impl Missions {
         flight: &Flight<'_>,
         lifting: &Lifting<'_>,
         ledger: &mut Ledger,
-    ) -> Option<(BuildingKind, TilePos)> {
+    ) -> Option<Objective> {
         let target = flight.target;
         if flight.age >= FIGHT_TICKS {
             self.list.remove(flight.index);
@@ -513,7 +557,7 @@ impl Missions {
         }
         if standing(lifting.observation, target) {
             self.list.remove(flight.index);
-            return Some((target.building, target.anchor));
+            return Some(target);
         }
         let (map, observation, frame) = (lifting.map, lifting.observation, lifting.frame);
         let island = map.component(target.anchor);
@@ -522,7 +566,7 @@ impl Missions {
             .objectives
             .iter()
             .copied()
-            .filter(|objective| *objective != target)
+            .filter(|objective| *objective != target && !lifting.held.contains(objective))
             .filter(|objective| island.is_some() && map.component(objective.anchor) == island)
             .filter(|objective| {
                 !lifting
@@ -584,11 +628,12 @@ impl<'a> Lifting<'a> {
             objectives: &scratch.objectives,
             severed: scratch.severed,
             reserve: scratch.reserve,
+            held: Vec::new(),
         })
     }
 
-    /// The best target no ground route reaches that has a landing, by value
-    /// for its distance from home.
+    /// The best target no ground route reaches and no other lift holds that
+    /// has a landing, by value for its distance from home.
     fn best_drop(&self) -> Option<Drop> {
         targets(
             self.objectives,
@@ -598,6 +643,7 @@ impl<'a> Lifting<'a> {
             self.memory,
         )
         .into_iter()
+        .filter(|target| !self.held.contains(target))
         .find_map(|target| {
             Some(Drop {
                 target,
@@ -618,6 +664,7 @@ impl<'a> Lifting<'a> {
             self.memory,
         )
         .into_iter()
+        .filter(|target| !self.held.contains(target))
         .find(|target| self.landings(*target).next().is_some())
         .map_or(0, |target| {
             defense(self.observation, self.memory, target.anchor) * margin(self.profile.difficulty)
