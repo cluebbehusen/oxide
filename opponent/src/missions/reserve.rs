@@ -20,8 +20,8 @@ const DOMAINS: [Domain; 2] = [Domain::Ground, Domain::Air];
 /// Value against each domain the seat keeps home from offense, before the
 /// units already out defending count: nothing while no enemy could reach
 /// home that way, else the stance's floor or its share of the known enemy
-/// army that could, whichever is more, less the static defenses that already
-/// cover it.
+/// army that could, whichever is more, less the static defenses on the
+/// start's ground that already cover it.
 pub(super) fn reserve(
     observation: &ObservationData,
     map: &MapModel,
@@ -30,6 +30,7 @@ pub(super) fn reserve(
 ) -> [u64; 2] {
     let me = observation.me;
     let now = observation.tick;
+    let home = map.start(me).and_then(|start| map.component(start));
     let (floor, share) = match stance {
         BotStance::Turtle => (minimum(stance), 1_500),
         BotStance::Balanced => (minimum(stance) / 2, 1_000),
@@ -68,7 +69,7 @@ pub(super) fn reserve(
         let standing: u64 = observation
             .my_buildings
             .iter()
-            .filter(|building| building.built)
+            .filter(|building| building.built && map.component(building.anchor) == home)
             .filter(|building| {
                 building
                     .kind
