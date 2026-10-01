@@ -78,6 +78,7 @@ mod chrome;
 mod destruction;
 pub(crate) mod entities;
 mod environment;
+mod impacts;
 mod minimap;
 mod motion;
 mod panel_draw;

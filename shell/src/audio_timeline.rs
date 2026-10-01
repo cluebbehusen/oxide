@@ -7,7 +7,7 @@ pub(crate) fn missile_ejection_ticks(total: f32) -> f32 {
 }
 
 /// Tick reports are consumed after the launch tick has completed.
-pub(crate) fn missile_elapsed_ticks(now: f32, arrival: u64, total: f32) -> f32 {
+pub(crate) fn projectile_elapsed_ticks(now: f32, arrival: u64, total: f32) -> f32 {
     total - (arrival as f32 + 1.0 - now)
 }
 
@@ -97,12 +97,12 @@ mod tests {
 
     #[test]
     fn missile_pose_and_cues_share_the_post_tick_launch_origin() {
-        assert_eq!(missile_elapsed_ticks(11.0, 30, 20.0), 0.0);
+        assert_eq!(projectile_elapsed_ticks(11.0, 30, 20.0), 0.0);
         assert_eq!(
-            missile_elapsed_ticks(14.0, 30, 20.0),
+            projectile_elapsed_ticks(14.0, 30, 20.0),
             missile_ejection_ticks(20.0)
         );
-        assert_eq!(missile_elapsed_ticks(31.0, 30, 20.0), 20.0);
+        assert_eq!(projectile_elapsed_ticks(31.0, 30, 20.0), 20.0);
         for total in [1.0, 4.0, 20.0] {
             assert!(missile_ejection_ticks(total) < total);
         }

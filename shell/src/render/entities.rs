@@ -353,7 +353,16 @@ pub(super) fn strike_contact(
             };
             building_contact(game, sprites, hit, from, aim)
         }
-        HitSurface::Unit(body) => unit_contact(sprites, body, from, to),
+        HitSurface::Unit(hit) => {
+            if let Some(unit) = game.state.unit(hit.id)
+                && crate::strategic_markers::visible(game, unit)
+            {
+                let pose =
+                    super::unit_body_pose(game, sprites, unit, game.presentation.tick_fraction());
+                return posed_unit_contact(sprites, &pose, from, pose.center);
+            }
+            unit_contact(sprites, hit.body, from, hit.center, hit.center)
+        }
     }
 }
 
@@ -362,6 +371,7 @@ pub(super) fn unit_contact(
     body: crate::game::UnitBody,
     from: Vec2,
     center: Vec2,
+    aim: Vec2,
 ) -> Option<Vec2> {
     let rotate = |v: Vec2, angle: f32| {
         vec2(
@@ -385,11 +395,170 @@ pub(super) fn unit_contact(
         .sprite_contact(
             source,
             rotate(from - center, -body.rotation),
-            Vec2::ZERO,
+            rotate(aim - center, -body.rotation),
             Vec2::splat(-size * 0.5),
             Vec2::splat(size),
         )
         .map(|point| center + rotate(point, body.rotation))
+}
+
+fn posed_unit_contact(
+    sprites: &Sprites,
+    pose: &super::UnitBodyPose,
+    from: Vec2,
+    aim: Vec2,
+) -> Option<Vec2> {
+    let (source, center, size, rotation) =
+        (pose.source, pose.center, pose.size, pose.body_rotation);
+    let rotate = |v: Vec2, angle: f32| Vec2::from_angle(angle).rotate(v);
+    sprites
+        .sprite_contact(
+            source,
+            rotate(from - center, -rotation),
+            rotate(aim - center, -rotation),
+            Vec2::splat(-size * 0.5),
+            Vec2::splat(size),
+        )
+        .map(|point| center + rotate(point, rotation))
+}
+
+fn payload_contact(
+    game: &crate::game::Scene<'_>,
+    sprites: &Sprites,
+    index: usize,
+) -> (Vec2, Option<crate::game::HitSurface>) {
+    let shell = &game.state.shells()[index];
+    let at = vec2(
+        shell.impact.x.to_num::<f32>(),
+        shell.impact.y.to_num::<f32>(),
+    );
+    let target = game
+        .presentation
+        .projectile_releases
+        .flight(game.state.shells(), index)
+        .and_then(|flight| flight.target)
+        .or_else(|| {
+            game.state
+                .buildings()
+                .iter()
+                .find(|building| {
+                    shell.targets.ground
+                        && game.state.hostile(shell.player, building.player)
+                        && building
+                            .closest_point_to(shell.impact)
+                            .dist_sq(shell.impact)
+                            <= chassis::fx::Fx::lit("0.0001")
+                })
+                .map(|building| oxide_sim::Target::Building(building.id))
+        });
+    let surface = game
+        .presentation
+        .hit_surface(game.state, target)
+        .filter(|surface| surface.covers(at));
+    let from = vec2(
+        shell.launch.x.to_num::<f32>(),
+        shell.launch.y.to_num::<f32>(),
+    );
+    let point = match surface {
+        Some(crate::game::HitSurface::Unit(hit)) => {
+            let unit = game
+                .state
+                .unit(hit.id)
+                .filter(|unit| crate::strategic_markers::visible(game, unit));
+            unit.and_then(|unit| {
+                let pose =
+                    super::unit_body_pose(game, sprites, unit, game.presentation.tick_fraction());
+                posed_unit_contact(
+                    sprites,
+                    &pose,
+                    if shell.kind == oxide_sim::ProjectileKind::Bomb {
+                        at
+                    } else {
+                        from
+                    },
+                    at,
+                )
+                .filter(|point| on_payload_course(from, at, *point))
+            })
+        }
+        _ => strike_contact(
+            game,
+            sprites,
+            surface,
+            if shell.kind == oxide_sim::ProjectileKind::Bomb {
+                at
+            } else {
+                from
+            },
+            at,
+            crate::game::ShotStyle::Rail,
+        ),
+    }
+    .filter(|point| {
+        game.presentation.all_seeing()
+            || game
+                .my_vision()
+                .visible(TilePos::new(point.x.floor() as i32, point.y.floor() as i32))
+    });
+    (point.unwrap_or(at), surface)
+}
+
+pub(super) fn impact_contact(
+    game: &crate::game::Scene<'_>,
+    sprites: &Sprites,
+    surface: Option<crate::game::HitSurface>,
+    from: Vec2,
+    at: Vec2,
+    payload: oxide_sim::ProjectileKind,
+) -> Vec2 {
+    let ray_from = if payload == oxide_sim::ProjectileKind::Bomb {
+        at
+    } else {
+        from
+    };
+    match surface {
+        Some(crate::game::HitSurface::Unit(hit)) => {
+            unit_contact(sprites, hit.body, ray_from, hit.center, at)
+                .filter(|point| on_payload_course(from, at, *point))
+        }
+        _ => strike_contact(
+            game,
+            sprites,
+            surface,
+            ray_from,
+            at,
+            crate::game::ShotStyle::Rail,
+        ),
+    }
+    .filter(|point| {
+        game.presentation.all_seeing()
+            || game
+                .my_vision()
+                .visible(TilePos::new(point.x.floor() as i32, point.y.floor() as i32))
+    })
+    .unwrap_or(at)
+}
+
+fn on_payload_course(from: Vec2, to: Vec2, contact: Vec2) -> bool {
+    let ray = to - from;
+    let t = (contact - from).dot(ray) / ray.length_squared().max(f32::EPSILON);
+    (0.0..=1.0).contains(&t) && contact.distance(from + ray * t) < 0.01
+}
+
+fn payload_flight_ticks(game: &crate::game::Scene<'_>, index: usize) -> f32 {
+    let shell = &game.state.shells()[index];
+    game.presentation
+        .projectile_releases
+        .flight(game.state.shells(), index)
+        .map_or_else(
+            || {
+                (shell.launch.dist_sq(shell.impact).to_num::<f32>().sqrt()
+                    / oxide_sim::stats::SHELL_SPEED.to_num::<f32>())
+                .ceil()
+                .max(1.0)
+            },
+            |flight| flight.ticks as f32,
+        )
 }
 
 pub(super) fn building_contact(
@@ -814,7 +983,7 @@ pub(crate) fn draw_units(game: &crate::game::Scene<'_>, sprites: &Sprites, alpha
     // them — each flyer casts an offset shadow so altitude reads even
     // when nothing overlaps.
     draw_unit_pass(game, sprites, alpha, oxide_sim::stats::Domain::Ground);
-    draw_bomber_bombs(game);
+    draw_bomber_bombs(game, sprites);
     draw_unit_pass(game, sprites, alpha, oxide_sim::stats::Domain::Air);
 }
 
@@ -897,7 +1066,7 @@ fn moth_bomb_pose(
     (position, tangent.normalize_or_zero())
 }
 
-fn draw_bomber_bombs(game: &crate::game::Scene<'_>) {
+fn draw_bomber_bombs(game: &crate::game::Scene<'_>, sprites: &Sprites) {
     let zoom = game.presentation.camera.zoom;
     let now = game.state.current_tick() as f32 + game.presentation.tick_fraction();
     for (index, shell) in game.state.shells().iter().enumerate() {
@@ -908,14 +1077,11 @@ fn draw_bomber_bombs(game: &crate::game::Scene<'_>) {
             shell.launch.x.to_num::<f32>(),
             shell.launch.y.to_num::<f32>(),
         );
-        let impact = vec2(
-            shell.impact.x.to_num::<f32>(),
-            shell.impact.y.to_num::<f32>(),
-        );
-        let total = (launch.distance(impact) / oxide_sim::stats::SHELL_SPEED.to_num::<f32>())
-            .ceil()
-            .max(1.0);
-        let t = (1.0 - (shell.arrival as f32 - now) / total).clamp(0.0, 1.0);
+        let (impact, _) = payload_contact(game, sprites, index);
+        let total = payload_flight_ticks(game, index);
+        let t = (crate::audio_timeline::projectile_elapsed_ticks(now, shell.arrival, total)
+            / total)
+            .clamp(0.0, 1.0);
         let moth = release.kind == oxide_sim::UnitKind::Moth;
         let (position, direction) = if moth {
             moth_bomb_pose(launch, impact, release, t, total)
@@ -1134,11 +1300,25 @@ fn forge_spot_phases(progress: f32) -> (f32, f32) {
     (travel, impact)
 }
 
+fn direct_phases(style: crate::game::ShotStyle, age: f32) -> (f32, f32) {
+    let travel_time = match style {
+        crate::game::ShotStyle::ForgeSpot => 0.12,
+        crate::game::ShotStyle::Mortar => 0.144,
+        _ => return forge_spot_phases(age / style.life()),
+    };
+    (
+        (age / travel_time).clamp(0., 1.),
+        ((age - travel_time) / (style.life() - travel_time)).clamp(0., 1.),
+    )
+}
+
 fn shot_impact_progress(style: crate::game::ShotStyle, age: f32) -> f32 {
     use crate::game::ShotStyle;
     match style {
         ShotStyle::Contact | ShotStyle::Rail => (age / style.life()).clamp(0.0, 1.0),
-        ShotStyle::ForgeSpot | ShotStyle::Kinetic { .. } => forge_spot_phases(age / style.life()).1,
+        ShotStyle::ForgeSpot | ShotStyle::Mortar | ShotStyle::Kinetic { .. } => {
+            direct_phases(style, age).1
+        }
         ShotStyle::FlakBurst { yoke_delay, .. } => {
             let arrival = yoke_delay.seconds() + FLAK_ROUND_TRAVEL;
             ((age - arrival) / (style.life() - arrival)).clamp(0.0, 1.0)
@@ -1196,7 +1376,6 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
     // Real shells render from sim state, aged by sim ticks: pause holds
     // them mid-air, speed changes track, and a replay loaded mid-flight
     // restores them — no wall-clock effect can drift from the rules.
-    let shell_speed = oxide_sim::stats::SHELL_SPEED.to_num::<f32>();
     let now = game.state.current_tick() as f32 + game.presentation.tick_fraction();
     for (index, shell) in game.state.shells().iter().enumerate() {
         if bomber_release(game, index).is_some() {
@@ -1206,10 +1385,7 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
             shell.launch.x.to_num::<f32>(),
             shell.launch.y.to_num::<f32>(),
         );
-        let to = vec2(
-            shell.impact.x.to_num::<f32>(),
-            shell.impact.y.to_num::<f32>(),
-        );
+        let (to, _) = payload_contact(game, sprites, index);
         // Indirect building fire currently means Bastion fire. Its sim
         // launch stays at the stable footprint center; presentation
         // advances that point to the authored barrel mouth.
@@ -1222,12 +1398,8 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
         let flat_seen = |k: f32| sees(from.lerp(to, k));
         // Reconstruct flight length the way the launch computed it, so
         // the shell lands exactly when the sim resolves the hit.
-        let total = (launch.distance(to) / shell_speed).ceil().max(1.0);
-        let elapsed = if shell.kind == oxide_sim::ProjectileKind::Missile {
-            crate::audio_timeline::missile_elapsed_ticks(now, shell.arrival, total)
-        } else {
-            total - (shell.arrival as f32 - now)
-        };
+        let total = payload_flight_ticks(game, index);
+        let elapsed = crate::audio_timeline::projectile_elapsed_ticks(now, shell.arrival, total);
         let flight_progress = (elapsed / total).clamp(0.0, 1.0);
         let t = if shell.kind == oxide_sim::ProjectileKind::Missile {
             missile_travel_progress(flight_progress, total, from.distance(to))
@@ -1356,11 +1528,11 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
             let normal = vec2(-direction.y, direction.x);
             let height = 4.0 * t * (1.0 - t);
             let scale = game.presentation.camera.zoom * (1.0 + height * 0.22);
-            let width = scale * if bastion_shell { 0.12 } else { 0.14 };
+            let width = scale * if bastion_shell { 0.085 } else { 0.10 };
             let length = scale * if bastion_shell { 0.34 } else { 0.30 };
             let back = shell_at - direction * length * 0.5;
             let nose = shell_at + direction * length * 0.5;
-            let shoulder = nose - direction * length * 0.22;
+            let shoulder = nose - direction * length * 0.34;
             let shadow = shell_at
                 + game.presentation.camera.zoom * (vec2(0.04, 0.06) + vec2(0.18, 0.26) * height);
             let shadow_half = direction * game.presentation.camera.zoom * 0.10;
@@ -1375,7 +1547,7 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
             line_between(
                 back,
                 shoulder,
-                width + game.presentation.camera.zoom * 0.035,
+                width + game.presentation.camera.zoom * 0.025,
                 Color::from_rgba(14, 15, 18, 255),
             );
             line_between(back, shoulder, width, Color::from_rgba(123, 128, 127, 255));
@@ -1448,6 +1620,16 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
         fill_circle(nose, radius * 0.54, Color::new(1.0, 0.82, 0.48, 1.0));
     }
     for fx in &game.presentation.fx {
+        let impact_at = match fx.kind {
+            EffectKind::Impact {
+                at,
+                from,
+                surface,
+                payload,
+                ..
+            } => Some(impact_contact(game, sprites, surface, from, at, payload)),
+            _ => None,
+        };
         // A visible impact may always spark so incoming damage reads.
         // Directional geometry still requires a visible source and must
         // not pinpoint a fogged shooter.
@@ -1470,7 +1652,8 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                 );
                 visibility.body || visibility.bloom
             }
-            EffectKind::Collapse { at, .. } | EffectKind::Impact { at, .. } => sees(at),
+            EffectKind::Collapse { at, .. } => sees(at),
+            EffectKind::Impact { at, .. } => sees(impact_at.unwrap_or(at)),
             EffectKind::Puff { at } => sees(at),
             // Falling fragments and airframes apply fog at their moving positions.
             EffectKind::Falling { .. } => true,
@@ -1490,6 +1673,7 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                 to,
                 splash,
                 surface,
+                completed_tick,
                 ..
             } => {
                 use crate::game::ShotStyle;
@@ -1498,7 +1682,6 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                     .unwrap_or(to);
                 let a = game.presentation.camera.to_screen(from);
                 let b = game.presentation.camera.to_screen(contact);
-                let blast = game.presentation.camera.to_screen(to);
                 let age = fx.age_at(game.state.current_tick(), game.presentation.tick_fraction());
                 let progress = (age / style.life()).clamp(0.0, 1.0);
                 let fade = 1.0 - progress;
@@ -1514,11 +1697,31 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                     {
                         draw_splash_bloom(
                             sprites,
-                            blast,
+                            b,
                             game.presentation.camera.zoom,
                             radius,
                             impact,
                         );
+                    }
+                    if let Some(family) = super::impacts::Family::direct(style) {
+                        let arrival = match style {
+                            ShotStyle::Rail => 0.,
+                            ShotStyle::ForgeSpot => 0.12,
+                            _ => 0.144,
+                        };
+                        super::impacts::draw(
+                            super::impacts::Contact {
+                                family,
+                                recipient: super::impacts::Recipient::of(surface),
+                                at: b,
+                                direction: Vec2::ZERO,
+                                radius: splash.unwrap_or(0.55),
+                                age: age - arrival,
+                                seed: super::impacts::seed(to, completed_tick),
+                            },
+                            game.presentation.camera.zoom,
+                        );
+                        continue;
                     }
                     if style == ShotStyle::Contact {
                         let normal = vec2(0.8, -0.6);
@@ -1559,31 +1762,43 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                     // The area bloom is part of the round-arrival phase,
                     // behind the projectiles, rather than an explosion the
                     // rounds visibly fly into.
-                    draw_splash_bloom(
-                        sprites,
-                        blast,
-                        game.presentation.camera.zoom,
-                        radius,
-                        impact,
-                    );
+                    draw_splash_bloom(sprites, b, game.presentation.camera.zoom, radius, impact);
                 }
                 match style {
                     ShotStyle::Contact => {}
-                    ShotStyle::Kinetic { heavy } => {
-                        let (travel, impact) = forge_spot_phases(progress);
+                    ShotStyle::Kinetic { .. } | ShotStyle::Mortar => {
+                        let heavy = !matches!(style, ShotStyle::Kinetic { heavy: false });
+                        let (travel, impact) = direct_phases(style, age);
                         let direction = (b - a).normalize_or_zero();
                         let zoom = game.presentation.camera.zoom;
                         let round = a.lerp(b, travel);
                         let length = zoom * if heavy { 0.19 } else { 0.09 };
                         let tail = round - direction * length.min(round.distance(a));
-                        let alpha = 1.0 - impact;
+                        let alpha = if style == ShotStyle::Mortar {
+                            (1. - (age - 0.144).max(0.) / 0.05).clamp(0., 1.)
+                        } else {
+                            1. - impact
+                        };
                         line_between(
                             tail,
                             round,
                             (zoom * if heavy { 0.065 } else { 0.03 }).max(1.0),
                             Color::new(0.91, 0.79, 0.57, alpha),
                         );
-                        if impact > 0.0 {
+                        if style == ShotStyle::Mortar {
+                            super::impacts::draw(
+                                super::impacts::Contact {
+                                    family: super::impacts::Family::Mortar,
+                                    recipient: super::impacts::Recipient::of(surface),
+                                    at: b,
+                                    direction,
+                                    radius: splash.unwrap_or(0.9),
+                                    age: age - 0.144,
+                                    seed: super::impacts::seed(to, completed_tick),
+                                },
+                                zoom,
+                            );
+                        } else if impact > 0.0 {
                             let normal = vec2(-direction.y, direction.x);
                             for side in [-1.0, 0.0, 1.0] {
                                 let spread = (-direction + normal * side * 1.4).normalize_or_zero();
@@ -1596,23 +1811,38 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                         }
                     }
                     ShotStyle::ForgeSpot => {
-                        let (travel, impact) = forge_spot_phases(progress);
+                        let (travel, _) = direct_phases(style, age);
                         let round = a.lerp(b, travel);
-                        let round_alpha = 1.0 - impact;
+                        let round_alpha = (1. - (age - 0.12).max(0.) / 0.05).clamp(0., 1.);
                         fill_circle(round, 3.8, Color::new(1.0, 0.38, 0.10, 0.20 * round_alpha));
                         fill_circle(round, 2.3, Color::new(0.42, 0.19, 0.09, round_alpha));
                         fill_circle(round, 1.35, Color::new(1.0, 0.85, 0.52, round_alpha));
-                        if impact > 0.0 {
-                            let radius = game.presentation.camera.zoom * (0.05 + impact * 0.18);
-                            stroke_circle(
-                                b,
-                                radius,
-                                1.5,
-                                Color::new(1.0, 0.62, 0.22, 1.0 - impact),
-                            );
-                        }
+                        super::impacts::draw(
+                            super::impacts::Contact {
+                                family: super::impacts::Family::Orb,
+                                recipient: super::impacts::Recipient::of(surface),
+                                at: b,
+                                direction: b - a,
+                                radius: splash.unwrap_or(0.55),
+                                age: age - 0.12,
+                                seed: super::impacts::seed(to, completed_tick),
+                            },
+                            game.presentation.camera.zoom,
+                        );
                     }
                     ShotStyle::Rail => {
+                        super::impacts::draw(
+                            super::impacts::Contact {
+                                family: super::impacts::Family::Rail,
+                                recipient: super::impacts::Recipient::of(surface),
+                                at: b,
+                                direction: b - a,
+                                radius: 0.75,
+                                age,
+                                seed: super::impacts::seed(to, completed_tick),
+                            },
+                            game.presentation.camera.zoom,
+                        );
                         line_between(
                             a,
                             b,
@@ -1744,13 +1974,27 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                 at,
                 radius,
                 payload,
+                from,
+                surface,
+                completed_tick,
             } => {
-                super::destruction::draw_impact(
-                    game.presentation.camera.to_screen(at),
+                let contact = impact_at.unwrap_or(at);
+                super::impacts::draw(
+                    super::impacts::Contact {
+                        family: super::impacts::Family::payload(payload),
+                        recipient: super::impacts::Recipient::of(surface),
+                        at: game.presentation.camera.to_screen(contact),
+                        direction: if game.presentation.all_seeing() || sees(from) {
+                            contact - from
+                        } else {
+                            Vec2::ZERO
+                        },
+                        radius,
+                        age: fx
+                            .age_at(game.state.current_tick(), game.presentation.tick_fraction()),
+                        seed: super::impacts::seed(at, completed_tick),
+                    },
                     game.presentation.camera.zoom,
-                    radius,
-                    fx.age,
-                    payload,
                 );
             }
             EffectKind::Puff { at } => {
@@ -3690,5 +3934,14 @@ mod tests {
         );
         assert!((low - (min - vec2(radius, radius))).length() < 1.0e-4);
         assert!((high - (max + vec2(radius, radius))).length() < 1.0e-4);
+    }
+
+    #[test]
+    fn unguided_unit_contacts_never_turn_toward_a_nearby_body() {
+        let from = vec2(2., 5.);
+        let to = vec2(8., 5.);
+        assert!(on_payload_course(from, to, vec2(7.7, 5.)));
+        assert!(!on_payload_course(from, to, vec2(7.7, 5.2)));
+        assert!(!on_payload_course(from, to, vec2(8.2, 5.)));
     }
 }
