@@ -4,16 +4,14 @@ use crate::memory::Memory;
 use crate::saving::Saving;
 use crate::{PersonalityTraits, Step};
 
-/// The arena with both seats' Harvesters saturating their two nodes, so a
+/// The arena with both seats' Harvesters saturating their nodes, so a
 /// Fabricator is worth saving for from the first decision.
 fn saturated(scrap: u32) -> Scenario {
     let mut scenario = arena(scrap);
-    scenario.units.extend([
-        harvester(0, 5, 7),
-        harvester(0, 4, 7),
-        harvester(1, 18, 4),
-        harvester(1, 19, 4),
-    ]);
+    scenario.units.extend(workforce(0));
+    scenario.units.extend(workforce(1));
+    scenario.units.extend(standing_army(0));
+    scenario.units.extend(standing_army(1));
     scenario
 }
 
@@ -335,6 +333,7 @@ fn reclaimers_wait_for_the_drip_and_refineries_need_a_fabricator() {
             depletion: 0,
             pull: Vec::new(),
             exposed: false,
+            severed: false,
             wanted: Vec::new(),
         })
         .into_iter()
@@ -555,6 +554,7 @@ fn mirrored_seats_rank_equal_extractor_frames_alike() {
             depletion: 0,
             pull: Vec::new(),
             exposed: false,
+            severed: false,
             wanted: Vec::new(),
         })
         .into_iter()

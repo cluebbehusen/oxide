@@ -165,6 +165,22 @@ impl Missions {
         map: &MapModel,
         reserve: [u64; 2],
     ) -> Spare {
+        let (home, free, defending) = self.at_home(observation, map);
+        Spare {
+            home,
+            left: std::array::from_fn(|index| {
+                free[index].saturating_sub(reserve[index].saturating_sub(defending[index]))
+            }),
+        }
+    }
+
+    /// The start's ground, and the value against each domain of the free
+    /// units at home and of the units out defending.
+    fn at_home(
+        &self,
+        observation: &ObservationData,
+        map: &MapModel,
+    ) -> (Option<u32>, [u64; 2], [u64; 2]) {
         let home = map
             .start(observation.me)
             .and_then(|start| map.component(start));
@@ -190,13 +206,7 @@ impl Missions {
             .filter_map(|id| mine(observation, id))
             .filter(|unit| at_home(map, home, unit))
             .collect();
-        let (defending, free) = (worth(&defending), worth(&free));
-        Spare {
-            home,
-            left: std::array::from_fn(|index| {
-                free[index].saturating_sub(reserve[index].saturating_sub(defending[index]))
-            }),
-        }
+        (home, worth(&free), worth(&defending))
     }
 
     /// The home `payload` a lift could take, cut to what the reserve lets

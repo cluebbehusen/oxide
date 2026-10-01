@@ -108,6 +108,13 @@ fn a_seen_enemy_airworks_raises_anti_air_before_any_flyer() {
             .map(|target| target.investment)
     };
     let mut bare = arena(200);
+    // A Turret already guards home, so tech need not wait for one.
+    bare.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Turret,
+        x: 4,
+        y: 9,
+    });
     assert_eq!(target(&bare), None, "premise: nothing worth saving for yet");
     bare.buildings.push(BuildingSpec {
         player: 1,
@@ -180,6 +187,7 @@ fn working_producers_ask_for_another_while_unspent_income_and_need_last() {
             depletion: 0,
             pull: Vec::new(),
             exposed: false,
+            severed: false,
             wanted,
         })
         .into_iter()
@@ -282,7 +290,7 @@ fn the_most_wanted_role_takes_the_scrap_before_a_nearer_producer() {
         x: 3,
         y: 8,
     });
-    scenario.units.extend((1..=2).map(|x| harvester(0, x, 10)));
+    scenario.units.extend(workforce(0));
     for player in &mut scenario.players {
         player.scrap = 200;
     }
@@ -362,6 +370,7 @@ fn a_working_foundry_or_crucible_asks_for_another_at_home() {
             depletion: 0,
             pull: Vec::new(),
             exposed: false,
+            severed: false,
             wanted,
         })
         .into_iter()

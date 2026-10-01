@@ -11,12 +11,10 @@ const FOUNDRY: TilePos = TilePos::new(3, 5);
 /// The arena with both seats' harvesting saturated.
 fn settled(scrap: u32) -> Scenario {
     let mut scenario = arena(scrap);
-    scenario.units.extend([
-        harvester(0, 5, 7),
-        harvester(0, 4, 7),
-        harvester(1, 18, 4),
-        harvester(1, 19, 4),
-    ]);
+    scenario.units.extend(workforce(0));
+    scenario.units.extend(workforce(1));
+    scenario.units.extend(standing_army(0));
+    scenario.units.extend(standing_army(1));
     scenario
 }
 
@@ -353,6 +351,10 @@ fn mirrored_seats_face_mirrored_threats_that_tie() {
 fn a_defense_upgrades_only_with_its_prerequisite_and_no_threat_near() {
     let staged = |fabricator: bool, raider: Option<(UnitKind, i32)>| {
         let mut scenario = settled(0);
+        // Only the staged raider threatens the Turret.
+        scenario
+            .units
+            .retain(|unit| unit.player == 0 || unit.kind != UnitKind::Sentinel);
         scenario
             .buildings
             .push(building(0, BuildingKind::Turret, 7, 5));
@@ -688,5 +690,30 @@ fn a_seat_does_not_wall_itself_in() {
     assert!(
         !defenses::keeps_paths(&observation, &map(&scrapped), exit),
         "live scrap closes the second way out until it is mined"
+    );
+}
+
+#[test]
+fn an_exposed_opening_buys_no_tech_before_its_first_turret() {
+    let mut scenario = arena(150);
+    scenario.units.push(unit(0, UnitKind::Sentinel, 3, 10));
+    let built = |state: &State| -> Vec<BuildingKind> {
+        builds(&seat_with(&scenario, 0, thrifty()).act(state, &mut OwnEvents::default()))
+            .into_iter()
+            .map(|(kind, _)| kind)
+            .collect()
+    };
+    let mut state = scenario.build().unwrap();
+    let opening = built(&state);
+    assert!(
+        opening.iter().all(|kind| *kind != BuildingKind::Fabricator),
+        "no Turret can be placed yet, so tech waits: {opening:?}"
+    );
+    advance_to(&mut state, crate::defenses::SETTLE_TICKS, &[]);
+    let settled = built(&state);
+    assert!(
+        settled.contains(&BuildingKind::Turret)
+            && settled.iter().all(|kind| *kind != BuildingKind::Fabricator),
+        "{settled:?}"
     );
 }

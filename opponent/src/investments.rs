@@ -81,6 +81,8 @@ pub(crate) struct Situation<'a> {
     pub(crate) pull: Vec<(BuildingKind, u32)>,
     /// Whether the seat's army is under the stance's minimum.
     pub(crate) exposed: bool,
+    /// Whether the seat knows of targets and ground reaches none of them.
+    pub(crate) severed: bool,
     /// The army roles with a deficit.
     pub(crate) wanted: Vec<Role>,
 }
@@ -161,14 +163,52 @@ pub(crate) fn candidates(situation: &Situation<'_>) -> Vec<Candidate> {
             list.push((refinery, base * 7 / 5));
         }
     }
+    let settled = saturated || observation.tick >= defenses::SETTLE_TICKS;
     list.extend(defenses::investments(
         observation,
         situation.map,
         situation.memory,
         traits,
-        saturated || observation.tick >= defenses::SETTLE_TICKS,
+        settled,
         situation.exposed,
     ));
+    // A seat without an army to speak of puts up a Turret before any tech:
+    // one gun holds an early rush that a tech building still going up would
+    // not. It leads the best tech by the margin that switches a saving target.
+    if situation.exposed && owned(BuildingKind::Turret) == 0 {
+        let tech = list
+            .iter()
+            .filter(|(investment, _)| matches!(investment, Investment::Tech(_)))
+            .map(|(_, score)| *score)
+            .max()
+            .unwrap_or(0);
+        let lead = (tech + (tech / 4).max(150) + 1).max(ADOPT);
+        let mut offered = false;
+        for (investment, score) in &mut list {
+            if matches!(
+                investment,
+                Investment::Defense {
+                    kind: BuildingKind::Turret,
+                    ..
+                }
+            ) {
+                *score = (*score).max(lead);
+                offered = true;
+            }
+        }
+        // No Turret is offered against a threat known only from public facts
+        // until the opening settles, so tech waits for that Turret. Holding
+        // tech just under adoption keeps a target already being saved for. A
+        // severed seat is exempt: its tech is how its army reaches anyone, and
+        // a rush can only come by landing.
+        if !settled && !offered && !situation.severed {
+            for (investment, score) in &mut list {
+                if matches!(investment, Investment::Tech(_)) {
+                    *score = (*score).min(ADOPT - 1);
+                }
+            }
+        }
+    }
     let mut list: Vec<Candidate> = list
         .into_iter()
         .filter(|(_, score)| *score > 0)

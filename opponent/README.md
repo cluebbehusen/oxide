@@ -11,22 +11,29 @@ and other emergencies, then an affordable saving target, then workers, then
 lifts, attacks and strikes, focus fire and scouting, then production. Missions
 only give orders; what they need, such as a scout or carriers, production buys.
 A seat with no worker alive or queued queues a Harvester even behind other work,
-from protected scrap if it must. Each built Foundry works the four nearest live
-known scrap nodes its ground can reach within twelve tiles, none shared with
-another Foundry, and ready Foundries train workers until there are two
-Harvesters' worth per worked node. A producer is ready when its queue would run
-out before the next decision, so it queues its next unit as the last one
-finishes rather than after it stands empty. Once a Fabricator stands, an
-Excavator, worth two Harvesters, fills two open places when the seat can pay for
-it with scrap to spare, less the greedier it is. A harvesting or idle worker
-away from home runs back beside the nearest Foundry once known enemy fire
-reaches it. Paid sites nobody is building get the nearest free worker. While no
-armed enemy in sight stands near it and the seat has scrap to pay, the damaged
-building missing the most value gets a free worker to weld it, two at most at
-once. Idle workers go to the reachable worked node with the fewest workers,
-never one inside the reach of known enemy weapons. Every ready producer then
-trains toward the army's needs. Difficulty caps the unit orders one decision
-issues; purchases do not count against that allowance.
+from protected scrap if it must. Each live known scrap node belongs to the
+nearest built Foundry whose ground reaches it, unless an enemy building or
+hostile start is as near, and is worked when a Harvester hauling from there
+repays its price within a horizon: three minutes for Turtle, two for Balanced
+and one and a half for Aggressive, stretched by up to half again the greedier
+the seat is. A worked node wants as many Harvesters as free tiles beside it hold
+and its remaining scrap repays, all of them for Turtle and three quarters for
+Balanced and half for Aggressive, more the greedier the seat is, and ready
+Foundries train workers until every worked node has its crew. Until the army
+reaches the stance's minimum, workers that would cost more than the army wait
+for army production and take only the Foundries it leaves. A producer is ready
+when its queue would run out before the next decision, so it queues its next
+unit as the last one finishes rather than after it stands empty. Once a
+Fabricator stands, an Excavator, worth two Harvesters, fills two open places
+when the seat can pay for it with scrap to spare, less the greedier it is. A
+harvesting or idle worker away from home runs back beside the nearest Foundry
+once known enemy fire reaches it. Paid sites nobody is building get the nearest
+free worker. While no armed enemy in sight stands near it and the seat has scrap
+to pay, the damaged building missing the most value gets a free worker to weld
+it, two at most at once. Idle workers go to the reachable worked node with the
+most places open, never one inside the reach of known enemy weapons. Every ready
+producer then trains toward the army's needs. Difficulty caps the unit orders
+one decision issues; purchases do not count against that allowance.
 
 ## Defense
 
@@ -97,11 +104,14 @@ land. Flak Turrets answer seen or remembered enemy aircraft or a known enemy
 Airworks. Each site is an investment worth the approach it covers that no other
 own weapon covers yet, by the building's value, by how sure the seat is of the
 threat, and by personality: fortification for Turrets and Bastions,
-fortification and support for Flak Turrets. A Bastion counts only ground the
-seat's or an ally's buildings see. When the threat is only a guess from public
-facts, equal sites go to the one nearest the building; otherwise to the one
-nearest the threat. Sites go only on ground where one of the seat's Harvesters
-stands to build them, and a site the simulation refused is skipped for a while.
+fortification and support for Flak Turrets. A seat under the stance's minimum
+army with no Turret puts one up before any tech, whatever its fortification: one
+gun holds an early rush that a tech building still going up would not. A Bastion
+counts only ground the seat's or an ally's buildings see. When the threat is
+only a guess from public facts, equal sites go to the one nearest the building;
+otherwise to the one nearest the threat. Sites go only on ground where one of
+the seat's Harvesters stands to build them, and a site the simulation refused is
+skipped for a while.
 
 Once the opening economy is up, a seat whose army is still under the stance's
 minimum weighs a hostile start nearly like seen enemies, so most seats put up an
@@ -267,9 +277,9 @@ one decision sends no two Tenders to the same patient.
 
 ## Army composition
 
-The seat remembers enemy units it has seen for 600 ticks, trusting them less as
-they age and forgetting one when its last spot is in sight and empty. Enemy
-buildings need no memory of its own: the observation keeps their ghosts.
+The seat remembers every enemy unit it has seen for 600 ticks, trusting them
+less as they age and forgetting one when its last spot is in sight and empty.
+Enemy buildings need no memory of its own: the observation keeps their ghosts.
 
 From that knowledge and its own army, alive and queued, it sets a deficit for
 each role: line fighters to match three quarters of the enemy's ground army or
