@@ -130,10 +130,13 @@ there that nothing the seat owns sees yet, and its radar lets Bastions fire that
 far. A Barricade goes a tile in front of a Turret or Bastion that has none, on
 the side of the threat; it is refused at purchase when it would cut the start
 off from a producer's exit, a worked scrap node or a hostile start on home
-ground. Once a Fabricator stands, Scuttle Charges go a few tiles out on the
-straight way in to a Foundry, spread so one blast does not set off the next.
-Fortification weighs Barricades; fortification and guile weigh Arrays and
-charges.
+ground. Once a Fabricator stands, Scuttle Charges mine the straight way in to a
+Foundry: a band about a blast wide, filled from a few tiles out toward the
+threat and spread so one blast does not set off the next. A field holds enough
+charges to deal the health of the threat along the way divided by the margin,
+one body to a blast, the threat counting at least an army of Sentinels at the
+stance's minimum. Fortification weighs Barricades; fortification and guile weigh
+Arrays and charges.
 
 A Repair Bay goes up beside a guarded building where its aura reaches the most
 missing value among the seat's wounded ground units and damaged buildings that

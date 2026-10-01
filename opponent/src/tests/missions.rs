@@ -452,6 +452,28 @@ fn checkpoints_reject_impossible_missions() {
 }
 
 #[test]
+fn a_mission_as_large_as_a_late_army_restores() {
+    let units: Vec<u32> = (1..=600).collect();
+    let missions: crate::missions::Missions = serde_json::from_value(serde_json::json!({
+        "next": 1,
+        "list": [{
+            "id": 0,
+            "task": {
+                "task": "attack",
+                "target": {"owner": 1, "building": "foundry", "anchor": {"x": 19, "y": 5}},
+                "phase": "travel",
+            },
+            "since": 0,
+            "units": units,
+            "goal": {"x": 10, "y": 5},
+        }],
+        "waiting": null,
+    }))
+    .unwrap();
+    assert_eq!(missions.validate(100, 24, 12, 0), Ok(()));
+}
+
+#[test]
 fn an_exhausted_mission_counter_is_rejected_at_any_tick() {
     let missions: crate::missions::Missions = serde_json::from_value(serde_json::json!({
         "next": u64::MAX,
