@@ -86,6 +86,7 @@ mod performance;
 mod pits;
 pub(crate) mod prim;
 mod support_brackets;
+mod worker;
 mod world;
 use chrome::*;
 use entities::*;
@@ -695,6 +696,229 @@ fn tracked_mount_angle(
         .then(|| direction.y.atan2(direction.x) + std::f32::consts::FRAC_PI_2)
 }
 
+pub(crate) struct UnitBodyPose {
+    pub center: Vec2,
+    pub size: f32,
+    pub source: Rect,
+    accent: Rect,
+    cargo_meter: Option<Rect>,
+    rotation: f32,
+    pub body_rotation: f32,
+    worker: bool,
+    animation: crate::presentation_animation::UnitAnimationState,
+}
+
+pub(crate) fn unit_body_pose(
+    game: &Scene<'_>,
+    sprites: &Sprites,
+    unit: &oxide_sim::Unit,
+    alpha: f32,
+) -> UnitBodyPose {
+    let faction = game.state.player(unit.player).faction;
+    let current = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
+    let moving = game
+        .presentation
+        .prev_pos
+        .get(&unit.id.0)
+        .is_some_and(|previous| (*previous - current).length_squared() > 1e-6);
+    let animation = game.presentation.animations.unit_state(
+        crate::presentation_animation::UnitAnimationFacts::capture(
+            game.state,
+            unit,
+            moving || game.presentation.chassis_turning(unit),
+        ),
+        crate::presentation_animation::AnimationClock::from_state(
+            game.state,
+            game.presentation.tick_fraction(),
+        ),
+        crate::presentation_animation::AnimationOptions {
+            reduced_motion: reduced_motion(),
+        },
+    );
+    let mut frame = motion::unit_frame(unit.kind, animation);
+    if tracks::supported(unit.kind) {
+        match &mut frame {
+            motion::UnitFrame::Moving(_) => frame = motion::UnitFrame::Idle,
+            motion::UnitFrame::Harvester { pose, .. }
+                if matches!(pose, motion::HarvesterPose::Moving(_)) =>
+            {
+                *pose = motion::HarvesterPose::Idle;
+            }
+            _ => {}
+        }
+    }
+    let preparing = animation.weapons.iter().any(|cycle| {
+        matches!(
+            cycle,
+            crate::presentation_animation::WeaponCycle::Preparing { .. }
+        )
+    });
+    // Report/recovery owns the heading. A stationary heavy weapon
+    // then keeps that aim throughout its physical reload; real
+    // locomotion resumes movement facing instead of sliding sideways.
+    let rig = sprites.unit_rig(unit.kind);
+    let aim = game
+        .presentation
+        .aim_units
+        .get(&unit.id.0)
+        .copied()
+        .map(|(angle, at)| {
+            let angle = if rig.is_some() && animation.attack.is_none() {
+                tracked_mount_angle(game, unit, alpha).unwrap_or(angle)
+            } else {
+                angle
+            };
+            (angle, at)
+        });
+    let work_facing = unit_work_facing(unit.pos, animation.work);
+    let contact_facing = animation
+        .demolition_preparation
+        .and_then(|_| tracked_mount_angle(game, unit, alpha));
+    let rotation = if unit.kind.stats().turn_rate > 0
+        || unit.kind.ground_turn_rate() > 0
+        || unit.kind.cruise_turn_rate() > 0
+        || unit.kind.turret_turn_rate() > 0
+    {
+        game.presentation
+            .draw_heading(unit.id, unit.weapon_heading(), alpha)
+    } else if crate::game::rotor_hull_turn_rate(unit.kind).is_some() {
+        game.draw_hull_heading(unit.id, alpha)
+    } else if let Some(angle) = contact_facing {
+        angle
+    } else {
+        match aim {
+            Some((angle, at))
+                if animation.attack.is_some()
+                    || (rig.is_some() || !moving)
+                        && (preparing || game.presentation.fx_time() - at < 1.2) =>
+            {
+                angle
+            }
+            _ => work_facing.unwrap_or_else(|| {
+                game.presentation
+                    .facing
+                    .get(&unit.id.0)
+                    .copied()
+                    .unwrap_or(0.0)
+            }),
+        }
+    };
+    // A turreted rig leans only its hull; the mount keeps its true aim.
+    let slide_yaw = game
+        .presentation
+        .slide_yaw(unit.id, alpha, reduced_motion());
+    let rotation = if rig.is_some() {
+        rotation
+    } else {
+        rotation + slide_yaw
+    };
+    let (source, accent, cargo_meter) = match frame {
+        motion::UnitFrame::Idle => (
+            sprites.unit(unit.kind, faction),
+            sprites.unit_accent(unit.kind),
+            None,
+        ),
+        motion::UnitFrame::Moving(phase) => (
+            sprites.unit_moving(unit.kind, faction, phase + 1),
+            sprites.unit_moving_accent(unit.kind, phase + 1),
+            None,
+        ),
+        motion::UnitFrame::Action(action) => (
+            sprites.unit_action(unit.kind, faction, action),
+            sprites.unit_action_accent(unit.kind, action),
+            None,
+        ),
+        motion::UnitFrame::Harvester { cargo, pose } => {
+            let pose = match pose {
+                motion::HarvesterPose::Idle => SpriteHarvesterPose::Idle,
+                motion::HarvesterPose::Moving(0) => SpriteHarvesterPose::Tread1,
+                motion::HarvesterPose::Moving(_) => SpriteHarvesterPose::Tread2,
+                motion::HarvesterPose::Scoop(0) => SpriteHarvesterPose::Scoop1,
+                motion::HarvesterPose::Scoop(_) => SpriteHarvesterPose::Scoop2,
+            };
+            (
+                sprites.harvester_frame(faction, cargo, pose),
+                sprites.harvester_frame_accent(cargo, pose),
+                None,
+            )
+        }
+        motion::UnitFrame::Excavator { cargo, pose } => {
+            let pose = match pose {
+                motion::ExcavatorPose::Idle => SpriteExcavatorPose::Idle,
+                motion::ExcavatorPose::Moving(0) => SpriteExcavatorPose::Tread1,
+                motion::ExcavatorPose::Moving(_) => SpriteExcavatorPose::Tread2,
+                motion::ExcavatorPose::Working(0) => SpriteExcavatorPose::Work1,
+                motion::ExcavatorPose::Working(1) => SpriteExcavatorPose::Work2,
+                motion::ExcavatorPose::Working(2) => SpriteExcavatorPose::Work3,
+                motion::ExcavatorPose::Working(_) => SpriteExcavatorPose::Work4,
+            };
+            (
+                sprites.excavator_frame(faction, pose),
+                sprites.excavator_frame_accent(pose),
+                Some(sprites.excavator_cargo(cargo)),
+            )
+        }
+    };
+    let (source, accent, body_rotation) = if let Some(rig) = rig {
+        let phase = match animation.propulsion {
+            crate::presentation_animation::PropulsionState::LiftRotors { cycle } => {
+                ((cycle * 3.0) as usize).min(2)
+            }
+            crate::presentation_animation::PropulsionState::None => match animation.locomotion {
+                crate::presentation_animation::LocomotionState::Moving { cycle } => {
+                    motion::tread_phase(cycle)
+                }
+                crate::presentation_animation::LocomotionState::Rest => 0,
+            },
+        };
+        let (source, accent) = rig.hull(
+            faction,
+            if tracks::supported(unit.kind) {
+                0
+            } else {
+                phase
+            },
+        );
+        (
+            source,
+            accent,
+            game.draw_hull_heading(unit.id, alpha) + slide_yaw,
+        )
+    } else {
+        (source, accent, rotation)
+    };
+    let worker_phase = match animation.locomotion {
+        crate::presentation_animation::LocomotionState::Rest => 0,
+        crate::presentation_animation::LocomotionState::Moving { cycle } => {
+            motion::tread_phase(cycle)
+        }
+    };
+    let worker_body = sprites.worker_body(
+        unit.kind,
+        faction,
+        animation
+            .cargo
+            .map_or(0, |cargo| (cargo.fill * 5.0).ceil() as usize),
+        worker_phase,
+    );
+    let (source, accent) = worker_body.unwrap_or((source, accent));
+    let mut center = game.presentation.draw_pos(unit.id, unit.pos, alpha);
+    if unit.domain() == oxide_sim::stats::Domain::Air {
+        center.y -= air_presentation(unit.kind, 1.0).2;
+    }
+    UnitBodyPose {
+        center,
+        size: unit_draw_scale(unit.kind),
+        source,
+        accent,
+        cargo_meter,
+        rotation,
+        body_rotation,
+        worker: worker_body.is_some(),
+        animation,
+    }
+}
+
 fn draw_unit_pass(
     game: &crate::game::Scene<'_>,
     sprites: &Sprites,
@@ -731,103 +955,17 @@ fn draw_unit_pass(
         }
         let draw_scale = unit_draw_scale(unit.kind);
         let dest = zoom * draw_scale;
-        let current = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
-        let moving = game
-            .presentation
-            .prev_pos
-            .get(&unit.id.0)
-            .is_some_and(|previous| (*previous - current).length_squared() > 1e-6);
-        let animation = game.presentation.animations.unit_state(
-            crate::presentation_animation::UnitAnimationFacts::capture(
-                game.state,
-                unit,
-                moving || game.presentation.chassis_turning(unit),
-            ),
-            crate::presentation_animation::AnimationClock::from_state(
-                game.state,
-                game.presentation.tick_fraction(),
-            ),
-            crate::presentation_animation::AnimationOptions {
-                reduced_motion: reduced_motion(),
-            },
-        );
-        let mut frame = motion::unit_frame(unit.kind, animation);
-        if tracks::supported(unit.kind) {
-            match &mut frame {
-                motion::UnitFrame::Moving(_) => frame = motion::UnitFrame::Idle,
-                motion::UnitFrame::Harvester { pose, .. }
-                    if matches!(pose, motion::HarvesterPose::Moving(_)) =>
-                {
-                    *pose = motion::HarvesterPose::Idle;
-                }
-                _ => {}
-            }
-        }
-        let preparing = animation.weapons.iter().any(|cycle| {
-            matches!(
-                cycle,
-                crate::presentation_animation::WeaponCycle::Preparing { .. }
-            )
-        });
-        // Report/recovery owns the heading. A stationary heavy weapon
-        // then keeps that aim throughout its physical reload; real
-        // locomotion resumes movement facing instead of sliding sideways.
+        let UnitBodyPose {
+            source,
+            accent,
+            cargo_meter,
+            rotation,
+            body_rotation,
+            worker: worker_body,
+            animation,
+            ..
+        } = unit_body_pose(game, sprites, unit, alpha);
         let rig = sprites.unit_rig(unit.kind);
-        let aim = game
-            .presentation
-            .aim_units
-            .get(&unit.id.0)
-            .copied()
-            .map(|(angle, at)| {
-                let angle = if rig.is_some() && animation.attack.is_none() {
-                    tracked_mount_angle(game, unit, alpha).unwrap_or(angle)
-                } else {
-                    angle
-                };
-                (angle, at)
-            });
-        let work_facing = unit_work_facing(unit.pos, animation.work);
-        let contact_facing = animation
-            .demolition_preparation
-            .and_then(|_| tracked_mount_angle(game, unit, alpha));
-        let rotation = if unit.kind.stats().turn_rate > 0
-            || unit.kind.ground_turn_rate() > 0
-            || unit.kind.cruise_turn_rate() > 0
-            || unit.kind.turret_turn_rate() > 0
-        {
-            game.presentation
-                .draw_heading(unit.id, unit.weapon_heading(), alpha)
-        } else if crate::game::rotor_hull_turn_rate(unit.kind).is_some() {
-            game.draw_hull_heading(unit.id, alpha)
-        } else if let Some(angle) = contact_facing {
-            angle
-        } else {
-            match aim {
-                Some((angle, at))
-                    if animation.attack.is_some()
-                        || (rig.is_some() || !moving)
-                            && (preparing || game.presentation.fx_time() - at < 1.2) =>
-                {
-                    angle
-                }
-                _ => work_facing.unwrap_or_else(|| {
-                    game.presentation
-                        .facing
-                        .get(&unit.id.0)
-                        .copied()
-                        .unwrap_or(0.0)
-                }),
-            }
-        };
-        // A turreted rig leans only its hull; the mount keeps its true aim.
-        let slide_yaw = game
-            .presentation
-            .slide_yaw(unit.id, alpha, reduced_motion());
-        let rotation = if rig.is_some() {
-            rotation
-        } else {
-            rotation + slide_yaw
-        };
         if airborne {
             let (shadow_size, shadow_offset, body_lift) = air_presentation(unit.kind, zoom);
             sprites.draw_unit(
@@ -868,83 +1006,6 @@ fn draw_unit_pass(
             }
         }
         let body_size = vec2(dest, dest);
-        let (source, accent, cargo_meter) = match frame {
-            motion::UnitFrame::Idle => (
-                sprites.unit(unit.kind, faction),
-                sprites.unit_accent(unit.kind),
-                None,
-            ),
-            motion::UnitFrame::Moving(phase) => (
-                sprites.unit_moving(unit.kind, faction, phase + 1),
-                sprites.unit_moving_accent(unit.kind, phase + 1),
-                None,
-            ),
-            motion::UnitFrame::Action(action) => (
-                sprites.unit_action(unit.kind, faction, action),
-                sprites.unit_action_accent(unit.kind, action),
-                None,
-            ),
-            motion::UnitFrame::Harvester { cargo, pose } => {
-                let pose = match pose {
-                    motion::HarvesterPose::Idle => SpriteHarvesterPose::Idle,
-                    motion::HarvesterPose::Moving(0) => SpriteHarvesterPose::Tread1,
-                    motion::HarvesterPose::Moving(_) => SpriteHarvesterPose::Tread2,
-                    motion::HarvesterPose::Scoop(0) => SpriteHarvesterPose::Scoop1,
-                    motion::HarvesterPose::Scoop(_) => SpriteHarvesterPose::Scoop2,
-                };
-                (
-                    sprites.harvester_frame(faction, cargo, pose),
-                    sprites.harvester_frame_accent(cargo, pose),
-                    None,
-                )
-            }
-            motion::UnitFrame::Excavator { cargo, pose } => {
-                let pose = match pose {
-                    motion::ExcavatorPose::Idle => SpriteExcavatorPose::Idle,
-                    motion::ExcavatorPose::Moving(0) => SpriteExcavatorPose::Tread1,
-                    motion::ExcavatorPose::Moving(_) => SpriteExcavatorPose::Tread2,
-                    motion::ExcavatorPose::Working(0) => SpriteExcavatorPose::Work1,
-                    motion::ExcavatorPose::Working(1) => SpriteExcavatorPose::Work2,
-                    motion::ExcavatorPose::Working(2) => SpriteExcavatorPose::Work3,
-                    motion::ExcavatorPose::Working(_) => SpriteExcavatorPose::Work4,
-                };
-                (
-                    sprites.excavator_frame(faction, pose),
-                    sprites.excavator_frame_accent(pose),
-                    Some(sprites.excavator_cargo(cargo)),
-                )
-            }
-        };
-        let (source, accent, body_rotation) = if let Some(rig) = rig {
-            let phase = match animation.propulsion {
-                crate::presentation_animation::PropulsionState::LiftRotors { cycle } => {
-                    ((cycle * 3.0) as usize).min(2)
-                }
-                crate::presentation_animation::PropulsionState::None => {
-                    match animation.locomotion {
-                        crate::presentation_animation::LocomotionState::Moving { cycle } => {
-                            motion::tread_phase(cycle)
-                        }
-                        crate::presentation_animation::LocomotionState::Rest => 0,
-                    }
-                }
-            };
-            let (source, accent) = rig.hull(
-                faction,
-                if tracks::supported(unit.kind) {
-                    0
-                } else {
-                    phase
-                },
-            );
-            (
-                source,
-                accent,
-                game.draw_hull_heading(unit.id, alpha) + slide_yaw,
-            )
-        } else {
-            (source, accent, rotation)
-        };
         if unit.kind == oxide_sim::UnitKind::Bombard
             && let Some(source) = sprites.bombard_spades(unit.brace_ticks)
         {
@@ -998,6 +1059,26 @@ fn draw_unit_pass(
                     ..params
                 },
                 zoom,
+            );
+        }
+        if worker_body {
+            worker::draw(
+                game,
+                sprites,
+                unit,
+                animation,
+                (body, body_rotation, body_size.x),
+                alpha,
+            );
+        }
+        if worker_body {
+            worker::draw_welder(
+                game,
+                sprites,
+                unit,
+                animation,
+                (body, body_rotation, body_size.x),
+                alpha,
             );
         }
         if let Some(cycle) = animation.scanner

@@ -335,7 +335,64 @@ fn building_body_sources(
     }
 }
 
-fn building_contact(
+pub(super) fn strike_contact(
+    game: &crate::game::Scene<'_>,
+    sprites: &Sprites,
+    surface: Option<crate::game::HitSurface>,
+    from: Vec2,
+    to: Vec2,
+    style: crate::game::ShotStyle,
+) -> Option<Vec2> {
+    use crate::game::{HitSurface, ShotStyle};
+    match surface? {
+        HitSurface::Building(hit) => {
+            let aim = if style == ShotStyle::Contact {
+                to + (to - from).normalize_or_zero() * 0.15
+            } else {
+                to
+            };
+            building_contact(game, sprites, hit, from, aim)
+        }
+        HitSurface::Unit(body) => unit_contact(sprites, body, from, to),
+    }
+}
+
+pub(super) fn unit_contact(
+    sprites: &Sprites,
+    body: crate::game::UnitBody,
+    from: Vec2,
+    center: Vec2,
+) -> Option<Vec2> {
+    let rotate = |v: Vec2, angle: f32| {
+        vec2(
+            v.x * angle.cos() - v.y * angle.sin(),
+            v.x * angle.sin() + v.y * angle.cos(),
+        )
+    };
+    let source = sprites
+        .worker_body(body.kind, body.faction, 0, 0)
+        .map_or_else(
+            || {
+                sprites.unit_rig(body.kind).map_or_else(
+                    || sprites.unit(body.kind, body.faction),
+                    |rig| rig.hull(body.faction, 0).0,
+                )
+            },
+            |(body, _)| body,
+        );
+    let size = super::unit_draw_scale(body.kind);
+    sprites
+        .sprite_contact(
+            source,
+            rotate(from - center, -body.rotation),
+            Vec2::ZERO,
+            Vec2::splat(-size * 0.5),
+            Vec2::splat(size),
+        )
+        .map(|point| center + rotate(point, body.rotation))
+}
+
+pub(super) fn building_contact(
     game: &crate::game::Scene<'_>,
     sprites: &Sprites,
     hit: crate::game::BuildingHit,
@@ -369,13 +426,13 @@ fn building_contact(
     let frame = super::motion::building_frame(hit.kind, animation);
     let (source, _) = building_body_sources(sprites, hit.kind, hit.tier, hit.faction, frame.body);
     let (width, height) = hit.kind.tier_stats(hit.tier).size;
-    sprites.building_contact(
-        source,
-        from,
-        aim,
-        hit.anchor,
-        vec2(width as f32, height as f32),
-    )
+    let size = vec2(width as f32, height as f32);
+    let aim = if (aim - from).length_squared() < f32::EPSILON {
+        hit.anchor + size * 0.5
+    } else {
+        aim
+    };
+    sprites.sprite_contact(source, from, aim, hit.anchor, size)
 }
 
 fn draw_defense_mount(
@@ -554,6 +611,7 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                     DrawTextureParams {
                         dest_size: Some(dest),
                         source: Some(source),
+
                         ..Default::default()
                     },
                 );
@@ -586,6 +644,7 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
         let screen = game.presentation.camera.to_screen(anchor);
         let (w, h) = building.stats().size;
         let dest = vec2(w as f32 * zoom, h as f32 * zoom);
+
         let animation = game.presentation.animations.building_state(
             crate::presentation_animation::BuildingAnimationFacts::capture(game.state, building),
             crate::presentation_animation::AnimationClock::from_state(
@@ -632,14 +691,16 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                 _ => 0.0,
             };
             let rotation = 20.0_f32.to_radians() - cycle * std::f32::consts::TAU;
-            let pivot = screen + dest * vec2(0.5, 49.0 / 128.0);
+            let local_pivot = dest * vec2(0.5, 49.0 / 128.0);
+            let pivot = screen + local_pivot;
+            let layer_origin = pivot - local_pivot;
             let (source, accent) = layers[1];
             for (source, tint) in
                 std::iter::once((source, WHITE)).chain(accent_tint.map(|tint| (accent, tint)))
             {
                 draw(
-                    screen.x,
-                    screen.y,
+                    layer_origin.x,
+                    layer_origin.y,
                     tint,
                     DrawTextureParams {
                         dest_size: Some(dest),
@@ -1428,12 +1489,11 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                 from,
                 to,
                 splash,
-                building,
+                surface,
                 ..
             } => {
                 use crate::game::ShotStyle;
-                let contact = building
-                    .and_then(|hit| building_contact(game, sprites, hit, from, to))
+                let contact = strike_contact(game, sprites, surface, from, to, style)
                     .filter(|&contact| game.presentation.all_seeing() || sees(contact))
                     .unwrap_or(to);
                 let a = game.presentation.camera.to_screen(from);
@@ -1459,6 +1519,30 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                             radius,
                             impact,
                         );
+                    }
+                    if style == ShotStyle::Contact {
+                        let normal = vec2(0.8, -0.6);
+                        let tangent = vec2(-normal.y, normal.x);
+                        let zoom = game.presentation.camera.zoom;
+                        for side in [-1., 1.] {
+                            let origin = b + tangent * side * zoom * 0.045;
+                            let end = origin
+                                + (normal * side + tangent * 0.35) * zoom * (0.06 + impact * 0.12);
+                            line_between(
+                                origin,
+                                end,
+                                (zoom * 0.035).max(1.),
+                                Color::new(0.91, 0.69, 0.40, fade),
+                            );
+                        }
+                        if impact < 0.4 {
+                            fill_circle(
+                                b,
+                                zoom * 0.045 * (1. - impact),
+                                Color::new(1., 0.88, 0.64, fade),
+                            );
+                        }
+                        continue;
                     }
                     let seed = (to.x * 31.7 + to.y * 17.3).abs();
                     for i in 0..3 {
