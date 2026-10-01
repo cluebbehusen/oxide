@@ -101,19 +101,21 @@ nearest hostile start. Ground threats count only where ground connects them to
 the building, except that a seat under the stance's minimum army also puts up a
 Turret against enemy buildings and starts across a chasm, whose units could
 land. Flak Turrets answer seen or remembered enemy aircraft or a known enemy
-Airworks. Guns hold a threat once they are worth it divided by the margin an
-attack brings over a defense; the threat is the armed enemies known behind the
-approach, and at least an army at the stance's minimum. Each site is an
-investment worth how far the guns covering the approach it covers fall short of
-that, by the building's value, by how sure the seat is of the threat, and by
-personality: fortification for Turrets and Bastions, fortification and support
-for Flak Turrets. A seat under the stance's minimum army with no Turret puts one
-up before any tech, whatever its fortification: one gun holds an early rush that
-a tech building still going up would not. A Bastion counts only ground the
-seat's or an ally's buildings see. When the threat is only a guess from public
-facts, equal sites go to the one nearest the building; otherwise to the one
-nearest the threat. Sites go only on ground where one of the seat's Harvesters
-stands to build them, and a site the simulation refused is skipped for a while.
+Airworks. Guns hold a threat once they are worth it, with every upgrade they
+have had, divided by the margin an attack brings over a defense; the threat is
+the armed enemies known behind the approach, on ground connected to the building
+unless they could only land, and at least an army at the stance's minimum. Each
+site is an investment worth how far the guns covering the approach it covers
+fall short of that, by the building's value, by how sure the seat is of the
+threat, and by personality: fortification for Turrets and Bastions,
+fortification and support for Flak Turrets. A seat under the stance's minimum
+army with no Turret puts one up before any tech, whatever its fortification: one
+gun holds an early rush that a tech building still going up would not. A Bastion
+counts only ground the seat's or an ally's buildings see. When the threat is
+only a guess from public facts, equal sites go to the one nearest the building;
+otherwise to the one nearest the threat. Sites go only on ground where one of
+the seat's Harvesters stands to build them, and a site the simulation refused is
+skipped for a while.
 
 Once the opening economy is up, a seat whose army is still under the stance's
 minimum weighs a hostile start nearly like seen enemies, so most seats put up an
@@ -254,13 +256,14 @@ for a while, which spaces them out, while attacks, lifts and strikes may still
 go after it.
 
 Once its income reaches a level that falls with guile, the seat keeps the
-Scuttlers, alive or queued, that a raid on the least defended known harvest line
-needs. Once it has scrap to spare, less the more it leans on siege, it keeps a
-Sapper for each known enemy defense that can hit ground around the targets of
-attacks under way and of the next attack. An attack on a target with such
-defenses takes a free Sapper along for each while it gathers or recovers, and
-once it fights sends each at the nearest such defense on its ground, leaving
-them to it when the rest of the army moves on.
+Scuttlers, alive or queued and out on no other mission, that a raid on the least
+defended known harvest line needs. Once it has scrap to spare, less the more it
+leans on siege, it keeps a Sapper for each known enemy defense, in sight or
+remembered, that can hit ground around the targets of attacks under way and of
+the next attack. An attack on a target with such defenses takes a free Sapper
+along for each while it gathers or recovers, and once it fights sends each at
+the nearest such defense on its ground, leaving them to it when the rest of the
+army moves on.
 
 ## Scouting
 
@@ -269,10 +272,11 @@ remembers when it last saw each. Each point unseen for a while draws its own
 scout, the most valuable first: hostile starts, then sites nearer an enemy than
 home. A scout moves on to the next point no other scout holds when it sees its
 own. Scouts are free Kestrels or Gnats, or else Scuttlers that can walk there.
-For each stale point no scout could take, the seat trains one: its air scout
-once it has an Airworks, a Scuttler before. An air scout flies around known
-anti-air when the straight line crosses it, and a point whose scout was lost on
-the way counts as seen, so the next scout waits until it is stale again.
+For each stale point no scout could take, the seat trains one that could reach
+it: its air scout once it has an Airworks, a Scuttler before. It trains none
+while no mission could take another. An air scout flies around known anti-air
+when the straight line crosses it, and a point whose scout was lost on the way
+counts as seen, so the next scout waits until it is stale again.
 
 ## Support
 

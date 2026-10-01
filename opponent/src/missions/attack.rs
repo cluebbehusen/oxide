@@ -227,11 +227,16 @@ impl Missions {
             held: held.clone(),
             per_tender: super::support::per_tender(profile.traits.support),
         };
-        let mut defenses: Vec<oxide_sim::BuildingId> = held
+        // Remembered buildings share one id, so a defense is told apart by
+        // where it stands.
+        let mut defenses: Vec<_> = held
             .iter()
             .filter_map(|target| plan.target(target.owner, target.building, target.anchor))
             .chain(plan.best(None))
-            .flat_map(|target| plan.defenses(target).map(|building| building.id))
+            .flat_map(|target| {
+                plan.defenses(target)
+                    .map(|building| (building.player, building.kind, building.anchor))
+            })
             .collect();
         defenses.sort_unstable();
         defenses.dedup();

@@ -15,7 +15,7 @@ use crate::saving::Saving;
 use crate::trace::{NextPurchase, Purchase, SavingTarget};
 use crate::workers;
 use chassis::grid::TilePos;
-use oxide_sim::observation::{BuildingObs, ObservationData};
+use oxide_sim::observation::{BuildingObs, ObservationData, UnitObs};
 use oxide_sim::scenario::{BotDifficulty, BotStance};
 use oxide_sim::stats::Role;
 use oxide_sim::{BuildingId, BuildingKind, Command, PlayerCommand, PlayerId, UnitId, UnitKind};
@@ -452,8 +452,8 @@ pub(crate) fn decide(
             train_raiders(
                 observation,
                 profile,
-                scuttlers,
-                sappers,
+                (scuttlers, sappers),
+                &persistent.missions.held_outside_raids(),
                 &producers,
                 &mut ledger,
             );
@@ -643,8 +643,8 @@ fn train_carriers(
 }
 
 /// Trains a scout while fewer are in production than the `lacking` stale
-/// places no scout could take: the faction's air scout at a built Airworks,
-/// else a Scuttler at a Foundry. Once an air scout can be trained a Scuttler
+/// places no scout could take but the one it would train could reach: the
+/// faction's air scout at a built Airworks, else a Scuttler at a Foundry. Once an air scout can be trained a Scuttler
 /// no longer counts, since one that could reach a stale point would already
 /// be scouting.
 fn train_scout(
@@ -724,14 +724,15 @@ fn train_tenders(
     }
 }
 
-/// Keeps `scuttlers`, alive or queued, for raiding, and the `sappers` the
-/// seat's attacks want once it has scrap to spare, less the more it leans on
-/// siege. Each trains at a ready producer that can.
+/// Keeps `scuttlers`, alive or queued and held by no mission but a raid, for
+/// raiding, and the `sappers` the seat's attacks want once it has scrap to
+/// spare, less the more it leans on siege. Each trains at a ready producer
+/// that can. `elsewhere` lists the units missions other than raids hold.
 fn train_raiders(
     observation: &ObservationData,
     profile: &ResolvedProfile,
-    scuttlers: usize,
-    sappers: usize,
+    (scuttlers, sappers): (usize, usize),
+    elsewhere: &[UnitId],
     producers: &[Producer<'_>],
     ledger: &mut Ledger,
 ) {
@@ -740,9 +741,15 @@ fn train_raiders(
         (UnitKind::Scuttler, scuttlers, 0),
         (UnitKind::Sapper, sappers, spare),
     ] {
+        // A Scuttler out scouting cannot raid; a Sapper in an attack is what
+        // the attack wanted it for.
+        let free = |unit: &&UnitObs| {
+            kind != UnitKind::Scuttler || elsewhere.binary_search(&unit.id).is_err()
+        };
         let have = observation
             .my_units
             .iter()
+            .filter(free)
             .map(|unit| unit.kind)
             .chain(observation.my_queues.iter().flatten().copied())
             .filter(|owned| *owned == kind)

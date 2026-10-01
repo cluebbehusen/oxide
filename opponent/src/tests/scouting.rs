@@ -377,6 +377,7 @@ fn an_air_scout_replaces_a_scuttler_that_cannot_reach() {
 fn the_mission_cap_holds_back_a_scout() {
     let cap = crate::missions::MISSION_CAP;
     let mut scenario = field();
+    scenario.players[0].scrap = 1_000;
     scenario.units.push(unit(0, UnitKind::Scuttler, 6, 9));
     for index in 0..cap {
         let (x, y) = cap_spot(index);
@@ -401,10 +402,16 @@ fn the_mission_cap_holds_back_a_scout() {
     json["missions"] = serde_json::json!({"next": cap, "list": list, "waiting": null});
     let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
     let mut opponent = Opponent::restore(&checkpoint, &scenario, &state, map(&scenario)).unwrap();
-    let (_, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
+    let (commands, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
     let missions = trace.unwrap().missions;
     assert_eq!(missions.len(), cap);
     assert!(scouts(&missions).is_empty());
+    assert!(
+        trains(&commands)
+            .iter()
+            .all(|(_, kind)| *kind != UnitKind::Scuttler),
+        "a scout no mission could take is not trained: {commands:?}"
+    );
     assert!(Opponent::restore(&opponent.checkpoint(), &scenario, &state, map(&scenario)).is_ok());
 }
 
@@ -544,5 +551,28 @@ fn an_air_scout_flies_around_remembered_anti_air() {
     assert!(
         (via.y - 11).abs() > 7,
         "the detour passes the Flakhounds out of reach: {via:?}"
+    );
+}
+
+#[test]
+fn no_scuttler_is_trained_for_a_point_across_a_chasm() {
+    let mut scenario = field();
+    scenario.players[0].scrap = 1_000;
+    for row in &mut scenario.map[1..23] {
+        row.replace_range(16..32, &"~".repeat(16));
+    }
+    scenario.units.push(unit(0, UnitKind::Scuttler, 6, 9));
+    let mut state = scenario.build().unwrap();
+    advance_to(&mut state, STALE, &[]);
+    let (commands, trace) = seat(&scenario, 0).act_traced(&state, &mut OwnEvents::default());
+    assert!(
+        scouts(&trace.unwrap().missions).is_empty(),
+        "premise: the Scuttler cannot go"
+    );
+    assert!(
+        trains(&commands)
+            .iter()
+            .all(|(_, kind)| *kind != UnitKind::Scuttler),
+        "another could not go either: {commands:?}"
     );
 }

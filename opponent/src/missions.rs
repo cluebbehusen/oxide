@@ -509,6 +509,18 @@ impl Missions {
         });
     }
 
+    /// Units a mission other than a raid holds, by id.
+    pub(crate) fn held_outside_raids(&self) -> Vec<UnitId> {
+        let mut held: Vec<UnitId> = self
+            .list
+            .iter()
+            .filter(|mission| !matches!(mission.task, Task::Raid { .. }))
+            .flat_map(|mission| mission.units.iter().copied())
+            .collect();
+        held.sort_unstable();
+        held
+    }
+
     /// Units no mission holds, by id. A defense may also `borrow` units that
     /// a recovering defense or an attack out of contact would lend it.
     fn available(&self, observation: &ObservationData, borrow: bool) -> Vec<UnitId> {
