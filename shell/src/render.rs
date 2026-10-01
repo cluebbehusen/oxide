@@ -757,14 +757,21 @@ impl UnitSpriteFrame {
                 {
                     *pose = motion::HarvesterPose::Idle;
                 }
+                motion::UnitFrame::Excavator { pose, .. }
+                    if matches!(pose, motion::ExcavatorPose::Moving(_)) =>
+                {
+                    *pose = motion::ExcavatorPose::Idle;
+                }
                 _ => {}
             }
         }
         let worker_phase = match animation.locomotion {
-            crate::presentation_animation::LocomotionState::Rest => 0,
-            crate::presentation_animation::LocomotionState::Moving { cycle } => {
+            crate::presentation_animation::LocomotionState::Moving { cycle }
+                if !tracks::supported(kind) =>
+            {
                 motion::tread_phase(cycle)
             }
+            _ => 0,
         };
         let hull_phase = match animation.propulsion {
             crate::presentation_animation::PropulsionState::LiftRotors { cycle } => {
