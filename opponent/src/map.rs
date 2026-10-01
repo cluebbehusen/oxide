@@ -41,6 +41,8 @@ pub struct MapModel {
     /// Ground component per tile, numbered from one; zero where terrain blocks
     /// ground units.
     components: Grid<u32>,
+    /// What terrain does to a shot crossing each tile.
+    cover: Grid<Cover>,
     /// Each seat's authored Foundry anchor, by player index.
     starts: Vec<Option<TilePos>>,
     /// Each seat's home building spots, by player index.
@@ -53,6 +55,17 @@ pub struct MapModel {
     teams: Vec<Option<u8>>,
     /// Starting scrap fields away from every start.
     sites: Vec<Site>,
+}
+
+/// What terrain does to a shot crossing a tile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Cover {
+    /// Every shot crosses.
+    Open,
+    /// Stops direct fire between two ground units.
+    Partial,
+    /// Stops every shot.
+    Full,
 }
 
 /// A field of starting scrap away from every start, where a Foundry could
@@ -78,6 +91,18 @@ impl MapModel {
     fn new(map: &Map, anchors: &[(PlayerId, TilePos)], teams: Vec<Option<u8>>) -> Self {
         let seats = teams.len();
         let components = components(map);
+        let mut cover = Grid::new(map.width(), map.height(), Cover::Open);
+        for (tile, cell) in map.iter() {
+            if let Some(slot) = cover.get_mut(tile) {
+                *slot = if cell.terrain.blocks_all_fire() {
+                    Cover::Full
+                } else if cell.terrain.blocks_direct_fire() {
+                    Cover::Partial
+                } else {
+                    Cover::Open
+                };
+            }
+        }
         let mut starts = vec![None; seats];
         let mut spots = vec![Vec::new(); seats];
         let mut home_nodes = vec![Vec::new(); seats];
@@ -98,6 +123,7 @@ impl MapModel {
         let sites = sites(map, &components, anchors);
         Self {
             components,
+            cover,
             starts,
             spots,
             home_nodes,
@@ -173,6 +199,16 @@ impl MapModel {
             .get(tile)
             .copied()
             .filter(|component| *component != 0)
+    }
+
+    /// Whether a shot may cross `tile`: peaks stop every shot, and rock also
+    /// stops `direct` fire between two ground units.
+    pub(crate) fn shot_crosses(&self, tile: TilePos, direct: bool) -> bool {
+        match self.cover.get(tile) {
+            Some(Cover::Open) => true,
+            Some(Cover::Partial) => !direct,
+            Some(Cover::Full) | None => false,
+        }
     }
 
     /// Whether a ground unit in `component` can stand beside `tile`, which is
