@@ -10,13 +10,15 @@ use crate::decision::Ledger;
 use crate::frame::{HomeFrame, doubled, footprint_centre, gap, ring};
 use crate::investments::Investment;
 use crate::map::MapModel;
-use crate::memory::Memory;
+use crate::memory::{Memory, SeenUnit};
 use crate::placement;
 use crate::profile::{PersonalityTraits, ResolvedProfile};
 use crate::workers;
 use chassis::grid::TilePos;
 use oxide_sim::observation::{BuildingObs, ObservationData};
-use oxide_sim::stats::{BuildingStats, Domain, FOUNDRY_REPAIR_PRICE, REPAIR_BAY_RADIUS};
+use oxide_sim::stats::{
+    BuildingStats, CHARGE_DAMAGE, Domain, FOUNDRY_REPAIR_PRICE, REPAIR_BAY_RADIUS,
+};
 use oxide_sim::{BuildingKind, UnitKind};
 use std::cell::OnceCell;
 use std::cmp::Reverse;
@@ -35,9 +37,13 @@ const FAR: [i64; 4] = [9, 12, 15, 18];
 /// Tiles an Array's radar reaches.
 const RADAR: i64 = 20;
 
-/// Tiles from a Foundry's centre along its approach where Scuttle Charges
-/// go.
-const MINEFIELD: [i64; 4] = [3, 4, 5, 6];
+/// Tiles from a Foundry's centre along its approach where its Scuttle
+/// Charges start.
+const MINEFIELD_START: i64 = 3;
+
+/// Tiles either side of a Foundry's straight way in that its Scuttle Charges
+/// cover: about a blast wide.
+const MINEFIELD_WIDTH: i64 = 2;
 
 /// Tiles apart Scuttle Charges stand, so one blast does not set off the
 /// next.
@@ -239,6 +245,7 @@ struct Guard<'a> {
     /// Whether the seat's army is too small to hold on its own, so a threat
     /// known only from public facts weighs as much as a remembered one.
     exposed: bool,
+    stakes: Stakes,
 }
 
 impl<'a> Guard<'a> {
@@ -371,6 +378,7 @@ impl<'a> Guard<'a> {
             crews,
             settled,
             exposed,
+            stakes,
         })
     }
 
@@ -503,7 +511,10 @@ impl<'a> Guard<'a> {
     }
 
     /// The best spot for a Scuttle Charge: on the straight way in to a
-    /// Foundry, a few tiles out, clear of other own charges.
+    /// Foundry whose field still falls short of its threat, nearest the
+    /// Foundry, clear of other own charges. A field holds enough charges to
+    /// deal the health of the threat along the way divided by the margin, one
+    /// body to a blast; each spot is worth the share of that still missing.
     fn charge(&self) -> Option<(TilePos, u64)> {
         let observation = self.observation;
         let charges: Vec<TilePos> = observation
@@ -524,22 +535,40 @@ impl<'a> Guard<'a> {
             if !self.usable(approach) {
                 continue;
             }
-            let worth = asset.value * 2 * self.weight(approach, BuildingKind::ScuttleCharge);
-            for tile in along(asset.centre, approach.source, &MINEFIELD)
-                .into_iter()
-                .flat_map(tiles_at)
-            {
-                let clear = charges
-                    .iter()
-                    .all(|charge| charge.chebyshev(tile) >= CHARGE_SPACING);
-                if clear {
-                    sites.push((worth, self.frame.rank(approach.source, doubled(tile)), tile));
-                }
+            let health = health(self.memory, observation.tick, approach.source, self.stakes);
+            let need =
+                (health * 1_000 / self.stakes.margin.max(1)).div_ceil(u64::from(CHARGE_DAMAGE));
+            let field = Field::of(asset.centre, approach.source);
+            let laid = charges
+                .iter()
+                .filter(|charge| field.holds(doubled(**charge)))
+                .count() as u64;
+            if laid >= need {
+                continue;
             }
+            let worth = asset.value
+                * 2
+                * self.weight(approach, BuildingKind::ScuttleCharge)
+                * (need - laid)
+                / need;
+            let Some((row, tile)) = field.first(
+                |tile| {
+                    charges
+                        .iter()
+                        .all(|charge| charge.chebyshev(tile) >= CHARGE_SPACING)
+                        && self.placeable(BuildingKind::ScuttleCharge, tile)
+                },
+                |tile| self.frame.rank(approach.source, doubled(tile)),
+            ) else {
+                continue;
+            };
+            let rank = self.frame.rank(approach.source, doubled(tile));
+            sites.push((Reverse(worth), row, rank, tile));
         }
-        first_placeable(sites, |tile| {
-            self.placeable(BuildingKind::ScuttleCharge, tile)
-        })
+        sites
+            .into_iter()
+            .min()
+            .map(|(Reverse(worth), _, _, tile)| (tile, worth))
     }
 
     /// The best spot for a Repair Bay beside a guarded building: where its
@@ -1000,18 +1029,35 @@ pub(crate) fn emergency(
 /// `source`, by how sure it is they are still there, and at least an army at
 /// the stance's minimum.
 fn threat(memory: &Memory, now: u64, source: (i64, i64), domain: Domain, stakes: Stakes) -> u64 {
-    let near: u64 = memory
-        .units()
-        .iter()
-        .filter(|unit| {
-            let stats = unit.kind.stats();
-            !stats.weapons.is_empty()
-                && stats.domain == domain
-                && chebyshev(doubled(unit.tile), source) <= 2 * GROUP_TILES
-        })
+    let near: u64 = armed_near(memory, source, domain)
         .map(|unit| unit.value(now))
         .sum();
     near.max(stakes.minimum)
+}
+
+/// The health of the armed ground enemies the seat remembers near `source`,
+/// by how sure it is they are still there, and at least an army of Sentinels
+/// at the stance's minimum.
+fn health(memory: &Memory, now: u64, source: (i64, i64), stakes: Stakes) -> u64 {
+    let near: u64 = armed_near(memory, source, Domain::Ground)
+        .map(|unit| u64::from(unit.kind.stats().max_hp) * u64::from(unit.confidence(now)) / 1_000)
+        .sum();
+    let sentinel = UnitKind::Sentinel.stats();
+    near.max(stakes.minimum * u64::from(sentinel.max_hp) / u64::from(sentinel.cost))
+}
+
+/// The armed enemies in `domain` the seat remembers near `source`.
+fn armed_near(
+    memory: &Memory,
+    source: (i64, i64),
+    domain: Domain,
+) -> impl Iterator<Item = &SeenUnit> {
+    memory.units().iter().filter(move |unit| {
+        let stats = unit.kind.stats();
+        !stats.weapons.is_empty()
+            && stats.domain == domain
+            && chebyshev(doubled(unit.tile), source) <= 2 * GROUP_TILES
+    })
 }
 
 /// An enemy unit in sight that fights or carries others.
@@ -1284,6 +1330,70 @@ fn along(centre: (i64, i64), source: (i64, i64), tiles: &[i64]) -> Vec<(i64, i64
         .filter(|step| *step < length)
         .map(|step| (centre.0 + dx * step / length, centre.1 + dy * step / length))
         .collect()
+}
+
+/// A Foundry's minefield: a band about a blast wide either side of its
+/// straight way in, from a few tiles out toward the threat, in doubled
+/// coordinates.
+struct Field {
+    centre: (i64, i64),
+    /// From the Foundry's centre to the threat.
+    toward: (i64, i64),
+}
+
+impl Field {
+    fn of(centre: (i64, i64), source: (i64, i64)) -> Self {
+        Field {
+            centre,
+            toward: (source.0 - centre.0, source.1 - centre.1),
+        }
+    }
+
+    /// Whether `point` lies ahead of the Foundry, short of the threat and
+    /// within the band: among the tiles `first` tries, allowing for their
+    /// rounding to tile centres.
+    fn holds(&self, point: (i64, i64)) -> bool {
+        let (dx, dy) = self.toward;
+        let (px, py) = (point.0 - self.centre.0, point.1 - self.centre.1);
+        let length = dx.abs().max(dy.abs());
+        let squared = dx * dx + dy * dy;
+        let slack = 2 * (dx.abs() + dy.abs());
+        let ahead = px * dx + py * dy;
+        let across = (px * dy - py * dx).abs();
+        ahead > 0
+            && ahead <= squared + slack
+            && across * length <= 2 * MINEFIELD_WIDTH * squared + slack * length
+    }
+
+    /// The first tile that `fits`, a row at a time from nearest the Foundry
+    /// outward, as its row and the tile; within a row, the least by `rank`.
+    fn first<R: Ord>(
+        &self,
+        fits: impl Fn(TilePos) -> bool,
+        rank: impl Fn(TilePos) -> R,
+    ) -> Option<(i64, TilePos)> {
+        let (dx, dy) = self.toward;
+        let length = dx.abs().max(dy.abs());
+        let mut row = MINEFIELD_START;
+        while 2 * row < length {
+            let (ax, ay) = (
+                self.centre.0 + dx * 2 * row / length,
+                self.centre.1 + dy * 2 * row / length,
+            );
+            let mut tiles: Vec<TilePos> = (-MINEFIELD_WIDTH..=MINEFIELD_WIDTH)
+                .flat_map(|side| {
+                    tiles_at((ax - dy * 2 * side / length, ay + dx * 2 * side / length))
+                })
+                .collect();
+            tiles.sort_by_key(|tile| (rank(*tile), *tile));
+            tiles.dedup();
+            if let Some(tile) = tiles.into_iter().find(|tile| fits(*tile)) {
+                return Some((row, tile));
+            }
+            row += 1;
+        }
+        None
+    }
 }
 
 /// The tiles whose centres lie within half a tile of `point`: one when it

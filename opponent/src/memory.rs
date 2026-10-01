@@ -16,8 +16,10 @@ use serde::{Deserialize, Serialize};
 /// Ticks a failed footprint stays skipped.
 const FAILURE_TICKS: u64 = 3_600;
 
-/// Failures remembered at once; the oldest is forgotten first.
-const FAILURE_CAP: usize = 16;
+/// Failures, abandoned targets and raided targets each remembered at once,
+/// the oldest forgotten first: a computation bound that normal play stays
+/// under, since each is forgotten after `FAILURE_TICKS` anyway.
+const FAILURE_CAP: usize = 256;
 
 /// Ticks an enemy unit is remembered after it was last seen.
 const UNIT_TICKS: u64 = 600;

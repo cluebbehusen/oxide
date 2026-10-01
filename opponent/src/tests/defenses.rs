@@ -730,6 +730,78 @@ fn scuttle_charges_mine_the_way_in_apart_from_each_other() {
     assert!(second.chebyshev(first) >= 3, "{first:?} {second:?}");
 }
 
+/// The Scuttle Charges West lays where offered, one at a time, until none
+/// is, against `stakes` and what `memory` holds.
+fn minefield(stakes: defenses::Stakes, memory: &Memory) -> Vec<TilePos> {
+    let mut scenario = settled(0);
+    scenario
+        .buildings
+        .push(building(0, BuildingKind::Fabricator, 3, 1));
+    let mut laid = Vec::new();
+    for _ in 0..32 {
+        let state = scenario.build().unwrap();
+        let offered = wanted_at(0, true, &scenario, &state, memory, 85, stakes);
+        let Some((anchor, _)) = offer(&offered, BuildingKind::ScuttleCharge) else {
+            return laid;
+        };
+        laid.push(anchor);
+        scenario
+            .buildings
+            .push(building(0, BuildingKind::ScuttleCharge, anchor.x, anchor.y));
+    }
+    panic!("the minefield never holds the threat off: {laid:?}");
+}
+
+#[test]
+fn a_minefield_grows_with_the_threat_along_the_way_in() {
+    let stance = |stance| defenses::Stakes {
+        minimum: crate::missions::minimum(stance),
+        ..defenses::Stakes::default()
+    };
+    let turtle = minefield(stance(BotStance::Turtle), &Memory::default());
+    let aggressive = minefield(stance(BotStance::Aggressive), &Memory::default());
+    assert!(
+        turtle.len() > aggressive.len(),
+        "{turtle:?} against {aggressive:?}"
+    );
+
+    let quiet = minefield(defenses::Stakes::default(), &Memory::default());
+    let army: Vec<serde_json::Value> = (0..12)
+        .map(|index| {
+            serde_json::json!({
+                "id": 1_000 + index,
+                "kind": "sentinel",
+                "tile": {"x": 17 + index % 3, "y": 3 + index / 3},
+                "seen": 0,
+            })
+        })
+        .collect();
+    let memory: Memory = serde_json::from_value(serde_json::json!({
+        "units": army,
+        "failures": [],
+        "abandoned": [],
+        "scouted": [],
+    }))
+    .unwrap();
+    let massed = minefield(defenses::Stakes::default(), &memory);
+    assert!(massed.len() > quiet.len(), "{massed:?} against {quiet:?}");
+}
+
+#[test]
+fn a_minefield_fills_from_the_foundry_out_toward_the_threat() {
+    let laid = minefield(defenses::Stakes::default(), &Memory::default());
+    assert!(laid.len() > 2, "premise: more than the old ring: {laid:?}");
+    for (index, charge) in laid.iter().enumerate() {
+        assert!(charge.x > FOUNDRY.x + 1, "{laid:?}");
+        assert!(
+            laid[..index]
+                .iter()
+                .all(|earlier| earlier.chebyshev(*charge) >= 3 && earlier.x <= charge.x + 1),
+            "{laid:?}"
+        );
+    }
+}
+
 #[test]
 fn mirrored_seats_watch_bar_and_mine_mirrored_spots() {
     let mut scenario = settled(0);

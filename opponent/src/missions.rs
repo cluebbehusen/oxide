@@ -40,9 +40,9 @@ pub(crate) use support::{per_tender, wounds};
 /// together with the missions of every other kind in normal play.
 pub(crate) const MISSION_CAP: usize = 128;
 
-/// Units one mission holds: a computation bound on a mission's orders, which
-/// normal play stays under.
-const UNIT_CAP: usize = 256;
+/// Units one mission holds: a computation bound on a mission's orders, above
+/// any army a seat fields in normal play.
+const UNIT_CAP: usize = 4_096;
 
 /// The seat's missions, by id.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
