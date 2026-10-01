@@ -4,6 +4,7 @@
 //! nothing here applies damage directly.
 
 mod blind;
+use super::contact;
 pub(super) use blind::{ShotBuffers, attack_known, automatic_radar, normalize_order};
 
 use super::super::flight;
@@ -49,6 +50,27 @@ fn shot_crosses(state: &State, t: TilePos, full: bool) -> bool {
 fn within_weapon_reach(weapon: &WeaponStats, distance_sq: chassis::fx::Fx) -> bool {
     distance_sq <= weapon.range * weapon.range
         && distance_sq >= weapon.minimum_range * weapon.minimum_range
+}
+
+fn within_unit_weapon_reach(
+    state: &State,
+    kind: crate::UnitKind,
+    target: Target,
+    weapon: &WeaponStats,
+    distance_sq: Fx,
+) -> bool {
+    let range = if let Some(reach) = kind.stats().contact_reach {
+        let target_radius = match target {
+            Target::Unit(id) => state.unit(id).map_or(Fx::ZERO, |u| u.kind.stats().radius),
+            Target::Building(_) => Fx::ZERO,
+        };
+        weapon
+            .range
+            .min(kind.stats().radius + target_radius + reach)
+    } else {
+        weapon.range
+    };
+    distance_sq <= range * range && distance_sq >= weapon.minimum_range * weapon.minimum_range
 }
 
 /// Buffers a shot: the direct hit, plus — for splash weapons — one hit on
@@ -708,6 +730,7 @@ fn retreat_to_firing_stand(
         return false;
     };
     state.unit_mut(id).expect("caller checked").path = Some(PathFollow {
+        final_point: None,
         goal,
         waypoints,
         next: 0,
@@ -894,7 +917,7 @@ pub(super) fn advance(
             }
             let dist = pos.dist_sq(target.pos);
             let full = traces_terrain(&weapon, stats.domain, domain);
-            if !within_weapon_reach(&weapon, dist)
+            if !within_unit_weapon_reach(state, kind, Target::Unit(target.id), &weapon, dist)
                 || !shot_open(target.tile(), full)
                 || chassis::path::line_blocked(pos, target.pos, |t| shot_open(t, full))
             {
@@ -922,9 +945,9 @@ pub(super) fn advance(
                     let aim = b.closest_point_to(pos);
                     (pos.dist_sq(aim), b.id, aim)
                 })
-                .filter(|(dist, _, aim)| {
+                .filter(|(dist, bid, aim)| {
                     let full = traces_terrain(&weapon, stats.domain, Domain::Ground);
-                    within_weapon_reach(&weapon, *dist)
+                    within_unit_weapon_reach(state, kind, Target::Building(*bid), &weapon, *dist)
                         && super::super::movement::advancing_weapon_aligned(unit, *aim - pos)
                         && shot_open(TilePos::containing(*aim), full)
                         && !chassis::path::line_blocked(pos, *aim, |t| shot_open(t, full))
@@ -1139,6 +1162,7 @@ fn sapper_attack(
         Some((goal, waypoints)) => {
             let unit = state.unit_mut(id).expect("caller checked");
             unit.path = Some(PathFollow {
+                final_point: None,
                 goal,
                 waypoints,
                 next: 0,
@@ -1280,6 +1304,7 @@ fn bomber_attack(
         let unit = state.unit_mut(id).expect("caller checked");
         unit.cooldowns[pi] = weapon.cooldown_ticks;
         unit.path = egress.map(|goal| PathFollow {
+            final_point: None,
             goal,
             waypoints: vec![goal],
             next: 0,
@@ -1298,6 +1323,7 @@ fn bomber_attack(
         {
             let unit = state.unit_mut(id).expect("caller checked");
             unit.path = Some(PathFollow {
+                final_point: None,
                 goal,
                 waypoints: vec![goal],
                 next: 0,
@@ -1323,6 +1349,7 @@ fn bomber_attack(
         let departure = egress_goal(state, pos, heading, stats);
         let unit = state.unit_mut(id).expect("caller checked");
         unit.path = departure.map(|waypoint| PathFollow {
+            final_point: None,
             goal: target_tile,
             waypoints: vec![waypoint],
             next: 0,
@@ -1350,6 +1377,7 @@ fn bomber_attack(
             Some(waypoints) => {
                 let unit = state.unit_mut(id).expect("caller checked");
                 unit.path = Some(PathFollow {
+                    final_point: None,
                     goal: target_tile,
                     waypoints,
                     next: 0,
@@ -1480,10 +1508,16 @@ pub(super) fn attack(
             .unit(uid)
             .filter(|t| t.hp > 0)
             .map(|t| (t.pos, t.tile())),
-        Target::Building(bid) => state
-            .building(bid)
-            .filter(|b| b.hp > 0)
-            .map(|b| (b.closest_point_to(pos), b.anchor)),
+        Target::Building(bid) => state.building(bid).filter(|b| b.hp > 0).map(|b| {
+            (
+                if stats.contact_reach.is_some() {
+                    state.contact_surface(b).closest(pos)
+                } else {
+                    b.closest_point_to(pos)
+                },
+                b.anchor,
+            )
+        }),
     };
     let victim_domain = target_domain(state, target);
     let primary = stats
@@ -1518,7 +1552,7 @@ pub(super) fn attack(
             b.tiles().any(|t| state.can_see(me, t)) && state.building_apparent(me, b)
         }),
     };
-    let in_range = within_weapon_reach(weapon, pos.dist_sq(aim_point));
+    let in_range = within_unit_weapon_reach(state, kind, target, weapon, pos.dist_sq(aim_point));
     let full = traces_terrain(weapon, stats.domain, victim_domain);
     // The line trace skips endpoint tiles by design — but a building's
     // closest-footprint aim point is an exact edge coordinate that can
@@ -1624,7 +1658,11 @@ pub(super) fn attack(
     // never fire. If terrain offers no legal stand, hold and retry instead of
     // making the geometry worse.
     if pos.dist_sq(aim_point) < weapon.minimum_range * weapon.minimum_range {
-        retreat_to_firing_stand(state, id, target, victim_domain, weapon);
+        if let Target::Building(building) = target {
+            approach_firing_area(state, id, building, weapon);
+        } else {
+            retreat_to_firing_stand(state, id, target, victim_domain, weapon);
+        }
         return;
     }
 
@@ -1716,6 +1754,7 @@ pub(super) fn attack(
                     Some((goal, waypoints)) => {
                         let unit = state.unit_mut(id).expect("caller checked");
                         unit.path = Some(PathFollow {
+                            final_point: None,
                             goal,
                             waypoints,
                             next: 0,
@@ -1741,9 +1780,12 @@ pub(super) fn attack(
             }
         }
         Target::Building(bid) => {
-            let b = state.building(bid).expect("resolved above");
-            let (anchor, size) = (b.anchor, b.stats().size);
-            if approach_rect(state, id, anchor, size) {
+            let approached = if stats.contact_reach.is_some() {
+                contact::approach(state, id, bid)
+            } else {
+                approach_firing_area(state, id, bid, weapon)
+            };
+            if approached {
                 Ok(())
             } else {
                 Err(StallReason::NoRoute)
@@ -1988,6 +2030,88 @@ pub(super) fn target_standing(state: &State, target: Target) -> bool {
         Target::Unit(u) => state.unit(u).is_some_and(|u| u.hp > 0),
         Target::Building(b) => state.building(b).is_some_and(|b| b.hp > 0),
     }
+}
+
+fn approach_firing_area(
+    state: &mut State,
+    id: UnitId,
+    building: crate::BuildingId,
+    weapon: &WeaponStats,
+) -> bool {
+    let unit = state.unit(id).expect("attacker");
+    let b = state.building(building).expect("visible building");
+    let (from, kind, player, pos) = (unit.tile(), unit.kind, unit.player, unit.pos);
+    let domain = unit.domain();
+    let full = traces_terrain(weapon, domain, Domain::Ground);
+    let legal = |point: Vec2Fx| {
+        let aim = b.closest_point_to(point);
+        state.passable_for(domain, TilePos::containing(point))
+            && crate::tick::crowding::standable(state, unit, point)
+            && within_weapon_reach(weapon, point.dist_sq(aim))
+            && shot_crosses(state, TilePos::containing(aim), full)
+            && !chassis::path::line_blocked(point, aim, |t| shot_crosses(state, t, full))
+    };
+    if unit.path.as_ref().is_some_and(|path| {
+        let point = path.final_point.unwrap_or(path.goal.center());
+        legal(point) && !crate::tick::crowding::claimed(state, id, point, true)
+    }) {
+        return true;
+    }
+    let r = weapon.range.ceil().to_num::<i32>();
+    let (w, h) = b.stats().size;
+    let frame = crate::tick::rect_approach_origin(state, player, from, b.anchor, (w, h));
+    let mut points = Vec::new();
+    for y in ((b.anchor.y - r).max(0) * 2)..((b.anchor.y + h + r).min(state.map.height()) * 2) {
+        for x in ((b.anchor.x - r).max(0) * 2)..((b.anchor.x + w + r).min(state.map.width()) * 2) {
+            let point = Vec2Fx::new(
+                Fx::from_num(x) / 2 + Fx::lit("0.25"),
+                Fx::from_num(y) / 2 + Fx::lit("0.25"),
+            );
+            if legal(point) {
+                points.push(point);
+            }
+        }
+    }
+    let aim = b.closest_point_to(pos);
+    let distance = pos.dist(aim);
+    if distance > weapon.range {
+        let point = pos.move_toward(aim, distance - weapon.range + Fx::lit("0.02"));
+        if legal(point) {
+            points.push(point);
+        }
+    }
+    points.sort_by_key(|&point| {
+        (
+            pos.dist_sq(point),
+            crate::geometry::rect_approach_key_from(
+                from,
+                frame,
+                b.anchor,
+                (w, h),
+                TilePos::containing(point),
+            ),
+            (point.x - pos.x) * (frame.center().y - pos.y)
+                - (point.y - pos.y) * (frame.center().x - pos.x),
+        )
+    });
+    let candidates = points
+        .into_iter()
+        .map(|point| crate::tick::crowding::Position {
+            goal: TilePos::containing(point),
+            point,
+        })
+        .collect();
+    let path = crate::tick::crowding::choose(
+        state,
+        id,
+        candidates,
+        b.center(),
+        |tile| state.passable_for(domain, tile),
+        |goal| super::super::route_for_position(state, kind, pos, goal),
+    );
+    let reachable = path.is_some();
+    state.unit_mut(id).expect("attacker").path = path;
+    reachable
 }
 
 #[cfg(test)]
@@ -2400,6 +2524,7 @@ mod tests {
         target.heading = 0;
         target.drive_speed = target.kind.stats().speed / 6;
         target.path = Some(PathFollow {
+            final_point: None,
             goal: TilePos::new(3, 1),
             waypoints: vec![TilePos::new(5, 1), TilePos::new(3, 1)],
             next: 0,
@@ -2418,6 +2543,7 @@ mod tests {
         );
         state.units[1].drive_speed = Fx::ZERO;
         state.units[1].path = Some(PathFollow {
+            final_point: None,
             goal: TilePos::new(8, 1),
             waypoints: vec![TilePos::new(8, 1)],
             next: 0,
@@ -2440,6 +2566,7 @@ mod tests {
             state.units[1].drive_speed = UnitKind::Scuttler.stats().speed;
             let target = state.units[1].id;
             state.units[1].path = Some(PathFollow {
+                final_point: None,
                 goal: turn,
                 waypoints: vec![TilePos::new(8, 1), turn],
                 next: 0,

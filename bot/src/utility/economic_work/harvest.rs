@@ -6,6 +6,7 @@ use super::*;
 #[cfg(test)]
 use crate::observation::ObservationData;
 use crate::orient::Orientation;
+use chassis::fx::Fx;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(in crate::utility) struct HarvestRegion {
@@ -32,6 +33,7 @@ impl HarvestRegion {
 struct HarvestGeometry<'a, 'cache> {
     commands: RouteProjection<'a>,
     services: &'cache mut [HarvestService],
+    orientation: Orientation,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -90,7 +92,7 @@ impl HarvestService {
 
 struct HarvestWorkRegion {
     value: HarvestRegion,
-    positions: BTreeSet<TilePos>,
+    positions: std::collections::BTreeMap<TilePos, usize>,
 }
 
 impl HarvestGeometryCache {
@@ -182,7 +184,7 @@ impl HarvestGeometry<'_, '_> {
                     workers: Vec::new(),
                     producer_access: Default::default(),
                 },
-                positions: BTreeSet::new(),
+                positions: Default::default(),
             })
             .collect::<Vec<_>>();
         let mut weighted_haul = vec![0u128; regions.len()];
@@ -202,23 +204,43 @@ impl HarvestGeometry<'_, '_> {
         }
         for ((y, x), amount) in sources {
             let source = TilePos::new(x, y);
-            let work_tiles = if obs.known_scrap_at(source) {
-                (-1..=1)
-                    .flat_map(|dy| (-1..=1).map(move |dx| source.offset(dx, dy)))
-                    .filter(|tile| *tile != source && self.commands.open(*tile))
-                    .collect::<Vec<_>>()
-            } else if self.commands.open(source) {
-                vec![source]
-            } else {
-                Vec::new()
-            };
+            let radius = UnitKind::Harvester.stats().radius;
+            let spacing = radius * Fx::lit("1.30");
+            let mut candidates = oxide_sim::geometry::work_positions(
+                source,
+                (1, 1),
+                oxide_sim::geometry::work_approach_distance(radius) + Fx::lit("0.06"),
+                spacing / 2,
+            );
+            candidates.sort_by_key(|point| {
+                let oriented = self.orientation.position(*point);
+                (point.dist_sq(source.center()), oriented.y, oriented.x)
+            });
+            let mut work_points = Vec::new();
+            for point in candidates {
+                let goal = TilePos::containing(point);
+                if self.commands.open(goal)
+                    && oxide_sim::geometry::circle_clear(point, radius, |tile| {
+                        tile == source || self.commands.open(tile)
+                    })
+                    && work_points.iter().all(|previous: &chassis::fx::Vec2Fx| {
+                        previous.dist_sq(point) >= spacing * spacing
+                    })
+                {
+                    work_points.push(point);
+                }
+            }
+            let mut work_tiles = std::collections::BTreeMap::<TilePos, usize>::new();
+            for point in work_points {
+                *work_tiles.entry(TilePos::containing(point)).or_default() += 1;
+            }
             let chosen = self
                 .services
                 .iter_mut()
                 .enumerate()
                 .filter_map(|(index, service)| {
                     let accessible = work_tiles
-                        .iter()
+                        .keys()
                         .filter_map(|&tile| {
                             service
                                 .corridor_distance(tile, &self.commands)
@@ -237,12 +259,13 @@ impl HarvestGeometry<'_, '_> {
             region.value.work.amount = region.value.work.amount.saturating_add(amount);
             weighted_haul[index] = weighted_haul[index]
                 .saturating_add(u128::from(distance).saturating_mul(u128::from(amount)));
-            region
-                .positions
-                .extend(accessible.into_iter().map(|(tile, _)| tile));
+            for (tile, _) in accessible {
+                let capacity = region.positions.entry(tile).or_default();
+                *capacity = (*capacity).max(work_tiles[&tile]);
+            }
         }
         for (region, weighted) in regions.iter_mut().zip(weighted_haul) {
-            region.value.work.positions = region.positions.len();
+            region.value.work.positions = region.positions.values().sum();
             region.value.work.haul_cost = u32::try_from(
                 weighted
                     .checked_div(u128::from(region.value.work.amount))
@@ -284,7 +307,7 @@ impl HarvestGeometry<'_, '_> {
                         PublicGroundDistances::from_sources_avoiding(
                             QueryPurpose::HarvestValuation,
                             briefing,
-                            regions[index].positions.iter().copied(),
+                            regions[index].positions.keys().copied(),
                             |tile| !self.commands.open(tile),
                         )
                     })
@@ -385,7 +408,11 @@ impl UtilityPolicy {
         );
         let mut cache = self.queries.harvest_geometry_cache.borrow_mut();
         let services = cache.prepare(&commands, briefing, obs);
-        let mut geometry = HarvestGeometry { commands, services };
+        let mut geometry = HarvestGeometry {
+            commands,
+            services,
+            orientation,
+        };
         let mut regions = geometry.value_resources(self, obs, &danger);
         geometry.credit_live_workers(self, obs, briefing, unavailable, &mut regions);
         geometry.credit_producers(obs, briefing, resources, orientation, &mut regions);
@@ -400,6 +427,47 @@ impl UtilityPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn partial_source_frontage_preserves_capacity_after_a_half_turn() {
+        use super::super::super::test_world as world;
+        let scenario = world::scenario_with(|tile| {
+            if (tile.y == 11 && (14..=16).contains(&tile.x)) || (tile.x == 16 && tile.y == 12) {
+                '#'
+            } else {
+                '.'
+            }
+        });
+        let map = PublicMapBriefing::from_scenario(&scenario).unwrap();
+        let mut obs = world::observation(PlayerId(0), world::LEFT_HOME);
+        obs.visible.fill(true);
+        obs.known_scrap = vec![(TilePos::new(15, 12), 500)];
+        obs.my_units.clear();
+        let turn = Orientation::for_map(
+            obs.map_width,
+            obs.map_height,
+            TilePos::new(obs.map_width - 1, obs.map_height - 1),
+        );
+        let rotated_obs = turn.observe(&obs);
+        let rotated_map = turn.briefing(&map);
+        let policy = UtilityPolicy::new();
+        let evaluate = |obs: &Observation, map: &PublicMapBriefing, home| {
+            policy.economic_harvest_regions(
+                obs,
+                map,
+                &ResourceSnapshot::from_observation(obs),
+                Orientation::for_home(obs, home),
+                &[],
+                (&[], &[]),
+            )
+        };
+        let original = evaluate(&obs, &map, world::LEFT_HOME);
+        let rotated = evaluate(&rotated_obs, &rotated_map, turn.tile(world::LEFT_HOME));
+        assert_eq!(original.len(), 1);
+        assert_eq!(rotated.len(), 1);
+        assert!(original[0].work.positions > 0);
+        assert_eq!(original[0].work, rotated[0].work);
+    }
 
     #[test]
     fn harvest_regions_share_dropoffs_without_double_counting_work_or_worker_supply() {
@@ -453,7 +521,7 @@ mod tests {
         let left = regions.iter().find(|r| r.service.x < 20).unwrap();
         let right = regions.iter().find(|r| r.service.x > 20).unwrap();
         assert_eq!((left.work.amount, left.work.positions), (250, 10));
-        assert_eq!((right.work.amount, right.work.positions), (500, 1));
+        assert_eq!((right.work.amount, right.work.positions), (500, 8));
         assert_eq!(
             left.workers.len(),
             3,
@@ -463,7 +531,20 @@ mod tests {
         assert!(left.workers[1].ready_after > 0);
         assert!(left.workers[2].ready_after > left.workers[1].ready_after);
         assert_eq!(right.workers.len(), 1);
-        assert_eq!(right.workers[0].ready_after, 0);
+        assert!(
+            right.workers[0].ready_after > 0,
+            "a worker on the wreck still has to reach its perimeter"
+        );
+        assert!(
+            right.marginal(
+                WorkerService {
+                    kind: UnitKind::Harvester,
+                    ready_after: 0
+                },
+                1_000
+            ) > 0,
+            "a reachable wreck can benefit from a second worker"
+        );
         assert!(left.producer_distance(BuildingId(0)).is_some());
         assert!(left.producer_distance(BuildingId(2)).is_none());
         assert!(right.producer_distance(BuildingId(0)).is_none());

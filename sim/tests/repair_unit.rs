@@ -7,6 +7,7 @@
 mod common;
 use common::{arena, cmd, run_until, unit};
 
+use chassis::fx::{Fx, Vec2Fx};
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
 use oxide_sim::scenario::UnitSpec;
@@ -128,6 +129,7 @@ fn departure_case(work: DepartingWork, tick: u64) -> (State, UnitId, UnitId, Pla
         json["buildings"][slot]["hp"] =
             serde_json::json!(BuildingKind::Turret.base_stats().max_hp - 10);
     }
+    json["units"][0]["pos"] = serde_json::json!(Vec2Fx::new(Fx::lit("4.8"), Fx::lit("5.5")));
     let state: State = serde_json::from_value(json).unwrap();
 
     let command = match work {
@@ -463,6 +465,8 @@ fn a_stationary_work_order_remains_weldable() {
         json["units"][0]["progress"] = serde_json::json!(weld_step_progress(UnitKind::Harvester));
         json["units"][1]["hp"] = serde_json::json!(UnitKind::Harvester.stats().max_hp - 10);
         json["units"][2]["hp"] = serde_json::json!(UnitKind::Harvester.stats().max_hp - 10);
+        json["units"][0]["pos"] = serde_json::json!(Vec2Fx::new(Fx::lit("4.8"), Fx::lit("5.5")));
+        json["units"][2]["pos"] = serde_json::json!(Vec2Fx::new(Fx::lit("6.2"), Fx::lit("5.5")));
         let mut state: State = serde_json::from_value(json).unwrap();
 
         let before = state.unit(patient).unwrap().hp;
@@ -525,6 +529,7 @@ fn a_patient_that_parks_during_its_brain_is_weldable_on_both_parities() {
             "waypoints": [{"x": 6, "y": 5}, {"x": 7, "y": 5}],
             "next": 0
         });
+        json["units"][0]["pos"] = serde_json::json!(Vec2Fx::new(Fx::lit("4.8"), Fx::lit("5.5")));
         let mut state: State = serde_json::from_value(json).unwrap();
 
         let before = state.unit(patient).unwrap().hp;
@@ -572,6 +577,12 @@ fn a_departing_patient_propagates_through_an_in_reach_weld_chain() {
         json["units"][1]["progress"] = serde_json::json!(weld_step_progress(UnitKind::Harvester));
         json["units"][1]["hp"] = serde_json::json!(UnitKind::Harvester.stats().max_hp - 10);
         json["units"][2]["hp"] = serde_json::json!(UnitKind::Harvester.stats().max_hp - 10);
+        for (slot, x) in [Fx::lit("4.75"), Fx::lit("5.45"), Fx::lit("6.2")]
+            .into_iter()
+            .enumerate()
+        {
+            json["units"][slot]["pos"] = serde_json::json!(Vec2Fx::new(x, Fx::lit("5.5")));
+        }
         let mut state: State = serde_json::from_value(json).unwrap();
 
         let before_hp = state.unit(b).unwrap().hp;
@@ -697,7 +708,7 @@ fn a_stationary_builder_at_a_revealed_scaffold_is_weldable() {
                 defer: true,
             },
         )]);
-        let mut json = serde_json::to_value(state).unwrap();
+        let mut json = serde_json::to_value(&state).unwrap();
         json["tick"] = serde_json::json!(tick);
         json["units"][0]["order"] = serde_json::json!({"order": "repair_unit", "unit": patient});
         json["units"][0]["progress"] = serde_json::json!(weld_step_progress(UnitKind::Harvester));
@@ -707,6 +718,20 @@ fn a_stationary_builder_at_a_revealed_scaffold_is_weldable() {
             anchor,
         })
         .unwrap();
+        let site = state
+            .buildings()
+            .iter()
+            .find(|b| b.anchor == anchor && b.kind == BuildingKind::Turret)
+            .unwrap();
+        let patient_pos = state.contact_surface(site).stance(
+            anchor.offset(-1, 0).center(),
+            UnitKind::Harvester.stats().radius + oxide_sim::stats::WORK_FOOTPRINT_GAP,
+        );
+        json["units"][0]["pos"] =
+            serde_json::json!(patient_pos - Vec2Fx::new(Fx::lit("0.7"), Fx::ZERO));
+        json["units"][1]["pos"] = serde_json::json!(patient_pos);
+        json["units"][1]["path"] = serde_json::Value::Null;
+        json["units"][1]["drive_speed"] = serde_json::json!(Fx::ZERO);
         let mut state: State = serde_json::from_value(json).unwrap();
 
         let before_hp = state.unit(patient).unwrap().hp;

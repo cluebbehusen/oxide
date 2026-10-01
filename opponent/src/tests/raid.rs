@@ -517,3 +517,87 @@ fn raiders_of_two_kinds_raid_distinct_targets_at_once() {
     };
     assert_ne!(first.kind, second.kind, "each goes after its own target");
 }
+
+#[test]
+fn defenses_remembered_out_of_sight_each_want_a_sapper() {
+    let spots: Vec<(i32, i32)> = (10..13).map(|x| (x, 12)).collect();
+    let (mut state, mut opponent, _, _) = besieging(
+        serde_json::json!("recover"),
+        true,
+        12,
+        &RING,
+        &spots,
+        |scenario| {
+            scenario.players[0].scrap = 1_000;
+            scenario.buildings.push(BuildingSpec {
+                player: 0,
+                kind: BuildingKind::Fabricator,
+                x: 3,
+                y: 14,
+            });
+        },
+    );
+    let kestrel = state
+        .units()
+        .iter()
+        .find(|unit| unit.player == PlayerId(0) && unit.kind == UnitKind::Kestrel)
+        .unwrap()
+        .id;
+    state.tick(&[run(0, vec![kestrel], 3, 3)]);
+    let remembered = |state: &State| {
+        ObservationData::fog_honest(state, PlayerId(0))
+            .enemy_buildings
+            .iter()
+            .filter(|building| building.kind == BuildingKind::Turret && !building.seen)
+            .count()
+    };
+    while remembered(&state) < RING.len() || !opponent.decision_due(&state) {
+        assert!(
+            state.current_tick() < 600,
+            "premise: the Turrets drop out of sight"
+        );
+        state.tick(&[]);
+    }
+    let commands = opponent.act(&state, &mut OwnEvents::default());
+    assert!(
+        trains(&commands)
+            .iter()
+            .any(|(_, kind)| *kind == UnitKind::Sapper),
+        "four remembered Turrets want a fourth Sapper"
+    );
+}
+
+#[test]
+fn a_scuttler_out_scouting_leaves_the_raid_stock_short() {
+    let mut scenario = outpost(UnitKind::Scuttler, BuildingKind::Foundry);
+    scenario.units.retain(|unit| (unit.x, unit.y) != RAIDERS[1]);
+    scenario.units.push(harvester(0, 2, 2));
+    scenario.players[0].scrap = 1_000;
+    let mut state = scenario.build().unwrap();
+    let scout = at(&state, RAIDERS[0].0, RAIDERS[0].1);
+    advance_to(&mut state, 120, &[]);
+    let mut json = serde_json::to_value(seat(&scenario, 0).checkpoint()).unwrap();
+    // Income enough to raid, and the one Scuttler holding the one scouting
+    // point.
+    json["income"] = serde_json::json!({"previous": null, "per_minute": 2_000});
+    json["missions"] = serde_json::json!({
+        "next": 1,
+        "list": [{
+            "id": 0,
+            "task": {"task": "scout", "point": 0},
+            "since": 100,
+            "units": [scout],
+            "goal": {"x": 40, "y": 11},
+        }],
+        "waiting": null,
+    });
+    let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
+    let mut opponent = Opponent::restore(&checkpoint, &scenario, &state, map(&scenario)).unwrap();
+    let commands = opponent.act(&state, &mut OwnEvents::default());
+    assert!(
+        trains(&commands)
+            .iter()
+            .any(|(_, kind)| *kind == UnitKind::Scuttler),
+        "{commands:?}"
+    );
+}

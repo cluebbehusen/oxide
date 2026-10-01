@@ -822,3 +822,35 @@ fn anti_air_near_the_rally_escorts_an_attack() {
     assert!(escorted((10, 11)), "beside the rally");
     assert!(!escorted((1, 22)), "far behind home");
 }
+
+#[test]
+fn a_unit_sitting_out_a_stalled_route_joins_no_new_attack() {
+    let scenario = armed(8, &[]);
+    let state = scenario.build().unwrap();
+    let commands = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
+    let [(sent, _)] = &hunts(&commands)[..] else {
+        panic!("premise: an attack forms: {commands:?}");
+    };
+    let stuck = sent[0];
+    let mut events = OwnEvents::default();
+    events.record(
+        PlayerId(0),
+        &[oxide_sim::Event::OrderStalled {
+            unit: stuck,
+            player: PlayerId(0),
+            pos: state.unit(stuck).unwrap().pos,
+            reason: oxide_sim::StallReason::NoRoute,
+        }],
+    );
+    let (commands, trace) = seat(&scenario, 0).act_traced(&state, &mut events);
+    let mission = attack(&trace.unwrap().missions).expect("the rest still attack");
+    let [(sent, _)] = &hunts(&commands)[..] else {
+        panic!("{commands:?}");
+    };
+    assert!(!sent.contains(&stuck), "{sent:?}");
+    assert_eq!(
+        sent.len(),
+        mission.units as usize,
+        "members are the units sent"
+    );
+}

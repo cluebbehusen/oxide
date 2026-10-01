@@ -98,6 +98,39 @@ fn opaque_bounds(image: &Image, source: Source) -> Rect {
         (bottom - top) as f32 / h as f32,
     )
 }
+fn contact_sources(manifest: &HashMap<String, [f32; 4]>) -> BTreeSet<Source> {
+    manifest
+        .iter()
+        .filter(|(name, _)| {
+            (oxide_sim::UnitKind::ALL.iter().any(|&kind| {
+                let stem = crate::assets::unit_stem(kind);
+                [
+                    format!("{stem}_ferrous"),
+                    format!("{stem}_cupric"),
+                    format!("rig_{stem}_hull_ferrous"),
+                    format!("rig_{stem}_hull_cupric"),
+                    format!("rig_{stem}_body_ferrous"),
+                    format!("rig_{stem}_body_cupric"),
+                ]
+                .iter()
+                .any(|prefix| {
+                    name.as_str() == prefix.as_str()
+                        || name
+                            .strip_prefix(prefix.as_str())
+                            .is_some_and(|suffix| suffix.starts_with('_'))
+                })
+            }) || name.starts_with("scrap_")
+                || *name == "wreck_pile"
+                || oxide_sim::BuildingKind::ALL.iter().any(|&kind| {
+                    name.strip_prefix("rig_")
+                        .unwrap_or(name)
+                        .starts_with(&format!("{}_", crate::assets::building_stem(kind)))
+                }))
+                && !name.contains("_accent")
+        })
+        .map(|(_, row)| row.map(|v| v as u32))
+        .collect()
+}
 impl EntityLod {
     pub(crate) async fn load(
         manifest: &HashMap<String, [f32; 4]>,
@@ -123,17 +156,7 @@ impl EntityLod {
         let mut packer = Packer::new();
         let mut sprites = HashMap::new();
         let mut bounds = HashMap::new();
-        let contact_sources: BTreeSet<Source> = manifest
-            .iter()
-            .filter(|(name, _)| {
-                oxide_sim::BuildingKind::ALL.iter().any(|&kind| {
-                    name.strip_prefix("rig_")
-                        .unwrap_or(name)
-                        .starts_with(&format!("{}_", crate::assets::building_stem(kind)))
-                }) && !name.contains("_accent")
-            })
-            .map(|(_, row)| row.map(|v| v as u32))
-            .collect();
+        let contact_sources = contact_sources(manifest);
         let mut contacts = HashMap::new();
         for &key in &sources {
             let page = key[1] as usize / page_height as usize;
@@ -421,6 +444,48 @@ fn reduce(image: &Image, source: Source, factor: usize) -> Image {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn live_body_frames_have_cached_production_contact_sources() {
+        let manifest: HashMap<String, [f32; 4]> =
+            serde_json::from_str(include_str!("../../assets/sprites/atlas.json")).unwrap();
+        let sources = contact_sources(&manifest);
+        let loaded_sources = entity_sources(&manifest);
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/sprites");
+        let bytes = std::fs::read(root.join("atlas.png")).unwrap();
+        let first = Image::from_file_with_format(&bytes, Some(ImageFormat::Png)).unwrap();
+        let page_height = u32::from(first.height);
+        let mut pages = vec![first];
+        for name in [
+            "rig_harvester_body_ferrous_cargo5",
+            "rig_excavator_body_cupric_move2",
+            "rig_tender_body_ferrous_move1",
+            "rig_scuttler_body_cupric_move2",
+            "rig_buzzard_hull_cupric_move2",
+            "bombard_ferrous_action2",
+        ] {
+            let key = manifest[name].map(|v| v as u32);
+            assert!(sources.contains(&key), "uncached live body frame: {name}");
+            assert!(
+                loaded_sources.contains(&key),
+                "body frame omitted from load: {name}"
+            );
+            let page = (key[1] / page_height) as usize;
+            while pages.len() <= page {
+                let bytes = std::fs::read(root.join(format!("atlas_{}.png", pages.len()))).unwrap();
+                pages.push(Image::from_file_with_format(&bytes, Some(ImageFormat::Png)).unwrap());
+            }
+            let mask = crate::sprite_contact::SpriteContact::capture(
+                &pages[page],
+                [key[0], key[1] % page_height, key[2], key[3]],
+            );
+            assert!(
+                mask.contact(vec2(0.0, -2.0), Vec2::ZERO, Vec2::splat(-0.5), Vec2::ONE)
+                    .is_some(),
+                "empty body mask: {name}"
+            );
+        }
+    }
+
     #[test]
     fn layered_units_omit_unused_full_poses_but_keep_portraits_and_fallbacks() {
         let mut manifest = HashMap::from([

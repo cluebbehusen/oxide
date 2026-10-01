@@ -4,15 +4,7 @@ use macroquad::prelude::*;
 use oxide_sim::UnitKind;
 
 pub(crate) fn supported(kind: UnitKind) -> bool {
-    matches!(
-        kind,
-        UnitKind::Sentinel
-            | UnitKind::Warden
-            | UnitKind::Lancer
-            | UnitKind::Harvester
-            | UnitKind::Avalanche
-            | UnitKind::Breaker
-    )
+    !runs(kind).is_empty()
 }
 
 fn runs(kind: UnitKind) -> &'static [[f32; 4]] {
@@ -25,9 +17,13 @@ fn runs(kind: UnitKind) -> &'static [[f32; 4]] {
             [98., 88., 117., 110.],
         ],
         UnitKind::Lancer => &[[16., 74., 32., 111.], [96., 74., 112., 111.]],
-        UnitKind::Harvester => &[[22., 34., 37., 110.], [91., 34., 106., 110.]],
+        UnitKind::Harvester => &[[20., 48., 33., 107.], [95., 48., 108., 107.]],
+        UnitKind::Excavator => &[[17., 50., 32., 109.], [96., 50., 111., 109.]],
+        UnitKind::Tender => &[[20., 52., 33., 108.], [95., 52., 108., 108.]],
         UnitKind::Avalanche => &[[27., 38., 36., 102.], [93., 38., 102., 102.]],
         UnitKind::Breaker => &[[23., 42., 38., 107.], [90., 42., 105., 107.]],
+        UnitKind::Bombard => &[[16., 58., 31., 107.], [97., 58., 112., 107.]],
+        UnitKind::Flakhound => &[[14., 73., 31., 111.], [97., 73., 114., 111.]],
         _ => &[],
     }
 }
@@ -90,6 +86,47 @@ pub(super) fn draw(
                 color_u8!(44, 45, 52, 255),
             );
             y += pitch;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn idle_body(kind: UnitKind) -> Image {
+        let sprites = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/sprites");
+        let name = kind.name();
+        let path = [
+            format!("rig_{name}_hull_ferrous"),
+            format!("rig_{name}_body_ferrous"),
+            format!("rig_{name}_body_ferrous_cargo0"),
+            format!("{name}_ferrous"),
+        ]
+        .into_iter()
+        .map(|stem| sprites.join(format!("{stem}.png")))
+        .find(|path| path.exists())
+        .unwrap_or_else(|| panic!("{kind:?} has no body art"));
+        Image::from_file_with_format(&std::fs::read(&path).unwrap(), Some(ImageFormat::Png))
+            .unwrap()
+    }
+
+    #[test]
+    fn belts_stay_on_their_track_casings() {
+        for kind in UnitKind::ALL.into_iter().filter(|&kind| supported(kind)) {
+            let body = idle_body(kind);
+            let width = usize::from(body.width);
+            for &[x0, y0, x1, y1] in runs(kind) {
+                for y in y0 as usize..y1 as usize {
+                    for x in x0 as usize..x1 as usize {
+                        assert_eq!(
+                            body.bytes[(y * width + x) * 4 + 3],
+                            u8::MAX,
+                            "{kind:?} belt leaves its casing at ({x}, {y})"
+                        );
+                    }
+                }
+            }
         }
     }
 }

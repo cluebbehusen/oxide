@@ -58,7 +58,7 @@ def load(d, level, x0=45, y0=72, width=38, height=28):
         line(d, [(x0 + 20, y - 2), (x0 + width - 6, y)], SCRAP_EDGE)
 
 
-def harvester(faction, move=0, work=0, cargo=0):
+def harvester(faction, move=0, work=0, cargo=0, *, body_only=False):
     im, d = canvas()
     paint = gen.FACTIONS[faction]["dark"]
     for bounds in ((17, 36, 36, 112), (92, 36, 111, 112)):
@@ -75,6 +75,8 @@ def harvester(faction, move=0, work=0, cargo=0):
     line(d, [(55, 49), (72, 49)], EDGE)
     vent(d, 51, 104, 26)
     base = finish(im)
+    if body_only:
+        return base
     im, d = canvas()
     reach = (0, 9, 4)[work]
     gap = (14, 20, 7)[work]
@@ -111,7 +113,7 @@ def harvester(faction, move=0, work=0, cargo=0):
     return base
 
 
-def excavator(faction, move=0, work=0):
+def excavator(faction, move=0, work=0, *, body_only=False):
     im, d = canvas()
     paint = gen.FACTIONS[faction]["dark"]
     for bounds in ((14, 38, 35, 114), (93, 38, 114, 114)):
@@ -128,6 +130,8 @@ def excavator(faction, move=0, work=0):
     box(d, (46, 106, 82, 113), paint, 1)
     vent(d, 51, 108, 26)
     base = finish(im)
+    if body_only:
+        return base
     im, d = canvas()
     shift = (0, -5, -8, -4, 0)[work]
     for x in (43, 85):
@@ -155,7 +159,7 @@ def excavator_cargo(level):
     return finish(im, rim=False)
 
 
-def tender(faction, move=0, work=0):
+def tender(faction, move=0, work=0, *, body_only=False):
     im, d = canvas()
     paint = gen.FACTIONS[faction]["dark"]
     for bounds in ((17, 40, 36, 113), (92, 40, 111, 113)):
@@ -176,6 +180,8 @@ def tender(faction, move=0, work=0):
     for y in (81, 88, 95):
         line(d, [(78, y), (84, y)], DARK, 2)
     base = finish(im)
+    if body_only:
+        return base
     im, d = canvas()
     paths = [
         [(81, 58), (89, 42), (76, 33)],
@@ -211,7 +217,7 @@ def leg(d, root, knee, foot):
     pin(d, *knee, 2)
 
 
-def scuttler(faction, move=0, action=0):
+def scuttler(faction, move=0, action=0, *, body_only=False):
     im, d = canvas()
     paint = gen.FACTIONS[faction]["dark"]
     for side in (-1, 1):
@@ -256,6 +262,8 @@ def scuttler(faction, move=0, action=0):
         line(d, [(65 - w / 2, y + 1), (62 + w / 2, y + 1)], EDGE)
     box(d, (59, 38, 69, 43), DEEP, 1)
     base = finish(im)
+    if body_only:
+        return base
     im, d = canvas()
     gap = (14, 20, 2, 9, 14)[action]
     for side in (-1, 1):

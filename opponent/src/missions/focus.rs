@@ -8,6 +8,7 @@ use crate::decision::Ledger;
 use crate::frame::{HomeFrame, doubled};
 use crate::map::MapModel;
 use chassis::fx::Fx;
+use chassis::path::line_blocked;
 use oxide_sim::observation::{ObservationData, UnitObs};
 use oxide_sim::scenario::BotDifficulty;
 use oxide_sim::stats::Domain;
@@ -92,10 +93,10 @@ fn threatens(enemy: &UnitObs, members: &[&UnitObs]) -> bool {
 }
 
 /// The members that can hit `enemy`, by id, if every one of them already
-/// reaches it in a straight line between tile centres, as the simulation
-/// measures a shot, and every ground member stands on the enemy's ground, so
-/// one a little short steps closer rather than seeking a way round; otherwise
-/// none.
+/// reaches it in a straight line between tile centres that terrain does not
+/// stop, as the simulation measures a shot, and every ground member stands on
+/// the enemy's ground, so one a little short steps closer rather than seeking
+/// a way round; otherwise none.
 fn shooters(map: &MapModel, members: &[&UnitObs], enemy: &UnitObs) -> Vec<UnitId> {
     let domain = enemy.body_domain();
     let mut shooters = Vec::new();
@@ -119,8 +120,12 @@ fn shooters(map: &MapModel, members: &[&UnitObs], enemy: &UnitObs) -> Vec<UnitId
             continue;
         }
         let reaches = weapons.any(|weapon| {
+            let direct = !weapon.indirect && walks && domain == Domain::Ground;
             distance_sq <= weapon.range * weapon.range
                 && distance_sq >= weapon.minimum_range * weapon.minimum_range
+                && !line_blocked(unit.tile.center(), enemy.tile.center(), |tile| {
+                    map.shot_crosses(tile, direct)
+                })
         });
         if !reaches {
             return Vec::new();
@@ -233,6 +238,23 @@ mod tests {
             0,
             "in range, but across the chasm"
         );
+    }
+
+    #[test]
+    fn nothing_focuses_an_enemy_behind_terrain_that_stops_its_shot() {
+        let behind = |terrain: &str, member: (UnitKind, i32, i32), enemy| {
+            let mut scenario = field(false, &[member], enemy);
+            scenario.map[4].replace_range(10..11, terrain);
+            focused(&scenario)
+        };
+        let sentinel = (UnitKind::Sentinel, 9, 4);
+        let target = (UnitKind::Sentinel, 11, 4);
+        assert_eq!(behind(".", sentinel, target), 1, "premise: in reach");
+        assert_eq!(behind("#", sentinel, target), 0, "rock, ground round it");
+        let gun = (UnitKind::Avalanche, 6, 4);
+        let far = (UnitKind::Sentinel, 14, 4);
+        assert_eq!(behind("#", gun, far), 1, "shells arc over rock");
+        assert_eq!(behind("^", gun, far), 0, "but not over a peak");
     }
 
     #[test]

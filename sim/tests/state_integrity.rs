@@ -400,10 +400,12 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::InvalidLeashClock(_) => 78,
         E::SandboxElimination => 79,
         E::NonCanonicalGoal(_) => 80,
+        E::InvalidUnloading(_) => 81,
+        E::InvalidWorkEndpoint(_) => 82,
     }
 }
 
-const ROWS: usize = 81;
+const ROWS: usize = 83;
 
 /// One rendered message per row, with the entity ids the forgeries
 /// provoke (everything targets seat p0 and entity 0). A fixture's
@@ -497,6 +499,8 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::InvalidLeashClock(UnitId(0)),
         E::SandboxElimination,
         E::NonCanonicalGoal(UnitId(0)),
+        E::InvalidUnloading(UnitId(0)),
+        E::InvalidWorkEndpoint(UnitId(0)),
     ]
 }
 
@@ -668,6 +672,21 @@ fn leash_clocks_are_bounded_at_deserialization() {
 #[test]
 fn every_checklist_row_refuses_its_forgery() {
     let fixtures: Vec<Forgery> = vec![
+        (
+            "release without cargo",
+            |d| {
+                d["units"][0]["carrying"] = json!(0);
+                d["units"][0]["unloading"] = json!({"foundry": 0, "elapsed": 3});
+            },
+            "unit u0 carries invalid unloading state",
+        ),
+        (
+            "endpoint outside its goal",
+            |d| {
+                d["units"][0]["path"] = json!({"goal": {"x": 4, "y": 4}, "waypoints": [{"x": 4, "y": 4}], "next": 0, "final_point": chassis::grid::TilePos::new(8, 4).center()});
+            },
+            "unit u0 carries an invalid work endpoint",
+        ),
         (
             "sandbox match result",
             |d| {

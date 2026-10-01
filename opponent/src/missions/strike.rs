@@ -115,7 +115,7 @@ impl Missions {
             return false;
         }
         let fit: Vec<&UnitObs> = self
-            .available(observation, false)
+            .free(observation, ledger)
             .into_iter()
             .filter_map(|id| mine(observation, id))
             .filter(|unit| bomber(unit.kind) && healthy(unit, FIT))
@@ -368,7 +368,7 @@ fn cover(air: &[Hazard], target: Objective) -> u64 {
 
 /// What a strike needs against the easiest target the seat knows of and has
 /// not given up on: the known anti-air reaching over it by the attack margin,
-/// at least the stance's minimum.
+/// at least the stance's minimum. Nothing while it has given up on all.
 pub(crate) fn strike_need(
     observation: &ObservationData,
     memory: &Memory,
@@ -382,8 +382,7 @@ pub(crate) fn strike_need(
         .filter(|target| !memory.abandoned(target.building, target.anchor, observation.tick))
         .map(|target| cover(&scratch.air, *target) * margin / 1_000)
         .min()
-        .unwrap_or(0)
-        .max(minimum(profile.stance))
+        .map_or(0, |need| need.max(minimum(profile.stance)))
 }
 
 /// Whether `kind` is a ground-attack aircraft a strike takes.

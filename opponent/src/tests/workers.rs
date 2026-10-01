@@ -260,3 +260,30 @@ fn checkpoints_reject_malformed_stuck_units() {
         assert!(validated(stuck.clone()).is_err(), "{stuck}");
     }
 }
+
+#[test]
+fn an_allied_building_beside_a_node_takes_its_places_as_an_own_one_does() {
+    let crews_beside = |owner: u8| {
+        // A third seat far to the east, allied with West.
+        let mut scenario = fielded((22, 3));
+        scenario.map[3].replace_range(40..41, "3");
+        let ally = scenario.players[1].clone();
+        scenario.players.push(ally);
+        for (player, team) in scenario.players.iter_mut().zip([0, 1, 0]) {
+            player.team = Some(team);
+        }
+        for y in 10..=12 {
+            scenario.buildings.push(BuildingSpec {
+                player: owner,
+                kind: BuildingKind::Barricade,
+                x: 7,
+                y,
+            });
+        }
+        let state = scenario.build().unwrap();
+        crew(&crews(&scenario, &state, BotStance::Turtle, 100), (6, 11))
+    };
+    let own = crews_beside(0);
+    assert!(own.is_some(), "premise: the node is worked");
+    assert_eq!(crews_beside(2), own);
+}

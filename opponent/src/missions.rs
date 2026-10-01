@@ -6,6 +6,7 @@
 //! lift, then attacks, strikes and raids, then scouting. Each takes from what
 //! [`Missions::available`] leaves free when it runs.
 
+use crate::decision::Ledger;
 use crate::frame::{HomeFrame, doubled, ring};
 use crate::map::{MapModel, UNREACHABLE};
 use crate::memory::Memory;
@@ -30,7 +31,7 @@ mod support;
 
 pub(crate) use air::{Hazard, hazards};
 pub(crate) use attack::{margin, minimum};
-pub(crate) use lift::{carrier, carriers_wanted, payload};
+pub(crate) use lift::{carrier, payload};
 pub(crate) use scouting::points;
 pub(crate) use strike::strike_need;
 pub(crate) use support::{per_tender, wounds};
@@ -509,6 +510,18 @@ impl Missions {
         });
     }
 
+    /// Units a mission other than a raid holds, by id.
+    pub(crate) fn held_outside_raids(&self) -> Vec<UnitId> {
+        let mut held: Vec<UnitId> = self
+            .list
+            .iter()
+            .filter(|mission| !matches!(mission.task, Task::Raid { .. }))
+            .flat_map(|mission| mission.units.iter().copied())
+            .collect();
+        held.sort_unstable();
+        held
+    }
+
     /// Units no mission holds, by id. A defense may also `borrow` units that
     /// a recovering defense or an attack out of contact would lend it.
     fn available(&self, observation: &ObservationData, borrow: bool) -> Vec<UnitId> {
@@ -525,6 +538,15 @@ impl Missions {
             .map(|unit| unit.id)
             .filter(|id| owned.binary_search(id).is_err())
             .collect()
+    }
+
+    /// Units no mission holds that may take orders: a unit sitting out after
+    /// its order found no route joins no mission, since it would be sent
+    /// nowhere.
+    fn free(&self, observation: &ObservationData, ledger: &Ledger) -> Vec<UnitId> {
+        let mut free = self.available(observation, false);
+        free.retain(|unit| !ledger.stuck(*unit));
+        free
     }
 
     /// Takes `units` out of every mission, dropping missions left empty.
@@ -693,9 +715,12 @@ pub(crate) struct Scratch {
     /// Value against ground and against aircraft that offense leaves home,
     /// before the units out defending count.
     pub(crate) reserve: [u64; 2],
-    /// Value against ground and transport slots of the units at home a lift
-    /// could take without cutting into the reserve.
-    pub(crate) payload: (u64, u64),
+    /// Value against ground of the units at home a lift could take without
+    /// cutting into the reserve.
+    pub(crate) payload: u64,
+    /// Value of the known armed enemy ground units on ground connected to the
+    /// seat's start.
+    pub(crate) invaders: u64,
 }
 
 impl Scratch {
@@ -730,6 +755,13 @@ impl Scratch {
             rival: None,
             reserve,
             payload: missions.liftable(observation, map, reserve, payload(observation, map)),
+            invaders: reserve::threat(
+                map,
+                memory,
+                observation.me,
+                observation.tick,
+                Domain::Ground,
+            ),
         }
     }
 }

@@ -2,8 +2,10 @@
 //! hit its threats and sends them at the threat nearest it, then lets them go
 //! once the threat has been gone a while. An ally's Foundry under ground
 //! attack gets the units the seat's own Foundries leave free. Shells from a
-//! gun out of sight send ground fighters toward where it probably stands.
+//! known enemy building send ground fighters beside it, and shells from a gun
+//! out of sight send them toward where it probably stands.
 
+use super::attack::building_value;
 use super::{
     DefendPhase, MISSION_CAP, Mission, Missions, Task, UNIT_CAP, hits, hunt, insert, mine, value,
 };
@@ -39,15 +41,17 @@ pub(super) fn timeout(phase: DefendPhase) -> u64 {
 impl Missions {
     /// Answers every threatened Foundry: recruits free units that can hit its
     /// threats until, in each domain it is attacked from, they outweigh the
-    /// attackers by half again, and sends them at the threat nearest the
-    /// Foundry. A defense that is only recovering lends its units, as does an
-    /// attack not yet fighting. Returns whether any defense stayed short.
+    /// attackers by half again, and sends them at the grounded threat nearest
+    /// the Foundry, else at a gun out of sight. A defense that is only
+    /// recovering lends its units, as does an attack not yet fighting.
+    /// Returns whether any defense stayed short.
     ///
     /// Only threats standing on or beside the Foundry's ground count. One
     /// across water or a chasm is left to production: chasing it would stall
     /// every defender, and a defense short forever would never save for the
-    /// tech that answers it. Nor does a defense against a gun out of sight
-    /// count as short: static defenses cannot reach it.
+    /// tech that answers it. Nor does a defense against shelling, from a
+    /// building or a gun out of sight, count as short: static defenses cannot
+    /// reach the guns.
     pub(crate) fn defend(
         &mut self,
         observation: &ObservationData,
@@ -89,37 +93,40 @@ impl Missions {
         for (foundry, siege, own) in &groups {
             let centre = footprint_centre(foundry.kind, foundry.anchor);
             let component = map.component(foundry.anchor);
-            let (goal, need) = match siege {
-                Siege::Seen(threats) => {
-                    let nearest = |threats: &mut dyn Iterator<Item = &&UnitObs>| {
-                        threats
-                            .min_by_key(|threat| frame.rank(centre, doubled(threat.tile)))
-                            .map(|threat| threat.tile)
-                    };
-                    let grounded = nearest(
-                        &mut threats
-                            .iter()
-                            .filter(|threat| threat.body_domain() == Domain::Ground),
-                    );
-                    let Some(goal) = grounded.or_else(|| {
-                        let flyer = nearest(&mut threats.iter())?;
-                        own.then(|| guard(observation, map, frame, component, flyer))?
-                    }) else {
-                        continue;
-                    };
-                    let need = [Domain::Ground, Domain::Air].map(|domain| {
-                        threats
-                            .iter()
-                            .filter(|threat| threat.body_domain() == domain)
-                            .map(|threat| value(threat))
-                            .sum::<u64>()
-                            * 3
-                            / 2
-                    });
-                    (goal, need)
-                }
-                Siege::Unseen(gun) => (*gun, [gun_value() * 3 / 2, 0]),
+            let nearest = |tiles: &mut dyn Iterator<Item = TilePos>| {
+                tiles.min_by_key(|tile| frame.rank(centre, doubled(*tile)))
             };
+            let grounded = nearest(
+                &mut siege
+                    .units
+                    .iter()
+                    .filter(|threat| threat.body_domain() == Domain::Ground)
+                    .map(|threat| threat.tile)
+                    .chain(siege.batteries.iter().map(|(_, beside)| *beside)),
+            );
+            let Some(goal) = grounded.or(siege.unseen).or_else(|| {
+                let flyer = nearest(&mut siege.units.iter().map(|threat| threat.tile))?;
+                own.then(|| guard(observation, map, frame, component, flyer))?
+            }) else {
+                continue;
+            };
+            let pressing = [Domain::Ground, Domain::Air].map(|domain| {
+                siege
+                    .units
+                    .iter()
+                    .filter(|threat| threat.body_domain() == domain)
+                    .map(|threat| value(threat))
+                    .sum::<u64>()
+                    * 3
+                    / 2
+            });
+            let guns = siege
+                .batteries
+                .iter()
+                .map(|(battery, _)| building_value(battery))
+                .sum::<u64>()
+                + siege.unseen.map_or(0, |_| gun_value());
+            let need = [pressing[0] + guns * 3 / 2, pressing[1]];
             let index = self.list.iter().position(
                 |mission| matches!(mission.task, Task::Defend { asset, .. } if asset == foundry.id),
             );
@@ -137,9 +144,11 @@ impl Missions {
                 .iter()
                 .filter_map(|id| mine(observation, *id))
                 .filter(|unit| !members.contains(&unit.id) && !ledger.stuck(unit.id))
-                .filter(|unit| match siege {
-                    Siege::Seen(threats) => can_hit_any(unit, threats),
-                    Siege::Unseen(_) => hits(unit, Domain::Ground),
+                .filter(|unit| {
+                    [Domain::Ground, Domain::Air]
+                        .into_iter()
+                        .enumerate()
+                        .any(|(index, domain)| need[index] > 0 && hits(unit, domain))
                 })
                 .filter(|unit| {
                     unit.kind.stats().domain == Domain::Air || map.component(unit.tile) == component
@@ -167,8 +176,7 @@ impl Missions {
                 }
                 recruits.push(unit.id);
             }
-            short |=
-                *own && matches!(siege, Siege::Seen(_)) && (have[0] < need[0] || have[1] < need[1]);
+            short |= *own && (have[0] < pressing[0] || have[1] < pressing[1]);
 
             let Some(index) = index else {
                 if recruits.is_empty() || self.list.len() >= MISSION_CAP {
@@ -234,39 +242,61 @@ fn take(free: &mut Vec<UnitId>, taken: &[UnitId]) {
     free.retain(|id| !taken.contains(id));
 }
 
-/// What threatens a Foundry.
-enum Siege<'a> {
+/// What threatens a Foundry: enemies in sight and shelling enemy buildings,
+/// or, with neither, a gun out of sight.
+#[derive(Default)]
+struct Siege<'a> {
     /// Enemies in sight.
-    Seen(Vec<&'a UnitObs>),
-    /// Shells from a gun out of sight, which probably stands at this tile.
-    Unseen(TilePos),
+    units: Vec<&'a UnitObs>,
+    /// Known enemy buildings, in sight or remembered, whose shells land near
+    /// the base, each with the tile beside it defenders go to.
+    batteries: Vec<(&'a BuildingObs, TilePos)>,
+    /// Where a gun shelling the base from out of sight probably stands.
+    unseen: Option<TilePos>,
 }
 
-/// Visible enemies that could hit the seat's buildings, grouped by the built
-/// Foundry each is nearest, home-nearest Foundry first, then the seat's
-/// Foundries shelled by a gun out of sight, then enemies that could hit an
-/// ally's buildings, grouped by the ally's Foundry, each marked whether the
-/// Foundry is the seat's own. An enemy joins only if it stands on or beside
-/// that Foundry's ground.
+/// Visible enemies and shelling enemy buildings that threaten the seat's
+/// buildings, grouped by the built Foundry each is nearest, home-nearest
+/// Foundry first, then the seat's other Foundries shelled by a gun out of
+/// sight, then enemies that could hit an ally's buildings, grouped by the
+/// ally's Foundry, each marked whether the Foundry is the seat's own. An
+/// enemy joins only if it stands on or beside that Foundry's ground.
 fn threats<'a>(
     observation: &'a ObservationData,
     map: &MapModel,
     frame: HomeFrame,
 ) -> Vec<(&'a BuildingObs, Siege<'a>, bool)> {
-    let mut groups = Vec::new();
+    let mut groups: Vec<(&BuildingObs, Siege, bool)> = Vec::new();
     let mut claimed: Vec<UnitId> = Vec::new();
+    // Remembered buildings share one id, so batteries are told apart by anchor.
+    let mut claimed_batteries: Vec<TilePos> = Vec::new();
     for (buildings, own) in [
         (&observation.my_buildings, true),
         (&observation.ally_buildings, false),
     ] {
-        for (foundry, threats) in besieged(observation, map, frame, buildings, &claimed) {
-            claimed.extend(threats.iter().map(|threat| threat.id));
-            groups.push((foundry, Siege::Seen(threats), own));
+        for (foundry, siege) in besieged(
+            observation,
+            map,
+            frame,
+            buildings,
+            &claimed,
+            &claimed_batteries,
+        ) {
+            claimed.extend(siege.units.iter().map(|threat| threat.id));
+            claimed_batteries.extend(siege.batteries.iter().map(|(battery, _)| battery.anchor));
+            groups.push((foundry, siege, own));
         }
         if own {
+            // A gun out of sight waits until the threats in sight are gone:
+            // answered together, shelling that never stops keeps the defense
+            // recruiting ground units and the army never leaves home.
             for (foundry, gun) in unseen(observation, map, frame) {
                 if !groups.iter().any(|(other, _, _)| other.id == foundry.id) {
-                    groups.push((foundry, Siege::Unseen(gun), true));
+                    let siege = Siege {
+                        unseen: Some(gun),
+                        ..Siege::default()
+                    };
+                    groups.push((foundry, siege, true));
                 }
             }
         }
@@ -274,15 +304,18 @@ fn threats<'a>(
     groups
 }
 
-/// Visible enemies not `claimed` that could hit one of `buildings`, grouped
-/// by the built Foundry among them each is nearest, home-nearest first.
+/// Visible enemies not `claimed` that could hit one of `buildings`, and known
+/// enemy buildings whose anchors are not in `claimed_batteries` shelling near
+/// them, grouped by the built Foundry among them each is nearest,
+/// home-nearest first.
 fn besieged<'a>(
     observation: &'a ObservationData,
     map: &MapModel,
     frame: HomeFrame,
     buildings: &'a [BuildingObs],
     claimed: &[UnitId],
-) -> Vec<(&'a BuildingObs, Vec<&'a UnitObs>)> {
+    claimed_batteries: &[TilePos],
+) -> Vec<(&'a BuildingObs, Siege<'a>)> {
     let mut foundries: Vec<&BuildingObs> = buildings
         .iter()
         .filter(|building| building.kind == BuildingKind::Foundry && building.built)
@@ -293,11 +326,20 @@ fn besieged<'a>(
             foundry.id,
         )
     });
-    let mut groups: Vec<(&BuildingObs, Vec<&UnitObs>)> = foundries
+    let mut groups: Vec<(&BuildingObs, Siege)> = foundries
         .iter()
-        .map(|foundry| (*foundry, Vec::new()))
+        .map(|foundry| (*foundry, Siege::default()))
         .collect();
     let shelled = shelled(observation, buildings);
+    let nearest = |anchor: TilePos, size: (i32, i32), centre: (i64, i64)| {
+        (0..foundries.len()).min_by_key(|index| {
+            let foundry = foundries[*index];
+            (
+                gap(foundry.anchor, foundry.kind.base_stats().size, anchor, size),
+                frame.rank(centre, footprint_centre(foundry.kind, foundry.anchor)),
+            )
+        })
+    };
     for enemy in &observation.enemy_units {
         if claimed.contains(&enemy.id) {
             continue;
@@ -324,18 +366,7 @@ fn besieged<'a>(
         if !near {
             continue;
         }
-        let nearest = (0..foundries.len()).min_by_key(|index| {
-            let foundry = foundries[*index];
-            let size = foundry.kind.base_stats().size;
-            (
-                gap(foundry.anchor, size, enemy.tile, (1, 1)),
-                frame.rank(
-                    doubled(enemy.tile),
-                    footprint_centre(foundry.kind, foundry.anchor),
-                ),
-            )
-        });
-        let Some(index) = nearest else {
+        let Some(index) = nearest(enemy.tile, (1, 1), doubled(enemy.tile)) else {
             continue;
         };
         let reachable = map
@@ -344,10 +375,33 @@ fn besieged<'a>(
                 map.component(enemy.tile) == Some(component) || map.touches(enemy.tile, component)
             });
         if reachable {
-            groups[index].1.push(enemy);
+            groups[index].1.units.push(enemy);
         }
     }
-    groups.retain(|(_, threats)| !threats.is_empty());
+    for building in &observation.enemy_buildings {
+        if claimed_batteries.contains(&building.anchor)
+            || !shelled.iter().any(|impact| battery(building, *impact))
+        {
+            continue;
+        }
+        let size = building.kind.base_stats().size;
+        let centre = footprint_centre(building.kind, building.anchor);
+        let Some(index) = nearest(building.anchor, size, centre) else {
+            continue;
+        };
+        let foundry = foundries[index];
+        let home = footprint_centre(foundry.kind, foundry.anchor);
+        let component = map.component(foundry.anchor);
+        // A battery off the Foundry's ground is left to production, as a
+        // unit across a chasm is.
+        let beside = ring(building.anchor, size)
+            .filter(|tile| component.is_some() && map.component(*tile) == component)
+            .min_by_key(|tile| frame.rank(home, doubled(*tile)));
+        if let Some(beside) = beside {
+            groups[index].1.batteries.push((building, beside));
+        }
+    }
+    groups.retain(|(_, siege)| !siege.units.is_empty() || !siege.batteries.is_empty());
     groups
 }
 
@@ -370,6 +424,20 @@ fn shelled(observation: &ObservationData, buildings: &[BuildingObs]) -> Vec<Tile
         .collect()
 }
 
+/// Whether the known enemy `building` could have sent a shell landing on
+/// `impact`. A site in sight cannot fire; a remembered one may have been
+/// finished since it was seen.
+fn battery(building: &BuildingObs, impact: TilePos) -> bool {
+    let centre = footprint_centre(building.kind, building.anchor);
+    (building.built || !building.seen)
+        && building
+            .kind
+            .base_stats()
+            .weapons
+            .iter()
+            .any(|weapon| shells(weapon, centre, impact))
+}
+
 /// Whether `weapon`, fired from the doubled position `from`, sends shells
 /// that could land on `impact`.
 fn shells(weapon: &WeaponStats, from: (i64, i64), impact: TilePos) -> bool {
@@ -383,9 +451,9 @@ fn shells(weapon: &WeaponStats, from: (i64, i64), impact: TilePos) -> bool {
 
 /// The seat's built Foundries shelled by a gun out of sight, home-nearest
 /// first, each with the tile the gun probably stands at: a hostile shell
-/// lands near the seat's buildings, no known enemy could have fired it, and
-/// the built Foundry nearest the impact answers for it. Of several such
-/// impacts, the one nearest that Foundry counts.
+/// lands near the seat's buildings, no visible enemy or known enemy building
+/// could have fired it, and the built Foundry nearest the impact answers for
+/// it. Of several such impacts, the one nearest that Foundry counts.
 fn unseen<'a>(
     observation: &'a ObservationData,
     map: &MapModel,
@@ -401,15 +469,10 @@ fn unseen<'a>(
                 .any(|weapon| shells(weapon, doubled(enemy.tile), impact))
         });
         units
-            || observation.enemy_buildings.iter().any(|building| {
-                let centre = footprint_centre(building.kind, building.anchor);
-                building
-                    .kind
-                    .base_stats()
-                    .weapons
-                    .iter()
-                    .any(|weapon| shells(weapon, centre, impact))
-            })
+            || observation
+                .enemy_buildings
+                .iter()
+                .any(|building| battery(building, impact))
     };
     let impacts: Vec<TilePos> = shelled(observation, &observation.my_buildings)
         .into_iter()
@@ -582,13 +645,4 @@ fn ground_reach(enemy: &UnitObs) -> Option<i32> {
         .filter(|weapon| weapon.targets.ground)
         .map(|weapon| weapon.range.ceil().to_num::<i32>().max(THREAT_GAP))
         .max()
-}
-
-/// Whether `unit` has a weapon for any of `threats`.
-fn can_hit_any(unit: &UnitObs, threats: &[&UnitObs]) -> bool {
-    unit.kind.stats().weapons.iter().any(|weapon| {
-        threats
-            .iter()
-            .any(|threat| weapon.targets.covers(threat.body_domain()))
-    })
 }

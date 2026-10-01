@@ -13,6 +13,10 @@ pub struct Sprites {
     textures: Vec<Texture2D>,
     entity_lod: crate::entity_lod::EntityLod,
     page_height: f32,
+    harvester_body: Option<[[Rect; 3]; 6]>,
+    excavator_body: Option<[[Rect; 3]; 3]>,
+    scuttler_body: Option<[[Rect; 3]; 3]>,
+    tender_body: Option<[[Rect; 3]; 3]>,
     sentinel_rig: Option<UnitRig>,
     warden_rig: Option<UnitRig>,
     lancer_rig: Option<UnitRig>,
@@ -26,6 +30,7 @@ pub struct Sprites {
     /// [`crate::panel::VerbIcon`].
     verb_icons: [Rect; 14],
     ground: [Rect; 6],
+    ground_detail: [Rect; 12],
     quarry_dressing: Option<[Rect; 12]>,
     rock: [Rect; 23],
     /// Full-tile exclusion barriers, indexed `neighbor_mask * 2 + variant`.
@@ -141,6 +146,29 @@ impl UnitRig {
     }
 }
 
+fn harvester_body_rows(rects: &Manifest) -> Result<Option<[[Rect; 3]; 6]>> {
+    if !rects
+        .keys()
+        .any(|key| key.starts_with("rig_harvester_body_"))
+    {
+        return Ok(None);
+    }
+    Ok(Some(variant_rows(
+        rects,
+        "rig_harvester_body",
+        [
+            "_cargo0", "_cargo1", "_cargo2", "_cargo3", "_cargo4", "_cargo5",
+        ],
+    )?))
+}
+
+fn worker_body_rows(rects: &Manifest, stem: &str) -> Result<Option<[[Rect; 3]; 3]>> {
+    if !rects.keys().any(|key| key.starts_with(&format!("{stem}_"))) {
+        return Ok(None);
+    }
+    Ok(Some(variant_rows(rects, stem, ["", "_move1", "_move2"])?))
+}
+
 fn unit_rig(rects: &Manifest, stem: &str, actions: usize) -> Result<Option<UnitRig>> {
     let prefix = format!("rig_{stem}");
     if !rects
@@ -222,6 +250,21 @@ const VERB_ICON_KEYS: [&str; 14] = [
 
 const GROUND_KEYS: [&str; 6] = [
     "ground_0", "ground_1", "ground_2", "ground_3", "ground_4", "ground_5",
+];
+
+const GROUND_DETAIL_KEYS: [&str; 12] = [
+    "ground_detail_0",
+    "ground_detail_1",
+    "ground_detail_2",
+    "ground_detail_3",
+    "ground_detail_4",
+    "ground_detail_5",
+    "ground_detail_6",
+    "ground_detail_7",
+    "ground_detail_8",
+    "ground_detail_9",
+    "ground_detail_10",
+    "ground_detail_11",
 ];
 
 const ROCK_KEYS: [&str; 23] = [
@@ -686,11 +729,12 @@ fn construction_rows(
 /// Every key accepted in the generated production atlas, including legacy
 /// compatibility aliases that remain in the generator output.
 #[cfg(test)]
-fn atlas_keys() -> Vec<String> {
+fn atlas_keys(atlas: &Manifest) -> Vec<String> {
     let mut keys: Vec<String> = SINGLE_KEYS
         .iter()
         .chain(VERB_ICON_KEYS.iter())
         .chain(GROUND_KEYS.iter())
+        .chain(GROUND_DETAIL_KEYS.iter())
         .chain(ROCK_KEYS.iter())
         .chain(PEAK_BARRIER_KEYS.iter())
         .chain(DECAL_KEYS.iter())
@@ -703,6 +747,24 @@ fn atlas_keys() -> Vec<String> {
         .collect();
     keys.extend((0..5).map(|phase| format!("bombard_spades_{phase}")));
     keys.push("scout_radar".to_owned());
+    if atlas
+        .keys()
+        .any(|key| key.starts_with("rig_harvester_body_"))
+    {
+        for cargo in 0..6 {
+            keys.extend(variant_keys(
+                "rig_harvester_body",
+                &format!("_cargo{cargo}"),
+            ));
+        }
+    }
+    for stem in ["rig_excavator_body", "rig_tender_body", "rig_scuttler_body"] {
+        if atlas.keys().any(|key| key.starts_with(stem)) {
+            for suffix in ["", "_move1", "_move2"] {
+                keys.extend(variant_keys(stem, suffix));
+            }
+        }
+    }
     keys.extend((0..12).map(|index| format!("quarry_dressing_{index}")));
     for (stem, action_count) in [
         ("sentinel", 4),
@@ -900,9 +962,14 @@ impl Sprites {
                 .map(|&[x, y, w, h]| Rect::new(x, y, w, h)),
             textures,
             entity_lod,
+            harvester_body: harvester_body_rows(&rects)?,
+            excavator_body: worker_body_rows(&rects, "rig_excavator_body")?,
+            scuttler_body: worker_body_rows(&rects, "rig_scuttler_body")?,
+            tender_body: worker_body_rows(&rects, "rig_tender_body")?,
             page_height,
             verb_icons: pick(&rects, VERB_ICON_KEYS)?,
             ground: pick(&rects, GROUND_KEYS)?,
+            ground_detail: pick(&rects, GROUND_DETAIL_KEYS)?,
             quarry_dressing: quarry_dressing_rows(&rects)?,
             rock: pick(&rects, ROCK_KEYS)?,
             peak_barriers: pick(&rects, PEAK_BARRIER_KEYS)?,
@@ -960,7 +1027,34 @@ impl Sprites {
         })
     }
 
-    pub(crate) fn building_contact(
+    pub(crate) fn harvester_body(&self, faction: Faction, cargo: usize) -> Option<(Rect, Rect)> {
+        self.harvester_body.as_ref().map(|rows| {
+            let row = rows[cargo.min(5)];
+            (row[faction_index(faction)], row[ACCENT])
+        })
+    }
+
+    pub(crate) fn worker_body(
+        &self,
+        kind: UnitKind,
+        faction: Faction,
+        cargo: usize,
+        phase: usize,
+    ) -> Option<(Rect, Rect)> {
+        if kind == UnitKind::Harvester {
+            return self.harvester_body(faction, cargo);
+        }
+        let rows = match kind {
+            UnitKind::Excavator => self.excavator_body.as_ref()?,
+            UnitKind::Scuttler => self.scuttler_body.as_ref()?,
+            UnitKind::Tender => self.tender_body.as_ref()?,
+            _ => return None,
+        };
+        let row = rows[phase.min(2)];
+        Some((row[faction_index(faction)], row[ACCENT]))
+    }
+
+    pub(crate) fn sprite_contact(
         &self,
         source: Rect,
         from: Vec2,
@@ -1058,6 +1152,15 @@ impl Sprites {
     /// A ground variant's atlas region.
     pub fn ground(&self, variant: usize) -> Rect {
         self.ground[variant % self.ground.len()]
+    }
+
+    /// A ground grit-and-crack overlay's atlas region.
+    pub fn ground_detail(&self, variant: usize) -> Rect {
+        self.ground_detail[variant % self.ground_detail.len()]
+    }
+
+    pub fn ground_detail_count(&self) -> usize {
+        self.ground_detail.len()
     }
 
     pub(crate) fn quarry_dressing(&self, variant: usize) -> Option<Rect> {
@@ -1771,6 +1874,20 @@ mod tests {
     }
 
     #[test]
+    fn harvester_body_layers_require_every_cargo_and_faction_mask() {
+        let mut atlas = Manifest::new();
+        assert!(harvester_body_rows(&atlas).unwrap().is_none());
+        for cargo in 0..6 {
+            for key in variant_keys("rig_harvester_body", &format!("_cargo{cargo}")) {
+                atlas.insert(key, [1., 1., 128., 128.]);
+            }
+        }
+        assert!(harvester_body_rows(&atlas).unwrap().is_some());
+        atlas.remove("rig_harvester_body_accent_cargo5");
+        assert!(harvester_body_rows(&atlas).is_err());
+    }
+
+    #[test]
     fn quarry_dressing_is_optional_but_partial_banks_are_rejected() {
         let mut atlas = Manifest::new();
         assert!(quarry_dressing_rows(&atlas).unwrap().is_none());
@@ -1869,7 +1986,7 @@ mod tests {
     #[test]
     fn the_shell_and_the_atlas_name_the_same_sprites() {
         let atlas = manifest();
-        let named = atlas_keys();
+        let named = atlas_keys(&atlas);
         let mut missing: Vec<&String> = named.iter().filter(|k| !atlas.contains_key(*k)).collect();
         missing.sort();
         assert!(

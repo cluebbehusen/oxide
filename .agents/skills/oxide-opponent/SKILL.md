@@ -187,7 +187,9 @@ ticks after training.
 Rows also record, for every controlled seat, the situations it met and how it
 answered them. A case opens when a situation first holds and closes once:
 answered when the response shows in time, moot when the situation ends first,
-missed at its deadline. Situations a seat must see count only what it sees.
+missed at its deadline. Situations a seat must see count only what it sees. A
+seat that has lost its last Foundry opens and answers no more cases, and a
+building's repair case opens once per spell under 75% health.
 `bot-matrix-report` prints each controller's cases per mode, with `oxide-bot`'s
 as the reference. Missed cases keep their ticks for replay review with
 `--replay-dir`.
@@ -197,9 +199,12 @@ as the reference. Missed cases keep their ticks for replay review with
 - **Airworks:** an enemy Airworks seen before any armed aircraft; anti-air
   before the first one.
 - **Ground and air defense:** a seen armed enemy within 8 tiles of an own
-  Foundry; the seat's units, turrets or guns hit one within 600 ticks.
-- **Artillery:** an enemy shell landing within 8 tiles of the seat's buildings;
-  the seat hits the gun within 1,200 ticks, moot if it dies to something else.
+  Foundry; the seat's units or turrets hit one, or its guns fire at one, within
+  600 ticks.
+- **Artillery:** an enemy shell fired at the seat's units or buildings that
+  lands within 8 tiles of its buildings; the seat hits the gun, or its guns fire
+  at it, within 1,200 ticks of the launch, moot if the gun dies to something
+  else.
 - **Scouting:** a standing hostile start unseen for 3,600 ticks; seen again
   within 3,600.
 - **Evacuation:** a worker more than 8 tiles from home in a seen armed enemy's
@@ -209,7 +214,7 @@ as the reference. Missed cases keep their ticks for replay review with
 - **Restoration:** a destroyed Extractor; another on its site within 3,600
   ticks, moot if an armed enemy still stands near.
 - **Relief:** a seen armed enemy within 8 tiles of an ally's Foundry; the seat
-  hits one within 1,200 ticks.
+  hits one, or fires at one, within 1,200 ticks.
 - **Withdrawal,** this bot only: an attack, strike or raid in its fight; it
   withdraws rather than vanishing with half its units lost.
 

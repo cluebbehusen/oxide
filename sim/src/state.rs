@@ -175,7 +175,7 @@ pub enum Order {
     /// Chase a wounded own ground unit and weld it back toward full
     /// (harvesters only; billed per hp against the patient's cost).
     /// The weld ticks only while welder and patient both stand still
-    /// within [`crate::stats::REPAIR_REACH`].
+    /// within their combined hull radii plus [`crate::stats::WORK_REACH`].
     RepairUnit {
         /// The patient.
         unit: crate::ids::UnitId,
@@ -296,12 +296,24 @@ fn is_zero_u16(v: &u16) -> bool {
 /// An in-progress walk along an A* path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PathFollow {
+    /// Exact ground-work endpoint within a short final approach of the last tile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_point: Option<Vec2Fx>,
     /// Final tile, used to detect stale paths when intent changes.
     pub goal: TilePos,
     /// Remaining waypoints from A* (start tile excluded).
     pub waypoints: Vec<TilePos>,
     /// Index of the waypoint currently steered toward.
     pub next: u32,
+}
+
+/// An uninterrupted cargo release at a completed Foundry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Unloading {
+    /// Destination held for this release.
+    pub foundry: BuildingId,
+    /// Completed work ticks; cargo remains aboard until the final tick.
+    pub elapsed: u8,
 }
 
 /// A mobile entity.
@@ -322,6 +334,9 @@ pub struct Unit {
     pub hp: u32,
     /// Scrap on board (harvesters only).
     pub carrying: u32,
+    /// Cargo release in progress, separate from extraction and welding meters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unloading: Option<Unloading>,
     /// Ticks until each weapon may fire again, indexed like
     /// `kind.stats().weapons` (unused slots stay zero).
     pub cooldowns: [u32; crate::stats::MAX_WEAPONS],
@@ -406,22 +421,28 @@ impl Unit {
         TilePos::containing(self.pos)
     }
 
-    /// Whether the worker is physically close enough to gather or unload.
-    pub fn in_harvest_reach(&self, anchor: TilePos, size: (i32, i32)) -> bool {
-        if !crate::tick::tile_adjacent_to_rect(self.tile(), anchor, size) {
-            return false;
-        }
-        let min = anchor.center() - Vec2Fx::new(chassis::fx::HALF, chassis::fx::HALF);
-        let max = min
-            + Vec2Fx::new(
-                chassis::fx::Fx::from_num(size.0),
-                chassis::fx::Fx::from_num(size.1),
-            );
-        let closest = Vec2Fx::new(
-            self.pos.x.clamp(min.x, max.x),
-            self.pos.y.clamp(min.y, max.y),
-        );
-        self.pos.dist_sq(closest) <= crate::stats::HARVEST_REACH * crate::stats::HARVEST_REACH
+    /// Whether this body is within tool reach of a rectangular resource footprint.
+    pub fn in_work_reach(&self, anchor: TilePos, size: (i32, i32)) -> bool {
+        let reach = crate::geometry::work_approach_distance(self.kind.stats().radius)
+            + crate::stats::WORK_REACH
+            - crate::stats::WORK_APPROACH_GAP
+            + Fx::lit("0.04");
+        self.pos
+            .dist_sq(crate::geometry::footprint_contact(self.pos, anchor, size))
+            <= reach * reach
+            && crate::tick::tile_adjacent_to_rect(self.tile(), anchor, size)
+    }
+
+    /// Whether this body's tool can reach a patient's hull.
+    pub fn in_repair_reach(&self, patient: &Unit) -> bool {
+        let reach =
+            self.kind.stats().radius + patient.kind.stats().radius + crate::stats::WORK_REACH;
+        self.pos.dist_sq(patient.pos) <= reach * reach
+    }
+
+    /// Whether ground work may advance without the motor moving this body.
+    pub fn work_stopped(&self) -> bool {
+        self.path.is_none() && self.drive_speed == Fx::ZERO
     }
 
     /// The movement layer this body occupies right now: a landed airframe
@@ -463,6 +484,7 @@ impl Unit {
         }
         self.path = None;
         self.progress = 0;
+        self.unloading = None;
     }
 
     /// Drops the active order without rotating it into a looping program:
@@ -474,6 +496,7 @@ impl Unit {
         }
         self.path = None;
         self.progress = 0;
+        self.unloading = None;
     }
 
     /// Completes an engagement without recycling its target into a patrol.
@@ -491,6 +514,7 @@ impl Unit {
         };
         self.path = None;
         self.progress = 0;
+        self.unloading = None;
     }
 
     /// Abandons the whole program. Overrides use it, and so do the stalls a
@@ -502,6 +526,7 @@ impl Unit {
         self.looping = false;
         self.path = None;
         self.progress = 0;
+        self.unloading = None;
     }
 }
 
@@ -717,11 +742,42 @@ impl ParkedBodies {
 pub(crate) struct GroundTerrain<'a> {
     map: &'a Map,
     occupancy: &'a [u8],
+    contact: Option<crate::building_contact::Surface>,
 }
 
 impl<'a> GroundTerrain<'a> {
     pub(crate) fn new(map: &'a Map, occupancy: &'a [u8]) -> Self {
-        Self { map, occupancy }
+        Self {
+            map,
+            occupancy,
+            contact: None,
+        }
+    }
+
+    pub(crate) fn with_contact(
+        mut self,
+        contact: Option<crate::building_contact::Surface>,
+    ) -> Self {
+        self.contact = contact;
+        self
+    }
+
+    pub(crate) fn at_contact(&self, pos: Vec2Fx, radius: Fx) -> bool {
+        self.contact.is_some_and(|surface| {
+            let reach = radius + Fx::lit("0.25");
+            pos.dist_sq(surface.closest(pos)) <= reach * reach
+                && self.contact_clear(pos, pos, radius)
+        })
+    }
+
+    pub(crate) fn contact_clear(&self, from: Vec2Fx, to: Vec2Fx, radius: Fx) -> bool {
+        self.contact.is_some_and(|surface| {
+            let open =
+                |tile| self.open(tile) || (surface.covers(tile) && self.map.terrain_passable(tile));
+            crate::geometry::circle_clear(to, radius, open)
+                && surface.clear(from, to, radius)
+                && !chassis::path::swept_line_blocked(from, to, radius, open)
+        })
     }
 
     /// Whether a ground body may occupy `tile`.
@@ -1126,6 +1182,31 @@ impl State {
             if u.carrying > stats.harvest.map_or(0, |harvest| harvest.capacity) {
                 return Err(E::ScrapBeyondCapacity(u.id));
             }
+            if let Some(release) = u.unloading
+                && (u.carrying == 0
+                    || release.elapsed == 0
+                    || release.elapsed >= crate::stats::UNLOAD_TICKS
+                    || !matches!(u.order, Order::Harvest { .. } | Order::ReturnCargo { .. })
+                    || matches!(u.order, Order::ReturnCargo { foundry, .. } if foundry != release.foundry)
+                    || !self.minted(Target::Building(release.foundry))
+                    || self
+                        .building(release.foundry)
+                        .is_some_and(|b| b.player != u.player || !b.kind.is_drop_off() || !b.built))
+            {
+                return Err(E::InvalidUnloading(u.id));
+            }
+            if let Some(path) = &u.path
+                && let Some(point) = path.final_point
+                && (!point_inside_envelope(point)
+                    || (point.x - path.goal.center().x).abs() > Fx::lit("1.5")
+                    || (point.y - path.goal.center().y).abs() > Fx::lit("1.5")
+                    || self.map.tile(path.goal).is_none()
+                    || path.waypoints.last() != Some(&path.goal)
+                    || path.next as usize >= path.waypoints.len()
+                    || (u.domain() != crate::stats::Domain::Ground && u.kind.stats().turn_rate > 0))
+            {
+                return Err(E::InvalidWorkEndpoint(u.id));
+            }
             if u.progress > PROGRESS_ENVELOPE {
                 return Err(E::UnitProgressOutOfRange(u.id));
             }
@@ -1272,6 +1353,7 @@ impl State {
                     || !rider.queue.is_empty()
                     || rider.looping
                     || rider.path.is_some()
+                    || rider.unloading.is_some()
                     || rider.leash.is_some()
                     || rider.settled != 0
                     || rider.brace_ticks != 0
@@ -1917,6 +1999,7 @@ impl State {
             air_motion: Vec2Fx::ZERO,
             hp: kind.stats().max_hp,
             carrying: 0,
+            unloading: None,
             cooldowns: [0; crate::stats::MAX_WEAPONS],
             brace_ticks: 0,
             turret_heading: None,
@@ -2369,6 +2452,12 @@ pub enum StateIntegrityError {
     /// A walking or transported unit holds more scrap than its harvest gear permits.
     #[error("unit {0} carries scrap beyond its harvest capacity")]
     ScrapBeyondCapacity(UnitId),
+    /// An incomplete cargo release has invalid timing, cargo, or destination.
+    #[error("unit {0} carries invalid unloading state")]
+    InvalidUnloading(UnitId),
+    /// A precise ground-work endpoint does not belong to its final waypoint.
+    #[error("unit {0} carries an invalid work endpoint")]
+    InvalidWorkEndpoint(UnitId),
     /// A stored aircraft displacement is not physically bounded.
     #[error("unit {0} carries invalid airborne motion")]
     InvalidAirMotion(UnitId),

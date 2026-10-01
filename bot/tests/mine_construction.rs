@@ -54,6 +54,22 @@ fn roundtrip(state: &State) {
     assert_eq!(state.hash(), copy.hash());
 }
 
+fn contact_builder(state: &mut State, index: usize, anchor: TilePos, kind: BuildingKind) {
+    let unit = &state.units()[index];
+    let mut proposed = state.buildings()[0].clone();
+    proposed.kind = kind;
+    proposed.anchor = anchor;
+    proposed.tier = 0;
+    let surface = state.contact_surface(&proposed);
+    let pos = surface.stance(
+        unit.tile().center(),
+        unit.kind.stats().radius + oxide_sim::stats::WORK_FOOTPRINT_GAP,
+    );
+    let mut data = serde_json::to_value(&*state).unwrap();
+    data["units"][index]["pos"] = serde_json::to_value(pos).unwrap();
+    *state = serde_json::from_value(data).unwrap();
+}
+
 #[test]
 fn hidden_mine_and_empty_ground_accept_identical_remote_placement() {
     for defer in [false, true] {
@@ -386,8 +402,9 @@ fn manual_cancellation_of_a_hidden_mine_overlap_preserves_the_mine() {
 }
 
 #[test]
-fn an_adjacent_builders_first_command_tick_uses_normal_lethal_blast_damage() {
+fn a_contacting_builders_first_command_tick_uses_normal_lethal_blast_damage() {
     let mut state = arena(true);
+    contact_builder(&mut state, 1, SITE, BuildingKind::Barricade);
     let builder = state.units()[1].id;
     let report = state.tick(&[cmd(
         0,
@@ -437,6 +454,8 @@ fn multiple_mines_and_builders_resolve_each_trigger_once() {
         });
     }
     let mut state = scenario.build().unwrap();
+    contact_builder(&mut state, 0, SITE, BuildingKind::Fabricator);
+    contact_builder(&mut state, 1, SITE, BuildingKind::Fabricator);
     let crew = state.units().iter().map(|u| u.id).collect();
     let report = state.tick(&[cmd(
         0,
@@ -569,6 +588,7 @@ fn construction_trips_a_mine_even_when_the_first_work_rounds_to_zero_hp() {
         y: 2,
     });
     let mut state = scenario.build().unwrap();
+    contact_builder(&mut state, 1, SITE, BuildingKind::ScuttleCharge);
     let builder = state.units()[1].id;
     let report = state.tick(&[cmd(
         0,

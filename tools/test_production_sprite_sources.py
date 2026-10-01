@@ -90,7 +90,7 @@ class ProductionSpriteSourceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             frames = {}
             mechanical_final.install_machines(frames, Path(directory))
-        self.assertEqual(len(frames), 587)
+        self.assertEqual(len(frames), 617)
         digest = hashlib.sha256()
         for key, image in sorted(frames.items()):
             self.assertEqual(self.registry[key].tobytes(), image.tobytes(), key)
@@ -98,7 +98,7 @@ class ProductionSpriteSourceTests(unittest.TestCase):
             digest.update(image.tobytes())
         self.assertEqual(
             digest.hexdigest(),
-            "4ec6ef878811b7555afa9b4488dd0a3c80442137a1e943c38b8ecf4fb662ac64",
+            "3d47503eef2e1f3982c42fe5e579521e4715cf8905becb87d812f1834c84a4c8",
         )
 
     def test_lift_rotors_keep_three_distinct_poses_during_actions(self) -> None:
@@ -166,7 +166,7 @@ class ProductionSpriteSourceTests(unittest.TestCase):
             digest.update(image.tobytes())
         self.assertEqual(
             digest.hexdigest(),
-            "44920b9cdeeb1c9b7ed78bae0331ad1002e7b63c457695d51cbcebce51b1995a",
+            "0ec627a546131cd5592ce2a85d13a94c04734de181c32989f3e173b956d4e253",
         )
 
     def test_promoted_specialists_match_approved_pixels(self) -> None:

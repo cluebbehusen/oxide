@@ -1,5 +1,5 @@
 //! Wreck salvage: deaths leave scrap on open ground, harvesters strip it
-//! standing on the tile, decay reclaims it, and foundations bury it.
+//! standing beside the tile, decay reclaims it, and foundations bury it.
 //! Headless scenarios through the public API only, like `behavior.rs`.
 
 mod common;
@@ -91,7 +91,7 @@ fn a_death_leaves_its_price_on_passable_ground() {
 }
 
 #[test]
-fn harvesters_strip_wrecks_standing_on_them_and_deliver() {
+fn harvesters_strip_wrecks_from_beside_them_and_deliver() {
     let mut state = arena(vec![
         unit(0, UnitKind::Harvester, 5, 5),
         unit(1, UnitKind::Scuttler, 6, 5),
@@ -117,10 +117,10 @@ fn harvesters_strip_wrecks_standing_on_them_and_deliver() {
             queue: false,
         },
     )]);
-    // The salvager must stand ON the wreck to strip it.
+    // The salvager must reach a stopped working position beside the pile.
     run_until(&mut state, 300, |s, _| {
         let u = s.unit(salvager).unwrap();
-        u.tile() == grave && u.carrying > 0
+        u.in_work_reach(grave, (1, 1)) && u.work_stopped() && u.carrying > 0
     });
     run_until(&mut state, 600, |s, events| {
         let _ = s;
@@ -672,7 +672,7 @@ fn fire_finishing_a_salvage_target_wins_and_forfeits_the_rest() {
     // credited. The stripper's order pops silently (its target is
     // simply gone), never stalls.
     let mut scenario = arena(vec![
-        unit(0, UnitKind::Harvester, 7, 2),
+        unit(0, UnitKind::Harvester, 8, 2),
         unit(1, UnitKind::Lancer, 11, 2),
     ]);
     scenario
@@ -687,26 +687,43 @@ fn fire_finishing_a_salvage_target_wins_and_forfeits_the_rest() {
         .find(|b| b.kind == BuildingKind::Array)
         .unwrap()
         .id;
+    let mut data = serde_json::to_value(&state).unwrap();
+    let slot = state
+        .buildings()
+        .iter()
+        .position(|b| b.id == array)
+        .unwrap();
+    data["buildings"][slot]["hp"] = serde_json::json!(30);
+    data["units"][0]["pos"] = serde_json::json!(chassis::fx::Vec2Fx::new(
+        chassis::fx::Fx::lit("8.6"),
+        chassis::fx::Fx::lit("2.5")
+    ));
+    data["units"][1]["turret_heading"] = serde_json::json!(128);
+    state = serde_json::from_value(data).unwrap();
     let bank_before = state.player(PlayerId(0)).scrap;
-    state.tick(&[
-        cmd(
-            0,
-            Command::Salvage {
-                units: vec![harvester],
-                building: array,
-                queue: false,
-            },
-        ),
-        cmd(
-            1,
-            Command::Attack {
-                units: raiders,
-                target: Target::Building(array).into(),
-                queue: false,
-            },
-        ),
-    ]);
-    let events = run_until(&mut state, 2000, |s, _| s.building(array).is_none());
+    let mut events = state
+        .tick(&[
+            cmd(
+                0,
+                Command::Salvage {
+                    units: vec![harvester],
+                    building: array,
+                    queue: false,
+                },
+            ),
+            cmd(
+                1,
+                Command::Attack {
+                    units: raiders,
+                    target: Target::Building(array).into(),
+                    queue: false,
+                },
+            ),
+        ])
+        .events;
+    events.extend(run_until(&mut state, 20, |s, _| {
+        s.building(array).is_none()
+    }));
     assert!(
         events
             .iter()

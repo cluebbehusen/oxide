@@ -77,7 +77,7 @@ fn a_worker_displaced_to_the_far_edge_of_its_doorstep_closes_the_gap() {
     data["units"][0]["pos"] =
         serde_json::to_value(Vec2Fx::new(Fx::lit("9.03"), Fx::lit("7.95"))).unwrap();
     state = serde_json::from_value(data).unwrap();
-    assert!(!state.unit(worker).unwrap().in_harvest_reach(node, (1, 1)));
+    assert!(!state.unit(worker).unwrap().in_work_reach(node, (1, 1)));
     state.tick(&[cmd(
         0,
         Command::Harvest {
@@ -87,7 +87,7 @@ fn a_worker_displaced_to_the_far_edge_of_its_doorstep_closes_the_gap() {
         },
     )]);
     run_until(&mut state, 200, |s, _| s.unit(worker).unwrap().carrying > 0);
-    assert!(state.unit(worker).unwrap().in_harvest_reach(node, (1, 1)));
+    assert!(state.unit(worker).unwrap().in_work_reach(node, (1, 1)));
 }
 
 #[test]
@@ -122,7 +122,9 @@ fn harvesting_waits_for_physical_reach_from_each_approach() {
             let dy = (worker.pos.y - chassis::fx::Fx::from_num(6)).min(chassis::fx::Fx::ZERO)
                 + (worker.pos.y - chassis::fx::Fx::from_num(7)).max(chassis::fx::Fx::ZERO);
             assert!(
-                dx * dx + dy * dy <= chassis::fx::Fx::lit("0.5625"),
+                dx * dx + dy * dy
+                    <= (kind.stats().radius + oxide_sim::stats::WORK_REACH)
+                        * (kind.stats().radius + oxide_sim::stats::WORK_REACH),
                 "{kind:?} gathered from the far side of a neighboring tile: {:?}",
                 worker.pos
             );
@@ -1391,4 +1393,34 @@ fn a_claimed_work_tile_still_serves_when_the_free_ones_are_sealed() {
         extracted,
         "the chained worker never extracted from the shared doorstep"
     );
+}
+
+#[test]
+fn wreck_workers_leave_the_pile_and_work_from_beside_it() {
+    let node = TilePos::new(10, 6);
+    for kind in [UnitKind::Harvester, UnitKind::Excavator] {
+        for start in [(10, 6), (6, 6), (14, 6), (10, 2), (10, 10)] {
+            let mut state = state_with_salvage(
+                24,
+                &[],
+                &[(node, 100)],
+                vec![unit(0, kind, start.0, start.1)],
+                vec![],
+            );
+            let worker = state.units()[0].id;
+            state.tick(&[cmd(
+                0,
+                Command::Harvest {
+                    units: vec![worker],
+                    node,
+                    queue: false,
+                },
+            )]);
+            run_until(&mut state, 300, |s, _| s.unit(worker).unwrap().carrying > 0);
+            let unit = state.unit(worker).unwrap();
+            assert_ne!(unit.tile(), node, "{kind:?} stood inside the wreck");
+            assert!(unit.in_work_reach(node, (1, 1)));
+            assert!(unit.work_stopped());
+        }
+    }
 }

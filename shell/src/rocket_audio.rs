@@ -6,7 +6,7 @@ use macroquad::audio::{PlaySoundParams, Sound, play_sound, set_sound_volume, sto
 use macroquad::prelude::Vec2;
 use oxide_sim::{ProjectileKind, Target};
 
-use crate::audio_timeline::{missile_ejection_ticks, missile_elapsed_ticks};
+use crate::audio_timeline::{missile_ejection_ticks, projectile_elapsed_ticks};
 use crate::game::{Scene, SoundKind, world_vec};
 
 pub(crate) const MOTOR_VOICES: usize = 16;
@@ -48,7 +48,7 @@ fn audible_motors(game: &Scene<'_>) -> Vec<Motor> {
         let total = (launch.distance(impact) / oxide_sim::stats::SHELL_SPEED.to_num::<f32>())
             .ceil()
             .max(1.0);
-        let elapsed = missile_elapsed_ticks(now, shell.arrival, total);
+        let elapsed = projectile_elapsed_ticks(now, shell.arrival, total);
         let envelope = motor_envelope(elapsed, total);
         if envelope <= 0.0 {
             continue;

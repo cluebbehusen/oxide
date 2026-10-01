@@ -81,18 +81,24 @@ fn the_excavator_waits_on_the_fabricator_and_builds_at_double_pace() {
             .find(|b| b.kind == BuildingKind::Turret)
             .unwrap()
             .id;
+        let mut started = None;
         for tick in 0..2_000u64 {
             state.tick(&[]);
-            if state.building(site).is_some_and(|b| b.built) {
-                return tick;
+            let building = state.building(site).unwrap();
+            if building.progress > 0 {
+                started.get_or_insert(tick);
+            }
+            if building.built {
+                return tick - started.expect("construction started") + 1;
             }
         }
         panic!("the turret never stood");
     };
     let harvester_pace = race(UnitKind::Harvester);
     let excavator_pace = race(UnitKind::Excavator);
-    assert!(
-        excavator_pace * 2 <= harvester_pace + 4,
+    assert_eq!(
+        excavator_pace * 2,
+        harvester_pace,
         "double hands: excavator {excavator_pace} vs harvester {harvester_pace}"
     );
 }
