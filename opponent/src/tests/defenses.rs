@@ -138,42 +138,42 @@ fn a_fortified_seat_guards_its_foundry_toward_the_enemy_and_a_thrifty_one_does_n
 }
 
 #[test]
-fn a_turret_on_the_approach_makes_room_for_a_bastion() {
-    let score = |wanted: &[(Investment, u32)], kind| {
-        wanted
-            .iter()
-            .find(|(investment, _)| {
-                matches!(investment, Investment::Defense { kind: wanted, .. } if *wanted == kind)
-            })
-            .map_or(0, |(_, score)| *score)
-    };
+fn turrets_and_bastions_share_a_watched_approach_by_what_they_hold_per_scrap() {
+    // An Array watches the way in, so a Bastion fires as far as it reaches,
+    // and a known army of Wardens outweighs any one gun.
     let mut scenario = settled(0);
-    let bare = scenario.build().unwrap();
-    let before = wanted(&scenario, &bare, &Memory::default(), 85);
-    assert!(
-        score(&before, BuildingKind::Turret) > score(&before, BuildingKind::Bastion),
-        "{before:?}"
-    );
-    let turret = before
-        .iter()
-        .find_map(|(investment, _)| match investment {
-            Investment::Defense {
-                kind: BuildingKind::Turret,
-                anchor,
-            } => Some(*anchor),
-            _ => None,
-        })
-        .expect("a Turret is wanted first");
+    // Room for the guns along the standing army's row.
+    scenario
+        .units
+        .retain(|unit| !(unit.player == 0 && unit.kind == UnitKind::Sentinel));
     scenario
         .buildings
-        .push(building(0, BuildingKind::Turret, turret.x, turret.y));
-    let state = scenario.build().unwrap();
-    let after = wanted(&scenario, &state, &Memory::default(), 85);
-    assert!(score(&after, BuildingKind::Bastion) >= ADOPT, "{after:?}");
-    assert!(
-        score(&after, BuildingKind::Turret) < score(&after, BuildingKind::Bastion),
-        "a second Turret adds less than a Bastion: {after:?}"
-    );
+        .push(building(0, BuildingKind::Array, 9, 3));
+    scenario.units.push(unit(0, UnitKind::Kestrel, 10, 5));
+    for (x, y) in [(13, 4), (13, 5), (13, 6), (14, 4), (14, 5), (14, 6)] {
+        scenario.units.push(unit(1, UnitKind::Warden, x, y));
+    }
+    let mut laid = Vec::new();
+    for _ in 0..6 {
+        let state = scenario.build().unwrap();
+        let mut memory = Memory::default();
+        memory.observe(&ObservationData::fog_honest(&state, PlayerId(0)));
+        let offered = wanted(&scenario, &state, &memory, 85);
+        let Some((kind, anchor)) = [BuildingKind::Turret, BuildingKind::Bastion]
+            .into_iter()
+            .filter_map(|kind| offer(&offered, kind).map(|(anchor, score)| (score, kind, anchor)))
+            .max_by_key(|(score, _, _)| *score)
+            .map(|(_, kind, anchor)| (kind, anchor))
+        else {
+            break;
+        };
+        laid.push(kind);
+        scenario
+            .buildings
+            .push(building(0, kind, anchor.x, anchor.y));
+    }
+    assert_eq!(laid.first(), Some(&BuildingKind::Turret), "{laid:?}");
+    assert!(laid.contains(&BuildingKind::Bastion), "{laid:?}");
 }
 
 #[test]
@@ -814,6 +814,35 @@ fn a_light_unit_takes_a_whole_blast() {
 }
 
 #[test]
+fn guns_holding_the_way_in_leave_less_for_charges_to_mine() {
+    let charges = |turrets: &[(i32, i32)]| {
+        let mut scenario = settled(0);
+        scenario
+            .buildings
+            .push(building(0, BuildingKind::Fabricator, 3, 1));
+        for (x, y) in turrets {
+            scenario
+                .buildings
+                .push(building(0, BuildingKind::Turret, *x, *y));
+        }
+        for laid in 0..32 {
+            let state = scenario.build().unwrap();
+            let offered = wanted(&scenario, &state, &remembered("sentinel", 12), 85);
+            let Some((anchor, _)) = offer(&offered, BuildingKind::ScuttleCharge) else {
+                return laid;
+            };
+            scenario
+                .buildings
+                .push(building(0, BuildingKind::ScuttleCharge, anchor.x, anchor.y));
+        }
+        panic!("the minefield never holds the threat off");
+    };
+    let bare = charges(&[]);
+    let guarded = charges(&[(7, 5), (8, 4)]);
+    assert!(guarded < bare, "{guarded} against {bare}");
+}
+
+#[test]
 fn every_charge_a_field_still_needs_is_worth_saving_for() {
     let laid = minefield_scored(defenses::Stakes::default(), &remembered("sentinel", 12));
     let (_, first) = laid[0];
@@ -999,10 +1028,10 @@ fn an_upgraded_gun_holds_what_its_upgrades_paid_for() {
         scenario
             .buildings
             .push(building(0, BuildingKind::Turret, first.x, first.y));
+        // A lone Warden: the threat is the stance's minimum army, which a
+        // Bulwark holds alone and a base Turret does not.
         scenario.units.push(unit(0, UnitKind::Kestrel, 10, 5));
-        for (x, y) in [(13, 4), (13, 5), (13, 6), (14, 4), (14, 5), (14, 6)] {
-            scenario.units.push(unit(1, UnitKind::Warden, x, y));
-        }
+        scenario.units.push(unit(1, UnitKind::Warden, 13, 5));
         let mut value = serde_json::to_value(scenario.build().unwrap()).unwrap();
         for entry in value["buildings"].as_array_mut().unwrap() {
             if entry["kind"] == "turret" {

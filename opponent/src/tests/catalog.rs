@@ -128,12 +128,19 @@ fn every_building_and_upgrade_is_bought_somewhere() {
 
     // Reclaimers, Refineries, a Barricade in front of the Turret, Scuttle
     // Charges, and the base-tier upgrades once a Fabricator stands, with an
-    // enemy in sight beyond the defenses' reach.
+    // army and aircraft in sight beyond the defenses' reach that outweigh
+    // the guns standing.
     let mut built = home.clone();
     built.units.extend([
         unit(1, UnitKind::Sentinel, 18, 8),
         unit(0, UnitKind::Kestrel, 17, 8),
     ]);
+    for (x, y) in [(19, 8), (20, 8), (21, 8), (19, 9), (20, 9), (21, 9)] {
+        built.units.push(unit(1, UnitKind::Warden, x, y));
+    }
+    for x in 18..=21 {
+        built.units.push(unit(1, UnitKind::Darter, x, 2));
+    }
     built.buildings.extend([
         building(0, BuildingKind::Fabricator, 3, 1),
         building(0, BuildingKind::Reclaimer, 1, 9),
