@@ -55,7 +55,7 @@ pub(crate) struct Ledger {
 }
 
 impl Ledger {
-    fn new(me: PlayerId, bank: u32, allowance: u32) -> Self {
+    pub(crate) fn new(me: PlayerId, bank: u32, allowance: u32) -> Self {
         Self {
             me,
             bank,
