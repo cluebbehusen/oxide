@@ -263,6 +263,35 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Profile the simulation inside a window of recorded ticks: rebuild the
+    /// replay to `--from`, re-simulate the window from that world again and
+    /// again under macOS's `sample`, and report each function's share of the
+    /// samples inside `State::tick`. Repetitions are identical, so a single
+    /// tick still gathers thousands of samples. Controllers do not run; the
+    /// recorded commands replay.
+    TickProfile {
+        /// Scenario-origin or checkpoint-origin replay.
+        replay: String,
+        /// First tick of the window: the world before commands stamped with
+        /// it run.
+        #[arg(long)]
+        from: u64,
+        /// Ticks in the window.
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u64).range(1..))]
+        ticks: u64,
+        /// Seconds to sample; about a thousand samples each.
+        #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u64).range(1..=600))]
+        seconds: u64,
+        /// Rows per table.
+        #[arg(long, default_value_t = 20)]
+        top: usize,
+        /// Also break down the outermost function whose name contains this.
+        #[arg(long)]
+        focus: Option<String>,
+        /// Emit JSON instead of the tables.
+        #[arg(long)]
+        json: bool,
+    },
     /// Re-execute a replay and report (or check) the final hash.
     Replay {
         /// Replay JSON path.
@@ -944,6 +973,28 @@ fn main() -> Result<()> {
                 print!("{}", bot_pressure::report(&outcomes));
             }
         }
+        Cmd::TickProfile {
+            replay,
+            from,
+            ticks,
+            seconds,
+            top,
+            focus,
+            json,
+        } => {
+            let report = oxide_driver::tick_profile::profile(
+                &replay,
+                from,
+                ticks,
+                seconds,
+                focus.as_deref(),
+            )?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print!("{}", report.table(top));
+            }
+        }
         Cmd::BotCost {
             workload,
             scenario,
@@ -1592,6 +1643,43 @@ mod tests {
             (None, None, None, false)
         );
         assert!(Cli::try_parse_from(["oxide-driver", "bot-matrix-report"]).is_err());
+    }
+
+    #[test]
+    fn tick_profile_defaults_to_one_tick_and_requires_its_start() {
+        let cli =
+            Cli::try_parse_from(["oxide-driver", "tick-profile", "match.json", "--from", "40"])
+                .expect("a replay and start parse");
+        let Cmd::TickProfile {
+            replay,
+            from,
+            ticks,
+            seconds,
+            focus,
+            json,
+            ..
+        } = cli.cmd
+        else {
+            panic!("tick-profile parsed as another command")
+        };
+        assert_eq!(
+            (replay.as_str(), from, ticks, seconds),
+            ("match.json", 40, 1, 5)
+        );
+        assert_eq!((focus, json), (None, false));
+        assert!(Cli::try_parse_from(["oxide-driver", "tick-profile", "match.json"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "oxide-driver",
+                "tick-profile",
+                "match.json",
+                "--from",
+                "40",
+                "--ticks",
+                "0",
+            ])
+            .is_err()
+        );
     }
 
     #[test]

@@ -43,6 +43,21 @@ the ceiling. Do not relax deserialization safety bounds to satisfy a size test.
 Existing shared-budget, production-reserve, pending-work, and background-seat
 continuation tests remain required; do not replace them with whole-match hashes.
 
+## Simulation hot spots
+
+To find where simulation time goes, profile a window of a scenario-origin or
+checkpoint-origin replay on macOS from a release build:
+
+```sh
+cargo run --release --locked -p oxide-driver -- tick-profile <replay> --from <tick> --ticks 1
+cargo run --release --locked -p oxide-driver -- tick-profile <replay> --from <tick> --ticks 50 --focus resolve_collisions
+```
+
+Each second of `--seconds` gathers about a thousand samples; a few thousand
+inside the tick resolve shares to about a point. Shares are of `State::tick`
+alone. Compare a candidate and its base on the same replay and window; a
+behavior change that diverges the world before the window is not comparable.
+
 ## Reproducible native workloads
 
 Build once before timing, from the workspace root:

@@ -24,6 +24,8 @@ boundary between simulation evidence and presentation evidence.
   fog, audio, and GPU rendering under a driven clock.
 - Use `driver profile-shell` for native frame timings. Do not substitute
   headless tick throughput or session screenshots for GPU-shell profiling.
+- Use `driver tick-profile` to see where simulation time goes inside a window of
+  recorded ticks. It measures the simulation alone, never frame timing.
 - Use `driver smoke --spawn` for an isolated end-to-end shell check.
 - Use `driver shots` only as a local per-machine visual regression gate. Its
   gitignored references are not portable CI goldens.
