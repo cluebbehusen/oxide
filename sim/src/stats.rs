@@ -2319,10 +2319,11 @@ pub const GROUND_BRAKE_TICKS: u8 = 3;
 /// replan; short enough that shoving a parked worker never lasts a second.
 pub const STALL_REPLAN_TICKS: u8 = 12;
 
-/// Ticks a Harvester held on its ordered route with danger ahead waits after
-/// a failed search for a safe detour before searching again. It keeps walking
-/// the ordered route meanwhile, as it does whenever no detour exists.
-pub const HARVEST_DETOUR_RETRY_TICKS: u64 = 16;
+/// Ticks a Harvester held by danger waits before searching again: one on its
+/// ordered route after a failed search for a safe detour keeps walking that
+/// route, and one holding cargo with no safe way to a drop-off keeps standing.
+/// Either reacts at once when the hold begins; only the repeat waits.
+pub const HARVEST_DANGER_RETRY_TICKS: u64 = 16;
 
 /// How many upcoming route waypoints the ground follower may skip per tick
 /// toward the furthest one its hull can reach on a straight, clear leg.

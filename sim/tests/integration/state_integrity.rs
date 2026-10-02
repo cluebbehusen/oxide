@@ -402,7 +402,7 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::NonCanonicalGoal(_) => 80,
         E::InvalidUnloading(_) => 81,
         E::InvalidWorkEndpoint(_) => 82,
-        E::InvalidDetourRetry(_) => 83,
+        E::InvalidDangerRetry(_) => 83,
     }
 }
 
@@ -502,7 +502,7 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::NonCanonicalGoal(UnitId(0)),
         E::InvalidUnloading(UnitId(0)),
         E::InvalidWorkEndpoint(UnitId(0)),
-        E::InvalidDetourRetry(UnitId(0)),
+        E::InvalidDangerRetry(UnitId(0)),
     ]
 }
 
@@ -909,9 +909,9 @@ fn every_checklist_row_refuses_its_forgery() {
             "unit u0 carries an invalid stall counter",
         ),
         (
-            "a detour retry no failed search could schedule",
-            |d| d["units"][0]["detour_retry_at"] = json!(u64::MAX),
-            "unit u0 carries a detour retry beyond its bound",
+            "a danger retry no failed search could schedule",
+            |d| d["units"][0]["danger_retry_at"] = json!(u64::MAX),
+            "unit u0 carries a danger retry beyond its bound",
         ),
         (
             "a unit shoved to the far end of the coordinate space",

@@ -287,10 +287,12 @@ fn accepted_units(state: &State, player: PlayerId, ids: &[UnitId]) -> Vec<UnitId
 /// player re-ordering the exact attack the unit already picked itself
 /// compares equal, returns early, and would otherwise silently keep
 /// the leash on an explicit commitment. A new program-writing verb
-/// must pass through here too, not restate the contract inline.
+/// must pass through here too, not restate the contract inline. A danger
+/// hold's pending retry ends too, so a new order is judged at once.
 fn end_station_keeping(unit: &mut crate::state::Unit) {
     unit.leash = None;
     unit.settled = 0;
+    unit.danger_retry_at = None;
 }
 
 /// Drops the active leg without rotating it into a looping program. This is
