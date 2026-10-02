@@ -112,7 +112,7 @@ impl EvaluationController {
         }
     }
 
-    fn config(self) -> BotConfig {
+    pub(crate) fn config(self) -> BotConfig {
         self.config
     }
 

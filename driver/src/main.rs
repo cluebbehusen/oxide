@@ -214,6 +214,40 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Run a ladder manifest: oxide-opponent against itself at pairs of
+    /// difficulty rungs, both seats sharing a personality seed and each pair
+    /// with the rungs swapped, then publish its rows and print each
+    /// comparison against its gate.
+    BotLadder {
+        /// Ladder manifest; its map paths resolve against its directory.
+        manifest: PathBuf,
+        /// Directory for rows.jsonl; existing rows are never replaced.
+        #[arg(long)]
+        out: PathBuf,
+        /// Maximum simultaneous matches; bounded by available CPUs.
+        #[arg(long, default_value = "4")]
+        jobs: std::num::NonZeroUsize,
+        /// Candidate recorded in the rows. Defaults to the build's version
+        /// and revision.
+        #[arg(long)]
+        candidate: Option<String>,
+        /// Directory for a replay of every leg, with their compact rows in
+        /// legs.jsonl.
+        #[arg(long)]
+        replay_dir: Option<PathBuf>,
+        /// Print the report as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Report rows written by `bot-ladder`.
+    BotLadderReport {
+        /// rows.jsonl files.
+        #[arg(required = true)]
+        rows: Vec<PathBuf>,
+        /// Print the report as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Run the staged pressure scenarios: a scripted attacker presses one
     /// situation on a bot seat, and each scenario reports whether the bot
     /// answered by its deadline.
@@ -632,6 +666,25 @@ fn ensure_distinct<T: PartialEq>(values: &[T], label: &str) -> Result<()> {
     Ok(())
 }
 
+/// The build's version and revision, marked dirty when the tree was.
+fn default_candidate() -> String {
+    let build = build_identity();
+    let revision: String = build.revision.chars().take(12).collect();
+    let dirty = if build.dirty == "false" { "" } else { "-dirty" };
+    format!("{}-{revision}{dirty}", build.version)
+}
+
+fn print_ladder_report(rows: &[PathBuf], json: bool) -> Result<()> {
+    let report =
+        oxide_driver::bot_ladder::build_report(&oxide_driver::bot_ladder::load_rows(rows)?)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", report.render());
+    }
+    Ok(())
+}
+
 fn print_matrix_report(rows: &[PathBuf], json: bool) -> Result<()> {
     let report =
         oxide_driver::bot_matrix::build_report(&oxide_driver::bot_matrix::load_rows(rows)?)?;
@@ -913,12 +966,7 @@ fn main() -> Result<()> {
                 None => bot_matrix::default_baseline_cache()
                     .context("no home directory for the baseline cache; pass --baseline-cache")?,
             };
-            let candidate = candidate.unwrap_or_else(|| {
-                let build = build_identity();
-                let revision: String = build.revision.chars().take(12).collect();
-                let dirty = if build.dirty == "false" { "" } else { "-dirty" };
-                format!("{}-{revision}{dirty}", build.version)
-            });
+            let candidate = candidate.unwrap_or_else(default_candidate);
             eprintln!(
                 "bot-matrix {}: {} legs, baseline cache {}",
                 manifest.name,
@@ -945,6 +993,37 @@ fn main() -> Result<()> {
             print_matrix_report(&[rows_path], json)?;
         }
         Cmd::BotMatrixReport { rows, json } => print_matrix_report(&rows, json)?,
+        Cmd::BotLadder {
+            manifest: manifest_path,
+            out,
+            jobs,
+            candidate,
+            replay_dir,
+            json,
+        } => {
+            use oxide_driver::{bot_ladder, bot_matrix};
+            let manifest = bot_ladder::LadderManifest::load(&manifest_path)?;
+            let base = manifest_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."));
+            let legs = bot_ladder::expand(&manifest, &manifest.scenarios(base)?)?;
+            let rows_path = bot_matrix::preflight_output(&out)?;
+            let candidate = candidate.unwrap_or_else(default_candidate);
+            eprintln!("bot-ladder {}: {} legs", manifest.name, legs.len());
+            let rows = bot_ladder::run_ladder(
+                &legs,
+                manifest.tick_limit,
+                &bot_ladder::LadderOptions {
+                    candidate: &candidate,
+                    jobs,
+                    replay_dir: replay_dir.as_deref(),
+                },
+            )?;
+            bot_matrix::publish_rows(&rows, &rows_path)?;
+            eprintln!("wrote {}", rows_path.display());
+            print_ladder_report(&[rows_path], json)?;
+        }
+        Cmd::BotLadderReport { rows, json } => print_ladder_report(&rows, json)?,
         Cmd::BotPressure {
             controller,
             dir,

@@ -153,6 +153,25 @@ Read the report by match mode, overall and by difficulty, stance and map family:
 - **Deliveries**, shown when any seat trained armed ground units on severed
   ground: their scrap delivered, lost and left at home.
 
+## Difficulty ladder
+
+The ladder measures the rungs against each other, not against `oxide-bot`:
+
+```sh
+cargo run --release -p oxide-driver -- bot-ladder driver/evaluation/ladder/ladder.json --out <new directory>
+```
+
+Each comparison pits a higher rung against a lower one on duel maps, in pairs
+with the rungs swapped between the seats, both seats sharing one personality
+seed. A comparison passes when the higher rung wins at least its gate of decided
+legs over at least the manifest's number of decided pairs: each rung against the
+one two below it at 65%, and Prime against Scrapheap at 80%, over 40 decided
+pairs. `ladder.json` covers the nine duel maps, every stance and four runs,
+about 650 legs; run it for a lever's final numbers. `ladder-smoke.json`,
+Balanced on three maps with two runs, is the quick check while a difficulty
+lever is in progress. `bot-ladder-report <rows.jsonl>...` re-reads published
+rows, and `--replay-dir` saves a replay of every leg.
+
 ## Failure detectors
 
 Evaluation rows carry omniscient QA detectors, checked every 12 ticks for every

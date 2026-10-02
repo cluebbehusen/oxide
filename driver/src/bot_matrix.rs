@@ -221,26 +221,31 @@ impl MatrixManifest {
     /// Loads every map, resolving relative paths against `base`, and checks
     /// that each builds.
     pub fn scenarios(&self, base: &Path) -> Result<Vec<Scenario>> {
-        self.maps
-            .iter()
-            .map(|map| {
-                let scenario = if map.path == "skirmish" {
-                    Scenario::skirmish()
-                } else {
-                    let path = base.join(&map.path);
-                    Scenario::load(&path)
-                        .with_context(|| format!("loading scenario {}", path.display()))?
-                };
-                scenario
-                    .build()
-                    .with_context(|| format!("building scenario {}", map.path))?;
-                Ok(scenario)
-            })
-            .collect()
+        load_scenarios(&self.maps, base)
     }
 }
 
-fn distinct<T: PartialEq>(values: &[T]) -> bool {
+/// Loads every manifest map, resolving relative paths against `base`, and
+/// checks that each builds.
+pub(crate) fn load_scenarios(maps: &[ManifestMap], base: &Path) -> Result<Vec<Scenario>> {
+    maps.iter()
+        .map(|map| {
+            let scenario = if map.path == "skirmish" {
+                Scenario::skirmish()
+            } else {
+                let path = base.join(&map.path);
+                Scenario::load(&path)
+                    .with_context(|| format!("loading scenario {}", path.display()))?
+            };
+            scenario
+                .build()
+                .with_context(|| format!("building scenario {}", map.path))?;
+            Ok(scenario)
+        })
+        .collect()
+}
+
+pub(crate) fn distinct<T: PartialEq>(values: &[T]) -> bool {
     values
         .iter()
         .enumerate()
@@ -337,7 +342,7 @@ pub fn expand(manifest: &MatrixManifest, scenarios: &[Scenario]) -> Result<Vec<M
 }
 
 /// A map's teams by seat.
-fn seat_teams(source: &Scenario) -> Result<Vec<u8>> {
+pub(crate) fn seat_teams(source: &Scenario) -> Result<Vec<u8>> {
     Ok(source
         .build()?
         .players()
@@ -413,7 +418,7 @@ fn front_places(source: &Scenario, teams: &[u8]) -> Result<Vec<usize>> {
 }
 
 /// A plan with every seat controlled, the authored human chair included.
-fn seated_plan(
+pub(crate) fn seated_plan(
     source: &Scenario,
     scenario_seed: u64,
     leg: EvaluationLeg,
@@ -673,7 +678,7 @@ pub fn preflight_output(directory: &Path) -> Result<PathBuf> {
 }
 
 /// Publishes rows to `path` without replacing an existing file.
-pub fn publish_rows(rows: &[LabelledRow], path: &Path) -> Result<()> {
+pub fn publish_rows<T: Serialize>(rows: &[T], path: &Path) -> Result<()> {
     let mut batch = EvidenceBatch::default();
     batch.stage_jsonl(rows, path)?;
     batch.publish()
