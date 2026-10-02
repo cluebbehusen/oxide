@@ -605,8 +605,9 @@ fn room(observation: &ObservationData, map: &MapModel, node: TilePos, component:
 /// node with the most places open, or to its nearest reachable known node
 /// when none is worked, never to a node inside known danger or whose route
 /// crosses it. A worker harvesting a node whose route has turned dangerous
-/// is sent elsewhere the same way, or home when nowhere is left. One order
-/// per node.
+/// is sent elsewhere the same way, or home when nowhere is left. A worker
+/// with nowhere to go that still carries scrap delivers it instead. One
+/// order per node.
 fn assign_idle(
     observation: &ObservationData,
     map: &MapModel,
@@ -652,6 +653,7 @@ fn assign_idle(
         .collect();
     idle.sort_by_key(|unit| (frame.rank(frame.home, doubled(unit.tile)), unit.id));
     let mut assignments: Vec<(TilePos, UnitId)> = Vec::new();
+    let mut loaded: Vec<&UnitObs> = Vec::new();
     let mut stranded: Vec<&UnitObs> = Vec::new();
     for unit in idle {
         let Some(component) = map.component(unit.tile) else {
@@ -675,7 +677,9 @@ fn assign_idle(
                     .filter(|node| map.touches(*node, component) && safe(node))
                     .min_by_key(|node| frame.rank(from, doubled(*node)));
                 let Some(node) = nearest else {
-                    if stale(unit) {
+                    if unit.carrying > 0 {
+                        loaded.push(unit);
+                    } else if stale(unit) {
                         stranded.push(unit);
                     }
                     continue;
@@ -697,6 +701,22 @@ fn assign_idle(
         }
     }
     let foundries = built_foundries(observation);
+    // Only a worker with a Foundry on its ground can deliver, and an order
+    // in which none can is refused.
+    let returning: Vec<UnitId> = loaded
+        .iter()
+        .filter(|unit| refuge(map, frame, &foundries, unit.tile).is_some())
+        .map(|unit| unit.id)
+        .collect();
+    if !returning.is_empty()
+        && !ledger.order(Command::ReturnCargo {
+            units: returning,
+            foundry: None,
+            repair: false,
+        })
+    {
+        return;
+    }
     for unit in stranded {
         let Some(refuge) = refuge(map, frame, &foundries, unit.tile) else {
             continue;

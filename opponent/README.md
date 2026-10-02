@@ -37,9 +37,10 @@ most missing value first. Idle workers go to the reachable worked node with the
 most places open, or with none worked to the nearest node with a clear route,
 never one inside the reach of known enemy weapons; with neither they wait at
 home. A worker harvesting a node whose route has turned dangerous is sent
-elsewhere the same way, or home. Every ready producer then trains toward the
-army's needs. Difficulty caps the unit orders one decision issues; purchases do
-not count against that allowance.
+elsewhere the same way, or home. A worker left with nowhere to go first delivers
+any scrap it carries to a Foundry on its ground. Every ready producer then
+trains toward the army's needs. Difficulty caps the unit orders one decision
+issues; purchases do not count against that allowance.
 
 ## Defense
 
