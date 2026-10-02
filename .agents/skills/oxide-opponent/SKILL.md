@@ -235,9 +235,12 @@ on adds no empty samples.
 
 `cargo run --release -p oxide-driver -- bot-pressure --controller opponent` runs
 the staged scenarios in `driver/evaluation/pressure/`; `--replay-dir` saves each
-run for `replay-summary`. A scripted attacker seat, whose Foundry sits on an
-island no ground unit reaches, issues tick-stamped commands for its preset units
-while the bot defends:
+run for `replay-summary`. A scripted attacker seat issues tick-stamped commands
+for its preset units while the bot defends. Its Foundry stands in a walled
+corner: for early rush, air switch and siege the corner opens at its far end, so
+the defender's ground reaches it only by a long route and the defender is not
+cut off from its enemy; for lift drop it is an island no ground unit reaches,
+since the drop must come by air.
 
 - **Early rush:** Sentinels and Scuttlers attack the base; the Foundry must
   stand at the deadline.
@@ -251,7 +254,8 @@ while the bot defends:
   every landed unit must be destroyed, unless the Skyhook falls before setting
   anyone down.
 
-`oxide-bot` passes all four. Scenario files are JSON: the staged scenario, the
+`--controller scripted` reports `oxide-bot`'s results as a reference only; it is
+not tuned to pass them. Scenario files are JSON: the staged scenario, the
 defender and attacker seats, a deadline, the script (unit ids follow scenario
 order) and the check.
 

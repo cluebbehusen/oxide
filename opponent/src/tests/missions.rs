@@ -569,7 +569,7 @@ fn shelled(shelled: &[u8]) -> (Scenario, State) {
 }
 
 #[test]
-fn shells_from_a_gun_out_of_sight_send_fighters_toward_it() {
+fn shells_from_a_gun_out_of_sight_advance_fighters_on_it() {
     let (scenario, state) = shelled(&[0]);
     let observation = ObservationData::fog_honest(&state, PlayerId(0));
     assert!(
@@ -580,7 +580,8 @@ fn shells_from_a_gun_out_of_sight_send_fighters_toward_it() {
         "premise: the gun is out of sight"
     );
     let (commands, trace) = seat(&scenario, 0).act_traced(&state, &mut OwnEvents::default());
-    let [(units, goal)] = &hunts(&commands)[..] else {
+    // Advancing, they pass the spotter overhead rather than chase it.
+    let [(units, goal)] = &advances(&commands)[..] else {
         panic!("{commands:?}");
     };
     assert!(!units.is_empty());
@@ -780,29 +781,49 @@ fn an_upgraded_building_is_worth_every_tier_it_paid_for() {
 }
 
 #[test]
-fn a_gun_in_sight_shelling_the_base_is_defended_against_where_it_stands() {
-    let mut scenario = shelling(&[0]);
-    // A West Scuttler beside the gun reveals it. The gun stands beyond the
-    // reach that makes a unit a threat to buildings, but its shells land in
-    // the base.
-    scenario
-        .units
-        .push(unit(0, UnitKind::Scuttler, GUN.0 + 4, GUN.1));
-    let mut state = scenario.build().unwrap();
-    open_fire(&mut state, &[0]);
-    until_shells_come(&scenario, &mut state, &[0]);
-    let gun = at(&state, GUN.0, GUN.1);
-    let observation = ObservationData::fog_honest(&state, PlayerId(0));
-    let seen = observation
-        .enemy_units
-        .iter()
-        .find(|enemy| enemy.id == gun)
-        .expect("premise: the gun is in sight");
-    let commands = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
-    assert!(
-        hunts(&commands).iter().any(|(_, goal)| *goal == seen.tile),
-        "{commands:?}"
-    );
+fn a_gun_in_sight_shelling_the_base_is_attacked() {
+    for config in [
+        config(),
+        BotConfig::opponent(BotDifficulty::Prime, BotStance::Balanced, 11),
+    ] {
+        let mut scenario = shelling(&[0]);
+        // A West Scuttler beside the gun reveals it. The gun stands beyond the
+        // reach that makes a unit a threat to buildings, but its shells land in
+        // the base.
+        scenario
+            .units
+            .push(unit(0, UnitKind::Scuttler, GUN.0 + 4, GUN.1));
+        let mut state = scenario.build().unwrap();
+        open_fire(&mut state, &[0]);
+        until_shells_come(&scenario, &mut state, &[0]);
+        let gun = at(&state, GUN.0, GUN.1);
+        let observation = ObservationData::fog_honest(&state, PlayerId(0));
+        assert!(
+            observation.enemy_units.iter().any(|enemy| enemy.id == gun),
+            "premise: the gun is in sight"
+        );
+        let commands = seat_with(&scenario, 0, config).act(&state, &mut OwnEvents::default());
+        let sent: Vec<UnitId> = commands
+            .iter()
+            .filter_map(|command| match &command.command {
+                Command::Attack {
+                    units,
+                    target: AttackTarget::Unit(target),
+                    ..
+                } if *target == gun => Some(units.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert!(!sent.is_empty(), "{commands:?}");
+        // Focus fire at Prime keeps them on it rather than hunting.
+        assert!(
+            hunts(&commands)
+                .iter()
+                .all(|(units, _)| units.iter().all(|unit| !sent.contains(unit))),
+            "{commands:?}"
+        );
+    }
 }
 
 #[test]
@@ -810,7 +831,7 @@ fn mirrored_seats_under_mirrored_shelling_answer_alike() {
     let (scenario, state) = shelled(&[0, 1]);
     let west = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
     let east = seat(&scenario, 1).act(&state, &mut OwnEvents::default());
-    assert!(!hunts(&west).is_empty(), "premise: {west:?}");
+    assert!(!advances(&west).is_empty(), "premise: {west:?}");
     assert_eq!(mirror(&state, west), east);
 }
 
@@ -819,7 +840,7 @@ fn a_checkpoint_while_answering_unseen_shelling_resumes_identically() {
     let (scenario, mut state) = shelled(&[0]);
     let mut opponent = seat(&scenario, 0);
     let commands = opponent.act(&state, &mut OwnEvents::default());
-    assert!(!hunts(&commands).is_empty(), "premise: {commands:?}");
+    assert!(!advances(&commands).is_empty(), "premise: {commands:?}");
     state.tick(&commands);
     let json = serde_json::to_string(&opponent.checkpoint()).unwrap();
     let checkpoint: Checkpoint = serde_json::from_str(&json).unwrap();
