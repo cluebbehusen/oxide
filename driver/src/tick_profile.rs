@@ -258,7 +258,8 @@ pub fn scan(path: &str, window: u64, top: usize) -> Result<Scan> {
         .map_err(|err| anyhow::anyhow!("{err}"))?;
     let mut state = oxide_kit::recording::initial_state(&replay)?;
     let start = state.current_tick();
-    let end = oxide_kit::replay_duration(&replay);
+    let end = oxide_kit::bounded_replay_duration(&replay)?;
+    ensure!(end > start, "the recording spans no ticks to scan");
     let mut next = replay
         .commands
         .partition_point(|command| command.tick < start);
@@ -291,7 +292,7 @@ pub fn scan(path: &str, window: u64, top: usize) -> Result<Scan> {
         start,
         end,
         per_tick: Summary::of(&times),
-        slowest_tick: start + slowest.unwrap_or(0) as u64,
+        slowest_tick: start + slowest.expect("a recording with ticks has a slowest one") as u64,
         window,
         windows: costliest(&times, start, window, &units, top),
     })
@@ -781,20 +782,40 @@ Total number in stack (recursive counted multiple, when >=5):
         assert_eq!(summary, [(12, 2, 9, 6), (16, 1, 9, 8), (14, 2, 4, 7)]);
     }
 
-    #[test]
-    fn a_scan_times_every_recorded_tick() {
-        let dir = std::env::temp_dir().join(format!("oxide-tick-scan-{}", std::process::id()));
+    fn scan_of(replay: &GameReplay) -> Result<Scan> {
+        let dir = std::env::temp_dir().join(format!(
+            "oxide-tick-scan-{}-{}",
+            std::process::id(),
+            replay.meta.ticks.unwrap_or_default()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("fixture.json");
-        crate::test_support::replay_fixture().save(&path).unwrap();
-        let scan = scan(path.to_str().unwrap(), 5, 10).unwrap();
+        replay.save(&path).unwrap();
+        let scan = scan(path.to_str().unwrap(), 5, 10);
         std::fs::remove_dir_all(&dir).unwrap();
+        scan
+    }
+
+    #[test]
+    fn a_scan_times_every_recorded_tick() {
+        let scan = scan_of(&crate::test_support::replay_fixture()).unwrap();
         assert_eq!((scan.start, scan.end, scan.per_tick.count), (0, 12, 12));
         assert_eq!(
             scan.windows.iter().map(|window| window.ticks).sum::<u64>(),
             12
         );
         assert!(scan.slowest_tick < 12);
+    }
+
+    #[test]
+    fn a_scan_refuses_empty_and_overlong_recordings() {
+        let mut empty = crate::test_support::replay_fixture();
+        empty.commands.clear();
+        empty.meta.ticks = Some(0);
+        assert!(scan_of(&empty).is_err());
+        let mut overlong = crate::test_support::replay_fixture();
+        overlong.meta.ticks = Some(oxide_kit::MAX_REPLAY_TICKS + 1);
+        assert!(scan_of(&overlong).is_err());
     }
 
     #[test]
