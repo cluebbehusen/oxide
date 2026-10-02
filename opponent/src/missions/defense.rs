@@ -47,7 +47,8 @@ impl Missions {
     /// with the known defense around it, and only while the units the defense
     /// holds or could take would beat that defense by half again. A defense that is only
     /// recovering lends its units, as does an attack not yet fighting.
-    /// Returns whether any defense stayed short.
+    /// Returns how far the seat's own defenses fall short of the attackers,
+    /// in scrap, against ground and air.
     ///
     /// Only threats standing on or beside the Foundry's ground count. One
     /// across water or a chasm is left to production: chasing it would stall
@@ -62,7 +63,7 @@ impl Missions {
         frame: HomeFrame,
         memory: &Memory,
         ledger: &mut Ledger,
-    ) -> bool {
+    ) -> [u64; 2] {
         let now = observation.tick;
         let lendable = self.available(observation, true);
         let mut groups = threats(observation, map, frame);
@@ -128,7 +129,7 @@ impl Missions {
         });
 
         let mut free = self.available(observation, true);
-        let mut short = false;
+        let mut shortfall = [0_u64; 2];
         for (foundry, siege, own) in &groups {
             let centre = footprint_centre(foundry.kind, foundry.anchor);
             let component = map.component(foundry.anchor);
@@ -212,7 +213,11 @@ impl Missions {
                 }
                 recruits.push(unit.id);
             }
-            short |= *own && (have[0] < pressing[0] || have[1] < pressing[1]);
+            if *own {
+                for index in 0..2 {
+                    shortfall[index] += pressing[index].saturating_sub(have[index]);
+                }
+            }
 
             let Some(index) = index else {
                 if recruits.is_empty() || self.list.len() >= MISSION_CAP {
@@ -269,7 +274,7 @@ impl Missions {
                 self.release_from_others(index, &recruits);
             }
         }
-        short
+        shortfall
     }
 }
 

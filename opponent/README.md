@@ -79,9 +79,13 @@ ordinary defense takes over.
 
 A defense that cannot recruit enough makes the decision an emergency: it skips
 the saving purchase, trains no Harvesters beyond the one a seat without any
-needs, and lets production spend protected scrap. Shelling, from a building or a
-gun out of sight, never does, since static defenses cannot reach the guns.
-Missions own only units that exist; production never works for a mission.
+needs, and lets production spend protected scrap. Ready producers the army's
+roles leave idle then each train the costliest armed unit the scrap on hand buys
+that can hit what the defense is short against, until what the decision queued
+makes up the shortfall, so a seat too poor for its line unit or a gun still
+fields what it can afford. Shelling, from a building or a gun out of sight,
+never makes an emergency, since static defenses cannot reach the guns. Missions
+own only units that exist; production never works for a mission.
 
 ## Home reserve
 

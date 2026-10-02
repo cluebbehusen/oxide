@@ -18,7 +18,7 @@ use crate::workers;
 use chassis::grid::TilePos;
 use oxide_sim::observation::{BuildingObs, ObservationData, UnitObs};
 use oxide_sim::scenario::{BotDifficulty, BotStance};
-use oxide_sim::stats::Role;
+use oxide_sim::stats::{Domain, Role};
 use oxide_sim::{BuildingId, BuildingKind, Command, PlayerCommand, PlayerId, UnitId, UnitKind};
 
 /// What one decision emits.
@@ -380,10 +380,11 @@ pub(crate) fn decide(
     persistent
         .missions
         .prune(observation, &mut persistent.memory);
-    let short =
+    let shortfall =
         persistent
             .missions
             .defend(observation, map, frame, &persistent.memory, &mut ledger);
+    let short = shortfall != [0, 0];
     scratch.rival = persistent
         .missions
         .rival(&scratch, observation, map, profile.traits);
@@ -538,6 +539,9 @@ pub(crate) fn decide(
             );
         }
         produce(observation, &producers, &mut needs, &mut ledger);
+        if short {
+            arm(observation, &producers, shortfall, &mut ledger);
+        }
     }
     if !short && exposed {
         workers::train(
@@ -952,6 +956,68 @@ fn produce(
         ) && ledger.train(producer.building.id, unit)
         {
             needs.queued(unit);
+        }
+    }
+}
+
+/// While a defense is short, ready producers the wanted roles left idle each
+/// train the costliest armed unit the scrap on hand buys that can hit a domain
+/// still short, until what this decision queued makes up the shortfall: a
+/// seat too poor for its line unit or a gun still fields what it can afford.
+fn arm(
+    observation: &ObservationData,
+    producers: &[Producer<'_>],
+    mut shortfall: [u64; 2],
+    ledger: &mut Ledger,
+) {
+    const DOMAINS: [Domain; 2] = [Domain::Ground, Domain::Air];
+    let hits = |kind: UnitKind, domain: Domain| {
+        kind.stats()
+            .weapons
+            .iter()
+            .any(|weapon| weapon.targets.covers(domain))
+    };
+    let cover = |shortfall: &mut [u64; 2], kind: UnitKind| {
+        for (index, domain) in DOMAINS.into_iter().enumerate() {
+            if hits(kind, domain) {
+                shortfall[index] = shortfall[index].saturating_sub(u64::from(kind.stats().cost));
+            }
+        }
+    };
+    let queued: Vec<UnitKind> = ledger
+        .decision
+        .purchases
+        .iter()
+        .filter_map(|purchase| match purchase {
+            Purchase::Train { unit, .. } => Some(*unit),
+            _ => None,
+        })
+        .collect();
+    for kind in queued {
+        cover(&mut shortfall, kind);
+    }
+    let idle: Vec<&Producer<'_>> = producers
+        .iter()
+        .filter(|producer| producer.ready && !ledger.queued_at(producer.building.id))
+        .collect();
+    for producer in idle {
+        if shortfall == [0, 0] {
+            return;
+        }
+        let budget = ledger.spendable();
+        let kind = DOMAINS
+            .into_iter()
+            .enumerate()
+            .filter(|(index, _)| shortfall[*index] > 0)
+            .find_map(|(_, domain)| {
+                composition::producible(observation, producer.building.kind)
+                    .filter(|kind| kind.stats().cost <= budget && hits(*kind, domain))
+                    .max_by_key(|kind| kind.stats().cost)
+            });
+        if let Some(kind) = kind
+            && ledger.train(producer.building.id, kind)
+        {
+            cover(&mut shortfall, kind);
         }
     }
 }

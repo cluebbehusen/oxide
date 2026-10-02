@@ -329,6 +329,21 @@ fn a_short_defense_defers_the_saving_target_and_spends_protected_scrap() {
 }
 
 #[test]
+fn a_short_seat_too_poor_for_a_line_unit_or_a_gun_trains_what_it_can_afford() {
+    let mut scenario = arena(50);
+    scenario.units.extend(workforce(0));
+    scenario.units.push(unit(1, UnitKind::Sentinel, 9, 5));
+    let state = scenario.build().unwrap();
+    let commands = seat_with(&scenario, 0, thrifty()).act(&state, &mut OwnEvents::default());
+    let foundry = foundries(&state, PlayerId(0))[0];
+    assert_eq!(
+        trains(&commands),
+        [(foundry, UnitKind::Scuttler)],
+        "{commands:?}"
+    );
+}
+
+#[test]
 fn mirrored_seats_defend_alike() {
     let mut scenario = arena(0);
     scenario.units.extend([
