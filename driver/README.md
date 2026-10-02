@@ -86,6 +86,13 @@ records as the frozen reference it compares against.
   observation and `oxide-bot` orientation costs, per seat and per controller.
   Seats decide serially with tracing off; its command and final hashes equal an
   untimed run.
+- `tick_profile` shows where simulation time goes inside a window of recorded
+  ticks. It rebuilds a replay to the window's first tick, re-simulates the
+  window from a clone of that world under macOS's `sample`, and reports each
+  function's share of the samples inside `State::tick`: the tick's phases, own
+  work, inclusive time and an optional breakdown of one function. Repetitions
+  are identical, so even a single tick gathers thousands of samples. Recorded
+  commands replay; controllers do not run. Other platforms refuse the command.
 - `audit`, `sweep`, `pace`, and `factorial`, plus the `matchup` CLI backed by
   `oxide-kit`, measure map geometry, configured-bot pacing, seat effects, and
   combat behavior.

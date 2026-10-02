@@ -18,6 +18,7 @@ pub mod session;
 pub mod shots;
 pub mod smoke;
 pub mod sweep;
+pub mod tick_profile;
 
 // Shared with the shell via oxide-kit; re-exported so the driver's
 // public surface (and its own `crate::render`-style paths) survive
