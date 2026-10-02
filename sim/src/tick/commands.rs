@@ -281,14 +281,16 @@ fn accepted_units(state: &State, player: PlayerId, ids: &[UnitId]) -> Vec<UnitId
 /// Any command is the player (or bot) speaking: whatever tether a
 /// self-acquired fight put on this machine ends here, and station
 /// keeping restarts — a commanded machine is on assignment, not
-/// standing a post. Runs UNCONDITIONALLY at the head of every verb
-/// that writes a unit's program ([`assign`], [`assign_circuit`],
+/// standing a post. Runs for every order that lands through a verb that
+/// writes a unit's program ([`assign`], [`assign_circuit`],
 /// [`apply_stop`]) — before `assign`'s no-op early return, because a
 /// player re-ordering the exact attack the unit already picked itself
 /// compares equal, returns early, and would otherwise silently keep
-/// the leash on an explicit commitment. A new program-writing verb
-/// must pass through here too, not restate the contract inline. A danger
-/// hold's pending retry ends too, so a new order is judged at once.
+/// the leash on an explicit commitment. An append a full queue refuses
+/// never reaches it: a rejected order leaves the unit untouched. A new
+/// program-writing verb must pass through here too, not restate the
+/// contract inline. A danger hold's pending retry ends too, so a new
+/// order is judged at once.
 fn end_station_keeping(unit: &mut crate::state::Unit) {
     unit.leash = None;
     unit.settled = 0;
@@ -309,14 +311,15 @@ fn remove_active_order(unit: &mut crate::state::Unit) {
 /// order actually landed — a full queue drops the append, and the caller
 /// reports it instead of pretending.
 fn assign(unit: &mut crate::state::Unit, order: Order, queue: bool) -> bool {
-    end_station_keeping(unit);
     if queue && !matches!(unit.order, Order::Idle) {
-        if unit.queue.len() < ORDER_QUEUE_CAP {
-            unit.queue.push_back(order);
-            return true;
+        if unit.queue.len() >= ORDER_QUEUE_CAP {
+            return false;
         }
-        return false;
+        end_station_keeping(unit);
+        unit.queue.push_back(order);
+        return true;
     }
+    end_station_keeping(unit);
     if !queue {
         unit.queue.clear();
         unit.looping = false;
@@ -1556,4 +1559,55 @@ fn apply_upgrade(
     b.salvage_drained = 0;
     b.salvage_credited = 0;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::Leash;
+    use chassis::grid::TilePos;
+
+    #[test]
+    fn an_append_a_full_queue_refuses_leaves_the_unit_untouched() {
+        let mut state = crate::Scenario::skirmish().build().unwrap();
+        let tick = state.tick;
+        let unit = &mut state.units[0];
+        let busy = Order::Harvest {
+            node: TilePos::new(5, 5),
+            anchor: None,
+            retiring: false,
+        };
+        unit.order = busy;
+        unit.queue = std::iter::repeat_n(busy, ORDER_QUEUE_CAP).collect();
+        unit.leash = Some(Leash {
+            anchor: unit.tile(),
+            patience: 1,
+            cooldown: 2,
+        });
+        unit.settled = 5;
+        unit.danger_retry_at = Some(tick + 3);
+        let (id, player) = (unit.id, unit.player);
+        let before = state.units[0].clone();
+        let mut events = Vec::new();
+        apply(
+            &mut state,
+            &[PlayerCommand {
+                player,
+                command: crate::Command::Run {
+                    units: vec![id],
+                    goal: TilePos::new(8, 8),
+                    queue: true,
+                },
+            }],
+            &mut events,
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            Event::CommandRejected {
+                reason: RejectReason::QueueFull,
+                ..
+            }
+        )));
+        assert_eq!(state.units[0], before);
+    }
 }
