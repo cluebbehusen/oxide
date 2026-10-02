@@ -660,8 +660,11 @@ pub(super) fn harvest(
         .expect("caller checked")
         .in_work_reach(node, (1, 1))
     {
+        // Arriving ends any hold from the route here; only a drop-off
+        // scan may start the next one.
         let worker = state.unit_mut(id).expect("caller checked");
         worker.path = None;
+        worker.danger_retry_at = None;
         if !worker.work_stopped() {
             return;
         }
@@ -974,7 +977,7 @@ fn approach_authoritative_source(
                     .final_point
                     .is_none_or(|point| !crowding::claimed(state, id, point, true)))
         {
-            state.unit_mut(id).expect("caller checked").detour_retry_at = None;
+            state.unit_mut(id).expect("caller checked").danger_retry_at = None;
             return true;
         }
         // Only danger defers a search, and only after one already failed: a
@@ -985,14 +988,14 @@ fn approach_authoritative_source(
                 known_ground_passable(state, danger, player, waypoint)
             })
             .is_none();
-        if danger_only && unit.detour_retry_at.is_some_and(|retry| state.tick < retry) {
+        if danger_only && unit.danger_retry_at.is_some_and(|retry| state.tick < retry) {
             return true;
         }
         let detour = authoritative_source_route(state, danger, id, source);
         let tick = state.tick;
         let worker = state.unit_mut(id).expect("caller checked");
-        worker.detour_retry_at = (detour.is_none() && danger_only)
-            .then_some(tick + crate::stats::HARVEST_DETOUR_RETRY_TICKS);
+        worker.danger_retry_at = (detour.is_none() && danger_only)
+            .then_some(tick + crate::stats::HARVEST_DANGER_RETRY_TICKS);
         if let Some(path) = detour {
             worker.path = Some(path);
         }
@@ -1001,7 +1004,7 @@ fn approach_authoritative_source(
         return true;
     }
 
-    state.unit_mut(id).expect("caller checked").detour_retry_at = None;
+    state.unit_mut(id).expect("caller checked").danger_retry_at = None;
     if let Some(path) = authoritative_source_route(state, danger, id, source) {
         state.unit_mut(id).expect("caller checked").path = Some(path);
         return true;
@@ -1206,6 +1209,11 @@ fn try_drop_offs(
     drop_offs: &[BuildingId],
     events: &mut Vec<Event>,
 ) -> bool {
+    let unit = state.unit(id).expect("caller checked");
+    if unit.path.is_none() && unit.danger_retry_at.is_some_and(|retry| state.tick < retry) {
+        report_danger_hold(state, id, events);
+        return true;
+    }
     let mut scan = DropOffScan::default();
     let mut path_cleared = false;
     for &foundry_id in drop_offs {
@@ -1226,12 +1234,15 @@ fn try_drop_offs(
                         && danger.route_safe_from(from, waypoint)
                 })
             {
+                state.unit_mut(id).expect("caller checked").danger_retry_at = None;
                 return true;
             }
         }
         if let Some(path) = known_rect_route(state, danger, id, anchor, size, true, Some(&mut scan))
         {
-            state.unit_mut(id).expect("caller checked").path = Some(path);
+            let worker = state.unit_mut(id).expect("caller checked");
+            worker.path = Some(path);
+            worker.danger_retry_at = None;
             return true;
         }
         if !path_cleared {
@@ -1244,25 +1255,34 @@ fn try_drop_offs(
         let foundry = state.building(foundry_id).expect("collected live drop-off");
         let (anchor, size) = (foundry.anchor, foundry.stats().size);
         if known_rect_route(state, danger, id, anchor, size, false, Some(&mut scan)).is_some() {
-            // Danger-blocked, not sealed: stand and wait for the window —
-            // visibly. A silent wait scored as an employed worker to
-            // every counter, the bot's recovery logic included.
-            if state
-                .current_tick()
-                .is_multiple_of(DANGER_HOLD_REPORT_PERIOD)
-            {
-                let unit = state.unit(id).expect("caller checked");
-                events.push(Event::OrderStalled {
-                    unit: id,
-                    player: unit.player,
-                    pos: unit.pos,
-                    reason: StallReason::DangerHold,
-                });
-            }
+            // Danger-blocked, not sealed: stand and wait for the window,
+            // checking again only after the retry period.
+            let tick = state.tick;
+            state.unit_mut(id).expect("caller checked").danger_retry_at =
+                Some(tick + crate::stats::HARVEST_DANGER_RETRY_TICKS);
+            report_danger_hold(state, id, events);
             return true;
         }
     }
+    state.unit_mut(id).expect("caller checked").danger_retry_at = None;
     false
+}
+
+/// A danger hold waits visibly: a silent wait scored as an employed worker to
+/// every counter, the bot's recovery logic included.
+fn report_danger_hold(state: &State, id: UnitId, events: &mut Vec<Event>) {
+    if state
+        .current_tick()
+        .is_multiple_of(DANGER_HOLD_REPORT_PERIOD)
+    {
+        let unit = state.unit(id).expect("caller checked");
+        events.push(Event::OrderStalled {
+            unit: id,
+            player: unit.player,
+            pos: unit.pos,
+            reason: StallReason::DangerHold,
+        });
+    }
 }
 
 fn known_rect_route(
@@ -1305,17 +1325,13 @@ fn known_rect_route(
                 - (candidate.point.y - unit.pos.y) * (frame.center().x - unit.pos.x),
         )
     });
-    let goals: Vec<_> = candidates.iter().map(|candidate| candidate.goal).collect();
     // The passability predicate is candidate-independent, so one failed
     // search that exhausted the walkable component has already decided
-    // every remaining doorstep — including a prior same-scan foundry's
-    // flood, which the scratch still holds at entry. Skipping a proven
-    // tile returns the identical None without re-flooding to the cap.
-    let mut reachability = if scan.as_deref().is_some_and(|scan| scan.flood_exhausted) {
-        danger.last_route_reachability(&goals, false)
-    } else {
-        None
-    };
+    // every remaining doorstep, including candidates the chooser moves
+    // outward and a prior same-scan foundry's flood, which the scratch
+    // still holds at entry. Skipping a proven tile returns the identical
+    // None without re-flooding to the cap.
+    let mut proven = scan.as_deref().is_some_and(|scan| scan.flood_exhausted);
     crowding::choose(
         state,
         id,
@@ -1327,21 +1343,20 @@ fn known_rect_route(
                 && (!avoid_danger || !danger.contains(tile))
         },
         |goal| {
-            if reachability.as_ref().is_some_and(|reachable| {
-                goals
-                    .iter()
-                    .position(|&tile| tile == goal)
-                    .is_some_and(|index| !reachable[index])
-            }) {
+            if proven
+                && danger
+                    .last_route_reachability(&[goal], false)
+                    .is_some_and(|reachable| !reachable[0])
+            {
                 return None;
             }
             let route = danger.find_route(from, goal, |tile| {
                 known_ground_passable(state, danger, player, tile)
                     && (!avoid_danger || danger.route_safe_from(from, tile))
             });
-            if route.is_none() && reachability.is_none() {
-                reachability = danger.last_route_reachability(&goals, false);
-                if reachability.is_some()
+            if route.is_none() {
+                proven = true;
+                if danger.last_route_reachability(&[], false).is_some()
                     && let Some(scan) = scan.as_deref_mut()
                 {
                     scan.flood_exhausted = true;
@@ -1883,7 +1898,7 @@ mod harvest_zone_tests {
     #[test]
     fn a_worker_held_by_danger_searches_at_once_then_backs_off_after_a_failure() {
         let (mut state, worker, source, ordered) = held_worker(None);
-        let period = crate::stats::HARVEST_DETOUR_RETRY_TICKS;
+        let period = crate::stats::HARVEST_DANGER_RETRY_TICKS;
         let searched = searches(&mut state, worker, source, &ordered, 2 * period);
         assert_eq!(searched, [0, period], "no safe detour exists in this lane");
         assert_eq!(
@@ -1891,18 +1906,27 @@ mod harvest_zone_tests {
             Some(&ordered),
             "the ordered route stays in force"
         );
-        assert_eq!(state.units[0].detour_retry_at, Some(state.tick + 1));
+        assert_eq!(state.units[0].danger_retry_at, Some(state.tick + 1));
     }
 
     #[test]
-    fn a_detour_retry_round_trips_up_to_its_bound() {
+    fn a_danger_retry_round_trips_up_to_its_bound() {
         let (mut state, ..) = held_worker(None);
-        let bound = state.tick + crate::stats::HARVEST_DETOUR_RETRY_TICKS;
-        state.units[0].detour_retry_at = Some(bound);
+        let bound = state.tick + crate::stats::HARVEST_DANGER_RETRY_TICKS;
+        state.units[0].danger_retry_at = Some(bound);
         let restored: State =
             serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
-        assert_eq!(restored.units[0].detour_retry_at, Some(bound));
-        state.units[0].detour_retry_at = Some(bound + 1);
+        assert_eq!(restored.units[0].danger_retry_at, Some(bound));
+        let renamed = serde_json::to_string(&state)
+            .unwrap()
+            .replace("danger_retry_at", "detour_retry_at");
+        let restored: State = serde_json::from_str(&renamed).unwrap();
+        assert_eq!(
+            restored.units[0].danger_retry_at,
+            Some(bound),
+            "saves from before the rename keep their retry"
+        );
+        state.units[0].danger_retry_at = Some(bound + 1);
         assert!(serde_json::from_str::<State>(&serde_json::to_string(&state).unwrap()).is_err());
     }
 
@@ -1913,7 +1937,7 @@ mod harvest_zone_tests {
             searches(&mut state, worker, source, &ordered, 4),
             [0, 1, 2, 3]
         );
-        assert_eq!(state.units[0].detour_retry_at, None);
+        assert_eq!(state.units[0].danger_retry_at, None);
     }
 
     #[test]
@@ -1948,6 +1972,117 @@ mod harvest_zone_tests {
         let before = danger.route_search_count();
         assert!(safe_source_route(&state, &danger, state.units[0].id, source).is_none());
         assert_eq!(danger.route_search_count() - before, 1);
+    }
+
+    #[test]
+    fn a_worker_held_from_its_drop_off_rescans_after_the_retry_period_and_on_command() {
+        let scenario = serde_json::json!({
+            "name": "danger-held-delivery", "seed": 25,
+            "map": [
+                "##########################",
+                "#1....................2..#",
+                "#........................#",
+                "#........................#",
+                "#........................#",
+                "#........................#",
+                "##########################"
+            ],
+            "players": [
+                {"name": "F", "faction": "ferrous", "scrap": 0, "bot": false},
+                {"name": "C", "faction": "cupric", "scrap": 0, "bot": true}
+            ],
+            "units": [
+                {"player": 0, "kind": "harvester", "x": 16, "y": 3},
+                {"player": 1, "kind": "scuttler", "x": 12, "y": 3}
+            ]
+        });
+        let mut state = Scenario::from_json(&scenario.to_string())
+            .unwrap()
+            .build()
+            .unwrap();
+        let worker = state.units[0].id;
+        state.units[0].carrying = 1;
+        let foundry = state
+            .buildings
+            .iter()
+            .find(|b| b.player == PlayerId(0))
+            .unwrap()
+            .id;
+        let period = crate::stats::HARVEST_DANGER_RETRY_TICKS;
+        let start = DANGER_HOLD_REPORT_PERIOD - 1;
+        let mut searched = Vec::new();
+        let mut reported = Vec::new();
+        for tick in start..=start + period {
+            state.tick = tick;
+            let danger = GroundSalvageDanger::capture(&state, PlayerId(0));
+            let before = danger.route_search_count();
+            let mut events = Vec::new();
+            assert!(try_drop_offs(
+                &mut state,
+                &danger,
+                worker,
+                &[foundry],
+                &mut events
+            ));
+            assert!(state.units[0].path.is_none(), "a held worker stands");
+            if danger.route_search_count() > before {
+                searched.push(tick - start);
+            }
+            if events.iter().any(|event| {
+                matches!(
+                    event,
+                    Event::OrderStalled {
+                        reason: StallReason::DangerHold,
+                        ..
+                    }
+                )
+            }) {
+                reported.push(tick);
+            }
+        }
+        assert_eq!(searched, [0, period]);
+        assert_eq!(
+            reported,
+            [DANGER_HOLD_REPORT_PERIOD],
+            "the hold stays visible"
+        );
+        assert!(state.units[0].danger_retry_at.is_some());
+        crate::tick::commands::apply(
+            &mut state,
+            &[crate::PlayerCommand {
+                player: PlayerId(0),
+                command: crate::Command::Stop {
+                    units: vec![worker],
+                },
+            }],
+            &mut Vec::new(),
+        );
+        assert_eq!(
+            state.units[0].danger_retry_at, None,
+            "a command is judged at once"
+        );
+    }
+
+    #[test]
+    fn arriving_at_the_source_ends_a_route_hold() {
+        let (mut state, worker, _, _) = held_worker(None);
+        let node = TilePos::new(6, 3);
+        let radius = state.units[0].kind.stats().radius;
+        state.units[0].pos =
+            crate::geometry::work_approach_point(TilePos::new(7, 3), node, (1, 1), radius);
+        state.units[0].danger_retry_at = Some(state.tick + 8);
+        assert!(state.units[0].in_work_reach(node, (1, 1)), "premise");
+        let danger = GroundSalvageDanger::capture(&state, PlayerId(0));
+        harvest(
+            &mut state,
+            &danger,
+            worker,
+            node,
+            None,
+            false,
+            &mut Vec::new(),
+        );
+        assert_eq!(state.units[0].danger_retry_at, None);
     }
 
     #[test]
