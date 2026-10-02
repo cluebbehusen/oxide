@@ -121,7 +121,7 @@
   "deadline": 5100,
   "script": [
     {
-      "tick": 1530,
+      "tick": 30,
       "command": {
         "type": "load",
         "units": [7, 8, 9, 10],
@@ -130,7 +130,7 @@
       }
     },
     {
-      "tick": 1900,
+      "tick": 1676,
       "command": {
         "type": "unload",
         "transport": 6,
