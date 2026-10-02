@@ -384,7 +384,11 @@ pub struct Unit {
     pub stall_ticks: u8,
     /// While this Harvester is held by danger, the tick from which it searches
     /// again. See [`crate::stats::HARVEST_DANGER_RETRY_TICKS`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        alias = "detour_retry_at",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub danger_retry_at: Option<crate::Tick>,
     /// Independent ground gun bearing; absent mounts follow the hull initially.
     #[serde(default, skip_serializing_if = "Option::is_none")]

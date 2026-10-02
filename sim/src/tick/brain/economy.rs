@@ -660,8 +660,11 @@ pub(super) fn harvest(
         .expect("caller checked")
         .in_work_reach(node, (1, 1))
     {
+        // Arriving ends any hold from the route here; only a drop-off
+        // scan may start the next one.
         let worker = state.unit_mut(id).expect("caller checked");
         worker.path = None;
+        worker.danger_retry_at = None;
         if !worker.work_stopped() {
             return;
         }
@@ -1914,6 +1917,15 @@ mod harvest_zone_tests {
         let restored: State =
             serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
         assert_eq!(restored.units[0].danger_retry_at, Some(bound));
+        let renamed = serde_json::to_string(&state)
+            .unwrap()
+            .replace("danger_retry_at", "detour_retry_at");
+        let restored: State = serde_json::from_str(&renamed).unwrap();
+        assert_eq!(
+            restored.units[0].danger_retry_at,
+            Some(bound),
+            "saves from before the rename keep their retry"
+        );
         state.units[0].danger_retry_at = Some(bound + 1);
         assert!(serde_json::from_str::<State>(&serde_json::to_string(&state).unwrap()).is_err());
     }
@@ -2049,6 +2061,28 @@ mod harvest_zone_tests {
             state.units[0].danger_retry_at, None,
             "a command is judged at once"
         );
+    }
+
+    #[test]
+    fn arriving_at_the_source_ends_a_route_hold() {
+        let (mut state, worker, _, _) = held_worker(None);
+        let node = TilePos::new(6, 3);
+        let radius = state.units[0].kind.stats().radius;
+        state.units[0].pos =
+            crate::geometry::work_approach_point(TilePos::new(7, 3), node, (1, 1), radius);
+        state.units[0].danger_retry_at = Some(state.tick + 8);
+        assert!(state.units[0].in_work_reach(node, (1, 1)), "premise");
+        let danger = GroundSalvageDanger::capture(&state, PlayerId(0));
+        harvest(
+            &mut state,
+            &danger,
+            worker,
+            node,
+            None,
+            false,
+            &mut Vec::new(),
+        );
+        assert_eq!(state.units[0].danger_retry_at, None);
     }
 
     #[test]
