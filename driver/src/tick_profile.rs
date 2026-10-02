@@ -1,5 +1,8 @@
 //! Where simulation time goes inside a window of recorded ticks.
 //!
+//! [`scan`] times every tick of a replay in one straight pass and ranks its
+//! windows, so a costly stretch can be found before it is profiled.
+//!
 //! The replay is rebuilt to the window's first tick, then the window is
 //! re-simulated from a clone of that world again and again while macOS's
 //! `sample` records the thread's stack once a millisecond. Every repetition
@@ -13,6 +16,7 @@ use oxide_kit::GameReplay;
 use oxide_kit::playback::Playback;
 use oxide_sim::{PlayerCommand, State};
 use serde::Serialize;
+use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
@@ -207,6 +211,146 @@ impl Report {
             self.window.count,
             self.profile.table(top)
         )
+    }
+}
+
+/// One window of a [`Scan`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WindowCost {
+    /// The window's first tick.
+    pub from: u64,
+    /// Ticks in the window; the last window may be short.
+    pub ticks: u64,
+    /// Average wall time per tick.
+    pub avg_ns: u64,
+    /// Slowest tick in the window.
+    pub max_ns: u64,
+    /// Units alive when the window starts.
+    pub units: usize,
+}
+
+/// Wall time of every tick of a replay, from one straight pass.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Scan {
+    /// The scanned replay.
+    pub replay: String,
+    /// First recorded tick.
+    pub start: u64,
+    /// End of the recording.
+    pub end: u64,
+    /// Per-tick wall time across the whole replay.
+    pub per_tick: Summary,
+    /// The tick with the largest wall time.
+    pub slowest_tick: u64,
+    /// Ticks per ranked window.
+    pub window: u64,
+    /// The costliest windows by average tick, most expensive first.
+    pub windows: Vec<WindowCost>,
+}
+
+/// Times every tick of the replay at `path` and ranks its `window`-tick
+/// windows, keeping the `top` costliest.
+pub fn scan(path: &str, window: u64, top: usize) -> Result<Scan> {
+    ensure!(window > 0, "a window spans at least one tick");
+    let replay = oxide_kit::load_replay(path).with_context(|| format!("loading {path}"))?;
+    replay
+        .validate(Some(oxide_sim::SIM_VERSION))
+        .map_err(|err| anyhow::anyhow!("{err}"))?;
+    let mut state = oxide_kit::recording::initial_state(&replay)?;
+    let start = state.current_tick();
+    let end = oxide_kit::bounded_replay_duration(&replay)?;
+    ensure!(end > start, "the recording spans no ticks to scan");
+    let mut next = replay
+        .commands
+        .partition_point(|command| command.tick < start);
+    let mut times = Vec::new();
+    let mut units = Vec::new();
+    while state.current_tick() < end {
+        let tick = state.current_tick();
+        if (tick - start).is_multiple_of(window) {
+            units.push(state.units().len());
+        }
+        let first = next;
+        while replay
+            .commands
+            .get(next)
+            .is_some_and(|command| command.tick == tick)
+        {
+            next += 1;
+        }
+        let commands: Vec<PlayerCommand> = replay.commands[first..next]
+            .iter()
+            .map(|command| command.command.clone())
+            .collect();
+        let began = Instant::now();
+        state.tick(&commands);
+        times.push(u64::try_from(began.elapsed().as_nanos()).unwrap_or(u64::MAX));
+    }
+    let slowest = (0..times.len()).max_by_key(|&index| (times[index], Reverse(index)));
+    Ok(Scan {
+        replay: path.to_owned(),
+        start,
+        end,
+        per_tick: Summary::of(&times),
+        slowest_tick: start + slowest.expect("a recording with ticks has a slowest one") as u64,
+        window,
+        windows: costliest(&times, start, window, &units, top),
+    })
+}
+
+/// The `top` costliest `window`-tick windows of per-tick `times` starting at
+/// tick `start`, by average tick, earliest first among equals.
+fn costliest(
+    times: &[u64],
+    start: u64,
+    window: u64,
+    units: &[usize],
+    top: usize,
+) -> Vec<WindowCost> {
+    let mut windows: Vec<WindowCost> = times
+        .chunks(window as usize)
+        .zip(units)
+        .enumerate()
+        .map(|(index, (chunk, &units))| WindowCost {
+            from: start + index as u64 * window,
+            ticks: chunk.len() as u64,
+            avg_ns: chunk.iter().sum::<u64>() / chunk.len() as u64,
+            max_ns: chunk.iter().copied().max().unwrap_or(0),
+            units,
+        })
+        .collect();
+    windows.sort_by(|a, b| b.avg_ns.cmp(&a.avg_ns).then(a.from.cmp(&b.from)));
+    windows.truncate(top);
+    windows
+}
+
+impl Scan {
+    /// The whole replay's tick costs above its costliest windows.
+    pub fn table(&self) -> String {
+        let micros = |ns: u64| ns as f64 / 1000.0;
+        let mut out = format!(
+            "{}: ticks {}..{}, avg {:.1} µs/tick, p99 {:.1} µs, max {:.1} µs at tick {}\n\
+             costliest {}-tick windows by average tick:\n",
+            self.replay,
+            self.start,
+            self.end,
+            micros(self.per_tick.avg_ns),
+            micros(self.per_tick.p99_ns),
+            micros(self.per_tick.max_ns),
+            self.slowest_tick,
+            self.window
+        );
+        for window in &self.windows {
+            out.push_str(&format!(
+                "  ticks {:>6}..{:<6}  avg {:>9.1} µs  max {:>9.1} µs  {:>5} units\n",
+                window.from,
+                window.from + window.ticks,
+                micros(window.avg_ns),
+                micros(window.max_ns),
+                window.units
+            ));
+        }
+        out
     }
 }
 
@@ -625,6 +769,53 @@ Total number in stack (recursive counted multiple, when >=5):
             readable("<alloc::vec::Vec<(u8, u16)> as core::iter::FromIterator<u8>>::from_iter"),
             "<alloc::vec::Vec as core::iter::FromIterator>::from_iter"
         );
+    }
+
+    #[test]
+    fn windows_rank_by_average_tick_and_keep_their_starting_units() {
+        let times = [1, 1, 9, 9, 4, 4, 9];
+        let windows = costliest(&times, 10, 2, &[5, 6, 7, 8], 3);
+        let summary: Vec<_> = windows
+            .iter()
+            .map(|window| (window.from, window.ticks, window.avg_ns, window.units))
+            .collect();
+        assert_eq!(summary, [(12, 2, 9, 6), (16, 1, 9, 8), (14, 2, 4, 7)]);
+    }
+
+    fn scan_of(replay: &GameReplay) -> Result<Scan> {
+        let dir = std::env::temp_dir().join(format!(
+            "oxide-tick-scan-{}-{}",
+            std::process::id(),
+            replay.meta.ticks.unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("fixture.json");
+        replay.save(&path).unwrap();
+        let scan = scan(path.to_str().unwrap(), 5, 10);
+        std::fs::remove_dir_all(&dir).unwrap();
+        scan
+    }
+
+    #[test]
+    fn a_scan_times_every_recorded_tick() {
+        let scan = scan_of(&crate::test_support::replay_fixture()).unwrap();
+        assert_eq!((scan.start, scan.end, scan.per_tick.count), (0, 12, 12));
+        assert_eq!(
+            scan.windows.iter().map(|window| window.ticks).sum::<u64>(),
+            12
+        );
+        assert!(scan.slowest_tick < 12);
+    }
+
+    #[test]
+    fn a_scan_refuses_empty_and_overlong_recordings() {
+        let mut empty = crate::test_support::replay_fixture();
+        empty.commands.clear();
+        empty.meta.ticks = Some(0);
+        assert!(scan_of(&empty).is_err());
+        let mut overlong = crate::test_support::replay_fixture();
+        overlong.meta.ticks = Some(oxide_kit::MAX_REPLAY_TICKS + 1);
+        assert!(scan_of(&overlong).is_err());
     }
 
     #[test]
