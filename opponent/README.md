@@ -85,8 +85,13 @@ takes over.
 
 A defense that cannot recruit enough makes the decision an emergency: it skips
 the saving purchase, trains no Harvesters beyond the one a seat without any
-needs, and lets production spend protected scrap. Shelling, from a building or a
-gun out of sight, never does, since static defenses cannot reach the guns.
+needs, and lets production spend protected scrap. Ready producers the army's
+roles leave idle then each train the costliest armed unit the scrap on hand buys
+that can reach and hit a Foundry whose defense is short, until what the decision
+queued makes up each Foundry's shortfall, so a seat too poor for its line unit
+or a gun still fields what it can afford; a ground unit counts only for a
+Foundry on its producer's ground. Shelling, from a building or a gun out of
+sight, never makes an emergency, since static defenses cannot reach the guns.
 Missions own only units that exist; production never works for a mission.
 
 ## Home reserve

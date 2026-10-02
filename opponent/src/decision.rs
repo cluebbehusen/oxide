@@ -9,7 +9,7 @@ use crate::income::Income;
 use crate::investments::{self, Investment, Situation, Step};
 use crate::map::MapModel;
 use crate::memory::Memory;
-use crate::missions::{Missions, Scratch};
+use crate::missions::{Missions, Scratch, Shortfall};
 use crate::placement;
 use crate::profile::ResolvedProfile;
 use crate::saving::Saving;
@@ -18,7 +18,7 @@ use crate::workers;
 use chassis::grid::TilePos;
 use oxide_sim::observation::{BuildingObs, ObservationData, UnitObs};
 use oxide_sim::scenario::{BotDifficulty, BotStance};
-use oxide_sim::stats::Role;
+use oxide_sim::stats::{Domain, Role};
 use oxide_sim::{BuildingId, BuildingKind, Command, PlayerCommand, PlayerId, UnitId, UnitKind};
 
 /// What one decision emits.
@@ -381,10 +381,11 @@ pub(crate) fn decide(
     persistent
         .missions
         .prune(observation, &mut persistent.memory);
-    let short =
+    let shortfalls =
         persistent
             .missions
             .defend(observation, map, frame, &persistent.memory, &mut ledger);
+    let short = !shortfalls.is_empty();
     scratch.rival = persistent
         .missions
         .rival(&scratch, observation, map, profile.traits);
@@ -539,6 +540,9 @@ pub(crate) fn decide(
             );
         }
         produce(observation, &producers, &mut needs, &mut ledger);
+        if short {
+            arm(observation, map, &producers, shortfalls, &mut ledger);
+        }
     }
     if !short && exposed {
         workers::train(
@@ -953,6 +957,83 @@ fn produce(
         ) && ledger.train(producer.building.id, unit)
         {
             needs.queued(unit);
+        }
+    }
+}
+
+/// While a defense is short, ready producers the wanted roles left idle each
+/// train the costliest armed unit the scrap on hand buys that can reach and hit
+/// a Foundry still short, until what this decision queued makes up each
+/// Foundry's shortfall: a seat too poor for its line unit or a gun still
+/// fields what it can afford. A ground unit helps only a Foundry on its
+/// producer's ground; an aircraft helps any.
+fn arm(
+    observation: &ObservationData,
+    map: &MapModel,
+    producers: &[Producer<'_>],
+    mut shortfalls: Vec<Shortfall>,
+    ledger: &mut Ledger,
+) {
+    const DOMAINS: [Domain; 2] = [Domain::Ground, Domain::Air];
+    let hits = |kind: UnitKind, domain: Domain| {
+        kind.stats()
+            .weapons
+            .iter()
+            .any(|weapon| weapon.targets.covers(domain))
+    };
+    // Whether `kind`, trained on ground `at`, can help `short`.
+    let helps = |kind: UnitKind, at: Option<u32>, short: &Shortfall| {
+        (kind.stats().domain == Domain::Air || (at.is_some() && at == short.ground))
+            && DOMAINS
+                .into_iter()
+                .enumerate()
+                .any(|(index, domain)| short.gap[index] > 0 && hits(kind, domain))
+    };
+    let cover = |shortfalls: &mut [Shortfall], kind: UnitKind, at: Option<u32>| {
+        if let Some(short) = shortfalls.iter_mut().find(|short| helps(kind, at, short)) {
+            for (index, domain) in DOMAINS.into_iter().enumerate() {
+                if hits(kind, domain) {
+                    short.gap[index] =
+                        short.gap[index].saturating_sub(u64::from(kind.stats().cost));
+                }
+            }
+        }
+    };
+    let ground = |building: BuildingId| {
+        observation
+            .my_buildings
+            .iter()
+            .find(|own| own.id == building)
+            .and_then(|own| map.component(own.anchor))
+    };
+    let queued: Vec<(BuildingId, UnitKind)> = ledger
+        .decision
+        .purchases
+        .iter()
+        .filter_map(|purchase| match purchase {
+            Purchase::Train { building, unit } => Some((*building, *unit)),
+            _ => None,
+        })
+        .collect();
+    for (building, kind) in queued {
+        cover(&mut shortfalls, kind, ground(building));
+    }
+    let idle: Vec<&Producer<'_>> = producers
+        .iter()
+        .filter(|producer| producer.ready && !ledger.queued_at(producer.building.id))
+        .collect();
+    for producer in idle {
+        let budget = ledger.spendable();
+        let at = map.component(producer.building.anchor);
+        let kind = shortfalls.iter().find_map(|short| {
+            composition::producible(observation, producer.building.kind)
+                .filter(|kind| kind.stats().cost <= budget && helps(*kind, at, short))
+                .max_by_key(|kind| kind.stats().cost)
+        });
+        if let Some(kind) = kind
+            && ledger.train(producer.building.id, kind)
+        {
+            cover(&mut shortfalls, kind, at);
         }
     }
 }

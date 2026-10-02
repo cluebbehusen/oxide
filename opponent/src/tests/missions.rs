@@ -329,6 +329,53 @@ fn a_short_defense_defers_the_saving_target_and_spends_protected_scrap() {
 }
 
 #[test]
+fn a_short_seat_too_poor_for_a_line_unit_or_a_gun_trains_what_it_can_afford() {
+    let mut scenario = arena(50);
+    scenario.units.extend(workforce(0));
+    scenario.units.push(unit(1, UnitKind::Sentinel, 9, 5));
+    let state = scenario.build().unwrap();
+    let commands = seat_with(&scenario, 0, thrifty()).act(&state, &mut OwnEvents::default());
+    let foundry = foundries(&state, PlayerId(0))[0];
+    assert_eq!(
+        trains(&commands),
+        [(foundry, UnitKind::Scuttler)],
+        "{commands:?}"
+    );
+}
+
+#[test]
+fn a_raided_expansion_on_other_ground_is_armed_from_its_own_foundry() {
+    // A rock wall down column 24 cuts West's home off from its expansion,
+    // which stands on East's ground with a raider beside it.
+    let mut scenario = field();
+    for row in scenario.map.iter_mut().skip(1).take(22) {
+        row.replace_range(24..25, "#");
+    }
+    scenario.players[0].scrap = 50;
+    scenario.units.extend(workforce(0));
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Foundry,
+        x: 30,
+        y: 11,
+    });
+    scenario.units.push(unit(1, UnitKind::Sentinel, 33, 11));
+    let state = scenario.build().unwrap();
+    let expansion = state
+        .buildings()
+        .iter()
+        .find(|building| building.player == PlayerId(0) && building.anchor == TilePos::new(30, 11))
+        .unwrap()
+        .id;
+    let commands = seat_with(&scenario, 0, thrifty()).act(&state, &mut OwnEvents::default());
+    assert_eq!(
+        trains(&commands),
+        [(expansion, UnitKind::Scuttler)],
+        "a Scuttler from home could never reach it: {commands:?}"
+    );
+}
+
+#[test]
 fn mirrored_seats_defend_alike() {
     let mut scenario = arena(0);
     scenario.units.extend([

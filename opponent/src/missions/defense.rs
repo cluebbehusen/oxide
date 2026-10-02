@@ -49,7 +49,8 @@ impl Missions {
     /// with the known defense around it, and only while the units the defense
     /// holds or could take would beat that defense by half again. A defense that is only
     /// recovering lends its units, as does an attack not yet fighting.
-    /// Returns whether any defense stayed short.
+    /// Returns each of the seat's own Foundries whose defense falls short of
+    /// its attackers, home-nearest first.
     ///
     /// Only threats standing on or beside the Foundry's ground count. One
     /// across water or a chasm is left to production: chasing it would stall
@@ -64,7 +65,7 @@ impl Missions {
         frame: HomeFrame,
         memory: &Memory,
         ledger: &mut Ledger,
-    ) -> bool {
+    ) -> Vec<Shortfall> {
         let now = observation.tick;
         let lendable = self.available(observation, true);
         let mut groups = threats(observation, map, frame);
@@ -130,7 +131,7 @@ impl Missions {
         });
 
         let mut free = self.available(observation, true);
-        let mut short = false;
+        let mut shortfalls = Vec::new();
         for (foundry, siege, own) in &groups {
             let centre = footprint_centre(foundry.kind, foundry.anchor);
             let component = map.component(foundry.anchor);
@@ -233,7 +234,13 @@ impl Missions {
                 }
                 recruits.push(unit.id);
             }
-            short |= *own && (have[0] < pressing[0] || have[1] < pressing[1]);
+            let gap = [0, 1].map(|index| pressing[index].saturating_sub(have[index]));
+            if *own && gap != [0, 0] {
+                shortfalls.push(Shortfall {
+                    ground: component,
+                    gap,
+                });
+            }
 
             let Some(index) = index else {
                 if recruits.is_empty() || self.list.len() >= MISSION_CAP {
@@ -306,8 +313,16 @@ impl Missions {
                 self.release_from_others(index, &recruits);
             }
         }
-        short
+        shortfalls
     }
+}
+
+/// How far one of the seat's Foundries' defense falls short of its attackers.
+pub(crate) struct Shortfall {
+    /// The Foundry's ground: ground units help only from there.
+    pub(crate) ground: Option<u32>,
+    /// The shortfall, in scrap, against ground and air attackers.
+    pub(crate) gap: [u64; 2],
 }
 
 /// Removes `taken` from the sorted `free`.
