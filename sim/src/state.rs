@@ -382,6 +382,11 @@ pub struct Unit {
     /// drops the route for a fresh plan.
     #[serde(default, skip_serializing_if = "is_zero_u8")]
     pub stall_ticks: u8,
+    /// While this Harvester walks an ordered route with danger ahead after a
+    /// failed search for a safe detour, the tick from which it searches again.
+    /// See [`crate::stats::HARVEST_DETOUR_RETRY_TICKS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detour_retry_at: Option<crate::Tick>,
     /// Independent ground gun bearing; absent mounts follow the hull initially.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turret_heading: Option<u8>,
@@ -1239,6 +1244,13 @@ impl State {
             {
                 return Err(E::InvalidStallTicks(u.id));
             }
+            if u.detour_retry_at.is_some_and(|tick| {
+                tick > self
+                    .tick
+                    .saturating_add(crate::stats::HARVEST_DETOUR_RETRY_TICKS)
+            }) {
+                return Err(E::InvalidDetourRetry(u.id));
+            }
             if u.turret_heading.is_some() && !u.kind.has_ground_turret() {
                 return Err(E::InvalidTurretHeading(u.id));
             }
@@ -1357,6 +1369,7 @@ impl State {
                     || rider.brace_ticks != 0
                     || rider.drive_speed != Fx::ZERO
                     || rider.stall_ticks != 0
+                    || rider.detour_retry_at.is_some()
                     || rider.landed
                     || !rider.cargo.is_empty()
                 {
@@ -2003,6 +2016,7 @@ impl State {
             turret_heading: None,
             drive_speed: Fx::ZERO,
             stall_ticks: 0,
+            detour_retry_at: None,
             progress: 0,
             order: Order::Idle,
             queue: std::collections::VecDeque::new(),
@@ -2546,6 +2560,9 @@ pub enum StateIntegrityError {
     /// walking a ground route.
     #[error("unit {0} carries an invalid stall counter")]
     InvalidStallTicks(UnitId),
+    /// A detour retry scheduled further ahead than a failed search sets.
+    #[error("unit {0} carries a detour retry beyond its bound")]
+    InvalidDetourRetry(UnitId),
     /// A chase allowance or reacquisition cooldown exceeds its legal bound.
     #[error("unit {0} carries an invalid leash clock")]
     InvalidLeashClock(UnitId),

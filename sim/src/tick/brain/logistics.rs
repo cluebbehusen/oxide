@@ -233,6 +233,7 @@ pub(in crate::tick) fn resolve(state: &mut State, mut pending: Pending, events: 
         rider.brace_ticks = 0;
         rider.drive_speed = chassis::fx::Fx::ZERO;
         rider.stall_ticks = 0;
+        rider.detour_retry_at = None;
         rider.progress = 0;
         rider.unloading = None;
         rider.pos = carrier_pos;

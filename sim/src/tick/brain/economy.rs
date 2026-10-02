@@ -718,28 +718,17 @@ const HARVEST_DANGER_REACT_ZONE: usize = 3;
 /// input; near-zone threats never wait.
 const HARVEST_REPLAN_PERIOD: u64 = 4;
 
-/// A worker held on its ordered route with danger ahead keeps walking that
-/// route, since a safe detour may not exist, and looks for one only on this
-/// period. Looking every tick re-proved the same dead end with full route
-/// searches for every such worker. A multiple of
-/// [`HARVEST_REPLAN_PERIOD`], so the two windows coincide.
-const HARVEST_DETOUR_RETRY_PERIOD: u64 = 16;
-
 /// Whether this is the tick on which `id` may re-plan a retained route
 /// the danger lookahead has flagged beyond the react zone.
 fn danger_replan_window(state: &State, id: UnitId) -> bool {
-    staggered_window(state, id, HARVEST_REPLAN_PERIOD)
-}
-
-/// Whether `id`'s turn in a `period`-tick cycle falls on this tick.
-fn staggered_window(state: &State, id: UnitId, period: u64) -> bool {
     let unit = state.unit(id).expect("caller checked");
     let rank = crate::ids::owner_local_unit_rank(
         id,
         unit.player,
         state.units.iter().map(|unit| (unit.id, unit.player)),
     );
-    (state.tick + u64::try_from(rank).expect("unit rank fits u64")).is_multiple_of(period)
+    (state.tick + u64::try_from(rank).expect("unit rank fits u64"))
+        .is_multiple_of(HARVEST_REPLAN_PERIOD)
 }
 
 /// Whether the retained route may be kept this tick: clear routes and
@@ -985,19 +974,34 @@ fn approach_authoritative_source(
                     .final_point
                     .is_none_or(|point| !crowding::claimed(state, id, point, true)))
         {
+            state.unit_mut(id).expect("caller checked").detour_retry_at = None;
             return true;
         }
-        if !near_route_is_clear && !staggered_window(state, id, HARVEST_DETOUR_RETRY_PERIOD) {
+        // Only danger defers a search, and only after one already failed: a
+        // newly flagged route or a waypoint that turned impassable replans
+        // at once.
+        let danger_only = !near_route_is_clear
+            && first_flagged_waypoint(path, |waypoint| {
+                known_ground_passable(state, danger, player, waypoint)
+            })
+            .is_none();
+        if danger_only && unit.detour_retry_at.is_some_and(|retry| state.tick < retry) {
             return true;
         }
-        if let Some(path) = authoritative_source_route(state, danger, id, source) {
-            state.unit_mut(id).expect("caller checked").path = Some(path);
+        let detour = authoritative_source_route(state, danger, id, source);
+        let tick = state.tick;
+        let worker = state.unit_mut(id).expect("caller checked");
+        worker.detour_retry_at = (detour.is_none() && danger_only)
+            .then_some(tick + crate::stats::HARVEST_DETOUR_RETRY_TICKS);
+        if let Some(path) = detour {
+            worker.path = Some(path);
         }
         // No safe detour means the explicitly ordered route remains in
         // force. This is the only path allowed to cross known danger.
         return true;
     }
 
+    state.unit_mut(id).expect("caller checked").detour_retry_at = None;
     if let Some(path) = authoritative_source_route(state, danger, id, source) {
         state.unit_mut(id).expect("caller checked").path = Some(path);
         return true;
@@ -1089,23 +1093,20 @@ fn source_route_avoiding_danger(
                 - (candidate.point.y - unit.pos.y) * (frame.center().x - unit.pos.x),
         )
     });
-    // Every candidate shares one passability rule, so a search that explored
-    // the start's whole component settles every other candidate it missed.
-    let goals: Vec<TilePos> = candidates.iter().map(|candidate| candidate.goal).collect();
-    let mut reachable: Option<Vec<bool>> = None;
+    // Every candidate, including those crowding moves outward, shares one
+    // passability rule, so a failed search that explored the start's whole
+    // component settles any later goal it never reached.
+    let mut failed = false;
     let route = |goal: TilePos| {
-        if let Some(reachable) = &reachable
-            && goals
-                .iter()
-                .position(|candidate| *candidate == goal)
-                .is_some_and(|index| !reachable[index])
+        if failed
+            && danger
+                .last_route_reachability(&[goal], allow_dangerous_goal)
+                .is_some_and(|reachable| !reachable[0])
         {
             return None;
         }
         let found = safe_route(goal);
-        if found.is_none() && reachable.is_none() {
-            reachable = danger.last_route_reachability(&goals, allow_dangerous_goal);
-        }
+        failed = found.is_none();
         found
     };
     crowding::choose(
@@ -1808,19 +1809,22 @@ mod harvest_zone_tests {
         assert_eq!(danger.route_search_count() - before, 2);
     }
 
-    #[test]
-    fn a_worker_held_on_a_dangerous_ordered_route_seeks_a_detour_once_per_retry_period() {
+    fn held_worker(wall: Option<(usize, usize)>) -> (State, UnitId, KnownSource, PathFollow) {
+        let mut map = vec![
+            "##########################".to_owned(),
+            "#1....................2..#".to_owned(),
+            "#........................#".to_owned(),
+            "#.....s..................#".to_owned(),
+            "#........................#".to_owned(),
+            "#........................#".to_owned(),
+            "##########################".to_owned(),
+        ];
+        if let Some((x, y)) = wall {
+            map[y].replace_range(x..=x, "#");
+        }
         let scenario = serde_json::json!({
             "name": "danger-held-order", "seed": 25,
-            "map": [
-                "##########################",
-                "#1....................2..#",
-                "#........................#",
-                "#.....s..................#",
-                "#........................#",
-                "#........................#",
-                "##########################"
-            ],
+            "map": map,
             "players": [
                 {"name": "F", "faction": "ferrous", "scrap": 0, "bot": false},
                 {"name": "C", "faction": "cupric", "scrap": 0, "bot": true}
@@ -1834,7 +1838,6 @@ mod harvest_zone_tests {
             .unwrap()
             .build()
             .unwrap();
-        let worker = state.units[0].id;
         let node = TilePos::new(6, 3);
         let source = known_source(&state, PlayerId(0), node).expect("the node is in sight");
         state.units[0].order = Order::Harvest {
@@ -1848,27 +1851,103 @@ mod harvest_zone_tests {
             waypoints: (7..16).rev().map(|x| TilePos::new(x, 3)).collect(),
             next: 0,
         };
+        let worker = state.units[0].id;
+        (state, worker, source, ordered)
+    }
+
+    /// Ticks, from the scene's start, on which the held worker searched.
+    fn searches(
+        state: &mut State,
+        worker: UnitId,
+        source: KnownSource,
+        ordered: &PathFollow,
+        ticks: u64,
+    ) -> Vec<u64> {
         let start = state.tick;
         let mut searched = Vec::new();
-        for tick in start..start + 2 * HARVEST_DETOUR_RETRY_PERIOD {
+        for tick in start..start + ticks {
             state.tick = tick;
             state.units[0].path = Some(ordered.clone());
-            let danger = GroundSalvageDanger::capture(&state, PlayerId(0));
+            let danger = GroundSalvageDanger::capture(state, PlayerId(0));
             let before = danger.route_search_count();
             assert!(approach_authoritative_source(
-                &mut state, &danger, worker, source
+                state, &danger, worker, source
             ));
-            assert_eq!(
-                state.units[0].path.as_ref(),
-                Some(&ordered),
-                "no safe detour exists, so the ordered route stays in force"
-            );
             if danger.route_search_count() > before {
-                searched.push(tick);
+                searched.push(tick - start);
             }
         }
-        assert_eq!(searched.len(), 2, "searched on ticks {searched:?}");
-        assert_eq!(searched[1] - searched[0], HARVEST_DETOUR_RETRY_PERIOD);
+        searched
+    }
+
+    #[test]
+    fn a_worker_held_by_danger_searches_at_once_then_backs_off_after_a_failure() {
+        let (mut state, worker, source, ordered) = held_worker(None);
+        let period = crate::stats::HARVEST_DETOUR_RETRY_TICKS;
+        let searched = searches(&mut state, worker, source, &ordered, 2 * period);
+        assert_eq!(searched, [0, period], "no safe detour exists in this lane");
+        assert_eq!(
+            state.units[0].path.as_ref(),
+            Some(&ordered),
+            "the ordered route stays in force"
+        );
+        assert_eq!(state.units[0].detour_retry_at, Some(state.tick + 1));
+    }
+
+    #[test]
+    fn a_detour_retry_round_trips_up_to_its_bound() {
+        let (mut state, ..) = held_worker(None);
+        let bound = state.tick + crate::stats::HARVEST_DETOUR_RETRY_TICKS;
+        state.units[0].detour_retry_at = Some(bound);
+        let restored: State =
+            serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+        assert_eq!(restored.units[0].detour_retry_at, Some(bound));
+        state.units[0].detour_retry_at = Some(bound + 1);
+        assert!(serde_json::from_str::<State>(&serde_json::to_string(&state).unwrap()).is_err());
+    }
+
+    #[test]
+    fn a_waypoint_turned_impassable_replans_every_tick() {
+        let (mut state, worker, source, ordered) = held_worker(Some((14, 3)));
+        assert_eq!(
+            searches(&mut state, worker, source, &ordered, 4),
+            [0, 1, 2, 3]
+        );
+        assert_eq!(state.units[0].detour_retry_at, None);
+    }
+
+    #[test]
+    fn a_sealed_worker_settles_every_work_position_with_one_search() {
+        let mut rows = vec![vec!['.'; 32]; 20];
+        for (y, row) in rows.iter_mut().enumerate() {
+            for (x, tile) in row.iter_mut().enumerate() {
+                if y == 0 || y == 19 || x == 0 || x == 31 || x == 15 {
+                    *tile = '#';
+                }
+            }
+        }
+        rows[2][18] = '1';
+        rows[16][28] = '2';
+        rows[7][20] = 's';
+        let scenario = serde_json::json!({
+            "name": "sealed-worker-source", "seed": 25,
+            "map": rows.into_iter().map(|row| row.into_iter().collect::<String>()).collect::<Vec<_>>(),
+            "players": [
+                {"name": "F", "faction": "ferrous", "scrap": 0, "bot": false},
+                {"name": "C", "faction": "cupric", "scrap": 0, "bot": true}
+            ],
+            "units": [{"player": 0, "kind": "harvester", "x": 4, "y": 5}]
+        });
+        let state = Scenario::from_json(&scenario.to_string())
+            .unwrap()
+            .build()
+            .unwrap();
+        let source =
+            known_source(&state, PlayerId(0), TilePos::new(20, 7)).expect("the node is in sight");
+        let danger = GroundSalvageDanger::capture(&state, PlayerId(0));
+        let before = danger.route_search_count();
+        assert!(safe_source_route(&state, &danger, state.units[0].id, source).is_none());
+        assert_eq!(danger.route_search_count() - before, 1);
     }
 
     #[test]
