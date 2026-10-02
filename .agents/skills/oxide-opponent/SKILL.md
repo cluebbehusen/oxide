@@ -250,9 +250,11 @@ since the drop must come by air.
 - **Siege:** Bombards shell the base with a Kestrel spotting; by the deadline
   they must be destroyed or out of range. Killing only the spotter does not
   pass.
-- **Lift drop:** a Skyhook sets four Sentinels down beside the harvest line;
-  every landed unit must be destroyed, unless the Skyhook falls before setting
-  anyone down.
+- **Lift drop:** a Skyhook loaded at the start sets four Sentinels down beside
+  the harvest line at about tick 1,900, about as early as an enemy could field a
+  Skyhook and its load after a Fabricator and an Airworks; its unload is ordered
+  early enough for the flight to land then. Every landed unit must be destroyed,
+  unless the Skyhook falls before setting anyone down.
 
 `--controller scripted` reports `oxide-bot`'s results as a reference only; it is
 not tuned to pass them. Scenario files are JSON: the staged scenario, the
