@@ -262,6 +262,26 @@ enum Cmd {
         /// Emit JSON instead of the table.
         #[arg(long)]
         json: bool,
+        /// Also save the timed run as a replay, for `tick-scan` and
+        /// `tick-profile`.
+        #[arg(long)]
+        save_replay: Option<PathBuf>,
+    },
+    /// Time every tick of a replay in one straight pass and rank its
+    /// costliest windows, to choose where `tick-profile` should look.
+    /// Recorded commands replay; controllers do not run.
+    TickScan {
+        /// Scenario-origin or checkpoint-origin replay.
+        replay: String,
+        /// Ticks per ranked window.
+        #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u64).range(1..))]
+        window: u64,
+        /// Windows to list.
+        #[arg(long, default_value_t = 10)]
+        top: usize,
+        /// Emit JSON instead of the table.
+        #[arg(long)]
+        json: bool,
     },
     /// Profile the simulation inside a window of recorded ticks: rebuild the
     /// replay to `--from`, re-simulate the window from that world again and
@@ -973,6 +993,19 @@ fn main() -> Result<()> {
                 print!("{}", bot_pressure::report(&outcomes));
             }
         }
+        Cmd::TickScan {
+            replay,
+            window,
+            top,
+            json,
+        } => {
+            let scan = oxide_driver::tick_profile::scan(&replay, window, top)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&scan)?);
+            } else {
+                print!("{}", scan.table());
+            }
+        }
         Cmd::TickProfile {
             replay,
             from,
@@ -1001,6 +1034,7 @@ fn main() -> Result<()> {
             ticks,
             controller,
             json,
+            save_replay,
         } => {
             let (label, scenario, window) = match (workload, scenario) {
                 (Some(workload), _) => (
@@ -1024,7 +1058,15 @@ fn main() -> Result<()> {
                 }
                 (None, None) => bail!("name a workload or pass --scenario"),
             };
-            let report = oxide_driver::bot_cost::measure(&label, &scenario, window)?;
+            let mut replay = save_replay
+                .as_ref()
+                .map(|_| oxide_kit::GameReplay::new(oxide_sim::SIM_VERSION, scenario.clone()));
+            let report =
+                oxide_driver::bot_cost::measure(&label, &scenario, window, replay.as_mut())?;
+            if let (Some(path), Some(replay)) = (&save_replay, &replay) {
+                replay.save(path)?;
+                eprintln!("replay: {}", path.display());
+            }
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
@@ -1646,6 +1688,29 @@ mod tests {
     }
 
     #[test]
+    fn tick_scan_ranks_hundred_tick_windows_by_default() {
+        let cli = Cli::try_parse_from(["oxide-driver", "tick-scan", "match.json"])
+            .expect("a replay alone parses");
+        let Cmd::TickScan {
+            replay,
+            window,
+            top,
+            json,
+        } = cli.cmd
+        else {
+            panic!("tick-scan parsed as another command")
+        };
+        assert_eq!(
+            (replay.as_str(), window, top, json),
+            ("match.json", 100, 10, false)
+        );
+        assert!(
+            Cli::try_parse_from(["oxide-driver", "tick-scan", "match.json", "--window", "0"])
+                .is_err()
+        );
+    }
+
+    #[test]
     fn tick_profile_defaults_to_one_tick_and_requires_its_start() {
         let cli =
             Cli::try_parse_from(["oxide-driver", "tick-profile", "match.json", "--from", "40"])
@@ -1699,6 +1764,7 @@ mod tests {
             ticks,
             controller,
             json,
+            ..
         } = cli.cmd
         else {
             panic!("bot-cost parsed as another command")

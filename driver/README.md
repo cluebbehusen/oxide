@@ -93,6 +93,9 @@ records as the frozen reference it compares against.
   work, inclusive time and an optional breakdown of one function. Repetitions
   are identical, so even a single tick gathers thousands of samples. Recorded
   commands replay; controllers do not run. Other platforms refuse the command.
+  Its `tick-scan` companion times every tick of a replay in one straight pass
+  and ranks the costliest windows, to choose where to profile.
+  `bot-cost --save-replay` records a timed workload for both.
 - `audit`, `sweep`, `pace`, and `factorial`, plus the `matchup` CLI backed by
   `oxide-kit`, measure map geometry, configured-bot pacing, seat effects, and
   combat behavior.

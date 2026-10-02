@@ -45,18 +45,28 @@ continuation tests remain required; do not replace them with whole-match hashes.
 
 ## Simulation hot spots
 
-To find where simulation time goes, profile a window of a scenario-origin or
-checkpoint-origin replay on macOS from a release build:
+To find where simulation time goes, record the benchmark set once per behavior
+change, scan it for costly stretches, then profile the windows that matter, on
+macOS from a release build:
 
 ```sh
-cargo run --release --locked -p oxide-driver -- tick-profile <replay> --from <tick> --ticks 1
-cargo run --release --locked -p oxide-driver -- tick-profile <replay> --from <tick> --ticks 50 --focus resolve_collisions
+driver() { cargo run --release --locked -q -p oxide-driver -- "$@"; }
+mkdir -p replays/benchmark
+for workload in duel skyhook mature-armies; do
+  driver bot-cost $workload --controller opponent --save-replay replays/benchmark/$workload.json
+done
+driver bot-cost --scenario scenarios/compass-grand.json --ticks 20000 --controller opponent \
+  --save-replay replays/benchmark/compass-grand.json
+driver tick-scan replays/benchmark/compass-grand.json
+driver tick-profile replays/benchmark/compass-grand.json --from <tick> --ticks 50 --focus <function>
 ```
 
-Each second of `--seconds` gathers about a thousand samples; a few thousand
-inside the tick resolve shares to about a point. Shares are of `State::tick`
-alone. Compare a candidate and its base on the same replay and window; a
-behavior change that diverges the world before the window is not comparable.
+Rank work by share of the tick: shares hold steady on a busy machine, while wall
+times swing with whatever else runs. Each second of `--seconds` gathers about a
+thousand samples; a few thousand inside the tick resolve shares to about a
+point. Compare a candidate and its base on the same replay and window; a
+behavior change that diverges the world before the window is not comparable, so
+re-record the set after one.
 
 ## Reproducible native workloads
 

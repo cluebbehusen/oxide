@@ -12,6 +12,7 @@
 
 use anyhow::{Context, Result};
 use oxide_bot::{Observation, Orientation};
+use oxide_kit::GameReplay;
 use oxide_kit::controller::{SeatController, record_events, seat_controllers};
 use oxide_protocol::hash_hex;
 use oxide_sim::observation::ObservationData;
@@ -287,8 +288,14 @@ fn nanos(elapsed: Duration) -> u64 {
 }
 
 /// Runs `scenario` from its start for up to `ticks` ticks, stopping early at
-/// a match result, and times every bot seat's due decisions.
-pub fn measure(workload: &str, scenario: &Scenario, ticks: u64) -> Result<CostReport> {
+/// a match result, and times every bot seat's due decisions. When `replay` is
+/// given, the run's commands are recorded into it outside the timed spans.
+pub fn measure(
+    workload: &str,
+    scenario: &Scenario,
+    ticks: u64,
+    mut replay: Option<&mut GameReplay>,
+) -> Result<CostReport> {
     let mut state = scenario.build().context("building scenario")?;
     let mut seats = seat_controllers(scenario).context("building public bot map briefing")?;
     let mut samples = seats
@@ -315,10 +322,18 @@ pub fn measure(workload: &str, scenario: &Scenario, ticks: u64) -> Result<CostRe
             samples.probe(&state);
         }
         command_hash = chassis::hash::state_hash(&(command_hash, tick, &commands));
+        if let Some(replay) = replay.as_deref_mut() {
+            for command in &commands {
+                replay.record(tick, command.clone());
+            }
+        }
         let start = Instant::now();
         let report = state.tick(&commands);
         simulation.push(nanos(start.elapsed()));
         record_events(&mut seats, &report);
+    }
+    if let Some(replay) = replay {
+        replay.meta.ticks = Some(state.current_tick());
     }
     let controllers = BotController::ALL
         .into_iter()
