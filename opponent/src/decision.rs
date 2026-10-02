@@ -189,7 +189,8 @@ impl Ledger {
                 | Command::Run { units, .. }
                 | Command::Repair { units, .. }
                 | Command::RepairUnit { units, .. }
-                | Command::Salvage { units, .. } => units.contains(&unit),
+                | Command::Salvage { units, .. }
+                | Command::ReturnCargo { units, .. } => units.contains(&unit),
                 _ => false,
             })
     }

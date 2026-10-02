@@ -167,6 +167,85 @@ fn a_harvester_whose_route_turns_dangerous_is_called_home() {
     );
 }
 
+/// `state` with `unit` carrying `scrap`.
+fn loaded(state: &State, unit: UnitId, scrap: u32) -> State {
+    let mut value = serde_json::to_value(state).unwrap();
+    let units = value["units"].as_array_mut().unwrap();
+    let entry = units
+        .iter_mut()
+        .find(|entry| entry["id"] == unit.0)
+        .unwrap();
+    entry["carrying"] = scrap.into();
+    serde_json::from_value(value).unwrap()
+}
+
+fn returns(commands: &[PlayerCommand]) -> Vec<UnitId> {
+    commands
+        .iter()
+        .filter_map(|command| match &command.command {
+            Command::ReturnCargo { units, .. } => Some(units.clone()),
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
+
+/// West's commands for an idle Harvester at (5, 11) carrying `scrap` when
+/// its only node lies past a known Turret.
+fn nowhere_to_harvest(scrap: u32) -> (UnitId, Vec<PlayerCommand>) {
+    let mut scenario = walled(true);
+    scenario.units.push(harvester(0, 5, 11));
+    let mut state = scenario.build().unwrap();
+    let worker = at(&state, 5, 11);
+    let mut opponent = seat_with(&scenario, 0, fortified());
+    while !opponent.decision_due(&state) {
+        state.tick(&[]);
+    }
+    let state = loaded(&state, worker, scrap);
+    (worker, opponent.act(&state, &mut OwnEvents::default()))
+}
+
+#[test]
+fn an_idle_harvester_with_no_safe_node_delivers_its_cargo() {
+    let (worker, commands) = nowhere_to_harvest(7);
+    assert_eq!(returns(&commands), [worker], "{commands:?}");
+}
+
+#[test]
+fn an_empty_idle_harvester_with_no_safe_node_is_not_sent_to_deliver() {
+    let (worker, commands) = nowhere_to_harvest(0);
+    assert!(!returns(&commands).contains(&worker), "{commands:?}");
+}
+
+#[test]
+fn a_loaded_harvester_whose_route_turns_dangerous_delivers_instead_of_running() {
+    let mut scenario = walled(true);
+    scenario.units.push(harvester(0, 5, 11));
+    let mut state = scenario.build().unwrap();
+    let worker = at(&state, 5, 11);
+    state.tick(&[PlayerCommand {
+        player: PlayerId(0),
+        command: Command::Harvest {
+            units: vec![worker],
+            node: TilePos::new(30, 3),
+            queue: false,
+        },
+    }]);
+    let mut opponent = seat_with(&scenario, 0, fortified());
+    while !opponent.decision_due(&state) {
+        state.tick(&[]);
+    }
+    let state = loaded(&state, worker, 7);
+    let commands = opponent.act(&state, &mut OwnEvents::default());
+    assert_eq!(returns(&commands), [worker], "{commands:?}");
+    assert!(
+        !runs(&commands)
+            .iter()
+            .any(|(units, _)| units.contains(&worker)),
+        "{commands:?}"
+    );
+}
+
 #[test]
 fn contested_scrap_with_a_clear_route_is_worked() {
     // Nearer East's Foundry than West's, but nothing known guards it.
