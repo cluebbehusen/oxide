@@ -402,10 +402,11 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::NonCanonicalGoal(_) => 80,
         E::InvalidUnloading(_) => 81,
         E::InvalidWorkEndpoint(_) => 82,
+        E::InvalidDetourRetry(_) => 83,
     }
 }
 
-const ROWS: usize = 83;
+const ROWS: usize = 84;
 
 /// One rendered message per row, with the entity ids the forgeries
 /// provoke (everything targets seat p0 and entity 0). A fixture's
@@ -501,6 +502,7 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::NonCanonicalGoal(UnitId(0)),
         E::InvalidUnloading(UnitId(0)),
         E::InvalidWorkEndpoint(UnitId(0)),
+        E::InvalidDetourRetry(UnitId(0)),
     ]
 }
 
@@ -905,6 +907,11 @@ fn every_checklist_row_refuses_its_forgery() {
             "a stall counter at its replan bound",
             |d| d["units"][0]["stall_ticks"] = json!(oxide_sim::stats::STALL_REPLAN_TICKS),
             "unit u0 carries an invalid stall counter",
+        ),
+        (
+            "a detour retry no failed search could schedule",
+            |d| d["units"][0]["detour_retry_at"] = json!(u64::MAX),
+            "unit u0 carries a detour retry beyond its bound",
         ),
         (
             "a unit shoved to the far end of the coordinate space",
