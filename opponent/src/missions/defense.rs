@@ -2,12 +2,14 @@
 //! hit its threats and sends them at the threat nearest it, then lets them go
 //! once the threat has been gone a while. An ally's Foundry under ground
 //! attack gets the units the seat's own Foundries leave free. Shells from a
-//! known enemy building send ground fighters beside it, and shells from a gun
-//! out of sight send them toward where it probably stands.
+//! known enemy building send ground fighters beside it, shells from a gun out
+//! of sight advance them on where it probably stands, and a gun in sight is
+//! attacked.
 
 use super::attack::{defense, defense_around};
 use super::{
     DefendPhase, MISSION_CAP, Mission, Missions, Task, UNIT_CAP, hits, hunt, insert, mine, value,
+    walking_gun,
 };
 use crate::decision::Ledger;
 use crate::frame::{HomeFrame, centre_distance, doubled, footprint_centre, gap, ring};
@@ -16,7 +18,7 @@ use crate::memory::Memory;
 use chassis::grid::TilePos;
 use oxide_sim::observation::{BuildingObs, ObservationData, UnitObs};
 use oxide_sim::stats::{Domain, WeaponStats};
-use oxide_sim::{BuildingKind, UnitId, UnitKind};
+use oxide_sim::{AttackTarget, BuildingKind, Command, UnitId, UnitKind};
 
 /// Empty tiles between an enemy and an own building inside which the enemy
 /// threatens it, unless its weapon reaches further.
@@ -149,6 +151,25 @@ impl Missions {
             }) else {
                 continue;
             };
+            // Artillery is reached rather than hunted: a hunt engages whatever
+            // comes first, such as a spotter overhead, while the guns shell the
+            // defenders from beyond reach. A gun in sight on the Foundry's
+            // ground is attacked; one out of sight is advanced on.
+            let gun = siege
+                .units
+                .iter()
+                .filter(|threat| walking_gun(threat) && map.component(threat.tile) == component)
+                .min_by_key(|threat| (frame.rank(centre, doubled(threat.tile)), threat.id))
+                .map(|threat| Pursuit::Gun(threat.id));
+            let pursuit = gun.unwrap_or(if grounded.is_none() && siege.unseen.is_some() {
+                Pursuit::Advance
+            } else {
+                Pursuit::Hunt
+            });
+            let gun = match pursuit {
+                Pursuit::Gun(id) => Some(id),
+                _ => None,
+            };
             let pressing = [Domain::Ground, Domain::Air].map(|domain| {
                 siege
                     .units
@@ -219,7 +240,7 @@ impl Missions {
                     continue;
                 }
                 recruits.sort_unstable();
-                if ledger.order(hunt(recruits.clone(), goal)) {
+                if dispatch(observation, ledger, recruits.clone(), goal, pursuit) {
                     take(&mut free, &recruits);
                     self.release(&recruits);
                     self.list.push(Mission {
@@ -229,7 +250,7 @@ impl Missions {
                         goal,
                         task: Task::Defend {
                             asset: foundry.id,
-                            phase: DefendPhase::Engage { focus: None },
+                            phase: DefendPhase::Engage { focus: gun },
                         },
                     });
                     self.next += 1;
@@ -241,9 +262,19 @@ impl Missions {
                 unreachable!("a defend mission's task");
             };
             let recovering = *phase == DefendPhase::Recover;
+            let focus = match *phase {
+                DefendPhase::Engage { focus } => focus,
+                DefendPhase::Recover => None,
+            };
+            // The defenders' target fell or left sight with no gun to go after.
+            let lost = gun.is_none()
+                && focus
+                    .is_some_and(|id| !observation.enemy_units.iter().any(|enemy| enemy.id == id));
             // Chasing a threat off the Foundry's ground, such as a flyer over a
             // chasm, would stall every defender each time it moved.
             let resend = recovering
+                || lost
+                || (gun.is_some() && focus != gun)
                 || (mission.goal.chebyshev(goal) > RETARGET_TILES
                     && map.component(goal) == component);
             let mut sent = recruits.clone();
@@ -254,7 +285,7 @@ impl Missions {
                 continue;
             }
             sent.sort_unstable();
-            if ledger.order(hunt(sent, goal)) {
+            if dispatch(observation, ledger, sent, goal, pursuit) {
                 for id in &recruits {
                     insert(&mut mission.units, *id);
                 }
@@ -262,8 +293,10 @@ impl Missions {
                 if resend {
                     mission.goal = goal;
                 }
+                if recovering || lost || gun.is_some() {
+                    *phase = DefendPhase::Engage { focus: gun };
+                }
                 if recovering {
-                    *phase = DefendPhase::Engage { focus: None };
                     mission.since = now;
                 }
                 self.release_from_others(index, &recruits);
@@ -276,6 +309,55 @@ impl Missions {
 /// Removes `taken` from the sorted `free`.
 fn take(free: &mut Vec<UnitId>, taken: &[UnitId]) {
     free.retain(|id| !taken.contains(id));
+}
+
+/// How defenders go after a Foundry's threats.
+#[derive(Clone, Copy)]
+enum Pursuit {
+    /// March on the nearest threat, engaging everything on the way.
+    Hunt,
+    /// Move on a gun out of sight without stopping for anything on the way.
+    Advance,
+    /// Attack a gun in sight.
+    Gun(UnitId),
+}
+
+/// Sends defenders after a Foundry's threats: those that can hit ground as
+/// `pursuit` says and the rest on a hunt to `goal`. Returns whether the first
+/// order was given.
+fn dispatch(
+    observation: &ObservationData,
+    ledger: &mut Ledger,
+    units: Vec<UnitId>,
+    goal: TilePos,
+    pursuit: Pursuit,
+) -> bool {
+    let (shooters, rest): (Vec<UnitId>, Vec<UnitId>) = match pursuit {
+        Pursuit::Hunt => (Vec::new(), units),
+        Pursuit::Advance | Pursuit::Gun(_) => units
+            .into_iter()
+            .partition(|id| mine(observation, *id).is_some_and(|unit| hits(unit, Domain::Ground))),
+    };
+    if shooters.is_empty() {
+        return ledger.order(hunt(rest, goal));
+    }
+    let command = match pursuit {
+        Pursuit::Gun(gun) => Command::Attack {
+            units: shooters,
+            target: AttackTarget::Unit(gun),
+            queue: false,
+        },
+        Pursuit::Hunt | Pursuit::Advance => Command::Advance {
+            units: shooters,
+            goal,
+            queue: false,
+        },
+    };
+    let given = ledger.order(command);
+    if given && !rest.is_empty() {
+        ledger.order(hunt(rest, goal));
+    }
+    given
 }
 
 /// What threatens a Foundry: enemies in sight and shelling enemy buildings,

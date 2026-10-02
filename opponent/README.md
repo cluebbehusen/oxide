@@ -57,7 +57,11 @@ since chasing it would stall every defender. The mission recruits free units
 that can hit one of its threats, ground units only from that Foundry's ground,
 nearest the Foundry first, until against ground and air attackers alike they are
 worth half again what those attackers are. It sends them in one Hunt at the
-grounded threat nearest the Foundry; against flyers alone they wait beside the
+grounded threat nearest the Foundry, except that artillery is reached rather
+than hunted, since a Hunt stops for whatever comes first, such as a spotter
+overhead, while the guns shell the defenders from beyond their reach: with a gun
+in sight on the Foundry's ground, those that can hit ground attack the nearest
+one and are sent again when it falls. Against flyers alone they wait beside the
 building nearest the raid, where anti-air reaches them, since the ground under a
 flyer may be none they can stand on. It sends them again only when its goal
 moves more than three tiles on the Foundry's ground or the mission re-engages,
@@ -74,8 +78,9 @@ could have fired comes from a gun out of sight. Once the built Foundry nearest
 the impact has no threat in sight, it gets a defend mission that sends units
 that can hit ground, worth half again one of the cheapest guns, toward where the
 gun probably stands: from the impact toward the nearest hostile start, as far as
-artillery reaches, on the Foundry's ground. Once the gun is in sight the
-ordinary defense takes over.
+artillery reaches, on the Foundry's ground. They Advance there, so they do not
+stop for anything on the way. Once the gun is in sight the ordinary defense
+takes over.
 
 A defense that cannot recruit enough makes the decision an emergency: it skips
 the saving purchase, trains no Harvesters beyond the one a seat without any

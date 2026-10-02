@@ -217,6 +217,16 @@ fn hunts(commands: &[PlayerCommand]) -> Vec<(Vec<UnitId>, TilePos)> {
         .collect()
 }
 
+fn advances(commands: &[PlayerCommand]) -> Vec<(Vec<UnitId>, TilePos)> {
+    commands
+        .iter()
+        .filter_map(|command| match &command.command {
+            Command::Advance { units, goal, .. } => Some((units.clone(), *goal)),
+            _ => None,
+        })
+        .collect()
+}
+
 fn run(player: u8, units: Vec<UnitId>, x: i32, y: i32) -> PlayerCommand {
     PlayerCommand {
         player: PlayerId(player),
@@ -378,6 +388,15 @@ fn mirror(state: &State, commands: Vec<PlayerCommand>) -> Vec<PlayerCommand> {
                     goal,
                     queue,
                 } => Command::Run {
+                    units: units(sent),
+                    goal: rotate(goal),
+                    queue,
+                },
+                Command::Advance {
+                    units: sent,
+                    goal,
+                    queue,
+                } => Command::Advance {
                     units: units(sent),
                     goal: rotate(goal),
                     queue,

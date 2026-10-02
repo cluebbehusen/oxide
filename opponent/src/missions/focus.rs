@@ -1,9 +1,9 @@
 //! Focus fire at Veteran and Prime: an engaged mission's members that can
 //! all already reach one enemy shoot the weakest such enemy together. Nobody
 //! chases, so focusing never pulls a member out of position or sends it after
-//! an enemy it cannot walk to.
+//! an enemy it cannot walk to. A defense sent at artillery keeps after it.
 
-use super::{Missions, hunt, mine};
+use super::{Missions, Task, hunt, mine, walking_gun};
 use crate::decision::Ledger;
 use crate::frame::{HomeFrame, doubled};
 use crate::map::MapModel;
@@ -37,16 +37,18 @@ impl Missions {
                 .iter()
                 .filter_map(|id| mine(observation, *id))
                 .collect();
+            let defending = matches!(mission.task, Task::Defend { .. });
             let Some(focus) = mission.task.focus() else {
                 continue;
             };
             let legal = |enemy: &UnitObs| !shooters(map, &members, enemy).is_empty();
+            // A defense sent at artillery closes on it before it can shoot.
             let kept = focus.and_then(|id| {
                 observation
                     .enemy_units
                     .iter()
                     .find(|enemy| enemy.id == id)
-                    .filter(|enemy| legal(enemy))
+                    .filter(|enemy| legal(enemy) || (defending && walking_gun(enemy)))
             });
             if kept.is_some() {
                 continue;
