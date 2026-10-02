@@ -224,10 +224,7 @@ fn a_known_army_draws_more_guns_than_a_lone_enemy() {
 #[test]
 fn a_quiet_approach_draws_more_guns_the_larger_the_stance_minimum() {
     let guns = |minimum: u64| {
-        let stakes = defenses::Stakes {
-            minimum,
-            ..defenses::Stakes::default()
-        };
+        let stakes = defenses::Stakes { minimum };
         let mut scenario = settled(0);
         for count in 0..16 {
             let state = scenario.build().unwrap();
@@ -764,7 +761,6 @@ fn minefield_scored(stakes: defenses::Stakes, memory: &Memory) -> Vec<(TilePos, 
 fn a_minefield_grows_with_the_threat_along_the_way_in() {
     let stance = |stance| defenses::Stakes {
         minimum: crate::missions::minimum(stance),
-        ..defenses::Stakes::default()
     };
     let turtle = minefield(stance(BotStance::Turtle), &Memory::default());
     let aggressive = minefield(stance(BotStance::Aggressive), &Memory::default());

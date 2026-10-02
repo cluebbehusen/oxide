@@ -95,32 +95,33 @@ pub(crate) const SETTLE_TICKS: u64 = 600;
 /// companions count toward the threat along it.
 const GROUP_TILES: i64 = 10;
 
+/// Per mille of a defense's worth an attack is assumed to bring when it means
+/// to beat it, so guns worth a threat divided by it hold that threat off. It
+/// models the attackers, not the seat, so it is the same at every difficulty:
+/// the seat's own attack margin says how it attacks, not how others do.
+const ATTACKER_MARGIN: u64 = 2_000;
+
 /// What a seat's defenses must stand up to: at least an army at the stance's
-/// minimum along any approach, and the per-mille margin an attack brings over
-/// a defense it means to beat, so guns worth a threat divided by it hold that
-/// threat off.
+/// minimum along any approach.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Stakes {
     pub(crate) minimum: u64,
-    pub(crate) margin: u64,
 }
 
 impl Stakes {
     pub(crate) fn of(profile: &ResolvedProfile) -> Self {
         Stakes {
             minimum: crate::missions::minimum(profile.stance),
-            margin: crate::missions::margin(profile.difficulty),
         }
     }
 }
 
 #[cfg(test)]
 impl Default for Stakes {
-    /// A Standard, Balanced seat's.
+    /// A Balanced seat's.
     fn default() -> Self {
         Stakes {
             minimum: crate::missions::minimum(oxide_sim::scenario::BotStance::Balanced),
-            margin: crate::missions::margin(oxide_sim::scenario::BotDifficulty::Standard),
         }
     }
 }
@@ -368,7 +369,7 @@ impl<'a> Guard<'a> {
                     threats.push(((approach.source, domain, beside.cloned()), value));
                     value
                 });
-                let need = value * 1_000 / stakes.margin.max(1);
+                let need = value * 1_000 / ATTACKER_MARGIN;
                 approach.need = need;
                 approach.open = approach
                     .samples
@@ -544,7 +545,7 @@ impl<'a> Guard<'a> {
     /// The best spot for a Scuttle Charge: on the straight way in to a
     /// Foundry whose field still falls short of its threat, nearest the
     /// Foundry, clear of other own charges. A field holds enough charges to
-    /// deal the health of the threat along the way divided by the margin, one
+    /// deal the health of the threat along the way divided by the attacker margin, one
     /// body to a blast, in the share the guns covering the way leave open;
     /// every spot is worth the same until it does.
     fn charge(&self) -> Option<(TilePos, u64)> {
@@ -570,7 +571,7 @@ impl<'a> Guard<'a> {
             let health = health(self.memory, observation.tick, approach.source, self.stakes);
             // Only the share of the approach the guns leave open.
             let open = approach.open.iter().sum::<u64>() / approach.open.len().max(1) as u64;
-            let need = (health * 1_000 / self.stakes.margin.max(1) * open / 2_000)
+            let need = (health * 1_000 / ATTACKER_MARGIN * open / 2_000)
                 .div_ceil(u64::from(CHARGE_DAMAGE));
             let field = Field::of(asset.centre, approach.source);
             let laid = charges
