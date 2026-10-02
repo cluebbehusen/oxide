@@ -86,10 +86,7 @@ impl Window {
     /// Repeats the window while `sample` records this process for `seconds`,
     /// returning the sampler's report.
     pub fn sample(&self, seconds: u64) -> Result<String> {
-        ensure!(
-            cfg!(target_os = "macos"),
-            "tick-profile records with macOS's `sample`, which this platform lacks"
-        );
+        ensure_sampler()?;
         let path =
             std::env::temp_dir().join(format!("oxide-tick-profile-{}.txt", std::process::id()));
         let mut sampler = std::process::Command::new("/usr/bin/sample")
@@ -138,6 +135,33 @@ pub struct Report {
     pub profile: Profile,
 }
 
+/// Repetitions the sampler must see so a repetition cut off at the end of
+/// sampling skews the shares toward the window's early ticks only slightly.
+const MIN_REPETITIONS: u32 = 10;
+
+/// Refuses platforms without macOS's `sample`.
+fn ensure_sampler() -> Result<()> {
+    ensure!(
+        cfg!(target_os = "macos"),
+        "tick-profile records with macOS's `sample`, which this platform lacks"
+    );
+    Ok(())
+}
+
+/// Refuses a window whose repetition takes `once` when `seconds` of sampling
+/// would not repeat it [`MIN_REPETITIONS`] times.
+fn ensure_repetitions(once: Duration, seconds: u64) -> Result<()> {
+    let needed = once * MIN_REPETITIONS;
+    ensure!(
+        needed <= Duration::from_secs(seconds),
+        "one repetition of the window takes {:.2} s, so {seconds} s of sampling covers it \
+         fewer than {MIN_REPETITIONS} times; raise --seconds to at least {} or shorten --ticks",
+        once.as_secs_f64(),
+        needed.as_secs_f64().ceil()
+    );
+    Ok(())
+}
+
 /// Profiles ticks `from..from + ticks` of the replay at `path`, sampling for
 /// `seconds`.
 pub fn profile(
@@ -147,8 +171,12 @@ pub fn profile(
     seconds: u64,
     focus: Option<&str>,
 ) -> Result<Report> {
+    ensure_sampler()?;
     let replay = oxide_kit::load_replay(path).with_context(|| format!("loading {path}"))?;
     let window = Window::from_replay(replay, from, ticks)?;
+    let began = Instant::now();
+    std::hint::black_box(window.run());
+    ensure_repetitions(began.elapsed(), seconds)?;
     let timing = window.time(Duration::from_secs(1));
     let profile = analyze(&window.sample(seconds)?, focus)?;
     Ok(Report {
@@ -387,8 +415,16 @@ pub fn analyze(report: &str, focus: Option<&str>) -> Result<Profile> {
     }
     let focus = focus.map(|pattern| {
         let matches = |name: &str| name.contains(pattern);
+        // Frames above the tick, such as the harness's own `run`, never
+        // shadow a match inside it.
         let selected: Vec<usize> = (0..frames.len())
-            .filter(|&index| in_tick(index) && outermost(index, &matches))
+            .filter(|&index| {
+                in_tick(index)
+                    && matches(&frames[index].name)
+                    && !ancestors(index)
+                        .take_while(|&up| in_tick(up))
+                        .any(|up| matches(&frames[up].name))
+            })
             .collect();
         Focus {
             pattern: pattern.to_owned(),
@@ -493,6 +529,46 @@ Total number in stack (recursive counted multiple, when >=5):
                 .iter()
                 .all(|share| !share.function.contains("clone"))
         );
+    }
+
+    #[test]
+    fn frames_above_the_tick_never_shadow_a_focus_match() {
+        let wrapped = REPORT.replace(
+            "      + 80 _RNvMs_NtCss5gFej5ujG_9oxide_sim4tickNtNtB6_5state5State4tick",
+            "      + 80 _RNvMs_NtCs1_12oxide_driver12tick_profileNtB4_6Window3run  (in oxide-driver) + 1  [0x9]\n      +   80 _RNvMs_NtCss5gFej5ujG_9oxide_sim4tickNtNtB6_5state5State4tick",
+        );
+        let wrapped = wrapped
+            .lines()
+            .map(|line| {
+                let deep = [
+                    "resolve_collisions",
+                    "quicksort",
+                    "_platform_memmove",
+                    "brain3run",
+                ]
+                .iter()
+                .any(|frame| line.contains(frame));
+                if deep {
+                    line.replacen("      +   ", "      +     ", 1)
+                } else {
+                    line.to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let profile = analyze(&wrapped, Some("run")).unwrap();
+        assert_eq!(profile.tick_samples, 80);
+        let focus = profile.focus.unwrap();
+        assert_eq!(
+            focus.samples, 20,
+            "brain::run is the outermost match inside the tick"
+        );
+    }
+
+    #[test]
+    fn a_window_must_repeat_enough_to_be_sampled_whole() {
+        assert!(ensure_repetitions(Duration::from_millis(500), 5).is_ok());
+        assert!(ensure_repetitions(Duration::from_millis(501), 5).is_err());
     }
 
     #[test]
