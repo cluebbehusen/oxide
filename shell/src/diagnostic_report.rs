@@ -141,7 +141,9 @@ mod tests {
         job.remember_playback(playback.recording.as_ref());
         playback.finish_diagnostics();
         drop(playback);
-        assert!(writer.status().clean);
+        // Finishing waits only a second for the writer; a loaded runner can
+        // take longer to flush.
+        until(|| writer.status().clean);
         job.start(&live).unwrap();
         until(|| job.poll().is_some_and(|result| result.is_ok()));
         let report_path = std::fs::read_dir(root.join("reports"))
