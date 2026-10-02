@@ -118,10 +118,10 @@
   },
   "defender": 0,
   "attacker": 1,
-  "deadline": 3600,
+  "deadline": 5100,
   "script": [
     {
-      "tick": 30,
+      "tick": 1530,
       "command": {
         "type": "load",
         "units": [7, 8, 9, 10],
@@ -130,7 +130,7 @@
       }
     },
     {
-      "tick": 400,
+      "tick": 1900,
       "command": {
         "type": "unload",
         "transport": 6,
