@@ -825,7 +825,7 @@ fn evaluate_plan_artifact_impl(
         }
     }
     let calibrations = attacks.finish(&ledger);
-    let ledgers = ledger.finish(state.current_tick());
+    let ledgers = ledger.finish(&state);
     for (seat, (((((evidence, report), income), reactivity), seat_ledger), calibration)) in evidence
         .iter_mut()
         .zip(failures.finish())

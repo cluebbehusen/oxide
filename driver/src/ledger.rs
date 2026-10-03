@@ -19,8 +19,9 @@
 use chassis::grid::TilePos;
 use oxide_sim::stats::{
     BuildingKind, CHARGE_ARRAY_DETECT_RADIUS, CHARGE_BASE_ARRAY_DETECT_RADIUS, CHARGE_BLAST_RADIUS,
-    EXTRACTOR_REMOTE_YIELD, EXTRACTOR_SUPPORTED_YIELD, FOUNDRY_DRIP_PERIOD,
-    FOUNDRY_DRIP_START_TICK, RECLAIMER_PERIOD, REFINERY_PERIOD, SAPPER_BLAST_RADIUS, UnitKind,
+    CRUCIBLE_SMELT_PERIOD, CRUCIBLE_SMELT_RADIUS, EXTRACTOR_REMOTE_YIELD,
+    EXTRACTOR_SUPPORTED_YIELD, FOUNDRY_DRIP_PERIOD, FOUNDRY_DRIP_START_TICK, RECLAIMER_PERIOD,
+    REFINERY_PERIOD, SAPPER_BLAST_RADIUS, UnitKind,
 };
 use oxide_sim::{
     BuildingId, Event, ExtractorIncome, State, Target, TickReport, UnitId, UnitRepairSource,
@@ -79,13 +80,28 @@ struct Body {
     tile: TilePos,
     vision: i32,
     class: Class,
+    unit: Option<UnitKind>,
     building: Option<(BuildingKind, u8, bool)>,
+    /// The transport a rider travels in; riders count toward worth and die
+    /// with their carrier.
+    carrier: Option<Key>,
 }
 
-/// Where a loss was dealt from, for spotting credit.
+impl Body {
+    fn tier(&self) -> Option<u8> {
+        self.building.map(|(_, tier, _)| tier)
+    }
+}
+
+/// Who dealt a loss, as they were when they fired: a shell can land after
+/// its gun is gone.
 #[derive(Debug, Clone, Copy)]
 struct Source {
     key: Key,
+    owner: u8,
+    team: u8,
+    vision: i32,
+    /// Where it fired from, for spotting credit.
     from: Option<TilePos>,
 }
 
@@ -210,13 +226,26 @@ pub struct SeatLedger {
     pub unattributed: u64,
     /// Scrap spent by `<category>:<kind>`, in the phases starting at minutes
     /// 0, 5, 10 and 20. Categories: `army` and `worker` units, `economy`,
-    /// `defense` and `tech` buildings, and `upgrade` to the named tier.
+    /// `defense` and `tech` buildings, and `upgrade` to the named tier. Units
+    /// count when trained, not when queued and paid, so one still queued
+    /// when the match ends is not counted.
     pub spend: BTreeMap<String, [u64; 4]>,
     /// Scrap refunded by cancelled and salvaged buildings.
     pub refunds: u64,
-    /// Net worth every [`WORTH_PERIOD`] ticks from the first: units and
-    /// buildings at their worth times their health fraction, plus the bank.
+    /// Net worth every [`WORTH_PERIOD`] ticks after `start`: units, riders
+    /// included, and buildings at their worth times their health fraction,
+    /// plus the bank.
     pub worth: Vec<u64>,
+    /// Tick the ledger began: zero for a match, later for a recording that
+    /// starts from a saved world.
+    #[serde(default)]
+    pub start: u64,
+    /// Tick the ledger ended; zero in rows recorded before it was kept.
+    #[serde(default)]
+    pub end: u64,
+    /// Net worth at `end`.
+    #[serde(default)]
+    pub final_worth: u64,
 }
 
 /// A shell in flight, waiting to land.
@@ -237,10 +266,16 @@ struct Sources {
     repaired: BTreeMap<Key, u32>,
     /// Charges that fired this tick, spending themselves.
     detonated: Vec<Key>,
+    /// Units trained this tick, with their kind and owner.
+    born: Vec<(Key, UnitKind, u8)>,
+    /// Where each unit that died this tick died.
+    died: BTreeMap<Key, TilePos>,
 }
 
 /// The ledger.
 pub struct ImpactLedger {
+    start: u64,
+    teams: Vec<u8>,
     bodies: Vec<Body>,
     records: BTreeMap<Key, Record>,
     unattributed: Vec<u64>,
@@ -248,6 +283,8 @@ pub struct ImpactLedger {
     refunds: Vec<u64>,
     worth: Vec<Vec<u64>>,
     shells: Vec<Shell>,
+    /// Crucibles that have a wreck in reach as a smelting tick begins.
+    smelting: Vec<Key>,
 }
 
 fn building_value(kind: BuildingKind, tier: u8) -> u64 {
@@ -266,13 +303,6 @@ fn snapshot(state: &State) -> Vec<Body> {
         .iter()
         .map(|unit| {
             let stats = unit.kind.stats();
-            let class = if stats.harvest.is_some() {
-                Class::Worker
-            } else if stats.can_fight() {
-                Class::Army
-            } else {
-                Class::Other
-            };
             Body {
                 key: Key::Unit(unit.id),
                 owner: unit.player.0,
@@ -282,11 +312,40 @@ fn snapshot(state: &State) -> Vec<Body> {
                 value: u64::from(stats.cost),
                 tile: unit.tile(),
                 vision: stats.vision,
-                class,
+                class: class(unit.kind),
+                unit: Some(unit.kind),
                 building: None,
+                carrier: None,
             }
         })
         .collect();
+    let riders: Vec<Body> = state
+        .units()
+        .iter()
+        .flat_map(|carrier| {
+            carrier.cargo.iter().map(|rider| {
+                let stats = rider.kind.stats();
+                Body {
+                    key: Key::Unit(rider.id),
+                    owner: rider.player.0,
+                    team: team(rider.player),
+                    hp: rider.hp,
+                    max_hp: stats.max_hp,
+                    value: u64::from(stats.cost),
+                    tile: carrier.tile(),
+                    vision: 0,
+                    class: class(rider.kind),
+                    unit: Some(rider.kind),
+                    building: None,
+                    carrier: Some(Key::Unit(carrier.id)),
+                }
+            })
+        })
+        .collect();
+    if !riders.is_empty() {
+        bodies.extend(riders);
+        bodies.sort_unstable_by_key(|body| body.key);
+    }
     bodies.extend(state.buildings().iter().map(|building| {
         let stats = building.kind.tier_stats(building.tier);
         Body {
@@ -299,10 +358,60 @@ fn snapshot(state: &State) -> Vec<Body> {
             tile: TilePos::containing(building.center()),
             vision: stats.vision,
             class: Class::Building,
+            unit: None,
             building: Some((building.kind, building.tier, building.built)),
+            carrier: None,
         }
     }));
     bodies
+}
+
+fn class(kind: UnitKind) -> Class {
+    let stats = kind.stats();
+    if stats.harvest.is_some() {
+        Class::Worker
+    } else if stats.can_fight() {
+        Class::Army
+    } else {
+        Class::Other
+    }
+}
+
+/// A seat's net worth: its share of `bodies` plus its bank in `state`.
+fn worth(state: &State, bodies: &[Body], seat: usize) -> u64 {
+    let owned: u64 = bodies
+        .iter()
+        .filter(|body| usize::from(body.owner) == seat)
+        .map(|body| body.value * u64::from(body.hp) / u64::from(body.max_hp.max(1)))
+        .sum();
+    owned + u64::from(state.players()[seat].scrap)
+}
+
+/// Crucibles in `state` that will find a wreck to smelt, by the
+/// simulation's reach rule.
+fn smelters(state: &State) -> Vec<Key> {
+    let reach = CRUCIBLE_SMELT_RADIUS.to_num::<i32>() + 1;
+    let radius = CRUCIBLE_SMELT_RADIUS * CRUCIBLE_SMELT_RADIUS;
+    state
+        .buildings()
+        .iter()
+        .filter(|building| {
+            building.built && building.hp > 0 && building.kind == BuildingKind::Crucible
+        })
+        .filter(|building| {
+            let (w, h) = building.kind.base_stats().size;
+            let anchor = building.anchor;
+            ((anchor.y - reach)..(anchor.y + h + reach)).any(|y| {
+                ((anchor.x - reach)..(anchor.x + w + reach)).any(|x| {
+                    let tile = TilePos::new(x, y);
+                    let center = tile.center();
+                    state.map().wreck_at(tile) > 0
+                        && building.closest_point_to(center).dist_sq(center) <= radius
+                })
+            })
+        })
+        .map(|building| Key::Building(building.id))
+        .collect()
 }
 
 fn within(a: TilePos, b: TilePos, radius: i32) -> bool {
@@ -323,13 +432,18 @@ impl ImpactLedger {
     /// A ledger starting from `state`, whose bodies count as the seats'
     /// starting stock.
     pub fn new(state: &State) -> Self {
+        let start = state.current_tick();
         let bodies = snapshot(state);
         let mut records = BTreeMap::new();
         for body in &bodies {
-            records.insert(body.key, record(state, body, true));
+            let mut record = record(body, true);
+            record.born = start;
+            records.insert(body.key, record);
         }
         let seats = state.players().len();
         Self {
+            start,
+            teams: state.players().iter().map(|player| player.team).collect(),
             bodies,
             records,
             unattributed: vec![0; seats],
@@ -337,6 +451,11 @@ impl ImpactLedger {
             refunds: vec![0; seats],
             worth: vec![Vec::new(); seats],
             shells: Vec::new(),
+            smelting: if start.is_multiple_of(CRUCIBLE_SMELT_PERIOD) {
+                smelters(state)
+            } else {
+                Vec::new()
+            },
         }
     }
 
@@ -353,20 +472,32 @@ impl ImpactLedger {
         let now = report.tick;
         let after = snapshot(state);
         let sources = self.events(report);
-        self.spending(state, &after, now);
+        self.spending(&after, now);
         self.damage(&after, &sources, now);
         self.passive(state, now);
-        if (now + 1).is_multiple_of(WORTH_PERIOD) {
-            for (seat, worth) in self.worth.iter_mut().enumerate() {
-                let owned: u64 = after
-                    .iter()
-                    .filter(|body| usize::from(body.owner) == seat)
-                    .map(|body| body.value * u64::from(body.hp) / u64::from(body.max_hp.max(1)))
-                    .sum();
-                worth.push(owned + u64::from(state.players()[seat].scrap));
+        if (now + 1 - self.start).is_multiple_of(WORTH_PERIOD) {
+            for (seat, samples) in self.worth.iter_mut().enumerate() {
+                samples.push(worth(state, &after, seat));
             }
         }
+        self.smelting = if (now + 1).is_multiple_of(CRUCIBLE_SMELT_PERIOD) {
+            smelters(state)
+        } else {
+            Vec::new()
+        };
         self.bodies = after;
+    }
+
+    /// `key` as a damage source, as it is now.
+    fn source(&self, key: Key, from: Option<TilePos>) -> Option<Source> {
+        let body = self.body(key)?;
+        Some(Source {
+            key,
+            owner: body.owner,
+            team: body.team,
+            vision: body.vision,
+            from,
+        })
     }
 
     fn body(&self, key: Key) -> Option<&Body> {
@@ -390,6 +521,7 @@ impl ImpactLedger {
                     player,
                 } => {
                     let cost = u64::from(kind.stats().cost);
+                    sources.born.push((Key::Unit(*unit), *kind, player.0));
                     self.records.insert(
                         Key::Unit(*unit),
                         Record {
@@ -410,7 +542,12 @@ impl ImpactLedger {
                     };
                     self.spent(player.0, format!("{category}:{}", kind.name()), now, cost);
                 }
-                Event::UnitDied { unit, .. } => self.gone(Key::Unit(*unit), now),
+                Event::UnitDied { unit, pos, .. } => {
+                    sources
+                        .died
+                        .insert(Key::Unit(*unit), TilePos::containing(*pos));
+                    self.gone(Key::Unit(*unit), now);
+                }
                 Event::BuildingDestroyed { building, .. } => {
                     self.gone(Key::Building(*building), now);
                 }
@@ -462,9 +599,11 @@ impl ImpactLedger {
                     target_pos,
                     ..
                 } => {
-                    let source = Source {
-                        key: Key::Unit(*attacker),
-                        from: Some(TilePos::containing(*attacker_pos)),
+                    let Some(source) = self.source(
+                        Key::Unit(*attacker),
+                        Some(TilePos::containing(*attacker_pos)),
+                    ) else {
+                        continue;
                     };
                     let at = TilePos::containing(*target_pos);
                     if *attacker_kind == UnitKind::Sapper {
@@ -480,15 +619,19 @@ impl ImpactLedger {
                     turret_pos,
                     target_pos,
                     ..
-                } => aim(
-                    &mut sources,
-                    *target,
-                    TilePos::containing(*target_pos),
-                    Source {
-                        key: Key::Building(*turret),
-                        from: Some(TilePos::containing(*turret_pos)),
-                    },
-                ),
+                } => {
+                    if let Some(source) = self.source(
+                        Key::Building(*turret),
+                        Some(TilePos::containing(*turret_pos)),
+                    ) {
+                        aim(
+                            &mut sources,
+                            *target,
+                            TilePos::containing(*target_pos),
+                            source,
+                        );
+                    }
+                }
                 Event::ShellLaunched {
                     shooter,
                     player,
@@ -496,27 +639,32 @@ impl ImpactLedger {
                     to,
                     flight,
                     ..
-                } => self.shells.push(Shell {
-                    lands: now + flight,
-                    owner: player.0,
-                    to: TilePos::containing(*to),
-                    source: Source {
-                        key: match shooter {
-                            Target::Unit(id) => Key::Unit(*id),
-                            Target::Building(id) => Key::Building(*id),
-                        },
-                        from: Some(TilePos::containing(*from)),
-                    },
-                }),
+                } => {
+                    let key = match shooter {
+                        Target::Unit(id) => Key::Unit(*id),
+                        Target::Building(id) => Key::Building(*id),
+                    };
+                    if let Some(source) = self.source(key, Some(TilePos::containing(*from))) {
+                        self.shells.push(Shell {
+                            lands: now + flight,
+                            owner: player.0,
+                            to: TilePos::containing(*to),
+                            source,
+                        });
+                    }
+                }
                 Event::ShellLanded {
                     player, at, splash, ..
                 } => {
                     let at = TilePos::containing(*at);
-                    if let Some(index) = self.shells.iter().position(|shell| {
-                        shell.owner == player.0
-                            && shell.to == at
-                            && shell.lands.abs_diff(now) <= SHELL_SLACK
-                    }) {
+                    let landed = |slack: u64| {
+                        self.shells.iter().position(|shell| {
+                            shell.owner == player.0
+                                && shell.to == at
+                                && shell.lands.abs_diff(now) <= slack
+                        })
+                    };
+                    if let Some(index) = landed(0).or_else(|| landed(SHELL_SLACK)) {
                         let shell = self.shells.remove(index);
                         let radius = splash.map_or(1, tiles);
                         sources.splash.push((at, radius, shell.source));
@@ -524,14 +672,13 @@ impl ImpactLedger {
                 }
                 Event::ChargeDetonated { building, at, .. } => {
                     sources.detonated.push(Key::Building(*building));
-                    sources.splash.push((
-                        TilePos::containing(*at),
-                        tiles(CHARGE_BLAST_RADIUS),
-                        Source {
-                            key: Key::Building(*building),
-                            from: None,
-                        },
-                    ));
+                    if let Some(source) = self.source(Key::Building(*building), None) {
+                        sources.splash.push((
+                            TilePos::containing(*at),
+                            tiles(CHARGE_BLAST_RADIUS),
+                            source,
+                        ));
+                    }
                 }
                 _ => {}
             }
@@ -563,12 +710,12 @@ impl ImpactLedger {
 
     /// Buildings placed and upgraded this tick, and bodies that appeared
     /// without being trained.
-    fn spending(&mut self, state: &State, after: &[Body], now: u64) {
+    fn spending(&mut self, after: &[Body], now: u64) {
         for body in after {
             let before = self.body(body.key).copied();
             match (before, body.building) {
                 (None, _) if !self.records.contains_key(&body.key) => {
-                    self.records.insert(body.key, record(state, body, false));
+                    self.records.insert(body.key, record(body, false));
                     if let Some((kind, tier, _)) = body.building {
                         let record = self.records.get_mut(&body.key).expect("just inserted");
                         record.born = now;
@@ -606,7 +753,7 @@ impl ImpactLedger {
     }
 
     /// Splits each body's health lost this tick among the sources that hit
-    /// it.
+    /// it, including units trained and killed within the tick.
     fn damage(&mut self, after: &[Body], sources: &Sources, now: u64) {
         let mut cursor = 0;
         let before = std::mem::take(&mut self.bodies);
@@ -614,13 +761,14 @@ impl ImpactLedger {
             while cursor < after.len() && after[cursor].key < pre.key {
                 cursor += 1;
             }
-            // Health a building loses to an upgrade that rebuilds it, or a
-            // charge to its own blast, is no one's damage.
+            // A charge spending itself in its own blast is no one's damage.
             if sources.detonated.contains(&pre.key) {
                 continue;
             }
             let post = match after.get(cursor) {
-                Some(post) if post.key == pre.key && post.building != pre.building => continue,
+                // An upgrade rebuilds the building; what it loses to that is
+                // no one's damage.
+                Some(post) if post.key == pre.key && post.tier() != pre.tier() => continue,
                 Some(post) if post.key == pre.key => post.hp,
                 _ if self
                     .records
@@ -633,134 +781,166 @@ impl ImpactLedger {
             };
             let gained = sources.repaired.get(&pre.key).copied().unwrap_or(0);
             let lost = (pre.hp + gained).saturating_sub(post);
-            if lost == 0 {
+            self.attribute(&before, pre, lost, post == 0, sources);
+        }
+        for &(key, kind, owner) in &sources.born {
+            let Some(&tile) = sources.died.get(&key) else {
+                continue;
+            };
+            if find(&before, key).is_some() {
                 continue;
             }
-            let value = u64::from(lost) * pre.value * MILLI / u64::from(pre.max_hp.max(1));
-            if let Some(record) = self.records.get_mut(&pre.key) {
-                record.taken += value;
-            }
-            let mut from: Vec<Source> = sources.aimed.get(&pre.key).cloned().unwrap_or_default();
-            from.extend(
-                sources
-                    .splash
-                    .iter()
-                    .filter(|(at, radius, _)| within(*at, pre.tile, *radius))
-                    .map(|(_, _, source)| *source),
-            );
-            from.extend(
-                sources
-                    .blind
-                    .iter()
-                    .filter(|(at, _)| at.chebyshev(pre.tile) <= 1)
-                    .map(|(_, source)| *source),
-            );
-            let hostile: Vec<(Source, Body)> = from
-                .into_iter()
-                .filter_map(|source| {
-                    let shooter = find(&before, source.key)?;
-                    (shooter.team != pre.team).then_some((source, *shooter))
-                })
-                .collect();
-            if hostile.is_empty() {
-                // An unfinished site that loses health with no one firing
-                // is decaying, not under attack.
-                if !matches!(pre.building, Some((_, _, false))) {
-                    self.unattributed[usize::from(pre.owner)] += value;
-                }
-                continue;
-            }
-            let share = value / hostile.len() as u64;
-            for (source, shooter) in &hostile {
-                let place = place(&before, shooter.owner, pre.owner, pre.tile);
-                if let Some(record) = self.records.get_mut(&source.key) {
-                    let dealt = &mut record.dealt;
-                    *match pre.class {
-                        Class::Army => &mut dealt.army,
-                        Class::Worker => &mut dealt.workers,
-                        Class::Other => &mut dealt.other,
-                        Class::Building => &mut dealt.buildings,
-                    } += share;
-                    *match place {
-                        Place::Home => &mut dealt.home,
-                        Place::Away => &mut dealt.away,
-                        Place::Field => &mut dealt.field,
-                    } += share;
-                }
-                if let Some(from) = source.from
-                    && !within(from, pre.tile, shooter.vision)
-                    && let Some(spotter) = before
-                        .iter()
-                        .filter(|body| {
-                            body.team == shooter.team
-                                && body.key != source.key
-                                && within(body.tile, pre.tile, body.vision)
-                        })
-                        .min_by_key(|body| {
-                            let (dx, dy) = (body.tile.x - pre.tile.x, body.tile.y - pre.tile.y);
-                            (dx * dx + dy * dy, body.key)
-                        })
-                    && let Some(record) = self.records.get_mut(&spotter.key)
-                {
-                    record.enabled += share;
-                }
-            }
-            let charge = matches!(pre.building, Some((BuildingKind::ScuttleCharge, _, _)));
-            if charge && post == 0 {
-                let team = hostile[0].1.team;
-                let array = before
-                    .iter()
-                    .filter(|body| body.team == team)
-                    .filter(|body| match body.building {
-                        Some((BuildingKind::Array, tier, true)) => within(
-                            body.tile,
-                            pre.tile,
-                            if tier >= 1 {
-                                CHARGE_ARRAY_DETECT_RADIUS
-                            } else {
-                                CHARGE_BASE_ARRAY_DETECT_RADIUS
-                            },
-                        ),
-                        _ => false,
-                    })
-                    .min_by_key(|body| body.key);
-                if let Some(array) = array
-                    && let Some(record) = self.records.get_mut(&array.key)
-                {
-                    record.enabled += pre.value * MILLI;
-                }
-            }
+            let stats = kind.stats();
+            let body = Body {
+                key,
+                owner,
+                team: self.teams[usize::from(owner)],
+                hp: stats.max_hp,
+                max_hp: stats.max_hp,
+                value: u64::from(stats.cost),
+                tile,
+                vision: stats.vision,
+                class: class(kind),
+                unit: Some(kind),
+                building: None,
+                carrier: None,
+            };
+            self.attribute(&before, &body, stats.max_hp, true, sources);
         }
         self.bodies = before;
     }
 
+    /// Credits `lost` health of `pre`, which ended the tick destroyed when
+    /// `destroyed`, to the sources that hit it this tick.
+    fn attribute(
+        &mut self,
+        before: &[Body],
+        pre: &Body,
+        lost: u32,
+        destroyed: bool,
+        sources: &Sources,
+    ) {
+        if lost == 0 {
+            return;
+        }
+        let value = u64::from(lost) * pre.value * MILLI / u64::from(pre.max_hp.max(1));
+        let mut from: Vec<Source> = sources.aimed.get(&pre.key).cloned().unwrap_or_default();
+        // A rider dies to whatever brought its carrier down.
+        if let Some(carrier) = pre.carrier {
+            from.extend(sources.aimed.get(&carrier).into_iter().flatten().copied());
+        }
+        from.extend(
+            sources
+                .splash
+                .iter()
+                .filter(|(at, radius, _)| within(*at, pre.tile, *radius))
+                .map(|(_, _, source)| *source),
+        );
+        from.extend(
+            sources
+                .blind
+                .iter()
+                .filter(|(at, _)| at.chebyshev(pre.tile) <= 1)
+                .map(|(_, source)| *source),
+        );
+        from.retain(|source| source.team != pre.team);
+        if from.is_empty() {
+            // An unfinished site that loses health with no one firing is
+            // decaying, not under attack.
+            if !matches!(pre.building, Some((_, _, false))) {
+                self.unattributed[usize::from(pre.owner)] += value;
+                if let Some(record) = self.records.get_mut(&pre.key) {
+                    record.taken += value;
+                }
+            }
+            return;
+        }
+        if let Some(record) = self.records.get_mut(&pre.key) {
+            record.taken += value;
+        }
+        let share = value / from.len() as u64;
+        for source in &from {
+            let place = place(before, source.owner, pre.owner, pre.tile);
+            if let Some(record) = self.records.get_mut(&source.key) {
+                let dealt = &mut record.dealt;
+                *match pre.class {
+                    Class::Army => &mut dealt.army,
+                    Class::Worker => &mut dealt.workers,
+                    Class::Other => &mut dealt.other,
+                    Class::Building => &mut dealt.buildings,
+                } += share;
+                *match place {
+                    Place::Home => &mut dealt.home,
+                    Place::Away => &mut dealt.away,
+                    Place::Field => &mut dealt.field,
+                } += share;
+            }
+            if let Some(origin) = source.from
+                && !within(origin, pre.tile, source.vision)
+                && let Some(spotter) = before
+                    .iter()
+                    .filter(|body| {
+                        body.team == source.team
+                            && body.key != source.key
+                            && within(body.tile, pre.tile, body.vision)
+                    })
+                    .min_by_key(|body| {
+                        let (dx, dy) = (body.tile.x - pre.tile.x, body.tile.y - pre.tile.y);
+                        (dx * dx + dy * dy, body.key)
+                    })
+                && let Some(record) = self.records.get_mut(&spotter.key)
+            {
+                record.enabled += share;
+            }
+        }
+        let charge = matches!(pre.building, Some((BuildingKind::ScuttleCharge, _, _)));
+        if charge && destroyed {
+            let team = from[0].team;
+            let array = before
+                .iter()
+                .filter(|body| body.team == team)
+                .filter(|body| match body.building {
+                    Some((BuildingKind::Array, tier, true)) => within(
+                        body.tile,
+                        pre.tile,
+                        if tier >= 1 {
+                            CHARGE_ARRAY_DETECT_RADIUS
+                        } else {
+                            CHARGE_BASE_ARRAY_DETECT_RADIUS
+                        },
+                    ),
+                    _ => false,
+                })
+                .min_by_key(|body| body.key);
+            if let Some(array) = array
+                && let Some(record) = self.records.get_mut(&array.key)
+            {
+                record.enabled += pre.value * MILLI;
+            }
+        }
+    }
+
     /// Credits the income the simulation pays without an event, by the same
-    /// rules and cadence.
+    /// rules and cadence: Reclaimers and the Foundry drip as buildings stood
+    /// when the tick began, before any combat in it; Extractors by the
+    /// support the state reports; and Crucibles that had a wreck in reach.
     fn passive(&mut self, state: &State, now: u64) {
         let completed = now + 1;
-        for building in state.buildings() {
-            if !building.built || building.hp == 0 {
+        let mut credits: Vec<(Key, u64)> = Vec::new();
+        for body in &self.bodies {
+            let Some((kind, tier, true)) = body.building else {
+                continue;
+            };
+            if body.hp == 0 {
                 continue;
             }
-            let resigned = state.player(building.player).resigned;
-            let scrap = match building.kind {
-                BuildingKind::Reclaimer if building.tier == 0 => {
+            let resigned = state.players()[usize::from(body.owner)].resigned;
+            let scrap = match kind {
+                BuildingKind::Reclaimer if tier == 0 => {
                     u64::from(now.is_multiple_of(RECLAIMER_PERIOD))
                 }
-                BuildingKind::Reclaimer if building.tier == 1 => {
+                BuildingKind::Reclaimer if tier == 1 => {
                     u64::from(now.is_multiple_of(REFINERY_PERIOD))
-                }
-                BuildingKind::Extractor if !resigned => {
-                    let (amount, period) = match state.extractor_income(building.id) {
-                        Some(ExtractorIncome::Supported) => EXTRACTOR_SUPPORTED_YIELD,
-                        Some(ExtractorIncome::Remote) => EXTRACTOR_REMOTE_YIELD,
-                        None => continue,
-                    };
-                    if completed.is_multiple_of(period) {
-                        u64::from(amount)
-                    } else {
-                        0
-                    }
                 }
                 BuildingKind::Foundry
                     if !resigned
@@ -771,22 +951,50 @@ impl ImpactLedger {
                 }
                 _ => 0,
             };
-            if scrap > 0
-                && let Some(record) = self.records.get_mut(&Key::Building(building.id))
+            if scrap > 0 {
+                credits.push((body.key, scrap));
+            }
+        }
+        for building in state.buildings() {
+            if building.kind != BuildingKind::Extractor
+                || !building.built
+                || building.hp == 0
+                || state.player(building.player).resigned
             {
+                continue;
+            }
+            let (amount, period) = match state.extractor_income(building.id) {
+                Some(ExtractorIncome::Supported) => EXTRACTOR_SUPPORTED_YIELD,
+                Some(ExtractorIncome::Remote) => EXTRACTOR_REMOTE_YIELD,
+                None => continue,
+            };
+            if completed.is_multiple_of(period) {
+                credits.push((Key::Building(building.id), u64::from(amount)));
+            }
+        }
+        if now.is_multiple_of(CRUCIBLE_SMELT_PERIOD) {
+            credits.extend(self.smelting.iter().map(|key| (*key, 1)));
+        }
+        for (key, scrap) in credits {
+            if let Some(record) = self.records.get_mut(&key) {
                 record.passive += scrap;
             }
         }
     }
 
-    /// Each seat's ledger, ending at `end`.
-    pub fn finish(self, end: u64) -> Vec<SeatLedger> {
+    /// Each seat's ledger, ending with `state`, the state the last observed
+    /// tick left.
+    pub fn finish(self, state: &State) -> Vec<SeatLedger> {
+        let end = state.current_tick();
         let mut seats: Vec<SeatLedger> = (0..self.spend.len())
             .map(|seat| SeatLedger {
                 unattributed: scrap(self.unattributed[seat]),
                 spend: self.spend[seat].clone(),
                 refunds: self.refunds[seat],
                 worth: self.worth[seat].clone(),
+                start: self.start,
+                end,
+                final_worth: worth(state, &self.bodies, seat),
                 ..SeatLedger::default()
             })
             .collect();
@@ -912,15 +1120,11 @@ fn aim(sources: &mut Sources, target: Option<Target>, at: TilePos, source: Sourc
     }
 }
 
-fn record(state: &State, body: &Body, starting: bool) -> Record {
-    let (unit, building) = match body.key {
-        Key::Unit(id) => (state.unit(id).map(|unit| unit.kind), None),
-        Key::Building(_) => (None, body.building.map(|(kind, _, _)| kind)),
-    };
+fn record(body: &Body, starting: bool) -> Record {
     Record {
         owner: body.owner,
-        unit,
-        building,
+        unit: body.unit,
+        building: body.building.map(|(kind, _, _)| kind),
         top_tier: body.building.map_or(0, |(_, tier, _)| tier),
         starting,
         paid: if starting { body.value } else { 0 },
@@ -1115,13 +1319,18 @@ impl LedgerPool {
     }
 }
 
-/// A seat's net worth at `tick`: the last sample at or before it, or the
-/// final sample when the match ended sooner; `None` before the first.
-pub fn worth_at(worth: &[u64], tick: u64) -> Option<u64> {
-    let samples = usize::try_from(tick / WORTH_PERIOD).ok()?;
+/// A seat's net worth at `tick`: its final worth once the ledger has ended,
+/// else the last sample at or before it; `None` before the first. Rows that
+/// predate the final worth carry their last sample forward instead.
+pub fn worth_at(ledger: &SeatLedger, tick: u64) -> Option<u64> {
+    if ledger.end > 0 && tick >= ledger.end {
+        return Some(ledger.final_worth);
+    }
+    let samples = usize::try_from(tick.checked_sub(ledger.start)? / WORTH_PERIOD).ok()?;
     if samples == 0 {
         return None;
     }
+    let worth = &ledger.worth;
     worth.get(samples - 1).or_else(|| worth.last()).copied()
 }
 
@@ -1167,7 +1376,7 @@ pub fn team_shares(
     Some(WORTH_TICKS.map(|tick| {
         let (mut own, mut all) = (0_u64, 0_u64);
         for (ledger, seat_team) in ledgers.iter().zip(teams) {
-            let worth = worth_at(&ledger.worth, tick)?;
+            let worth = worth_at(ledger, tick)?;
             all += worth;
             if *seat_team == team {
                 own += worth;
@@ -1311,8 +1520,8 @@ mod tests {
             let report = state.tick(&orders.take().unwrap_or_default());
             ledger.observe(&state, &report);
         }
-        let end = state.current_tick();
-        (state, ledger.finish(end))
+        let ledgers = ledger.finish(&state);
+        (state, ledgers)
     }
 
     fn unit_at(state: &State, x: i32, y: i32) -> UnitId {
@@ -1673,15 +1882,9 @@ mod tests {
             .sum::<u64>()
             + u64::from(state.players()[0].scrap);
         assert_eq!(ledgers[0].worth[1], expected);
-        assert_eq!(
-            worth_at(&ledgers[0].worth, 1_500),
-            Some(ledgers[0].worth[0])
-        );
-        assert_eq!(
-            worth_at(&ledgers[0].worth, 9_000),
-            Some(ledgers[0].worth[1])
-        );
-        assert_eq!(worth_at(&ledgers[0].worth, 500), None);
+        assert_eq!(worth_at(&ledgers[0], 1_500), Some(ledgers[0].worth[0]));
+        assert_eq!(worth_at(&ledgers[0], 9_000), Some(ledgers[0].worth[1]));
+        assert_eq!(worth_at(&ledgers[0], 500), None);
     }
 
     #[test]
@@ -1710,5 +1913,156 @@ mod tests {
         let refs: Vec<Option<&SeatLedger>> = ledgers.iter().map(Some).collect();
         assert_eq!(team_shares(&refs, &[0, 1], 0).unwrap()[0], Some(750));
         assert_eq!(team_shares(&[Some(&ledgers[0]), None], &[0, 1], 0), None);
+    }
+
+    /// `scenario` built, with `edit` applied to its JSON form.
+    fn staged(scenario: &Scenario, edit: impl FnOnce(&mut serde_json::Value)) -> State {
+        let mut value = serde_json::to_value(scenario.build().unwrap()).unwrap();
+        edit(&mut value);
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn a_shell_that_lands_after_its_gun_is_gone_is_still_its_guns() {
+        let scenario = field(
+            0,
+            &[(0, UnitKind::Bombard, 8, 6), (0, UnitKind::Kestrel, 15, 6)],
+            &[(1, BuildingKind::Barricade, 16, 6)],
+        );
+        let mut state = scenario.build().unwrap();
+        state.tick(&[]);
+        let bombard = unit_at(&state, 8, 6);
+        let barricade = building(&state, 1, BuildingKind::Barricade);
+        let mut ledger = ImpactLedger::new(&state);
+        let mut orders = vec![order(
+            0,
+            Command::Attack {
+                units: vec![bombard],
+                target: AttackTarget::Building(barricade),
+                queue: false,
+            },
+        )];
+        let mut fired = false;
+        for _ in 0..600 {
+            let report = state.tick(&std::mem::take(&mut orders));
+            ledger.observe(&state, &report);
+            if report
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::ShellLaunched { .. }))
+            {
+                fired = true;
+                break;
+            }
+        }
+        assert!(fired, "premise: the gun fires");
+        let mut value = serde_json::to_value(&state).unwrap();
+        value["units"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|unit| unit["kind"] != "bombard");
+        let mut state: State = serde_json::from_value(value).unwrap();
+        for _ in 0..200 {
+            let report = state.tick(&[]);
+            ledger.observe(&state, &report);
+        }
+        let ledgers = ledger.finish(&state);
+        assert!(unit(&ledgers, 0, "bombard").dealt.buildings > 0);
+        assert_eq!(ledgers[1].unattributed, 0);
+    }
+
+    #[test]
+    fn riders_count_toward_worth_and_die_to_whoever_downs_their_carrier() {
+        let scenario = field(
+            0,
+            &[
+                (0, UnitKind::Skyhook, 14, 6),
+                (0, UnitKind::Sentinel, 4, 10),
+            ],
+            &[(1, BuildingKind::FlakTurret, 16, 6)],
+        );
+        let state = staged(&scenario, |value| {
+            let units = value["units"].as_array_mut().unwrap();
+            let rider = units
+                .iter()
+                .position(|unit| unit["kind"] == "sentinel")
+                .unwrap();
+            let rider = units.remove(rider);
+            let skyhook = units
+                .iter_mut()
+                .find(|unit| unit["kind"] == "skyhook")
+                .unwrap();
+            skyhook["cargo"] = serde_json::json!([rider]);
+        });
+        let rider_value = u64::from(UnitKind::Sentinel.stats().cost);
+        let ledger = ImpactLedger::new(&state);
+        assert!(
+            worth(&state, &ledger.bodies, 0)
+                >= rider_value + u64::from(UnitKind::Skyhook.stats().cost),
+            "the rider counts while aboard"
+        );
+        let (_, ledgers) = play(state, 1_200, Vec::new());
+        let rider = unit(&ledgers, 0, "sentinel");
+        assert_eq!((rider.deaths, rider.taken), (1, rider_value), "{rider:?}");
+        assert_eq!(ledgers[0].unattributed, 0);
+        assert!(built(&ledgers, 1, "flak turret").dealt.army >= rider_value);
+    }
+
+    #[test]
+    fn a_crucible_is_credited_with_the_wrecks_it_smelts() {
+        let scenario = field(
+            0,
+            &[
+                (0, UnitKind::Harvester, 4, 8),
+                (0, UnitKind::Lancer, 10, 6),
+                (0, UnitKind::Lancer, 10, 7),
+                (1, UnitKind::Sentinel, 13, 6),
+            ],
+            &[(0, BuildingKind::Crucible, 9, 9)],
+        );
+        let state = scenario.build().unwrap();
+        let before = state.players()[0].scrap;
+        let (state, ledgers) = play(state, 1_200, Vec::new());
+        let crucible = built(&ledgers, 0, "crucible");
+        assert!(crucible.passive > 0, "{crucible:?}");
+        let passive: u64 = ledgers[0]
+            .buildings
+            .values()
+            .map(|totals| totals.passive)
+            .sum();
+        assert_eq!(passive, u64::from(state.players()[0].scrap - before));
+    }
+
+    #[test]
+    fn worth_runs_from_the_start_of_the_recording_to_its_end() {
+        let scenario = field(250, &[(0, UnitKind::Sentinel, 10, 6)], &[]);
+        let mut state = scenario.build().unwrap();
+        for _ in 0..500 {
+            state.tick(&[]);
+        }
+        let mut ledger = ImpactLedger::new(&state);
+        for _ in 0..1_500 {
+            let report = state.tick(&[]);
+            ledger.observe(&state, &report);
+        }
+        let ledgers = ledger.finish(&state);
+        let seat = &ledgers[0];
+        assert_eq!((seat.start, seat.end, seat.worth.len()), (500, 2_000, 1));
+        assert_eq!(worth_at(seat, 1_499), None, "before the first sample");
+        assert_eq!(worth_at(seat, 1_500), Some(seat.worth[0]));
+        let expected: u64 = snapshot(&state)
+            .iter()
+            .filter(|body| body.owner == 0)
+            .map(|body| body.value * u64::from(body.hp) / u64::from(body.max_hp.max(1)))
+            .sum::<u64>()
+            + u64::from(state.players()[0].scrap);
+        assert_eq!(seat.final_worth, expected);
+        assert_eq!(
+            worth_at(seat, 24_000),
+            Some(expected),
+            "a finished match keeps its end"
+        );
+        let sentinel = unit(&ledgers, 0, "sentinel");
+        assert_eq!(sentinel.starting, 1);
     }
 }
