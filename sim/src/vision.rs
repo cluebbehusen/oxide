@@ -1033,6 +1033,7 @@ pub(crate) fn refresh(state: &mut State) {
     let mut vision = std::mem::take(&mut state.vision);
     let mut coverage = RowCoverage::new(state.map.width(), state.map.height());
     let mut eyes: Vec<(TilePos, i32)> = Vec::new();
+    let sightings = Sighting::gather(state);
     for index in 0..vision.len() {
         // Team sight is seat-symmetric by construction: every teammate
         // stamps the same discs, reconciles the same memories, hears
@@ -1055,11 +1056,10 @@ pub(crate) fn refresh(state: &mut State) {
         // tiles, so only the widest disc per tile is stamped.
         eyes.clear();
         eyes.extend(
-            state
-                .units
+            sightings
                 .iter()
-                .filter(|u| allied(u.player))
-                .map(|u| (u.tile(), u.kind.stats().vision)),
+                .filter(|unit| unit.team == my_team)
+                .map(|unit| (unit.tile, unit.vision)),
         );
         eyes.sort_unstable_by_key(|&(tile, radius)| (tile.y, tile.x, std::cmp::Reverse(radius)));
         eyes.dedup_by_key(|&mut (tile, _)| tile);
@@ -1178,8 +1178,8 @@ pub(crate) fn refresh(state: &mut State) {
                     .min()
                     .filter(|&d| d <= r * r)
             };
-            for u in state.units.iter().filter(|u| !allied(u.player)) {
-                let t = u.tile();
+            for unit in sightings.iter().filter(|unit| unit.team != my_team) {
+                let t = unit.tile;
                 if !view.visible(t) && ring_distance(t).is_some() {
                     view.contacts.push(t);
                 }
@@ -1204,10 +1204,34 @@ pub(crate) fn refresh(state: &mut State) {
             view.contacts.dedup();
         }
         let mut tracking = std::mem::take(&mut view.tracking);
-        tracking.refresh(view, state, PlayerId(index as u8));
+        tracking.refresh(view, state, PlayerId(index as u8), &sightings);
         view.tracking = tracking;
     }
     state.vision = vision;
+}
+
+/// One unit as each view's refresh reads it: gathered once per refresh
+/// instead of once per view.
+pub(super) struct Sighting {
+    pub(super) id: crate::UnitId,
+    pub(super) tile: TilePos,
+    pub(super) team: u8,
+    vision: i32,
+}
+
+impl Sighting {
+    pub(super) fn gather(state: &State) -> Vec<Self> {
+        state
+            .units
+            .iter()
+            .map(|unit| Self {
+                id: unit.id,
+                tile: unit.tile(),
+                team: state.players[unit.player.0 as usize].team,
+                vision: unit.kind.stats().vision,
+            })
+            .collect()
+    }
 }
 
 /// The footprint tile a building's radar return reports: the one nearest a
@@ -1275,10 +1299,11 @@ fn radar_return(
 pub(crate) fn initialize_legacy_tracking(state: &mut State) -> bool {
     let mut vision = std::mem::take(&mut state.vision);
     let mut initialized = false;
+    let sightings = Sighting::gather(state);
     for (index, view) in vision.iter_mut().enumerate() {
         if view.tracking.next_id == 0 && view.tracking.tracks.is_empty() {
             let mut tracking = std::mem::take(&mut view.tracking);
-            tracking.refresh(view, state, PlayerId(index as u8));
+            tracking.refresh(view, state, PlayerId(index as u8), &sightings);
             initialized |= tracking.next_id != 0;
             view.tracking = tracking;
         }
