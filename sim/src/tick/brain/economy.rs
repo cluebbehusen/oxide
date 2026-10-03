@@ -1125,19 +1125,6 @@ fn source_route_avoiding_danger(
     )
 }
 
-/// Tile centers no longer describe the clearance between adjacent work positions.
-fn work_position_claimed(
-    state: &State,
-    id: UnitId,
-    anchor: TilePos,
-    size: (i32, i32),
-    goal: TilePos,
-) -> bool {
-    let unit = state.unit(id).expect("caller checked");
-    let point = crate::geometry::work_approach_point(goal, anchor, size, unit.kind.stats().radius);
-    crowding::claimed(state, id, point, false)
-}
-
 /// Ground occupancy as the worker's team can know it. Visible tiles use
 /// live truth. Under fog, static terrain and frozen scrap memory combine
 /// with allied buildings and hostile building ghosts; an unscouted live
@@ -1227,8 +1214,12 @@ fn try_drop_offs(
                 .path
                 .as_ref()
                 .filter(|path| tile_adjacent_to_rect(path.goal, anchor, size))
+                // Like every kept position, the route's own end point yields
+                // only to a unit that outranks this one there.
                 && (from.chebyshev(path.goal) > 1
-                    || !work_position_claimed(state, id, anchor, size, path.goal))
+                    || path
+                        .final_point
+                        .is_none_or(|point| !crowding::claimed(state, id, point, true)))
                 && keep_flagged_route(state, id, path, |waypoint| {
                     known_ground_passable(state, danger, player, waypoint)
                         && danger.route_safe_from(from, waypoint)
@@ -1822,6 +1813,80 @@ mod harvest_zone_tests {
             Some(foundry.id)
         );
         assert_eq!(danger.route_search_count() - before, 2);
+    }
+
+    /// Two workers of one seat bound for the same drop-off spot: the nearer
+    /// keeps its route, the farther yields. Yielding to every arrival made
+    /// each give the spot up to the other.
+    #[test]
+    fn a_held_drop_off_route_yields_only_to_a_nearer_worker() {
+        let scenario = serde_json::json!({
+            "name": "shared-drop-off", "seed": 25,
+            "map": [
+                "##########################",
+                "#1....................2..#",
+                "#........................#",
+                "#........................#",
+                "#........................#",
+                "#........................#",
+                "##########################"
+            ],
+            "players": [
+                {"name": "F", "faction": "ferrous", "scrap": 0, "bot": false},
+                {"name": "C", "faction": "cupric", "scrap": 0, "bot": true}
+            ],
+            "units": [
+                {"player": 0, "kind": "harvester", "x": 9, "y": 3},
+                {"player": 0, "kind": "harvester", "x": 10, "y": 3}
+            ]
+        });
+        let mut state = Scenario::from_json(&scenario.to_string())
+            .unwrap()
+            .build()
+            .unwrap();
+        let foundry = state
+            .buildings
+            .iter()
+            .find(|b| b.player == PlayerId(0))
+            .unwrap();
+        let (foundry_id, anchor, size) = (foundry.id, foundry.anchor, foundry.stats().size);
+        let goal = TilePos::new(anchor.x + size.0, anchor.y + 1);
+        let point = goal.center() - Vec2Fx::new(Fx::lit("0.2"), Fx::ZERO);
+        let ids = [state.units[0].id, state.units[1].id];
+        for (slot, offset) in [(0, Fx::lit("0.3")), (1, Fx::lit("0.8"))] {
+            let unit = &mut state.units[slot];
+            unit.carrying = 1;
+            unit.pos = point + Vec2Fx::new(offset, Fx::ZERO);
+            unit.path = Some(PathFollow {
+                goal,
+                final_point: Some(point),
+                waypoints: vec![goal],
+                next: 0,
+            });
+        }
+        let keeps = |state: &mut State, id: UnitId| {
+            let danger = GroundSalvageDanger::capture(state, PlayerId(0));
+            let mut events = Vec::new();
+            assert!(try_drop_offs(
+                state,
+                &danger,
+                id,
+                &[foundry_id],
+                &mut events
+            ));
+            state
+                .unit(id)
+                .unwrap()
+                .path
+                .as_ref()
+                .and_then(|path| path.final_point)
+                == Some(point)
+        };
+        assert!(
+            keeps(&mut state, ids[0]),
+            "the nearer worker keeps the spot"
+        );
+        assert!(!keeps(&mut state, ids[1]), "the farther worker yields it");
     }
 
     fn held_worker(wall: Option<(usize, usize)>) -> (State, UnitId, KnownSource, PathFollow) {
