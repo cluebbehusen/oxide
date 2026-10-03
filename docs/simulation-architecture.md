@@ -257,12 +257,15 @@ change tile passability or open travel passages between buildings. Work and
 contact weapons share perimeter candidate generation. Work, melee, and ranged
 building attacks share a crowd-aware position chooser: productive occupants win
 space, nearby arrivals carry soft claims, and distant routes do not reserve
-frontage. When productive units fill the legal positions, overflow approaches
-wait outside the interaction area. Ranged candidates retain their weapon's
-minimum and maximum range, line of fire, and movement layer. Fixed-wing aircraft
-retain run-in attacks. Building artwork and its approximate contact outline
-retain their authored facing; asymmetric contact can differ under a map
-half-turn. Rectangular placement, travel, and ranged reach remain unchanged.
+frontage. When arrivals' positions overlap, the unit nearer its own position
+keeps its claim, whatever seat it belongs to, so allied crowds cannot all yield
+to one another; an exact tie goes to the earlier unit of one seat. When
+productive units fill the legal positions, overflow approaches wait outside the
+interaction area. Ranged candidates retain their weapon's minimum and maximum
+range, line of fire, and movement layer. Fixed-wing aircraft retain run-in
+attacks. Building artwork and its approximate contact outline retain their
+authored facing; asymmetric contact can differ under a map half-turn.
+Rectangular placement, travel, and ranged reach remain unchanged.
 
 Talon, Darter, Shrike, Sylph, Kestrel, and Gnat cruise heading-first but can
 hover at rest. Their travel and fixed-gun traverse rates are independent of

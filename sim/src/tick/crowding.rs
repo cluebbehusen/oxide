@@ -26,9 +26,13 @@ struct Neighbor {
     destination: Option<Vec2Fx>,
     spacing: Fx,
     productive: bool,
-    precedes: bool,
+    /// For a unit of the same seat, whether its id comes first; unit ids
+    /// order different seats unevenly, so they never rank across seats.
+    earlier: Option<bool>,
 }
 struct Pressure {
+    /// Where the asking unit stands.
+    origin: Vec2Fx,
     neighbors: Vec<Neighbor>,
 }
 /// How far from its body a neighbor's destination may lie and still count
@@ -44,6 +48,7 @@ impl Pressure {
     fn new(state: &State, id: UnitId, center: Vec2Fx, reach: Fx) -> Self {
         let unit = state.unit(id).expect("position owner");
         Self {
+            origin: unit.pos,
             neighbors: state
                 .units()
                 .iter()
@@ -72,12 +77,24 @@ impl Pressure {
                         destination,
                         spacing: spacing(unit, other),
                         productive: productive(state, other),
-                        precedes: other.player != unit.player || other.id < id,
+                        earlier: (other.player == unit.player).then_some(other.id < id),
                     }
                 })
                 .collect(),
         }
     }
+    /// Whether `other`, arriving at `destination`, outranks the asking
+    /// unit's claim on `point`: the unit nearer its own position keeps it.
+    /// Measuring each unit against its own position gives every ally a
+    /// single rank, so two overlapping claims never each outrank the other
+    /// and no cycle of units yields to the next. An exact tie goes to the
+    /// earlier unit of one seat; across seats both yield, since nothing
+    /// seat-fair separates them.
+    fn precedes(&self, other: &Neighbor, destination: Vec2Fx, point: Vec2Fx) -> bool {
+        let (theirs, ours) = (other.pos.dist_sq(destination), self.origin.dist_sq(point));
+        theirs < ours || (theirs == ours && other.earlier.unwrap_or(true))
+    }
+
     fn rank(&self, point: Vec2Fx, retained: bool) -> (usize, usize, usize) {
         let mut occupied = 0;
         let mut arriving = 0;
@@ -86,12 +103,10 @@ impl Pressure {
             let distance = other.spacing * other.spacing;
             bodies += usize::from(point.dist_sq(other.pos) < distance);
             occupied += usize::from(other.productive && point.dist_sq(other.pos) < distance);
-            arriving += usize::from(
-                (!retained || other.precedes)
-                    && other
-                        .destination
-                        .is_some_and(|p| point.dist_sq(p) < distance),
-            );
+            arriving += usize::from(other.destination.is_some_and(|destination| {
+                point.dist_sq(destination) < distance
+                    && (!retained || self.precedes(other, destination, point))
+            }));
         }
         (occupied, bodies, arriving)
     }
@@ -307,13 +322,50 @@ mod tests {
             next: 0,
         });
         assert!(claimed(&state, id, point, false));
-        assert!(claimed(&state, id, point, true));
+        assert!(
+            !claimed(&state, id, point, true),
+            "the nearer body keeps a contested position"
+        );
+        state.unit_mut(id).unwrap().path = state.unit(ally).unwrap().path.clone();
+        assert!(claimed(&state, ally, point, true));
         assert_eq!(
             Pressure::new(&state, id, point, Fx::ZERO).neighbors[0].spacing,
             UnitKind::Harvester.stats().radius * 2
         );
         state.players[1].team = state.players[0].team.wrapping_add(1);
         assert!(!claimed(&state, id, point, false));
+    }
+
+    /// Two workers of one seat and one of an allied seat converge on one
+    /// position. Ranking by id within a seat but yielding across seats let
+    /// each defer to the next in a cycle and none of them ever took it.
+    #[test]
+    fn exactly_the_nearest_of_mixed_allied_arrivals_keeps_a_position() {
+        let mut state = Scenario::skirmish().build().unwrap();
+        state.units.clear();
+        state.players[1].team = state.players[0].team;
+        let point = TilePos::new(15, 8).center();
+        let offset = |distance: &str| point - Vec2Fx::new(Fx::lit(distance), Fx::ZERO);
+        let farthest = state.spawn_unit(PlayerId(0), UnitKind::Harvester, offset("1.0"));
+        let nearest = state.spawn_unit(PlayerId(0), UnitKind::Harvester, offset("0.3"));
+        let middle = state.spawn_unit(
+            PlayerId(1),
+            UnitKind::Harvester,
+            point + Vec2Fx::new(Fx::lit("0.6"), Fx::ZERO),
+        );
+        for id in [farthest, nearest, middle] {
+            state.unit_mut(id).unwrap().path = Some(PathFollow {
+                goal: TilePos::new(15, 8),
+                final_point: Some(point),
+                waypoints: vec![TilePos::new(15, 8)],
+                next: 0,
+            });
+        }
+        let keeps: Vec<_> = [farthest, nearest, middle]
+            .into_iter()
+            .filter(|&id| !claimed(&state, id, point, true))
+            .collect();
+        assert_eq!(keeps, [nearest]);
     }
 
     #[test]
@@ -334,6 +386,37 @@ mod tests {
             next: 0,
         });
         assert!(claimed(&state, id, point, false));
+    }
+
+    /// Two workers bound for overlapping positions after their paths
+    /// crossed: each stands nearer the other's position. Ranking each claim
+    /// by its own position keeps exactly one of them.
+    #[test]
+    fn crossed_arrivals_to_overlapping_positions_keep_exactly_one() {
+        let mut state = Scenario::skirmish().build().unwrap();
+        state.units.clear();
+        let mine = TilePos::new(15, 8).center();
+        let theirs = mine + Vec2Fx::new(Fx::lit("0.3"), Fx::ZERO);
+        let farther = state.spawn_unit(
+            PlayerId(0),
+            UnitKind::Harvester,
+            mine + Vec2Fx::new(Fx::lit("0.5"), Fx::ZERO),
+        );
+        let nearer = state.spawn_unit(
+            PlayerId(0),
+            UnitKind::Harvester,
+            mine - Vec2Fx::new(Fx::lit("0.1"), Fx::ZERO),
+        );
+        for (id, point) in [(farther, mine), (nearer, theirs)] {
+            state.unit_mut(id).unwrap().path = Some(PathFollow {
+                goal: TilePos::containing(point),
+                final_point: Some(point),
+                waypoints: vec![TilePos::containing(point)],
+                next: 0,
+            });
+        }
+        assert!(claimed(&state, farther, mine, true));
+        assert!(!claimed(&state, nearer, theirs, true));
     }
 
     #[test]
