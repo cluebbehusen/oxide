@@ -83,13 +83,15 @@ impl Pressure {
                 .collect(),
         }
     }
-    /// Whether `other`'s claim on `point` outranks the asking unit's: the
-    /// body nearer the point keeps it. One order over every ally leaves no
-    /// cycle of units each yielding to the next. An exact tie goes to the
+    /// Whether `other`, arriving at `destination`, outranks the asking
+    /// unit's claim on `point`: the unit nearer its own position keeps it.
+    /// Measuring each unit against its own position gives every ally a
+    /// single rank, so two overlapping claims never each outrank the other
+    /// and no cycle of units yields to the next. An exact tie goes to the
     /// earlier unit of one seat; across seats both yield, since nothing
     /// seat-fair separates them.
-    fn precedes(&self, other: &Neighbor, point: Vec2Fx) -> bool {
-        let (theirs, ours) = (point.dist_sq(other.pos), point.dist_sq(self.origin));
+    fn precedes(&self, other: &Neighbor, destination: Vec2Fx, point: Vec2Fx) -> bool {
+        let (theirs, ours) = (other.pos.dist_sq(destination), self.origin.dist_sq(point));
         theirs < ours || (theirs == ours && other.earlier.unwrap_or(true))
     }
 
@@ -101,12 +103,10 @@ impl Pressure {
             let distance = other.spacing * other.spacing;
             bodies += usize::from(point.dist_sq(other.pos) < distance);
             occupied += usize::from(other.productive && point.dist_sq(other.pos) < distance);
-            arriving += usize::from(
-                (!retained || self.precedes(other, point))
-                    && other
-                        .destination
-                        .is_some_and(|p| point.dist_sq(p) < distance),
-            );
+            arriving += usize::from(other.destination.is_some_and(|destination| {
+                point.dist_sq(destination) < distance
+                    && (!retained || self.precedes(other, destination, point))
+            }));
         }
         (occupied, bodies, arriving)
     }
@@ -386,6 +386,37 @@ mod tests {
             next: 0,
         });
         assert!(claimed(&state, id, point, false));
+    }
+
+    /// Two workers bound for overlapping positions after their paths
+    /// crossed: each stands nearer the other's position. Ranking each claim
+    /// by its own position keeps exactly one of them.
+    #[test]
+    fn crossed_arrivals_to_overlapping_positions_keep_exactly_one() {
+        let mut state = Scenario::skirmish().build().unwrap();
+        state.units.clear();
+        let mine = TilePos::new(15, 8).center();
+        let theirs = mine + Vec2Fx::new(Fx::lit("0.3"), Fx::ZERO);
+        let farther = state.spawn_unit(
+            PlayerId(0),
+            UnitKind::Harvester,
+            mine + Vec2Fx::new(Fx::lit("0.5"), Fx::ZERO),
+        );
+        let nearer = state.spawn_unit(
+            PlayerId(0),
+            UnitKind::Harvester,
+            mine - Vec2Fx::new(Fx::lit("0.1"), Fx::ZERO),
+        );
+        for (id, point) in [(farther, mine), (nearer, theirs)] {
+            state.unit_mut(id).unwrap().path = Some(PathFollow {
+                goal: TilePos::containing(point),
+                final_point: Some(point),
+                waypoints: vec![TilePos::containing(point)],
+                next: 0,
+            });
+        }
+        assert!(claimed(&state, farther, mine, true));
+        assert!(!claimed(&state, nearer, theirs, true));
     }
 
     #[test]
