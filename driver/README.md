@@ -81,7 +81,8 @@ records as the frozen reference it compares against.
   prints, for each comparison, the higher rung's share of decided legs with a
   Wilson interval, pairs by result, and whether it reaches the comparison's gate
   over enough decided pairs, overall and by stance and map family;
-  `bot-ladder-report` re-reads published rows.
+  `bot-ladder-report` re-reads published rows, keeping each manifest's
+  comparisons apart.
 - `bot_pressure` runs the staged scenarios in `evaluation/pressure/`: a scripted
   attacker seat presses one situation (an early rush, air harassment, an
   artillery siege, a transport drop) on a bot seat, and a check over

@@ -81,6 +81,10 @@ impl LadderManifest {
         );
         ensure!(self.tick_limit > 0, "tick limit must be positive");
         ensure!(self.runs > 0, "runs must be positive");
+        ensure!(
+            self.min_decided_pairs > 0,
+            "the decided-pair minimum must be positive"
+        );
         for base in [self.scenario_seed_base, self.personality_seed_base] {
             ensure!(
                 base.checked_add(self.runs - 1).is_some(),
@@ -404,6 +408,9 @@ impl Tally {
 /// One comparison's results.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ComparisonReport {
+    /// Manifest whose rows these are; manifests never share a tally, since
+    /// two can play the same legs.
+    pub manifest: String,
     /// The rung expected to win.
     pub higher: BotDifficulty,
     /// The rung it plays.
@@ -422,7 +429,7 @@ pub struct ComparisonReport {
     pub families: Vec<(MapFamily, Tally)>,
 }
 
-/// Every comparison's results, in the order rows first name them.
+/// Every manifest's comparisons, in the order rows first name them.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct LadderReport {
     /// Comparisons.
@@ -472,10 +479,18 @@ fn winner(row: &ScoredLadderRow) -> Result<Won> {
     if row.termination != Termination::Decided {
         return Ok(None);
     }
-    Ok(match row.winner_seats[..] {
-        [seat] => Some(rungs[usize::from(seat)] == Some(label.higher)),
-        _ => None,
-    })
+    let [seat] = row.winner_seats[..] else {
+        return Ok(None);
+    };
+    let rung = rungs.get(usize::from(seat)).with_context(|| {
+        format!(
+            "a {} leg of {} against {} names winner seat {seat}, which it lacks",
+            row.leg.name(),
+            label.higher,
+            label.lower
+        )
+    })?;
+    Ok(Some(*rung == Some(label.higher)))
 }
 
 /// Scores rows into pairs by comparison, refusing incomplete or repeated
@@ -526,15 +541,17 @@ pub fn build_report(rows: &[ScoredLadderRow]) -> Result<LadderReport> {
                 label.run
             );
         };
-        let position = match comparisons
-            .iter()
-            .position(|each| each.higher == label.higher && each.lower == label.lower)
-        {
+        let position = match comparisons.iter().position(|each| {
+            each.manifest == label.manifest
+                && each.higher == label.higher
+                && each.lower == label.lower
+        }) {
             Some(position) => {
                 let each = &comparisons[position];
                 ensure!(
                     each.gate == label.gate && each.min_decided_pairs == label.min_decided_pairs,
-                    "rows of {} against {} disagree on the gate",
+                    "{} rows of {} against {} disagree on the gate",
+                    label.manifest,
                     label.higher,
                     label.lower
                 );
@@ -542,6 +559,7 @@ pub fn build_report(rows: &[ScoredLadderRow]) -> Result<LadderReport> {
             }
             None => {
                 comparisons.push(ComparisonReport {
+                    manifest: label.manifest.clone(),
                     higher: label.higher,
                     lower: label.lower,
                     gate: label.gate,
@@ -566,7 +584,7 @@ pub fn build_report(rows: &[ScoredLadderRow]) -> Result<LadderReport> {
             .sort_by_key(|(stance, _)| BotStance::ALL.iter().position(|each| each == stance));
         report.families.sort_by_key(|(family, _)| *family);
         let tally = &report.overall;
-        report.verdict = if tally.pairs.decided() < report.min_decided_pairs {
+        report.verdict = if tally.pairs.decided() < report.min_decided_pairs.max(1) {
             Verdict::TooFewPairs
         } else if u64::from(tally.higher_wins) * 1_000
             >= u64::from(report.gate) * u64::from(tally.decided)
@@ -603,7 +621,8 @@ impl LadderReport {
             };
             let _ = writeln!(
                 out,
-                "{} against {}: {verdict} (gate {}% of decided legs over {} decided pairs)",
+                "{}: {} against {}: {verdict} (gate {}% of decided legs over {} decided pairs)",
+                report.manifest,
                 report.higher,
                 report.lower,
                 (report.gate + 5) / 10,
@@ -729,7 +748,7 @@ mod tests {
     #[test]
     fn invalid_manifests_are_refused() {
         type Edit = fn(&mut LadderManifest);
-        let edits: [(Edit, &str); 6] = [
+        let edits: [(Edit, &str); 7] = [
             (
                 |m| m.comparisons[0].higher = BotDifficulty::Scrapheap,
                 "does not rank above",
@@ -742,6 +761,7 @@ mod tests {
             (|m| m.stances.clear(), "stances are empty"),
             (|m| m.maps.clear(), "maps are empty"),
             (|m| m.runs = 0, "runs must be positive"),
+            (|m| m.min_decided_pairs = 0, "minimum must be positive"),
         ];
         for (edit, message) in edits {
             let mut manifest = manifest();
@@ -897,6 +917,34 @@ mod tests {
             build_report(&few).unwrap().comparisons[0].verdict,
             Verdict::TooFewPairs
         );
+
+        let mut unminimized: Vec<ScoredLadderRow> = pair(0, None, None).into();
+        for row in &mut unminimized {
+            row.ladder.min_decided_pairs = 0;
+        }
+        assert_eq!(
+            build_report(&unminimized).unwrap().comparisons[0].verdict,
+            Verdict::TooFewPairs,
+            "no decided pair never passes"
+        );
+    }
+
+    #[test]
+    fn manifests_that_play_the_same_legs_keep_separate_tallies() {
+        use BotDifficulty::Prime;
+        let full = pair(0, Some(Prime), Some(Prime));
+        let mut smoke = full.clone();
+        for row in &mut smoke {
+            row.ladder.manifest = "ladder-smoke".into();
+        }
+        let rows: Vec<ScoredLadderRow> = full.into_iter().chain(smoke).collect();
+        let report = build_report(&rows).unwrap();
+        let tallies: Vec<(&str, u32)> = report
+            .comparisons
+            .iter()
+            .map(|comparison| (comparison.manifest.as_str(), comparison.overall.legs))
+            .collect();
+        assert_eq!(tallies, [("ladder", 2), ("ladder-smoke", 2)]);
     }
 
     #[test]
@@ -919,6 +967,12 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("needs oxide-opponent"), "{error}");
+        let mut absent = swapped.clone();
+        absent.winner_seats = vec![5];
+        let error = build_report(&[forward.clone(), absent])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("winner seat 5"), "{error}");
         let mut regated = swapped;
         regated.ladder.run = 1;
         regated.ladder.gate = 700;
