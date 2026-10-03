@@ -74,6 +74,15 @@ records as the frozen reference it compares against.
   every evaluated leg. Evaluation inputs live in `evaluation/`, not
   `scenarios/`, whose every file the shell menu, map gates and golden sweeps
   read.
+- `bot_ladder` expands a manifest from `evaluation/ladder/` into pairs of
+  `oxide-opponent` against itself at two difficulty rungs, the higher rung in
+  seat zero and then in seat one, both seats sharing one personality seed so the
+  seats differ only in difficulty. `bot-ladder` publishes labelled rows and
+  prints, for each comparison, the higher rung's share of decided legs with a
+  Wilson interval, pairs by result, and whether it reaches the comparison's gate
+  over enough decided pairs, overall and by stance and map family;
+  `bot-ladder-report` re-reads published rows, keeping each manifest's
+  comparisons apart.
 - `bot_pressure` runs the staged scenarios in `evaluation/pressure/`: a scripted
   attacker seat presses one situation (an early rush, air harassment, an
   artillery siege, a transport drop) on a bot seat, and a check over

@@ -1,0 +1,40 @@
+{
+  "name": "ladder-smoke",
+  "tick_limit": 60000,
+  "runs": 2,
+  "scenario_seed_base": 7000,
+  "personality_seed_base": 9000,
+  "stances": ["balanced"],
+  "comparisons": [
+    {
+      "higher": "prime",
+      "lower": "standard",
+      "gate": 650
+    },
+    {
+      "higher": "veteran",
+      "lower": "scrapheap",
+      "gate": 650
+    },
+    {
+      "higher": "prime",
+      "lower": "scrapheap",
+      "gate": 800
+    }
+  ],
+  "min_decided_pairs": 40,
+  "maps": [
+    {
+      "path": "../../../scenarios/skirmish.json",
+      "family": "open"
+    },
+    {
+      "path": "../../../scenarios/the-deep-cut.json",
+      "family": "constrained"
+    },
+    {
+      "path": "../../../scenarios/subsidence.json",
+      "family": "constrained"
+    }
+  ]
+}

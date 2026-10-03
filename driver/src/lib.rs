@@ -4,6 +4,7 @@ pub mod audit;
 pub mod auto;
 pub mod bot_cost;
 pub mod bot_eval;
+pub mod bot_ladder;
 pub mod bot_matrix;
 pub mod bot_pressure;
 pub mod client;

@@ -1,0 +1,64 @@
+{
+  "name": "ladder",
+  "tick_limit": 60000,
+  "runs": 4,
+  "scenario_seed_base": 7000,
+  "personality_seed_base": 9000,
+  "stances": ["turtle", "balanced", "aggressive"],
+  "comparisons": [
+    {
+      "higher": "prime",
+      "lower": "standard",
+      "gate": 650
+    },
+    {
+      "higher": "veteran",
+      "lower": "scrapheap",
+      "gate": 650
+    },
+    {
+      "higher": "prime",
+      "lower": "scrapheap",
+      "gate": 800
+    }
+  ],
+  "min_decided_pairs": 40,
+  "maps": [
+    {
+      "path": "../../../scenarios/skirmish.json",
+      "family": "open"
+    },
+    {
+      "path": "../../../scenarios/cinder-steppe.json",
+      "family": "open"
+    },
+    {
+      "path": "../../../scenarios/terrace-ledger.json",
+      "family": "open"
+    },
+    {
+      "path": "../../../scenarios/the-deep-cut.json",
+      "family": "constrained"
+    },
+    {
+      "path": "../../../scenarios/basalt-spine.json",
+      "family": "constrained"
+    },
+    {
+      "path": "../../../scenarios/subsidence.json",
+      "family": "constrained"
+    },
+    {
+      "path": "../../../scenarios/smelter-basin.json",
+      "family": "constrained"
+    },
+    {
+      "path": "../../../scenarios/severance.json",
+      "family": "severed"
+    },
+    {
+      "path": "../../../scenarios/the-scattering.json",
+      "family": "severed"
+    }
+  ]
+}
