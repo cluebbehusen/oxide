@@ -132,6 +132,7 @@ pub(super) fn run(
     // and arrival queries share this index. Orders, speed and landed state
     // can change during the loop and must still be read from the live unit.
     index.rebuild(&state.units);
+    index.survey(state);
     let motion = MotionSnapshot::capture(state);
     let mut hits: Vec<PendingHit> = Vec::new();
     let mut builds: Vec<PendingHpGain> = Vec::new();
