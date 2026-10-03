@@ -278,7 +278,7 @@ pub(super) fn run(
     }
     advance_upgrades(state, &mut builds);
     commit_unit_welds(state, field_welds, events, &mut heals);
-    turret_fire(state, &motion, events, &mut hits, &mut launches);
+    turret_fire(state, index, &motion, events, &mut hits, &mut launches);
     repair_bay_aura(state, &mut heals, &mut builds);
     crucible_smelter(state);
     // Arrivals join this tick's volley; launches land on later ticks
