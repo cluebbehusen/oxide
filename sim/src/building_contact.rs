@@ -77,10 +77,23 @@ impl Surface {
     pub fn closest(self, from: Vec2Fx) -> Vec2Fx {
         let center = Vec2Fx::new(Fx::from_num(self.anchor.x), Fx::from_num(self.anchor.y))
             + Vec2Fx::new(Fx::from_num(self.size.0), Fx::from_num(self.size.1)) / Fx::from_num(2);
-        self.edges()
-            .map(|(a, b)| closest_on_segment(from, a, b))
-            .min_by_key(|p| (from.dist_sq(*p), cross(from - center, *p - center)))
-            .expect("nonempty outline")
+        let mut best: Option<((Fx, Fx), Vec2Fx)> = None;
+        for (a, b) in self.edges() {
+            // An edge strictly farther than the nearest so far cannot win,
+            // and the first of equally near edges is kept.
+            if let Some(((distance, _), _)) = best {
+                let gap = box_gap(from, from, a, b) - ROUNDING_MARGIN;
+                if gap > Fx::ZERO && gap * gap > distance {
+                    continue;
+                }
+            }
+            let p = closest_on_segment(from, a, b);
+            let key = (from.dist_sq(p), cross(from - center, p - center));
+            if best.is_none_or(|(best, _)| key < best) {
+                best = Some((key, p));
+            }
+        }
+        best.expect("nonempty outline").1
     }
 
     /// Final contact point approached from an ordinary perimeter tile.
@@ -117,6 +130,11 @@ impl Surface {
                 if segments_cross(from, to, a, b) {
                     return false;
                 }
+                // Boxes this far apart keep every point of one segment
+                // farther than the radius from the other.
+                if box_gap(from, to, a, b) > radius.abs() + ROUNDING_MARGIN {
+                    return true;
+                }
                 [
                     from.dist_sq(closest_on_segment(from, a, b)),
                     to.dist_sq(closest_on_segment(to, a, b)),
@@ -134,6 +152,25 @@ impl Surface {
             && tile.y >= self.anchor.y
             && tile.y < self.anchor.y + self.size.1
     }
+}
+
+/// Slack for the rounding in projected points and squared distances, far
+/// above any fixed-point error and far below any surface feature.
+const ROUNDING_MARGIN: Fx = Fx::lit("0.00390625");
+
+/// The larger axis gap between the bounding boxes of segments `p q` and
+/// `a b`, or zero when the boxes overlap: a lower bound on the distance
+/// between any point of one segment and any point of the other.
+fn box_gap(p: Vec2Fx, q: Vec2Fx, a: Vec2Fx, b: Vec2Fx) -> Fx {
+    let gap = |low: Fx, high: Fx, other_low: Fx, other_high: Fx| {
+        (other_low - high).max(low - other_high).max(Fx::ZERO)
+    };
+    gap(p.x.min(q.x), p.x.max(q.x), a.x.min(b.x), a.x.max(b.x)).max(gap(
+        p.y.min(q.y),
+        p.y.max(q.y),
+        a.y.min(b.y),
+        a.y.max(b.y),
+    ))
 }
 
 fn cross(a: Vec2Fx, b: Vec2Fx) -> Fx {
@@ -174,5 +211,68 @@ impl State {
     /// Contact artwork and tools use this surface; ranged distance remains rectangular.
     pub fn contact_surface(&self, building: &Building) -> Surface {
         Surface::new(building)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The pruned queries against a plain walk over every edge, around every
+    /// outline, from points inside, beside, and well clear of it.
+    #[test]
+    fn pruned_surface_queries_match_a_walk_over_every_edge() {
+        let mut rng = chassis::rng::Pcg32::new(41, 7);
+        let mut near = |anchor: i32, span: i32| {
+            Fx::from_num(anchor - 3)
+                + Fx::from_bits(i64::from(rng.next_u32() % ((span as u32 + 6) << 10)) << 22)
+        };
+        let (mut blocked, mut open) = (0, 0);
+        for kind in BuildingKind::ALL {
+            let size = kind.base_stats().size;
+            let surface = Surface {
+                kind,
+                anchor: TilePos::new(10, 20),
+                size,
+            };
+            let center = Vec2Fx::new(Fx::from_num(10), Fx::from_num(20))
+                + Vec2Fx::new(Fx::from_num(size.0), Fx::from_num(size.1)) / Fx::from_num(2);
+            for _ in 0..400 {
+                let from = Vec2Fx::new(near(10, size.0), near(20, size.1));
+                let to = from
+                    + (Vec2Fx::new(near(10, size.0), near(20, size.1)) - from) / Fx::from_num(4);
+                let radius = near(0, 0) / 8 + Fx::lit("0.2");
+                let closest = surface
+                    .edges()
+                    .map(|(a, b)| closest_on_segment(from, a, b))
+                    .min_by_key(|p| (from.dist_sq(*p), cross(from - center, *p - center)))
+                    .expect("nonempty outline");
+                assert_eq!(surface.closest(from), closest, "{kind:?} {from:?}");
+                let clear = !surface.contains(from)
+                    && !surface.contains(to)
+                    && surface.edges().all(|(a, b)| {
+                        !segments_cross(from, to, a, b)
+                            && [
+                                from.dist_sq(closest_on_segment(from, a, b)),
+                                to.dist_sq(closest_on_segment(to, a, b)),
+                                a.dist_sq(closest_on_segment(a, from, to)),
+                                b.dist_sq(closest_on_segment(b, from, to)),
+                            ]
+                            .into_iter()
+                            .all(|d| d >= radius * radius)
+                    });
+                assert_eq!(
+                    surface.clear(from, to, radius),
+                    clear,
+                    "{kind:?} {from:?} {to:?}"
+                );
+                blocked += usize::from(!clear);
+                open += usize::from(clear);
+            }
+        }
+        assert!(
+            blocked > 200 && open > 200,
+            "{blocked} blocked, {open} open"
+        );
     }
 }
