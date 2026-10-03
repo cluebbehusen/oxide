@@ -1100,7 +1100,11 @@ fn source_route_avoiding_danger(
     // passability rule, so a failed search that explored the start's whole
     // component settles any later goal it never reached.
     let mut failed = false;
+    let outside = danger.outside_every_envelope(from);
     let route = |goal: TilePos| {
+        if outside && safe_route_impossible(state, danger, from, goal, allow_dangerous_goal) {
+            return None;
+        }
         if failed
             && danger
                 .last_route_reachability(&[goal], allow_dangerous_goal)
@@ -1110,6 +1114,9 @@ fn source_route_avoiding_danger(
         }
         let found = safe_route(goal);
         failed = found.is_none();
+        if failed && outside {
+            record_safe_failure(state, danger, player);
+        }
         found
     };
     crowding::choose(
@@ -1174,6 +1181,26 @@ fn known_ground_passable(
             return (false, false);
         }
         (!danger.known_building_blocked(tile), false)
+    })
+}
+
+/// Keeps a failed safe search's component. Only a visible node's live scrap
+/// can open closed ground within a phase.
+fn record_safe_failure(state: &State, danger: &GroundSalvageDanger, player: PlayerId) {
+    danger.record_safe_failure(|tile| {
+        state.vision(player).visible(tile) && state.map.scrap_at(tile) > 0
+    });
+}
+
+fn safe_route_impossible(
+    state: &State,
+    danger: &GroundSalvageDanger,
+    from: TilePos,
+    goal: TilePos,
+    allow_goal_only: bool,
+) -> bool {
+    danger.safe_route_impossible(from, goal, allow_goal_only, |tile| {
+        state.map.scrap_at(tile) == 0
     })
 }
 
@@ -1332,6 +1359,7 @@ fn known_rect_route(
     // still holds at entry. Skipping a proven tile returns the identical
     // None without re-flooding to the cap.
     let mut proven = scan.as_deref().is_some_and(|scan| scan.flood_exhausted);
+    let safe_shortcut = avoid_danger && danger.outside_every_envelope(from);
     crowding::choose(
         state,
         id,
@@ -1343,6 +1371,9 @@ fn known_rect_route(
                 && (!avoid_danger || !danger.contains(tile))
         },
         |goal| {
+            if safe_shortcut && safe_route_impossible(state, danger, from, goal, false) {
+                return None;
+            }
             if proven
                 && danger
                     .last_route_reachability(&[goal], false)
@@ -1355,6 +1386,9 @@ fn known_rect_route(
                     && (!avoid_danger || danger.route_safe_from(from, tile))
             });
             if route.is_none() {
+                if safe_shortcut {
+                    record_safe_failure(state, danger, player);
+                }
                 proven = true;
                 if danger.last_route_reachability(&[], false).is_some()
                     && let Some(scan) = scan.as_deref_mut()
@@ -1760,13 +1794,16 @@ mod harvest_zone_tests {
             .build()
             .unwrap();
         let danger = GroundSalvageDanger::capture(&state, PlayerId(0));
-        for worker in &state.units[..2] {
+        // The first worker's failed safety pass proves the sealed side for
+        // the phase, so the second worker searches only while ignoring
+        // danger.
+        for (worker, searches) in state.units[..2].iter().zip([2, 1]) {
             let before = danger.route_search_count();
             assert_eq!(
                 return_cargo_destination(&state, &danger, worker.id, None),
                 None
             );
-            assert_eq!(danger.route_search_count() - before, 2);
+            assert_eq!(danger.route_search_count() - before, searches);
         }
         assert!(return_cargo_destination(&state, &danger, state.units[2].id, None).is_some());
     }
@@ -1816,12 +1853,66 @@ mod harvest_zone_tests {
             )
             .is_none()
         );
+        // The failed safe search above already settles the safety pass; the
+        // pass that ignores danger must still search afresh and succeed.
         let before = danger.route_search_count();
         assert_eq!(
             return_cargo_destination(&state, &danger, worker, None),
             Some(foundry.id)
         );
-        assert_eq!(danger.route_search_count() - before, 2);
+        assert_eq!(danger.route_search_count() - before, 1);
+    }
+
+    /// A failed safe search settles later searches from its component until
+    /// a node beside that component drains open.
+    #[test]
+    fn a_failed_safe_search_settles_repeats_until_a_watched_node_drains() {
+        let scenario = serde_json::json!({
+            "name": "scrap-gated-return", "seed": 25,
+            "map": [
+                "##########################",
+                "#1............#.......2..#",
+                "#.............#..........#",
+                "#.............s..........#",
+                "#.............#..........#",
+                "#.............#..........#",
+                "##########################"
+            ],
+            "players": [
+                {"name": "F", "faction": "ferrous", "scrap": 0, "bot": false},
+                {"name": "C", "faction": "cupric", "scrap": 0, "bot": true}
+            ],
+            "units": [{"player": 0, "kind": "harvester", "x": 17, "y": 3}]
+        });
+        let mut state = Scenario::from_json(&scenario.to_string())
+            .unwrap()
+            .build()
+            .unwrap();
+        let worker = state.units[0].id;
+        let gate = TilePos::new(14, 3);
+        let foundry = state
+            .buildings
+            .iter()
+            .find(|b| b.player == PlayerId(0))
+            .unwrap();
+        let (anchor, size) = (foundry.anchor, foundry.stats().size);
+        let danger = GroundSalvageDanger::capture(&state, PlayerId(0));
+        assert!(state.vision(PlayerId(0)).visible(gate));
+        assert!(danger.outside_every_envelope(state.units[0].tile()));
+        let route =
+            |state: &State| known_rect_route(state, &danger, worker, anchor, size, true, None);
+
+        assert!(route(&state).is_none());
+        let before = danger.route_search_count();
+        assert!(route(&state).is_none());
+        assert_eq!(
+            danger.route_search_count(),
+            before,
+            "the failure settles the repeat"
+        );
+
+        while state.map.extract_scrap(gate).is_some() {}
+        assert!(route(&state).is_some(), "the drained gate lapses the proof");
     }
 
     fn held_worker(wall: Option<(usize, usize)>) -> (State, UnitId, KnownSource, PathFollow) {

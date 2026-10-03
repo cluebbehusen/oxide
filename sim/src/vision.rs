@@ -438,6 +438,9 @@ pub(crate) struct GroundSalvageDanger {
     /// served uncached exactly as before.
     lanes: Vec<Cell<u8>>,
     path_scratch: RefCell<AstarScratch>,
+    /// What failed safe searches from outside every envelope reached this
+    /// phase; see [`Self::safe_route_impossible`].
+    safe_proofs: RefCell<Vec<SafeProof>>,
     #[cfg(test)]
     route_searches: Cell<usize>,
 }
@@ -559,6 +562,7 @@ impl GroundSalvageDanger {
             threat_cells: OnceCell::new(),
             lanes,
             path_scratch: RefCell::new(AstarScratch::default()),
+            safe_proofs: RefCell::new(Vec::new()),
             #[cfg(test)]
             route_searches: Cell::new(0),
         }
@@ -730,6 +734,94 @@ impl GroundSalvageDanger {
         )
     }
 
+    /// Whether `from` lies outside every remembered static envelope and
+    /// incident ring. From such an origin [`Self::route_safe_from`] refuses
+    /// exactly the tiles [`Self::contains`] marks, so every safe search from
+    /// one shares a single passability rule.
+    pub(crate) fn outside_every_envelope(&self, from: TilePos) -> bool {
+        let point = from.center();
+        let in_static = self
+            .threat_cells()
+            .statics
+            .at(self.cell_of(from))
+            .iter()
+            .map(|&i| &self.statics[i as usize])
+            .any(|pressure| {
+                rect_closest_point(pressure.anchor, pressure.size, point).dist_sq(point)
+                    <= pressure.reach_sq
+            });
+        let in_ring = self.incidents.iter().any(|incident| {
+            incident.chebyshev(from) <= crate::stats::HARVEST_INCIDENT_DANGER_RADIUS
+        });
+        !in_static && !in_ring
+    }
+
+    /// Keeps what the search that just failed reached, when it explored
+    /// its whole component: every later safe search starting inside that
+    /// component reaches exactly it. `may_drain` marks closed ground that
+    /// could open later in this phase (a visible node with live scrap);
+    /// such tiles beside the component are watched, since one opening could
+    /// join more ground to it.
+    pub(crate) fn record_safe_failure(&self, may_drain: impl Fn(TilePos) -> bool) {
+        let scratch = self.path_scratch.borrow();
+        if !scratch.last_search_exhausted() {
+            return;
+        }
+        let mut reached = vec![0u64; (self.width as usize * self.height as usize).div_ceil(64)];
+        let mut watched = Vec::new();
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let tile = TilePos::new(x, y);
+                if !scratch.last_search_reached(tile) {
+                    continue;
+                }
+                let i = self.lane_index(tile).expect("in bounds");
+                reached[i / 64] |= 1 << (i % 64);
+                for (dx, dy) in CARDINALS {
+                    let next = tile.offset(dx, dy);
+                    if !scratch.last_search_reached(next) && may_drain(next) {
+                        watched.push(next);
+                    }
+                }
+            }
+        }
+        self.safe_proofs
+            .borrow_mut()
+            .push(SafeProof { reached, watched });
+    }
+
+    /// Whether a recorded failure proves that a safe search from `from`, an
+    /// origin outside every envelope, cannot reach `goal` (or, with
+    /// `allow_goal_only`, any cardinal neighbor of it). A proof applies when
+    /// it reached `from`, and lapses once `drained` reports a watched tile
+    /// open. Adjacent goals are left to the search, which can step onto
+    /// them from a closed origin.
+    pub(crate) fn safe_route_impossible(
+        &self,
+        from: TilePos,
+        goal: TilePos,
+        allow_goal_only: bool,
+        drained: impl Fn(TilePos) -> bool,
+    ) -> bool {
+        if from.chebyshev(goal) <= 1 {
+            return false;
+        }
+        let mut proofs = self.safe_proofs.borrow_mut();
+        proofs.retain(|proof| !proof.watched.iter().any(|&tile| drained(tile)));
+        let Some(proof) = proofs
+            .iter()
+            .find(|proof| self.lane_index(from).is_some_and(|i| proof.reaches(i)))
+        else {
+            return false;
+        };
+        let reached = |tile: TilePos| self.lane_index(tile).is_some_and(|i| proof.reaches(i));
+        !(reached(goal)
+            || (allow_goal_only
+                && CARDINALS
+                    .into_iter()
+                    .any(|(dx, dy)| reached(goal.offset(dx, dy)))))
+    }
+
     #[cfg(test)]
     pub(crate) fn route_search_count(&self) -> usize {
         self.route_searches.get()
@@ -880,6 +972,19 @@ fn tile_reach(reach_sq: Fx) -> i32 {
         reach += 1;
     }
     reach
+}
+
+/// One failed safe search's reach: a whole cardinal component, plus the
+/// drainable tiles bordering it.
+struct SafeProof {
+    reached: Vec<u64>,
+    watched: Vec<TilePos>,
+}
+
+impl SafeProof {
+    fn reaches(&self, index: usize) -> bool {
+        self.reached[index / 64] >> (index % 64) & 1 == 1
+    }
 }
 
 /// [`CellLists`] for each kind of threat record.
