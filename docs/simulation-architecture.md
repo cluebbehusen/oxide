@@ -272,7 +272,8 @@ hover at rest. Their travel and fixed-gun traverse rates are independent of
 bomber flight; per-kind rates live in `UnitKind::cruise_turn_rate` in
 `sim/src/stats.rs`. Near waypoints they slow to tighten the arc; intermediate
 waypoints can be rounded only when the onward segment is clear. An obstructed
-step holds position while the nose turns and replans from the actual position.
+step holds position and keeps its route while the nose turns, and replans from
+the actual position only once the nose faces the waypoint and is still blocked.
 Arrivals, Stop, and in-range attacks hover rather than orbit or land. Fixed guns
 traverse with the body before firing ordinary hitscan shots; Advance only fires
 when already aligned and does not turn away from its route to aim. These
