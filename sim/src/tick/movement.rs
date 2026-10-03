@@ -904,7 +904,8 @@ struct Body {
 /// sum < 1), so 3x3 tile neighborhoods suffice, and a pair that only comes
 /// into one through this tick's corrections waits for the next tick. `None`
 /// means no pair overlaps beyond [`COLLISION_SLOP`], so no pass could move
-/// anything and nothing is sorted.
+/// anything and nothing is sorted; likewise only groups of linked pairs with
+/// such an overlap are kept.
 fn collision_pairs(
     state: &State,
     reversed: bool,
@@ -913,7 +914,7 @@ fn collision_pairs(
 ) -> Option<Vec<(usize, usize)>> {
     index.rebuild(&state.units);
     let mut pairs = Vec::new();
-    let mut any_pressing = false;
+    let mut pressed = Vec::new();
     let bodies: Vec<Body> = state
         .units
         .iter()
@@ -940,15 +941,54 @@ fn collision_pairs(
             let row = index.row_span(home.y + dy, home.x - 1, home.x + 1);
             for j in OrientedRow::new(row, rotated_frame) {
                 if j > i && bodies[j].shoveable && may_touch_this_tick(body, &bodies[j]) {
-                    any_pressing |= pressing(body, &bodies[j]);
+                    if pressing(body, &bodies[j]) {
+                        pressed.push(i);
+                    }
                     pairs.push((i, j));
                 }
             }
         }
     }
-    if !any_pressing {
+    if pressed.is_empty() {
         return None;
     }
+    // Pairs sharing a unit form groups. A group with no pressing pair moves
+    // nothing this tick: only an overlap beyond the slop corrects, a
+    // correction moves only that pair's units, and two units in different
+    // groups were never within reach of each other. Such groups are dropped
+    // before the sort; the order of every pair that remains is unchanged.
+    // When most pairs press, as in a melee, little would be dropped, so the
+    // grouping is skipped.
+    if pressed.len() * 4 >= pairs.len() {
+        return Some(sort_collision_pairs(state, owner_ranks, reversed, pairs));
+    }
+    let mut group: Vec<usize> = (0..bodies.len()).collect();
+    fn root(group: &mut [usize], mut i: usize) -> usize {
+        while group[i] != i {
+            group[i] = group[group[i]];
+            i = group[i];
+        }
+        i
+    }
+    for &(i, j) in &pairs {
+        let (a, b) = (root(&mut group, i), root(&mut group, j));
+        group[a.max(b)] = a.min(b);
+    }
+    let mut moving = vec![false; bodies.len()];
+    for i in pressed {
+        let r = root(&mut group, i);
+        moving[r] = true;
+    }
+    pairs.retain(|&(i, _)| moving[root(&mut group, i)]);
+    Some(sort_collision_pairs(state, owner_ranks, reversed, pairs))
+}
+
+fn sort_collision_pairs(
+    state: &State,
+    owner_ranks: &[usize],
+    reversed: bool,
+    mut pairs: Vec<(usize, usize)>,
+) -> Vec<(usize, usize)> {
     pairs.sort_by_cached_key(|&(i, j)| {
         (
             collision_pair_ranks(state, owner_ranks, i, j),
@@ -958,7 +998,7 @@ fn collision_pairs(
     if reversed {
         pairs.reverse();
     }
-    Some(pairs)
+    pairs
 }
 
 /// One pass over the tick's candidate pairs; returns whether any pair
@@ -1112,6 +1152,39 @@ mod tests {
     use crate::scenario::{PlayerSpec, Scenario, UnitSpec};
     use crate::state::Faction;
     use crate::stats::UnitKind;
+
+    /// A resting row of bodies has no pair to correct and is dropped; a
+    /// touching neighbor of a pressing pair stays, since the pair's push can
+    /// reach it.
+    #[test]
+    fn only_groups_with_a_pressing_pair_are_kept() {
+        let mut state = Scenario::skirmish().build().expect("skirmish builds");
+        state.units.clear();
+        let spacing = UnitKind::Harvester.stats().radius * 2;
+        let step = |from: Vec2Fx, gap: &str| from + Vec2Fx::new(spacing + Fx::lit(gap), Fx::ZERO);
+        let mut resting = TilePos::new(6, 5).center();
+        for _ in 0..4 {
+            state.spawn_unit(crate::PlayerId(0), UnitKind::Harvester, resting);
+            resting = step(resting, "0.1");
+        }
+        let first = TilePos::new(6, 12).center();
+        let second = step(first, "-0.1");
+        let third = step(second, "0.1");
+        let chain = [first, second, third]
+            .map(|pos| state.spawn_unit(crate::PlayerId(0), UnitKind::Harvester, pos));
+        let slot = |id| state.units.iter().position(|u| u.id == id).unwrap();
+        let ranks = owner_local_ranks(&state);
+        let pairs = collision_pairs(&state, false, &mut UnitIndex::new(), &ranks)
+            .expect("the chain presses");
+        let mut kept: Vec<_> = pairs.into_iter().collect();
+        kept.sort_unstable();
+        let mut expected = vec![
+            (slot(chain[0]), slot(chain[1])),
+            (slot(chain[1]), slot(chain[2])),
+        ];
+        expected.sort_unstable();
+        assert_eq!(kept, expected);
+    }
 
     #[test]
     fn contact_that_cancels_progress_drops_the_route_after_the_stall_bound() {
