@@ -152,6 +152,25 @@ Read the report by match mode, overall and by difficulty, stance and map family:
   baseline cache is cleared.
 - **Deliveries**, shown when any seat trained armed ground units on severed
   ground: their scrap delivered, lost and left at home.
+- **Ledger**, per controller over each mode:
+  - **Net worth share**: its side's share of army, buildings and bank in
+    head-to-head pairs at 6k, 12k, 18k and 24k ticks. It moves with far fewer
+    legs than win share and shows when a game turns; a match that ended sooner
+    carries its final worth.
+  - **Attacks**, grouped by strength sent against the known defense at launch:
+    how many withdrew, fought on or never met the enemy, and value dealt over
+    value lost. A withdrawal rate that does not fall as the sent-to-known ratio
+    rises means the estimate misses what the attack meets.
+  - **Units and buildings**, most-bought first: value dealt per scrap paid, by
+    victim and by place (near its own buildings, near the enemy's, or neither),
+    enabled (damage friendly shooters dealt to targets only that kind saw),
+    repair supplied, deaths and lifetime; for buildings, income and production
+    per scrap. Front-line units absorb damage for ranged ones, so their own
+    returns understate them; upgraded buildings survived to be upgraded, so
+    compare tiers with care.
+
+`replay-ledger <replay>...` gives the same tables for any replay or match
+recording, including human games.
 
 ## Difficulty ladder
 
@@ -170,7 +189,9 @@ pairs. `ladder.json` covers the nine duel maps, every stance and four runs,
 about 650 legs; run it for a lever's final numbers. `ladder-smoke.json`,
 Balanced on three maps with two runs, is the quick check while a difficulty
 lever is in progress. `bot-ladder-report <rows.jsonl>...` re-reads published
-rows, and `--replay-dir` saves a replay of every leg.
+rows, and `--replay-dir` saves a replay of every leg. The report adds the higher
+rung's share of net worth by pair, which separates rungs with fewer legs than
+win share, and each rung's ledger and attack calibration.
 
 ## Failure detectors
 

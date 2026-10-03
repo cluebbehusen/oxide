@@ -449,4 +449,6 @@ received own events, committed spending, purchases, unit-order count, allowance,
 saving target with its next purchase, protected scrap, and missions. Traces are
 diagnostics only. `Opponent::protected_scrap` and `Opponent::missions` report
 the protected amount and each mission's phase, when it began and the timeout it
-should end within to hosts.
+should end within to hosts. `Opponent::launches` reports the attacks the last
+decision launched, each with the known defense, margin, need and strength sent
+it was judged by and the units sent; it is never saved and no decision reads it.

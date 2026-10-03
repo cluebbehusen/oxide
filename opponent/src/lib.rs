@@ -22,7 +22,7 @@ pub use checkpoint::Checkpoint;
 pub use events::{OwnEvent, OwnEvents};
 pub use investments::{Investment, Step};
 pub use map::MapModel;
-pub use missions::{MissionKind, MissionStatus, Phase};
+pub use missions::{Launch, MissionKind, MissionStatus, Phase};
 pub use profile::{PersonalityTraits, ResolvedProfile, Specialty};
 pub use trace::{NextPurchase, Purchase, SavingTarget, Trace};
 
@@ -38,6 +38,8 @@ pub struct Opponent {
     profile: ResolvedProfile,
     map: Arc<MapModel>,
     persistent: Box<decision::Persistent>,
+    /// Attacks the last decision launched; output only, never saved.
+    launches: Vec<Launch>,
 }
 
 impl Opponent {
@@ -49,6 +51,7 @@ impl Opponent {
             profile: ResolvedProfile::resolve(config),
             map,
             persistent: Box::default(),
+            launches: Vec::new(),
         }
     }
 
@@ -60,6 +63,13 @@ impl Opponent {
     /// The seat's missions as its last decision left them.
     pub fn missions(&self) -> Vec<MissionStatus> {
         self.persistent.missions.statuses()
+    }
+
+    /// The attacks the seat's last decision launched, with what it believed
+    /// of each when it did. Diagnostics for hosts: never saved, and no
+    /// decision reads them.
+    pub fn launches(&self) -> &[Launch] {
+        &self.launches
     }
 
     /// The seat this controller drives.
@@ -131,13 +141,14 @@ impl Opponent {
         }
         let observation = ObservationData::fog_honest(state, self.player);
         let events = events.take();
-        let decision = decision::decide(
+        let mut decision = decision::decide(
             &observation,
             &events,
             &self.map,
             &self.profile,
             &mut self.persistent,
         );
+        self.launches = std::mem::take(&mut decision.launches);
         Some((observation, events, decision))
     }
 }

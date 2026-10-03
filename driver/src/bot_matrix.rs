@@ -41,7 +41,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump when the evaluation loop changes what a row records, so cached
 /// baseline rows are recomputed rather than mixed with new ones.
-pub const BASELINE_CACHE_VERSION: u32 = 1;
+pub const BASELINE_CACHE_VERSION: u32 = 2;
 
 /// File a matrix run publishes in its output directory.
 pub const ROWS_FILE: &str = "rows.jsonl";

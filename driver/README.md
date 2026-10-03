@@ -34,6 +34,19 @@ records as the frozen reference it compares against.
   absolute tick, and summaries and inactivity windows cover only that segment.
   Inspection schema 2 and summary schema 4 expose this boundary; inspection
   rejects requests for unavailable earlier ticks.
+- `ledger` is the impact ledger: what every unit and building did over a match,
+  valued in scrap. Events name a hit's shooter but not its damage or a death's
+  killer, so it diffs every body's health tick to tick, net of reported repairs,
+  and splits each loss among the shooters, shells, charges and Sapper blasts
+  that hit that body. It also credits repair to the welder or Repair Bay,
+  spotting to the nearest friendly body that saw a target its shooter could not
+  (sight approximated by vision radius), hidden charges destroyed inside an
+  Array's detection to that Array, deliveries and passive income by building,
+  spending by category and phase, and each seat's net worth every 1,000 ticks.
+  Crew repair of buildings, radar warning and the harvester recovery trickle
+  emit nothing it can credit. `replay-ledger <replay>...` re-executes replays
+  and match recordings, not player saves, through it and pools seats by faction
+  and controller; `--json` prints each game's ledgers.
 - `bot_eval` runs the player-facing controllers to a decision, tick ceiling, or
   stall-loop anomaly, and emits compact JSONL with candidate, scenario,
   tick-ceiling, exact-profile, and anomaly provenance. `--controller` selects
@@ -54,9 +67,13 @@ records as the frozen reference it compares against.
   impossible orders, abandoned paid construction, starved production,
   `oxide-opponent` missions stuck in one phase, and an army idle at home) with
   per-producer idle diagnostics, the fate of armed ground units trained on
-  severed ground, and income against a saturated-economy estimate while the seat
-  is still in the match. These are QA evidence computed from authoritative state
-  and the missions a controller reports; they never reach a controller.
+  severed ground, income against a saturated-economy estimate while the seat is
+  still in the match, and the seat's impact ledger. `oxide-opponent` seats also
+  record attack calibration: each attack its decisions launched, with the known
+  defense, margin, need and strength sent that `Opponent::launches` reports,
+  followed through its mission to how it ended and what its units dealt and
+  lost. These are QA evidence computed from authoritative state and what a
+  controller reports; they never reach a controller.
 - `bot_matrix` expands a manifest from `evaluation/` into cells of
   `oxide-opponent` against `oxide-bot`, every seat sharing one personality seed,
   plus one `oxide-bot` mirror leg per cell. A duel is a head-to-head pair with
@@ -69,9 +86,11 @@ records as the frozen reference it compares against.
   under the reference digest and reused while it is unchanged. `bot-matrix`
   publishes labelled rows and prints pair outcomes, the new bot's share of won
   legs with Wilson intervals, decided rates, placement, failure incidents and
-  income by match mode, overall and by difficulty, stance and map family;
-  `bot-matrix-report` re-reads published rows. `--replay-dir` saves a replay of
-  every evaluated leg. Evaluation inputs live in `evaluation/`, not
+  income by match mode, overall and by difficulty, stance and map family, then
+  each controller's ledger over each mode: its side's share of net worth in
+  head-to-head pairs, its attack calibration and its most-bought units and
+  buildings; `bot-matrix-report` re-reads published rows. `--replay-dir` saves a
+  replay of every evaluated leg. Evaluation inputs live in `evaluation/`, not
   `scenarios/`, whose every file the shell menu, map gates and golden sweeps
   read.
 - `bot_ladder` expands a manifest from `evaluation/ladder/` into pairs of
@@ -80,9 +99,10 @@ records as the frozen reference it compares against.
   seats differ only in difficulty. `bot-ladder` publishes labelled rows and
   prints, for each comparison, the higher rung's share of decided legs with a
   Wilson interval, pairs by result, and whether it reaches the comparison's gate
-  over enough decided pairs, overall and by stance and map family;
-  `bot-ladder-report` re-reads published rows, keeping each manifest's
-  comparisons apart.
+  over enough decided pairs, overall and by stance and map family, with the
+  higher rung's share of net worth by pair, then each rung's ledger and attack
+  calibration; `bot-ladder-report` re-reads published rows, keeping each
+  manifest's comparisons apart.
 - `bot_pressure` runs the staged scenarios in `evaluation/pressure/`: a scripted
   attacker seat presses one situation (an early rush, air harassment, an
   artillery siege, a transport drop) on a bot seat, and a check over
