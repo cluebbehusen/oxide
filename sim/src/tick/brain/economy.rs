@@ -1863,6 +1863,49 @@ mod harvest_zone_tests {
         assert_eq!(danger.route_search_count() - before, 1);
     }
 
+    /// A failure inside a small pocket keeps no proof: walking the whole
+    /// map to record it would cost more than repeating the pocket's search.
+    #[test]
+    fn a_failed_search_from_a_small_pocket_keeps_no_proof() {
+        let scenario = serde_json::json!({
+            "name": "pocketed-return", "seed": 25,
+            "map": [
+                "##########################",
+                "#1....................2..#",
+                "#..............###.......#",
+                "#..............#.#.......#",
+                "#..............###.......#",
+                "#........................#",
+                "##########################"
+            ],
+            "players": [
+                {"name": "F", "faction": "ferrous", "scrap": 0, "bot": false},
+                {"name": "C", "faction": "cupric", "scrap": 0, "bot": true}
+            ],
+            "units": [{"player": 0, "kind": "harvester", "x": 16, "y": 3}]
+        });
+        let state = Scenario::from_json(&scenario.to_string())
+            .unwrap()
+            .build()
+            .unwrap();
+        let worker = state.units[0].id;
+        let foundry = state
+            .buildings
+            .iter()
+            .find(|b| b.player == PlayerId(0))
+            .unwrap();
+        let (anchor, size) = (foundry.anchor, foundry.stats().size);
+        let danger = GroundSalvageDanger::capture(&state, PlayerId(0));
+        let route = || known_rect_route(&state, &danger, worker, anchor, size, true, None);
+        assert!(route().is_none());
+        let before = danger.route_search_count();
+        assert!(route().is_none());
+        assert!(
+            danger.route_search_count() > before,
+            "the pocket searches again"
+        );
+    }
+
     /// A failed safe search settles later searches from its component until
     /// a node beside that component drains open.
     #[test]

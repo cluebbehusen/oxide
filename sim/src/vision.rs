@@ -762,9 +762,17 @@ impl GroundSalvageDanger {
     /// could open later in this phase (a visible node with live scrap);
     /// such tiles beside the component are watched, since one opening could
     /// join more ground to it.
+    ///
+    /// Only a component covering at least an eighth of the map is kept: a
+    /// proof costs a walk over the whole map, which a small component's
+    /// repeat searches would not repay. That bounds the walk by eight times
+    /// the search it follows; and since a search from inside a kept
+    /// component never fails into a new proof, at most eight are kept at
+    /// once.
     pub(crate) fn record_safe_failure(&self, may_drain: impl Fn(TilePos) -> bool) {
         let scratch = self.path_scratch.borrow();
-        if !scratch.last_search_exhausted() {
+        let area = self.width as usize * self.height as usize;
+        if !scratch.last_search_exhausted() || (scratch.last_expansions() as usize) * 8 < area {
             return;
         }
         let mut reached = vec![0u64; (self.width as usize * self.height as usize).div_ceil(64)];
