@@ -4,12 +4,11 @@
 //! move every hash or poison the derived equality with a skipped field.
 //!
 //! Entries are `(tile, slot)` pairs in `(y, x, slot)` order — exactly the
-//! order the collision resolver's bucket list has always used — plus a
-//! per-tile offset table over the occupied rectangle, so a neighborhood
-//! query slices each row with two lookups and walks it contiguously.
-//! Every window walk yields candidates in the same deterministic order the
-//! full scans produced; whoever consumes the index inherits that order,
-//! not a new one.
+//! order the collision resolver's bucket list has always used — plus an
+//! offset table over the occupied rectangle, so a neighborhood query
+//! slices each row once and walks it contiguously. Every window walk yields
+//! candidates in the same deterministic order the full scans produced;
+//! whoever consumes the index inherits that order, not a new one.
 
 use crate::State;
 use crate::state::{Building, Unit};
@@ -26,9 +25,10 @@ pub(super) struct UnitIndex {
     entries: Vec<(TilePos, usize)>,
     /// The same pairs in slot order, before the sort.
     unordered: Vec<(TilePos, usize)>,
-    /// Row-major over the occupied rectangle: `starts[t]..starts[t + 1]`
-    /// bounds tile `t` within `entries`.
+    /// `starts[b]..starts[b + 1]` bounds bucket `b` within `entries`: one
+    /// bucket per tile or per row of the occupied rectangle, row-major.
     starts: Vec<u32>,
+    layout: Layout,
     /// Lowest occupied row and column.
     origin: TilePos,
     /// Columns in the occupied rectangle; zero when no body lives.
@@ -39,6 +39,23 @@ pub(super) struct UnitIndex {
     /// ran since the last rebuild.
     presence: Option<Presence>,
 }
+
+/// How [`UnitIndex::starts`] buckets the entries.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Layout {
+    /// One bucket per tile, so a row lookup is two reads.
+    Tiles,
+    /// One bucket per row, `(x, slot)`-sorted within it, so a row lookup is
+    /// two binary searches. Chosen when the occupied rectangle holds more
+    /// than [`TILES_PER_BODY`] tiles per body, which keeps the table, and
+    /// the work of rebuilding it, proportional to the bodies.
+    Rows,
+}
+
+/// Most occupied-rectangle tiles per body the per-tile layout may cost.
+/// Crowded late games sit well under it; a few units spread over a large
+/// map, or a body far outside the map, sit far over.
+const TILES_PER_BODY: usize = 64;
 
 /// Edge of a presence cell, in tiles.
 const CELL: i32 = 8;
@@ -85,6 +102,7 @@ impl UnitIndex {
             entries: Vec::new(),
             unordered: Vec::new(),
             starts: Vec::new(),
+            layout: Layout::Rows,
             origin: TilePos::new(0, 0),
             width: 0,
             height: 0,
@@ -94,8 +112,8 @@ impl UnitIndex {
 
     /// Rebuilds the index over `units` (dead bodies excluded), reusing the
     /// buffers. The rectangle spans the occupied coordinate range, including
-    /// bodies fractionally beyond a map border that [`State`]'s accepted
-    /// coordinate envelope permits.
+    /// bodies beyond a map border, which [`State`]'s accepted coordinate
+    /// envelope permits.
     pub(super) fn rebuild(&mut self, units: &[Unit]) {
         self.presence = None;
         self.unordered.clear();
@@ -122,13 +140,23 @@ impl UnitIndex {
         self.width = high.x - low.x + 1;
         self.height = high.y - low.y + 1;
 
-        // Counting sort: tally each tile, accumulate to each tile's end,
-        // then place entries in reverse slot order, stepping each tile's
-        // cursor back to its start. Slot order survives within a tile.
         let area = self.width as usize * self.height as usize;
-        self.starts.resize(area + 1, 0);
+        self.layout = if area <= TILES_PER_BODY * self.unordered.len() {
+            Layout::Tiles
+        } else {
+            Layout::Rows
+        };
+        let buckets = match self.layout {
+            Layout::Tiles => area,
+            Layout::Rows => self.height as usize,
+        };
+
+        // Counting sort: tally each bucket, accumulate to each bucket's end,
+        // then place entries in reverse slot order, stepping each bucket's
+        // cursor back to its start. Slot order survives within a bucket.
+        self.starts.resize(buckets + 1, 0);
         for &(tile, _) in &self.unordered {
-            let at = self.offset(tile);
+            let at = self.bucket(tile);
             self.starts[at] += 1;
         }
         let mut end = 0;
@@ -138,15 +166,25 @@ impl UnitIndex {
         }
         self.entries.resize(self.unordered.len(), (first, 0));
         for &(tile, slot) in self.unordered.iter().rev() {
-            let at = self.offset(tile);
+            let at = self.bucket(tile);
             self.starts[at] -= 1;
             self.entries[self.starts[at] as usize] = (tile, slot);
         }
+        if self.layout == Layout::Rows {
+            for row in self.starts.windows(2) {
+                self.entries[row[0] as usize..row[1] as usize]
+                    .sort_unstable_by_key(|&(tile, slot)| (tile.x, slot));
+            }
+        }
     }
 
-    /// Position of an occupied-rectangle tile in `starts`.
-    fn offset(&self, tile: TilePos) -> usize {
-        (tile.y - self.origin.y) as usize * self.width as usize + (tile.x - self.origin.x) as usize
+    /// The bucket holding an occupied-rectangle tile.
+    fn bucket(&self, tile: TilePos) -> usize {
+        let row = (tile.y - self.origin.y) as usize;
+        match self.layout {
+            Layout::Tiles => row * self.width as usize + (tile.x - self.origin.x) as usize,
+            Layout::Rows => row,
+        }
     }
 
     /// Records which teams own the indexed bodies and `state`'s buildings in
@@ -230,14 +268,28 @@ impl UnitIndex {
     /// bucket walk over that span produces. Empty outside the occupied
     /// rectangle.
     pub(super) fn row_span(&self, y: i32, x_min: i32, x_max: i32) -> &[(TilePos, usize)] {
-        let x_min = x_min.max(self.origin.x);
-        let x_max = x_max.min(self.origin.x + self.width - 1);
-        if y < self.origin.y || y >= self.origin.y + self.height || x_min > x_max {
+        if y < self.origin.y || y >= self.origin.y + self.height {
             return &[];
         }
-        let first = self.offset(TilePos::new(x_min, y));
-        let last = self.offset(TilePos::new(x_max, y));
-        &self.entries[self.starts[first] as usize..self.starts[last + 1] as usize]
+        match self.layout {
+            Layout::Tiles => {
+                let x_min = x_min.max(self.origin.x);
+                let x_max = x_max.min(self.origin.x + self.width - 1);
+                if x_min > x_max {
+                    return &[];
+                }
+                let first = self.bucket(TilePos::new(x_min, y));
+                let last = self.bucket(TilePos::new(x_max, y));
+                &self.entries[self.starts[first] as usize..self.starts[last + 1] as usize]
+            }
+            Layout::Rows => {
+                let at = (y - self.origin.y) as usize;
+                let row = &self.entries[self.starts[at] as usize..self.starts[at + 1] as usize];
+                let start = row.partition_point(|&(t, _)| t.x < x_min);
+                let len = row[start..].partition_point(|&(t, _)| t.x <= x_max);
+                &row[start..start + len]
+            }
+        }
     }
 }
 
@@ -249,8 +301,37 @@ mod tests {
     /// Every window the index serves must equal a brute-force filter of
     /// the unit list, entry for entry — the order is load-bearing (the
     /// collision resolver applies corrections in visit order).
-    #[test]
-    fn row_spans_match_a_full_filter_in_order() {
+    fn assert_row_spans_match_a_full_filter(state: &State, index: &UnitIndex) {
+        let reference = |y: i32, x_min: i32, x_max: i32| -> Vec<(TilePos, usize)> {
+            let mut hits: Vec<(TilePos, usize)> = state
+                .units
+                .iter()
+                .enumerate()
+                .filter(|(_, u)| u.hp > 0)
+                .map(|(slot, u)| (u.tile(), slot))
+                .filter(|(t, _)| t.y == y && t.x >= x_min && t.x <= x_max)
+                .collect();
+            hits.sort_unstable_by_key(|&(t, slot)| (t.x, slot));
+            hits
+        };
+        let width = state.map.width();
+        let height = state.map.height();
+        let mut nonempty = 0;
+        for y in -1..=height {
+            for x in -1..=width {
+                let got = index.row_span(y, x - 1, x + 1);
+                assert_eq!(got, &reference(y, x - 1, x + 1)[..], "window ({y}, {x})");
+                nonempty += usize::from(!got.is_empty());
+            }
+            let whole = index.row_span(y, i32::MIN, i32::MAX);
+            assert_eq!(whole, &reference(y, i32::MIN, i32::MAX)[..], "row {y}");
+        }
+        assert!(nonempty > 0, "the fixture exercised no occupied windows");
+    }
+
+    /// A state whose bodies sit on both sides of the map, border rows
+    /// included, so the occupied rectangle is the whole map and then some.
+    fn spread_skirmish() -> State {
         let mut state = Scenario::skirmish().build().expect("skirmish builds");
         for _ in 0..90 {
             state.tick(&[]);
@@ -271,32 +352,48 @@ mod tests {
         state
             .validate_invariants()
             .expect("the accepted coordinate envelope includes border rows");
+        state
+    }
+
+    #[test]
+    fn row_spans_match_a_full_filter_in_either_layout() {
+        let mut state = spread_skirmish();
+        let mut index = UnitIndex::new();
+        index.rebuild(&state.units);
+        assert_eq!(index.layout, Layout::Rows, "a sparse map keeps row buckets");
+        assert_row_spans_match_a_full_filter(&state, &index);
+
+        // Pack the same bodies into a block across the corner, stacking
+        // several per tile, until the rectangle is small enough for tiles.
+        for (slot, unit) in state.units.iter_mut().enumerate() {
+            let slot = slot as i32 / 2;
+            unit.pos = TilePos::new(slot % 3 - 1, slot / 3 - 1).center();
+        }
+        index.rebuild(&state.units);
+        assert_eq!(index.layout, Layout::Tiles, "a crowd gets tile buckets");
+        assert_row_spans_match_a_full_filter(&state, &index);
+    }
+
+    /// The accepted envelope reaches far past any map; a body out there
+    /// must not make the index pay for the empty rectangle between.
+    #[test]
+    fn bodies_at_the_envelope_corners_keep_the_index_small() {
+        let mut state = Scenario::skirmish().build().expect("skirmish builds");
+        let near = TilePos::new(-2048, -2048);
+        let far = TilePos::new(2047, 2047);
+        state.units[0].pos = near.center();
+        state.units[1].pos = far.center();
+        state
+            .validate_invariants()
+            .expect("the envelope accepts both corners");
 
         let mut index = UnitIndex::new();
         index.rebuild(&state.units);
-        let reference = |y: i32, x_min: i32, x_max: i32| -> Vec<(TilePos, usize)> {
-            let mut hits: Vec<(TilePos, usize)> = state
-                .units
-                .iter()
-                .enumerate()
-                .filter(|(_, u)| u.hp > 0)
-                .map(|(slot, u)| (u.tile(), slot))
-                .filter(|(t, _)| t.y == y && t.x >= x_min && t.x <= x_max)
-                .collect();
-            hits.sort_unstable_by_key(|&(t, slot)| (t.x, slot));
-            hits
-        };
-        let mut nonempty = 0;
-        for y in -1..=height {
-            for x in -1..=width {
-                let got = index.row_span(y, x - 1, x + 1);
-                assert_eq!(got, &reference(y, x - 1, x + 1)[..], "window ({y}, {x})");
-                nonempty += usize::from(!got.is_empty());
-            }
+        assert_eq!(index.layout, Layout::Rows);
+        assert_eq!(index.starts.len(), 4096 + 1);
+        for (slot, tile) in [(0, near), (1, far)] {
+            assert_eq!(index.row_span(tile.y, tile.x, tile.x), &[(tile, slot)]);
         }
-        assert!(nonempty > 0, "the fixture exercised no occupied windows");
-        assert_eq!(index.row_span(-1, i32::MIN, i32::MAX).len(), 1);
-        assert_eq!(index.row_span(height, i32::MIN, i32::MAX).len(), 1);
     }
 
     /// The survey may over-report but never miss: every hostile body or
@@ -304,17 +401,9 @@ mod tests {
     /// would skip a target the full scan finds.
     #[test]
     fn the_survey_never_misses_a_hostile_near_a_tile() {
-        let mut state = Scenario::skirmish().build().expect("skirmish builds");
-        for _ in 0..90 {
-            state.tick(&[]);
-        }
+        let mut state = spread_skirmish();
         let width = state.map.width();
         let height = state.map.height();
-        state.units[0].pos = TilePos::new(-1, -1).center();
-        state.units[1].pos = TilePos::new(width, height).center();
-        state
-            .validate_invariants()
-            .expect("the accepted coordinate envelope includes border rows");
         // A footprint across a cell corner must mark every cell it covers.
         let corner = TilePos::new(
             CELL * (width / CELL / 2) - 1,
