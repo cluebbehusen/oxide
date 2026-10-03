@@ -30,13 +30,25 @@ fn leg_open(unit: &Unit, waypoint: TilePos, terrain: &GroundTerrain) -> bool {
                     crate::tick::brain::contact::collision_radius(unit),
                 ))
     } else {
-        !chassis::path::swept_line_blocked(
+        !swept_leg_blocked(
             unit.pos,
             waypoint.center(),
             unit.kind.stats().radius,
             |tile| terrain.open(tile),
         )
     }
+}
+
+/// [`chassis::path::swept_line_blocked`], answered first from the leg's
+/// bounding box: every tile the sweep can test lies inside it, so a box with
+/// no closed tile proves the leg open without walking its three lines.
+fn swept_leg_blocked(a: Vec2Fx, b: Vec2Fx, radius: Fx, clear: impl Fn(TilePos) -> bool) -> bool {
+    // Margin for the rounding in the sweep's edge offsets.
+    let reach = radius + const { Fx::lit("0.015625") };
+    let low = TilePos::containing(Vec2Fx::new(a.x.min(b.x) - reach, a.y.min(b.y) - reach));
+    let high = TilePos::containing(Vec2Fx::new(a.x.max(b.x) + reach, a.y.max(b.y) + reach));
+    let open = (low.y..=high.y).all(|y| (low.x..=high.x).all(|x| clear(TilePos::new(x, y))));
+    !open && chassis::path::swept_line_blocked(a, b, radius, clear)
 }
 
 pub(super) fn path_point(path: &crate::state::PathFollow, index: usize) -> Vec2Fx {
@@ -107,12 +119,7 @@ fn route_target(
             && target < cursor + ROUTE_LOOKAHEAD
             && let Some(&candidate) = path.waypoints.get(target + 1)
             && clear(candidate)
-            && !chassis::path::swept_line_blocked(
-                unit.pos,
-                path_point(path, target + 1),
-                radius,
-                clear,
-            )
+            && !swept_leg_blocked(unit.pos, path_point(path, target + 1), radius, clear)
         {
             target += 1;
         }
@@ -656,5 +663,41 @@ mod tests {
         advance(&mut unit, &state.ground_terrain(), &ParkedBodies::default());
         assert_eq!(unit.pos, before);
         assert_eq!(unit.drive_speed, Fx::ZERO);
+    }
+
+    #[test]
+    fn the_bounding_box_shortcut_never_changes_a_sweep() {
+        let mut rng = chassis::rng::Pcg32::new(29, 1);
+        let mut coordinate =
+            |span: u32| Fx::from_bits(i64::from(rng.next_u32() % (span << 8)) << 24);
+        let (mut open, mut blocked) = (0, 0);
+        for layout in 0..40u32 {
+            let closed: Vec<bool> = (0..256).map(|i| (i * 7 + layout * 13) % 23 == 0).collect();
+            let clear = |tile: TilePos| {
+                (0..16).contains(&tile.x)
+                    && (0..16).contains(&tile.y)
+                    && !closed[(tile.y * 16 + tile.x) as usize]
+            };
+            for _ in 0..200 {
+                let a = Vec2Fx::new(coordinate(16), coordinate(16));
+                let b = a + Vec2Fx::new(
+                    coordinate(12) - Fx::from_num(6),
+                    coordinate(12) - Fx::from_num(6),
+                );
+                let radius = coordinate(1) / 2;
+                let swept = chassis::path::swept_line_blocked(a, b, radius, clear);
+                assert_eq!(
+                    swept_leg_blocked(a, b, radius, clear),
+                    swept,
+                    "{a:?} -> {b:?} r {radius:?}"
+                );
+                open += usize::from(!swept);
+                blocked += usize::from(swept);
+            }
+        }
+        assert!(
+            open > 100 && blocked > 100,
+            "{open} open, {blocked} blocked"
+        );
     }
 }

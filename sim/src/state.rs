@@ -725,20 +725,28 @@ pub struct State {
     pub(crate) building_occupancy: Vec<u8>,
 }
 
-/// Tiles under friendly ground bodies standing still, sorted by `(y, x)`.
-/// Route lookahead never cuts through them; routes stay body-blind and the
-/// collision resolver separates whatever bodies meet.
+/// Map tiles under friendly ground bodies standing still, one bit per tile
+/// in row-major order. Route lookahead never cuts through them; routes stay
+/// body-blind and the collision resolver separates whatever bodies meet.
+/// Ground off the map is closed anyway, so a body resting there marks
+/// nothing.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct ParkedBodies {
-    tiles: Vec<TilePos>,
+    width: i32,
+    height: i32,
+    bits: Vec<u64>,
 }
 
 impl ParkedBodies {
-    /// Whether a friendly body stands still on `tile`.
+    fn index(&self, tile: TilePos) -> Option<usize> {
+        ((0..self.width).contains(&tile.x) && (0..self.height).contains(&tile.y))
+            .then(|| tile.y as usize * self.width as usize + tile.x as usize)
+    }
+
+    /// Whether a friendly body stands still on map tile `tile`.
     pub(crate) fn blocks(&self, tile: TilePos) -> bool {
-        self.tiles
-            .binary_search_by_key(&(tile.y, tile.x), |t| (t.y, t.x))
-            .is_ok()
+        self.index(tile)
+            .is_some_and(|i| self.bits[i / 64] >> (i % 64) & 1 == 1)
     }
 }
 
@@ -1878,21 +1886,24 @@ impl State {
     /// now. Only friendly bodies count: steering around an unseen enemy
     /// before contact would leak its position.
     pub(crate) fn parked_bodies(&self, player: PlayerId) -> ParkedBodies {
-        let mut tiles: Vec<TilePos> = self
-            .units
-            .iter()
-            .filter(|u| {
-                u.hp > 0
-                    && u.domain() == crate::stats::Domain::Ground
-                    && u.drive_speed == Fx::ZERO
-                    && u.path.is_none()
-                    && !self.hostile(player, u.player)
-            })
-            .map(Unit::tile)
-            .collect();
-        tiles.sort_unstable_by_key(|t| (t.y, t.x));
-        tiles.dedup();
-        ParkedBodies { tiles }
+        let (width, height) = (self.map.width(), self.map.height());
+        let mut parked = ParkedBodies {
+            width,
+            height,
+            bits: vec![0; (width as usize * height as usize).div_ceil(64)],
+        };
+        for unit in self.units.iter().filter(|u| {
+            u.hp > 0
+                && u.domain() == crate::stats::Domain::Ground
+                && u.drive_speed == Fx::ZERO
+                && u.path.is_none()
+                && !self.hostile(player, u.player)
+        }) {
+            if let Some(i) = parked.index(unit.tile()) {
+                parked.bits[i / 64] |= 1 << (i % 64);
+            }
+        }
+        parked
     }
 
     /// Marks or clears one building's footprint in the occupancy grid.
@@ -2320,6 +2331,42 @@ pub enum PlaceRefusal {
 mod tests {
     use super::*;
     use chassis::fx::Fx;
+
+    #[test]
+    fn parked_bodies_mark_exactly_the_resting_friendly_ground_tiles() {
+        let mut state = crate::Scenario::skirmish()
+            .build()
+            .expect("skirmish builds");
+        for _ in 0..90 {
+            state.tick(&[]);
+        }
+        let (width, height) = (state.map.width(), state.map.height());
+        state.units[0].pos = TilePos::new(-1, 2).center();
+        state.units[0].path = None;
+        state.units[0].drive_speed = Fx::ZERO;
+        let mut marked = 0;
+        for player in 0..state.players.len() {
+            let viewer = PlayerId(player as u8);
+            let parked = state.parked_bodies(viewer);
+            for y in -1..=height {
+                for x in -1..=width {
+                    let tile = TilePos::new(x, y);
+                    let resting = state.map.grid().get(tile).is_some()
+                        && state.units.iter().any(|u| {
+                            u.hp > 0
+                                && u.domain() == crate::stats::Domain::Ground
+                                && u.drive_speed == Fx::ZERO
+                                && u.path.is_none()
+                                && !state.hostile(viewer, u.player)
+                                && u.tile() == tile
+                        });
+                    assert_eq!(parked.blocks(tile), resting, "{viewer:?} {tile:?}");
+                    marked += usize::from(resting);
+                }
+            }
+        }
+        assert!(marked > 0, "no body was resting");
+    }
 
     fn tiny_state() -> State {
         let (map, _) = Map::parse(&["....", "....", "....", "...."]).unwrap();
