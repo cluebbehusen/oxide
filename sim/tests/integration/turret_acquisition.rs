@@ -210,3 +210,41 @@ fn turret_building_fallback_obeys_range_terrain_and_allegiance() {
         }
     }
 }
+
+/// A turret picks its victims from the tiles around it rather than the whole
+/// unit list; a lone hostile anywhere around the range edge must still be
+/// engaged exactly when it is in range and in sight.
+#[test]
+fn a_turret_engages_a_lone_hostile_exactly_within_its_range() {
+    let weapon = &BuildingKind::Turret.base_stats().weapons[0];
+    let (range, minimum) = (weapon.range, weapon.minimum_range);
+    let anchor = TilePos::new(18, 13);
+    let span = range.to_num::<i32>() + 3;
+    let (mut engaged, mut ignored) = (0, 0);
+    for dy in -span..=span {
+        for dx in -span..=span {
+            let tile = anchor.offset(dx, dy);
+            let mut scenario =
+                open_arena(40, 30, vec![unit(1, UnitKind::Harvester, tile.x, tile.y)]);
+            scenario.buildings = vec![building(0, BuildingKind::Turret, anchor.x, anchor.y)];
+            let Ok(mut state) = scenario.build() else {
+                continue;
+            };
+            let defense = id(&state, BuildingKind::Turret);
+            let victim = state.units()[0].id;
+            let center = state.building(defense).unwrap().center();
+            let distance = center.dist_sq(state.units()[0].pos);
+            let expected = distance <= range * range
+                && distance >= minimum * minimum
+                && state.can_see(PlayerId(0), tile);
+            let fired = shot(&state.tick(&[]).events, defense) == Some(Target::Unit(victim));
+            assert_eq!(fired, expected, "hostile at {tile:?}");
+            engaged += usize::from(fired);
+            ignored += usize::from(!fired);
+        }
+    }
+    assert!(
+        engaged > 20 && ignored > 20,
+        "{engaged} engaged, {ignored} ignored"
+    );
+}

@@ -466,6 +466,7 @@ fn buffer_shot(
 /// every shot, in building-id order.
 pub(super) fn turret_fire(
     state: &mut State,
+    index: &super::super::spatial::UnitIndex,
     motion: &MotionSnapshot,
     events: &mut Vec<Event>,
     hits: &mut Vec<PendingHit>,
@@ -512,12 +513,18 @@ pub(super) fn turret_fire(
         }
         let focused_victim =
             focused.and_then(|view| view.entity.map(|target| (target, view.aim_from(center))));
-        let unit_victim = focused_victim
-            .is_none()
+        // A unit in range stands on a tile within `reach` of the turret's;
+        // a building in range covers one, or the next where its closest
+        // point sits on an edge. Positions hold still through the brain
+        // phase, so the phase's index and survey still describe them.
+        let home = TilePos::containing(center);
+        let reach = atk.range.floor().to_num::<i32>() + 1;
+        let hostiles = index.hostiles_near(state.player(me).team, home, reach + 1);
+        let unit_victim = (focused_victim.is_none() && hostiles.bodies)
             .then(|| {
-                state
-                    .units
-                    .iter()
+                (home.y - reach..=home.y + reach)
+                    .flat_map(|y| index.row_span(y, home.x - reach, home.x + reach))
+                    .map(|&(_, slot)| &state.units[slot])
                     .filter(|u| {
                         state.hostile(me, u.player) && u.hp > 0 && atk.targets.covers(u.domain())
                     })
@@ -535,8 +542,12 @@ pub(super) fn turret_fire(
             && unit_victim.is_none()
             && atk.targets.covers(Domain::Ground))
         .then(|| {
-            state
-                .buildings
+            let candidates = if hostiles.buildings {
+                state.buildings()
+            } else {
+                index.buildings_since_survey(state.buildings())
+            };
+            candidates
                 .iter()
                 .filter(|target| {
                     state
