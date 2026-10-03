@@ -18,7 +18,7 @@ use chassis::fx::{Fx, HALF, Vec2Fx};
 use chassis::grid::{CARDINALS, Grid, TilePos};
 use chassis::path::AstarScratch;
 use serde::{Deserialize, Serialize};
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 
 mod tracking;
 pub use tracking::{ContactSample, ContactTrack};
@@ -424,6 +424,9 @@ pub(crate) struct GroundSalvageDanger {
     mobile: Vec<MobileGroundPressure>,
     statics: Vec<StaticGroundPressure>,
     building_blocks: Vec<Vec<(i32, i32)>>,
+    /// Per coarse cell, the threat records whose reach could cover a tile
+    /// in it; built from the captured lists on the first probe.
+    threat_cells: OnceCell<ThreatCells>,
     /// One byte of memo lanes per tile, replacing three separate
     /// tables and their RefCell borrow bookkeeping — the A*
     /// predicates probe these once per neighbor, and a `Cell` read is
@@ -553,11 +556,73 @@ impl GroundSalvageDanger {
             mobile,
             statics,
             building_blocks,
+            threat_cells: OnceCell::new(),
             lanes,
             path_scratch: RefCell::new(AstarScratch::default()),
             #[cfg(test)]
             route_searches: Cell::new(0),
         }
+    }
+
+    /// The threat cells, built on first use: many snapshots are never
+    /// probed at all.
+    fn threat_cells(&self) -> &ThreatCells {
+        self.threat_cells.get_or_init(|| self.index_threats())
+    }
+
+    /// Files every threat record under each coarse cell its reach could
+    /// cover. Each box is a conservative superset of the tiles whose centers
+    /// the record's exact test can accept, so a probe that walks only its
+    /// cell's records reaches the same verdict as a walk over all of them.
+    fn index_threats(&self) -> ThreatCells {
+        let (columns, rows) = (danger_cells(self.width), danger_cells(self.height));
+        let radar = crate::stats::HARVEST_RADAR_DANGER_RADIUS;
+        let contacts = CellLists::build(
+            columns,
+            rows,
+            self.contacts
+                .iter()
+                .map(|&contact| (contact.offset(-radar, -radar), contact.offset(radar, radar))),
+        );
+        let mobile = CellLists::build(
+            columns,
+            rows,
+            self.mobile.iter().map(|pressure| {
+                let home = TilePos::containing(pressure.pos);
+                let reach = tile_reach(pressure.reach_sq) + 1;
+                (home.offset(-reach, -reach), home.offset(reach, reach))
+            }),
+        );
+        let statics = CellLists::build(
+            columns,
+            rows,
+            self.statics.iter().map(|pressure| {
+                let reach = tile_reach(pressure.reach_sq);
+                (
+                    pressure.anchor.offset(-reach - 1, -reach - 1),
+                    pressure
+                        .anchor
+                        .offset(pressure.size.0 + reach, pressure.size.1 + reach),
+                )
+            }),
+        );
+        ThreatCells {
+            contacts,
+            mobile,
+            statics,
+        }
+    }
+
+    /// The coarse cell holding `tile`; off-map tiles share the nearest
+    /// border cell, as off-map record boxes do.
+    fn cell_of(&self, tile: TilePos) -> usize {
+        let columns = danger_cells(self.width);
+        let column = tile.x.div_euclid(DANGER_CELL).clamp(0, columns - 1);
+        let row = tile
+            .y
+            .div_euclid(DANGER_CELL)
+            .clamp(0, danger_cells(self.height) - 1);
+        (row * columns + column) as usize
     }
 
     /// Whether this snapshot marks one tile as too dangerous for
@@ -584,14 +649,20 @@ impl GroundSalvageDanger {
         if observed {
             let from_point = from.center();
             let next_point = tile.center();
-            if self.statics.iter().any(|pressure| {
-                let next_distance = rect_closest_point(pressure.anchor, pressure.size, next_point)
-                    .dist_sq(next_point);
-                next_distance <= pressure.reach_sq
-                    && next_distance
-                        < rect_closest_point(pressure.anchor, pressure.size, from_point)
-                            .dist_sq(from_point)
-            }) {
+            let statics = self.threat_cells().statics.at(self.cell_of(tile));
+            if statics
+                .iter()
+                .map(|&i| &self.statics[i as usize])
+                .any(|pressure| {
+                    let next_distance =
+                        rect_closest_point(pressure.anchor, pressure.size, next_point)
+                            .dist_sq(next_point);
+                    next_distance <= pressure.reach_sq
+                        && next_distance
+                            < rect_closest_point(pressure.anchor, pressure.size, from_point)
+                                .dist_sq(from_point)
+                })
+            {
                 return false;
             }
         }
@@ -704,23 +775,35 @@ impl GroundSalvageDanger {
             return true;
         }
         let source_point = source.center();
-        self.statics.iter().any(|pressure| {
-            rect_closest_point(pressure.anchor, pressure.size, source_point).dist_sq(source_point)
-                <= pressure.reach_sq
-        })
+        let statics = self.threat_cells().statics.at(self.cell_of(source));
+        statics
+            .iter()
+            .map(|&i| &self.statics[i as usize])
+            .any(|pressure| {
+                rect_closest_point(pressure.anchor, pressure.size, source_point)
+                    .dist_sq(source_point)
+                    <= pressure.reach_sq
+            })
     }
 
     fn mobile_or_radar_contains(&self, source: TilePos) -> bool {
-        if self
-            .contacts
-            .iter()
-            .any(|contact| contact.chebyshev(source) <= crate::stats::HARVEST_RADAR_DANGER_RADIUS)
-        {
+        let cell = self.cell_of(source);
+        let cells = self.threat_cells();
+        if cells.contacts.at(cell).iter().any(|&i| {
+            self.contacts[i as usize].chebyshev(source) <= crate::stats::HARVEST_RADAR_DANGER_RADIUS
+        }) {
             return true;
         }
+        // Strengths are non-negative, so a saturating sum over any subset
+        // holding every in-reach pressure equals the sum over all of them.
         let source_point = source.center();
         let (mut hostile_strength, mut screen_strength) = (0u64, 0u64);
-        for pressure in &self.mobile {
+        for pressure in cells
+            .mobile
+            .at(cell)
+            .iter()
+            .map(|&i| &self.mobile[i as usize])
+        {
             if pressure.pos.dist_sq(source_point) > pressure.reach_sq {
                 continue;
             }
@@ -780,6 +863,74 @@ impl GroundSalvageDanger {
         let verdict = compute();
         cell.set(bits | set | if verdict { value } else { 0 });
         verdict
+    }
+}
+
+/// Edge of a [`GroundSalvageDanger`] threat cell, in tiles.
+const DANGER_CELL: i32 = 8;
+
+fn danger_cells(tiles: i32) -> i32 {
+    tiles.div_euclid(DANGER_CELL).max(0) + 1
+}
+
+/// The smallest whole tile count at least as long as `sqrt(reach_sq)`.
+fn tile_reach(reach_sq: Fx) -> i32 {
+    let mut reach = 0;
+    while Fx::from_num(reach * reach) < reach_sq {
+        reach += 1;
+    }
+    reach
+}
+
+/// [`CellLists`] for each kind of threat record.
+struct ThreatCells {
+    contacts: CellLists,
+    mobile: CellLists,
+    statics: CellLists,
+}
+
+/// Record indices filed per coarse cell, ascending within each cell.
+struct CellLists {
+    starts: Vec<u32>,
+    items: Vec<u32>,
+}
+
+impl CellLists {
+    /// Files record `i` under every cell its inclusive tile box overlaps,
+    /// clamping boxes that run past the map onto the border cells.
+    fn build(
+        columns: i32,
+        rows: i32,
+        boxes: impl Iterator<Item = (TilePos, TilePos)> + Clone,
+    ) -> Self {
+        let cells = |(low, high): (TilePos, TilePos)| {
+            let clamp_column = |x: i32| x.div_euclid(DANGER_CELL).clamp(0, columns - 1);
+            let clamp_row = |y: i32| y.div_euclid(DANGER_CELL).clamp(0, rows - 1);
+            (clamp_row(low.y)..=clamp_row(high.y)).flat_map(move |row| {
+                (clamp_column(low.x)..=clamp_column(high.x))
+                    .map(move |column| (row * columns + column) as usize)
+            })
+        };
+        let mut starts = vec![0u32; (columns * rows) as usize + 1];
+        for cell in boxes.clone().flat_map(cells) {
+            starts[cell + 1] += 1;
+        }
+        for cell in 1..starts.len() {
+            starts[cell] += starts[cell - 1];
+        }
+        let mut cursors = starts.clone();
+        let mut items = vec![0u32; starts[starts.len() - 1] as usize];
+        for (record, bounds) in boxes.enumerate() {
+            for cell in cells(bounds) {
+                items[cursors[cell] as usize] = record as u32;
+                cursors[cell] += 1;
+            }
+        }
+        Self { starts, items }
+    }
+
+    fn at(&self, cell: usize) -> &[u32] {
+        &self.items[self.starts[cell] as usize..self.starts[cell + 1] as usize]
     }
 }
 
@@ -1539,5 +1690,104 @@ mod danger_tests {
             hostile: true,
         });
         assert!(!mobile.route_safe_from(from, to));
+    }
+
+    /// A walk over every threat record, kept as the reference the coarse
+    /// cells must reproduce: `(mobile or radar, observed)`.
+    fn linear_threats(danger: &GroundSalvageDanger, source: TilePos) -> (bool, bool) {
+        let point = source.center();
+        let radar = danger
+            .contacts
+            .iter()
+            .any(|contact| contact.chebyshev(source) <= crate::stats::HARVEST_RADAR_DANGER_RADIUS);
+        let (mut hostile, mut screen) = (0u64, 0u64);
+        for pressure in &danger.mobile {
+            if pressure.pos.dist_sq(point) <= pressure.reach_sq {
+                if pressure.hostile {
+                    hostile = hostile.saturating_add(pressure.strength);
+                } else {
+                    screen = screen.saturating_add(pressure.strength);
+                }
+            }
+        }
+        let mobile = radar || hostile > screen;
+        let statics = danger.statics.iter().any(|pressure| {
+            rect_closest_point(pressure.anchor, pressure.size, point).dist_sq(point)
+                <= pressure.reach_sq
+        });
+        (mobile, mobile || statics)
+    }
+
+    #[test]
+    fn threat_cells_agree_with_a_walk_over_every_record() {
+        let mut state = Scenario::skirmish().build().expect("skirmish builds");
+        for _ in 0..90 {
+            state.tick(&[]);
+        }
+        let mut danger = GroundSalvageDanger::capture(&state, PlayerId(0));
+        assert!(danger.incidents.is_empty());
+        let (width, height) = (state.map.width(), state.map.height());
+        let mut rng = chassis::rng::Pcg32::new(17, 3);
+        let mut coordinate = |span: i32| (rng.next_u32() % (span as u32 + 8)) as i32 - 4;
+        for _ in 0..160 {
+            let (x, y) = (coordinate(width), coordinate(height));
+            let reach = Fx::from_num(x.rem_euclid(9) + 1) + Fx::lit("0.3");
+            danger.mobile.push(MobileGroundPressure {
+                pos: TilePos::new(x, y).center() + Vec2Fx::new(Fx::lit("0.2"), -Fx::lit("0.4")),
+                reach_sq: reach * reach,
+                strength: (y.rem_euclid(7) as u64 + 1) * 40,
+                hostile: x % 2 == 0,
+            });
+        }
+        for _ in 0..40 {
+            let (x, y) = (coordinate(width), coordinate(height));
+            let reach = Fx::from_num(y.rem_euclid(3) + 1);
+            danger.statics.push(StaticGroundPressure {
+                anchor: TilePos::new(x, y),
+                size: (x.rem_euclid(3) + 1, y.rem_euclid(2) + 1),
+                reach_sq: reach * reach,
+            });
+        }
+        for _ in 0..6 {
+            let (x, y) = (coordinate(width), coordinate(height));
+            danger.contacts.push(TilePos::new(x, y));
+        }
+
+        let froms = [
+            TilePos::new(0, 0),
+            TilePos::new(width / 2, height / 2),
+            TilePos::new(width - 1, 3),
+        ];
+        let (mut dangerous, mut safe) = (0, 0);
+        for y in -2..=height + 1 {
+            for x in -2..=width + 1 {
+                let tile = TilePos::new(x, y);
+                let (mobile, observed) = linear_threats(&danger, tile);
+                assert_eq!(danger.mobile_or_radar_contains(tile), mobile, "{tile:?}");
+                assert_eq!(danger.compute_observed_contains(tile), observed, "{tile:?}");
+                for from in froms {
+                    let approaches = danger.statics.iter().any(|pressure| {
+                        let next =
+                            rect_closest_point(pressure.anchor, pressure.size, tile.center())
+                                .dist_sq(tile.center());
+                        next <= pressure.reach_sq
+                            && next
+                                < rect_closest_point(pressure.anchor, pressure.size, from.center())
+                                    .dist_sq(from.center())
+                    });
+                    assert_eq!(
+                        danger.route_safe_from(from, tile),
+                        !(observed && (mobile || approaches)),
+                        "{from:?} -> {tile:?}"
+                    );
+                }
+                dangerous += usize::from(observed);
+                safe += usize::from(!observed);
+            }
+        }
+        assert!(
+            dangerous > 0 && safe > 0,
+            "{dangerous} dangerous, {safe} safe"
+        );
     }
 }
