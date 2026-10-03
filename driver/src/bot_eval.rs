@@ -781,6 +781,11 @@ fn evaluate_plan_artifact_impl(
             oxide_kit::runner::step(&mut state, &mut bots, Some(&mut replay))
         };
         let tick = state.current_tick();
+        for bot in &bots {
+            if let SeatController::Opponent { controller, .. } = bot {
+                attacks.open(controller.player().0, controller.launches(), &ledger);
+            }
+        }
         ledger.observe(&state, &report);
         failures.observe_events(&state, &report.events, tick);
         reactions.observe_events(&state, &report.events, tick);
@@ -811,13 +816,7 @@ fn evaluate_plan_artifact_impl(
                     let missions = controller.missions();
                     failures.check_missions(controller.player().0, tick, &missions);
                     reactions.check_missions(controller.player().0, tick, &missions);
-                    attacks.check(
-                        controller.player().0,
-                        tick,
-                        controller.launches(),
-                        &missions,
-                        &ledger,
-                    );
+                    attacks.follow(controller.player().0, tick, &missions, &ledger);
                 }
             }
             failures.check(&state, tick, &protected);

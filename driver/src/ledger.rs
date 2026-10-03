@@ -85,11 +85,31 @@ struct Body {
     /// The transport a rider travels in; riders count toward worth and die
     /// with their carrier.
     carrier: Option<Key>,
+    /// A building's construction or upgrade progress, the build ticks its
+    /// tier takes, and the health salvage has drained from it.
+    progress: u32,
+    build_ticks: u32,
+    salvage: u32,
 }
 
 impl Body {
     fn tier(&self) -> Option<u8> {
         self.building.map(|(_, tier, _)| tier)
+    }
+
+    /// Health construction or an upgrade added by `post`, which emits no
+    /// event: the simulation's ramp from a fifth of full health by build
+    /// progress. `None` on the tick work starts, which sets the site up.
+    fn built_gain(&self, post: &Body) -> Option<u32> {
+        if !matches!(self.building, Some((_, _, false))) || self.build_ticks == 0 {
+            return Some(0);
+        }
+        if self.progress == 0 && post.progress > 0 {
+            return None;
+        }
+        let ramp = self.max_hp - self.max_hp / 5;
+        let at = |progress: u32| ramp * progress.min(self.build_ticks) / self.build_ticks;
+        Some(at(post.progress).saturating_sub(at(self.progress)))
     }
 }
 
@@ -316,6 +336,9 @@ fn snapshot(state: &State) -> Vec<Body> {
                 unit: Some(unit.kind),
                 building: None,
                 carrier: None,
+                progress: 0,
+                build_ticks: 0,
+                salvage: 0,
             }
         })
         .collect();
@@ -338,6 +361,9 @@ fn snapshot(state: &State) -> Vec<Body> {
                     unit: Some(rider.kind),
                     building: None,
                     carrier: Some(Key::Unit(carrier.id)),
+                    progress: 0,
+                    build_ticks: 0,
+                    salvage: 0,
                 }
             })
         })
@@ -361,6 +387,12 @@ fn snapshot(state: &State) -> Vec<Body> {
             unit: None,
             building: Some((building.kind, building.tier, building.built)),
             carrier: None,
+            progress: building.progress,
+            build_ticks: stats
+                .construction
+                .as_ref()
+                .map_or(0, |construction| construction.build_ticks),
+            salvage: building.salvage_drained,
         }
     }));
     bodies
@@ -387,31 +419,46 @@ fn worth(state: &State, bodies: &[Body], seat: usize) -> u64 {
     owned + u64::from(state.players()[seat].scrap)
 }
 
-/// Crucibles in `state` that will find a wreck to smelt, by the
-/// simulation's reach rule.
+/// Crucibles in `state` that will smelt a wreck, by the simulation's reach
+/// rule and allocation: in id order, each takes one unit of salvage from the
+/// nearest wreck, the richer on a tie, so two sharing a last unit do not
+/// both smelt it.
 fn smelters(state: &State) -> Vec<Key> {
     let reach = CRUCIBLE_SMELT_RADIUS.to_num::<i32>() + 1;
     let radius = CRUCIBLE_SMELT_RADIUS * CRUCIBLE_SMELT_RADIUS;
-    state
-        .buildings()
-        .iter()
-        .filter(|building| {
-            building.built && building.hp > 0 && building.kind == BuildingKind::Crucible
-        })
-        .filter(|building| {
-            let (w, h) = building.kind.base_stats().size;
-            let anchor = building.anchor;
-            ((anchor.y - reach)..(anchor.y + h + reach)).any(|y| {
-                ((anchor.x - reach)..(anchor.x + w + reach)).any(|x| {
-                    let tile = TilePos::new(x, y);
-                    let center = tile.center();
-                    state.map().wreck_at(tile) > 0
-                        && building.closest_point_to(center).dist_sq(center) <= radius
-                })
-            })
-        })
-        .map(|building| Key::Building(building.id))
-        .collect()
+    let mut taken: BTreeMap<(i32, i32), u32> = BTreeMap::new();
+    let mut smelting = Vec::new();
+    for building in state.buildings() {
+        if !building.built || building.hp == 0 || building.kind != BuildingKind::Crucible {
+            continue;
+        }
+        let (w, h) = building.kind.base_stats().size;
+        let anchor = building.anchor;
+        let mut fuel = None;
+        for y in (anchor.y - reach)..(anchor.y + h + reach) {
+            for x in (anchor.x - reach)..(anchor.x + w + reach) {
+                let tile = TilePos::new(x, y);
+                let left = state
+                    .map()
+                    .wreck_at(tile)
+                    .saturating_sub(taken.get(&(x, y)).copied().unwrap_or(0));
+                let center = tile.center();
+                let distance = building.closest_point_to(center).dist_sq(center);
+                if left == 0 || distance > radius {
+                    continue;
+                }
+                let key = (distance, std::cmp::Reverse(left), (y, x));
+                if fuel.is_none_or(|best| key < best) {
+                    fuel = Some(key);
+                }
+            }
+        }
+        if let Some((_, _, (y, x))) = fuel {
+            *taken.entry((x, y)).or_default() += 1;
+            smelting.push(Key::Building(building.id));
+        }
+    }
+    smelting
 }
 
 fn within(a: TilePos, b: TilePos, radius: i32) -> bool {
@@ -488,14 +535,24 @@ impl ImpactLedger {
         self.bodies = after;
     }
 
-    /// `key` as a damage source, as it is now.
+    /// `key` as a damage source, as it is now; a unit trained this tick,
+    /// absent from the snapshot, as its record has it.
     fn source(&self, key: Key, from: Option<TilePos>) -> Option<Source> {
-        let body = self.body(key)?;
+        if let Some(body) = self.body(key) {
+            return Some(Source {
+                key,
+                owner: body.owner,
+                team: body.team,
+                vision: body.vision,
+                from,
+            });
+        }
+        let record = self.records.get(&key)?;
         Some(Source {
             key,
-            owner: body.owner,
-            team: body.team,
-            vision: body.vision,
+            owner: record.owner,
+            team: self.teams[usize::from(record.owner)],
+            vision: record.unit?.stats().vision,
             from,
         })
     }
@@ -670,6 +727,21 @@ impl ImpactLedger {
                         sources.splash.push((at, radius, shell.source));
                     }
                 }
+                Event::AircraftImpacted { crash } => {
+                    if let Some(profile) = crash.kind.crash_profile() {
+                        sources.splash.push((
+                            TilePos::containing(crash.impact),
+                            tiles(profile.radius),
+                            Source {
+                                key: Key::Unit(crash.unit),
+                                owner: crash.player.0,
+                                team: self.teams[usize::from(crash.player.0)],
+                                vision: 0,
+                                from: None,
+                            },
+                        ));
+                    }
+                }
                 Event::ChargeDetonated { building, at, .. } => {
                     sources.detonated.push(Key::Building(*building));
                     if let Some(source) = self.source(Key::Building(*building), None) {
@@ -765,32 +837,43 @@ impl ImpactLedger {
             if sources.detonated.contains(&pre.key) {
                 continue;
             }
-            let post = match after.get(cursor) {
+            let gained = sources.repaired.get(&pre.key).copied().unwrap_or(0);
+            let lost = match after.get(cursor) {
                 // An upgrade rebuilds the building; what it loses to that is
                 // no one's damage.
                 Some(post) if post.key == pre.key && post.tier() != pre.tier() => continue,
-                Some(post) if post.key == pre.key => post.hp,
+                Some(post) if post.key == pre.key => {
+                    // Construction and salvage move health without events.
+                    let Some(built) = pre.built_gain(post) else {
+                        continue;
+                    };
+                    let drained = post.salvage.saturating_sub(pre.salvage);
+                    (pre.hp + gained + built).saturating_sub(post.hp + drained)
+                }
                 _ if self
                     .records
                     .get(&pre.key)
                     .is_some_and(|record| record.gone == Some(now)) =>
                 {
-                    0
+                    pre.hp + gained
                 }
                 _ => continue,
             };
-            let gained = sources.repaired.get(&pre.key).copied().unwrap_or(0);
-            let lost = (pre.hp + gained).saturating_sub(post);
-            self.attribute(&before, pre, lost, post == 0, sources);
+            let destroyed = !matches!(after.get(cursor), Some(post) if post.key == pre.key);
+            self.attribute(&before, pre, lost, destroyed, sources);
         }
+        // A unit trained this tick starts at full health, whether it lived
+        // through the tick or died in it.
         for &(key, kind, owner) in &sources.born {
-            let Some(&tile) = sources.died.get(&key) else {
-                continue;
-            };
             if find(&before, key).is_some() {
                 continue;
             }
             let stats = kind.stats();
+            let (tile, hp, destroyed) = match (find(after, key), sources.died.get(&key)) {
+                (Some(post), _) => (post.tile, post.hp, false),
+                (None, Some(&tile)) => (tile, 0, true),
+                (None, None) => continue,
+            };
             let body = Body {
                 key,
                 owner,
@@ -804,8 +887,11 @@ impl ImpactLedger {
                 unit: Some(kind),
                 building: None,
                 carrier: None,
+                progress: 0,
+                build_ticks: 0,
+                salvage: 0,
             };
-            self.attribute(&before, &body, stats.max_hp, true, sources);
+            self.attribute(&before, &body, stats.max_hp - hp, destroyed, sources);
         }
         self.bodies = before;
     }
@@ -844,6 +930,10 @@ impl ImpactLedger {
                 .map(|(_, source)| *source),
         );
         from.retain(|source| source.team != pre.team);
+        // A source counts once per victim per tick: a Sapper's blast reports
+        // its target both as aimed and inside its splash.
+        from.sort_by_key(|source| source.key);
+        from.dedup_by_key(|source| source.key);
         if from.is_empty() {
             // An unfinished site that loses health with no one firing is
             // decaying, not under attack.
@@ -2064,5 +2154,190 @@ mod tests {
         );
         let sentinel = unit(&ledgers, 0, "sentinel");
         assert_eq!(sentinel.starting, 1);
+    }
+
+    #[test]
+    fn construction_does_not_hide_fire_on_a_site() {
+        let scenario = field(
+            500,
+            &[
+                (0, UnitKind::Harvester, 10, 8),
+                (1, UnitKind::Sentinel, 16, 6),
+            ],
+            &[],
+        );
+        let mut state = scenario.build().unwrap();
+        state.tick(&[]);
+        let harvester = unit_at(&state, 10, 8);
+        let sentinel = unit_at(&state, 16, 6);
+        let mut ledger = ImpactLedger::new(&state);
+        let report = state.tick(&[order(
+            0,
+            Command::Build {
+                units: vec![harvester],
+                kind: BuildingKind::Turret,
+                anchor: TilePos::new(13, 6),
+                queue: false,
+                defer: false,
+            },
+        )]);
+        ledger.observe(&state, &report);
+        let site = building(&state, 0, BuildingKind::Turret);
+        let mut orders = vec![order(
+            1,
+            Command::Attack {
+                units: vec![sentinel],
+                target: AttackTarget::Building(site),
+                queue: false,
+            },
+        )];
+        let mut hits = 0_u64;
+        for _ in 0..400 {
+            let report = state.tick(&std::mem::take(&mut orders));
+            hits += report
+                .events
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        Event::AttackHit { target: Some(Target::Building(id)), .. } if *id == site
+                    )
+                })
+                .count() as u64;
+            ledger.observe(&state, &report);
+        }
+        let ledgers = ledger.finish(&state);
+        let turret = BuildingKind::Turret.tier_stats(0);
+        let damage = u64::from(UnitKind::Sentinel.stats().weapons[0].damage);
+        let expected =
+            hits * damage * building_value(BuildingKind::Turret, 0) / u64::from(turret.max_hp);
+        let dealt = unit(&ledgers, 1, "sentinel").dealt.buildings;
+        assert!(hits > 0, "premise: the site is under fire");
+        assert!(
+            dealt.abs_diff(expected) <= 1,
+            "{dealt} dealt, {expected} expected from {hits} hits"
+        );
+    }
+
+    #[test]
+    fn salvage_is_no_ones_damage() {
+        let scenario = field(
+            0,
+            &[(0, UnitKind::Harvester, 9, 6)],
+            &[(0, BuildingKind::Turret, 10, 6)],
+        );
+        let mut state = scenario.build().unwrap();
+        state.tick(&[]);
+        let harvester = unit_at(&state, 9, 6);
+        let turret = building(&state, 0, BuildingKind::Turret);
+        let (_, ledgers) = play(
+            state,
+            1_200,
+            vec![order(
+                0,
+                Command::Salvage {
+                    units: vec![harvester],
+                    building: turret,
+                    queue: false,
+                },
+            )],
+        );
+        assert!(ledgers[0].refunds > 0, "premise: it was salvaged");
+        assert_eq!(built(&ledgers, 0, "turret").taken, 0);
+        assert_eq!(ledgers[0].unattributed, 0);
+    }
+
+    #[test]
+    fn a_crash_is_credited_to_the_aircraft_that_fell() {
+        let mut units = vec![(0, UnitKind::Condor, 16, 6)];
+        for y in 4..9 {
+            for x in 14..19 {
+                if (x, y) != (16, 6) {
+                    units.push((1, UnitKind::Sentinel, x, y));
+                }
+            }
+        }
+        let scenario = field(0, &units, &[(1, BuildingKind::FlakTurret, 20, 6)]);
+        let (_, ledgers) = play(scenario.build().unwrap(), 1_200, Vec::new());
+        let condor = unit(&ledgers, 0, "condor");
+        assert_eq!(condor.deaths, 1, "premise: it is shot down");
+        assert!(condor.dealt.army > 0, "{condor:?}");
+        assert_eq!(ledgers[1].unattributed, 0);
+    }
+
+    #[test]
+    fn a_source_counts_once_per_victim_per_tick() {
+        let scenario = field(
+            0,
+            &[(0, UnitKind::Sapper, 14, 6), (0, UnitKind::Sentinel, 14, 7)],
+            &[(1, BuildingKind::Barricade, 16, 6)],
+        );
+        let state = scenario.build().unwrap();
+        let mut ledger = ImpactLedger::new(&state);
+        let (sapper, sentinel) = (unit_at(&state, 14, 6), unit_at(&state, 14, 7));
+        let barricade = Key::Building(building(&state, 1, BuildingKind::Barricade));
+        let source = |id| ledger.source(Key::Unit(id), None).unwrap();
+        let mut sources = Sources::default();
+        sources
+            .aimed
+            .insert(barricade, vec![source(sapper), source(sentinel)]);
+        let at = find(&ledger.bodies, barricade).unwrap().tile;
+        sources.splash.push((at, 2, source(sapper)));
+        let before = ledger.bodies.clone();
+        let target = *find(&before, barricade).unwrap();
+        ledger.attribute(&before, &target, 100, false, &sources);
+        let dealt = |id| ledger.records[&Key::Unit(id)].dealt.buildings;
+        assert_eq!(
+            dealt(sapper),
+            dealt(sentinel),
+            "the Sapper's blast is one hit"
+        );
+    }
+
+    #[test]
+    fn crucibles_sharing_a_last_unit_of_wreck_do_not_both_smelt_it() {
+        let scenario = field(
+            0,
+            &[],
+            &[
+                (0, BuildingKind::Crucible, 10, 6),
+                (0, BuildingKind::Crucible, 14, 6),
+            ],
+        );
+        let state = staged(&scenario, |value| {
+            let width = value["map"]["grid"]["width"].as_i64().unwrap();
+            let cell = (8 * width + 13) as usize;
+            value["map"]["grid"]["cells"][cell]["wreck"] = serde_json::json!(1);
+        });
+        assert_eq!(state.map().wreck_at(TilePos::new(13, 8)), 1);
+        let smelting = smelters(&state);
+        assert_eq!(smelting.len(), 1, "{smelting:?}");
+    }
+
+    #[test]
+    fn construction_gain_follows_the_simulations_ramp() {
+        let scenario = field(0, &[], &[(0, BuildingKind::Turret, 10, 6)]);
+        let state = scenario.build().unwrap();
+        let mut site = *snapshot(&state)
+            .iter()
+            .find(|body| matches!(body.building, Some((BuildingKind::Turret, ..))))
+            .unwrap();
+        site.building = Some((BuildingKind::Turret, 0, false));
+        let ramp = site.max_hp - site.max_hp / 5;
+        let at = |progress: u32| Body { progress, ..site };
+        assert_eq!(
+            at(0).built_gain(&at(3)),
+            None,
+            "the first work sets the site up"
+        );
+        assert_eq!(
+            at(10).built_gain(&at(12)),
+            Some(ramp * 12 / site.build_ticks - ramp * 10 / site.build_ticks)
+        );
+        let built = Body {
+            building: Some((BuildingKind::Turret, 0, true)),
+            ..site
+        };
+        assert_eq!(built.built_gain(&built), Some(0));
     }
 }

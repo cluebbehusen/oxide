@@ -164,23 +164,30 @@ impl AttackFollower {
         }
     }
 
-    /// Opens the attacks `launches` reports for the first time and advances
-    /// the open ones by `missions`, both as `seat`'s controller reports them
-    /// at `tick`.
-    pub(crate) fn check(
-        &mut self,
-        seat: u8,
-        tick: u64,
-        launches: &[Launch],
-        missions: &[MissionStatus],
-        ledger: &ImpactLedger,
-    ) {
+    /// Opens the attacks `launches` reports for the first time, before
+    /// `ledger` accounts for the tick their orders run in: an attack can land
+    /// on its command tick. An ended attack still in its tail closes once any
+    /// of its units launch again, so the two never share later fighting.
+    pub(crate) fn open(&mut self, seat: u8, launches: &[Launch], ledger: &ImpactLedger) {
         let Some(Some(attacks)) = self.seats.get_mut(usize::from(seat)) else {
             return;
         };
         for launch in launches {
             if !attacks.seen.insert(launch.mission) {
                 continue;
+            }
+            let relaunched: Vec<u64> = attacks
+                .open
+                .iter()
+                .filter(|(_, open)| {
+                    open.ended.is_some()
+                        && open.units.iter().any(|unit| launch.units.contains(unit))
+                })
+                .map(|(id, _)| *id)
+                .collect();
+            for id in relaunched {
+                let open = attacks.open.remove(&id).expect("listed as open");
+                close(&mut attacks.done, open, ledger);
             }
             let (dealt, taken) = totals(ledger, &launch.units);
             attacks.open.insert(
@@ -197,6 +204,20 @@ impl AttackFollower {
                 },
             );
         }
+    }
+
+    /// Advances `seat`'s open attacks by `missions` as its controller reports
+    /// them at `tick`, closing those whose tail has passed.
+    pub(crate) fn follow(
+        &mut self,
+        seat: u8,
+        tick: u64,
+        missions: &[MissionStatus],
+        ledger: &ImpactLedger,
+    ) {
+        let Some(Some(attacks)) = self.seats.get_mut(usize::from(seat)) else {
+            return;
+        };
         for (id, open) in &mut attacks.open {
             if open.ended.is_some() {
                 continue;
@@ -300,10 +321,10 @@ mod tests {
         let ledger = ImpactLedger::new(&state);
         let mut follower = AttackFollower::new([true, false]);
         let launches = [launch(1, 0, 600), launch(2, 400, 700), launch(3, 100, 900)];
-        follower.check(
+        follower.open(0, &launches, &ledger);
+        follower.follow(
             0,
             12,
-            &launches,
             &[
                 status(1, Phase::Gather),
                 status(2, Phase::Gather),
@@ -311,15 +332,16 @@ mod tests {
             ],
             &ledger,
         );
-        follower.check(
+        follower.open(0, &launches, &ledger);
+        follower.follow(
             0,
             24,
-            &launches,
             &[status(2, Phase::Engage), status(3, Phase::Engage)],
             &ledger,
         );
-        follower.check(0, 36, &[], &[status(2, Phase::Withdraw)], &ledger);
-        follower.check(1, 36, &launches, &[], &ledger);
+        follower.follow(0, 36, &[status(2, Phase::Withdraw)], &ledger);
+        follower.open(1, &launches, &ledger);
+        follower.follow(1, 36, &[], &ledger);
         let [Some(seat), None] = &follower.finish(&ledger)[..] else {
             panic!("only the opponent seat is followed");
         };
@@ -343,5 +365,43 @@ mod tests {
         seat.render(&mut rendered, "");
         assert!(rendered.contains("under 2x"), "{rendered}");
         assert!(!rendered.contains("2x to 4x"), "{rendered}");
+    }
+
+    #[test]
+    fn an_ended_attack_closes_when_its_units_launch_again() {
+        let state = Scenario::skirmish().build().unwrap();
+        let ledger = ImpactLedger::new(&state);
+        let mut follower = AttackFollower::new([true]);
+        let unit = |id| oxide_sim::UnitId(id);
+        let first = Launch {
+            units: vec![unit(7), unit(8)],
+            ..launch(1, 0, 600)
+        };
+        follower.open(0, std::slice::from_ref(&first), &ledger);
+        follower.follow(0, 12, &[], &ledger);
+        let open = |follower: &AttackFollower| -> Vec<u64> {
+            follower.seats[0]
+                .as_ref()
+                .unwrap()
+                .open
+                .keys()
+                .copied()
+                .collect()
+        };
+        assert_eq!(open(&follower), [1], "ended, still in its tail");
+        let second = Launch {
+            units: vec![unit(8), unit(9)],
+            ..launch(2, 0, 600)
+        };
+        follower.open(0, &[first, second], &ledger);
+        assert_eq!(
+            open(&follower),
+            [2],
+            "the first closed when unit 8 relaunched"
+        );
+        let [Some(seat)] = &follower.finish(&ledger)[..] else {
+            panic!();
+        };
+        assert_eq!(seat.unknown.attacks, 2);
     }
 }

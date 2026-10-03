@@ -131,16 +131,21 @@ fn evaluation_controllers(
     replay: &GameReplay,
 ) -> Option<serde_json::Result<Vec<Option<RecordedController>>>> {
     let description = replay.meta.description.as_deref()?;
-    let (_, controllers) = description.split_once("; controllers=")?;
+    // The controllers come last, after fields such as the candidate that may
+    // themselves contain the marker.
+    let (_, controllers) = description.rsplit_once("; controllers=")?;
     Some(serde_json::from_str(controllers))
 }
 
 /// Loads `path` as a replay or match recording, refusing a player save.
 pub fn load(path: &Path) -> Result<GameReplay> {
-    let head = std::fs::read(path)
-        .map(|bytes| bytes.starts_with(SAVE_MAGIC))
-        .with_context(|| format!("reading {}", path.display()))?;
-    if head {
+    let mut head = [0_u8; SAVE_MAGIC.len()];
+    let save = std::fs::File::open(path)
+        .and_then(|mut file| std::io::Read::read(&mut file, &mut head))
+        .with_context(|| format!("reading {}", path.display()))?
+        == head.len()
+        && head == SAVE_MAGIC;
+    if save {
         bail!(
             "{} is a player save, which keeps no command history to re-execute; \
              use the match recording (match-*.json) instead",
@@ -253,6 +258,13 @@ mod tests {
                 "bot-eval candidate=unit; controllers=[not json".into()
             )),
             [SeatPlayer::Unknown, SeatPlayer::Unknown]
+        );
+        assert_eq!(
+            seats(Some(format!(
+                "bot-eval candidate=a; controllers=[]; leg=forward; controllers={controllers}"
+            ))),
+            [SeatPlayer::Bot { config: prime }, SeatPlayer::Human],
+            "the last marker holds the controllers"
         );
         assert_eq!(seats(None), [SeatPlayer::Human, SeatPlayer::Human]);
     }
