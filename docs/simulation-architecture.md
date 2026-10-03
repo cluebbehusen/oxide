@@ -417,10 +417,14 @@ against an approaching unit; other stationary bodies receive ordinary
 separation. Friendly contacts around productive work allow 65 percent of summed
 body radii, while moving and waiting crowds use full body spacing. Terrain wins
 over a proposed push, and a per-tick budget prevents dense groups from exploding
-outward. Iteration direction alternates with tick parity to avoid a permanent
-id-order advantage. When bodies are perfectly stacked and geometry provides no
-separating vector, the deterministic owner-local-rank direction is rotated into
-the stack's map-relative half-turn frame.
+outward. Candidate pairs are gathered and ordered once per tick, and every pass
+walks that list. An overlap within a small slop counts as resting contact and is
+not corrected, so rounding alone never keeps a parked crowd moving, and a tick
+with no deeper overlap runs no pass at all. Iteration direction alternates with
+tick parity to avoid a permanent id-order advantage. When bodies are perfectly
+stacked and geometry provides no separating vector, the deterministic
+owner-local-rank direction is rotated into the stack's map-relative half-turn
+frame.
 
 ## Economy, construction, salvage, and repair
 
