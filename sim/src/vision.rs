@@ -881,6 +881,7 @@ pub(crate) fn forget_observed_building(state: &mut State, id: crate::BuildingId,
 pub(crate) fn refresh(state: &mut State) {
     let mut vision = std::mem::take(&mut state.vision);
     let mut coverage = RowCoverage::new(state.map.width(), state.map.height());
+    let mut eyes: Vec<(TilePos, i32)> = Vec::new();
     for index in 0..vision.len() {
         // Team sight is seat-symmetric by construction: every teammate
         // stamps the same discs, reconciles the same memories, hears
@@ -898,9 +899,21 @@ pub(crate) fn refresh(state: &mut State) {
         let allied = |p: PlayerId| state.players[p.0 as usize].team == my_team;
         view.visible.fill(false);
         coverage.reset();
-        // Team sight: every teammate's eyes stamp into this view.
-        for unit in state.units.iter().filter(|u| allied(u.player)) {
-            view.stamp_disc(unit.tile(), unit.kind.stats().vision, &mut coverage);
+        // Team sight: every teammate's eyes stamp into this view. A disc
+        // lies inside any wider one around the same tile, and crowds share
+        // tiles, so only the widest disc per tile is stamped.
+        eyes.clear();
+        eyes.extend(
+            state
+                .units
+                .iter()
+                .filter(|u| allied(u.player))
+                .map(|u| (u.tile(), u.kind.stats().vision)),
+        );
+        eyes.sort_unstable_by_key(|&(tile, radius)| (tile.y, tile.x, std::cmp::Reverse(radius)));
+        eyes.dedup_by_key(|&mut (tile, _)| tile);
+        for &(tile, radius) in &eyes {
+            view.stamp_disc(tile, radius, &mut coverage);
         }
         // Sites don't see: a pile of parts has no sensors.
         for building in state
@@ -1121,6 +1134,32 @@ pub(crate) fn initialize_legacy_tracking(state: &mut State) -> bool {
     }
     state.vision = vision;
     initialized
+}
+
+#[cfg(test)]
+mod sight_tests {
+    use super::*;
+    use crate::{Scenario, UnitKind};
+
+    #[test]
+    fn eyes_sharing_a_tile_see_what_the_widest_sees() {
+        let (narrow, wide) = (UnitKind::Bombard, UnitKind::Kestrel);
+        assert!(narrow.stats().vision < wide.stats().vision);
+        let visible = |kinds: &[UnitKind]| {
+            let mut state = Scenario::skirmish().build().expect("skirmish builds");
+            state.units.clear();
+            let tile = TilePos::new(state.map.width() / 2, state.map.height() / 2);
+            for &kind in kinds {
+                state.spawn_unit(PlayerId(0), kind, tile.center());
+            }
+            state.refresh_vision();
+            state.vision(PlayerId(0)).visible.clone()
+        };
+        let widest = visible(&[wide]);
+        assert_eq!(visible(&[narrow, wide]), widest);
+        assert_eq!(visible(&[wide, narrow]), widest);
+        assert_ne!(visible(&[narrow]), widest);
+    }
 }
 
 #[cfg(test)]

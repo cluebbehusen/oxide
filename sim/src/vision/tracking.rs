@@ -5,7 +5,6 @@ use crate::{ContactId, PlayerId, State, Tick, UnitId};
 use chassis::fx::{Fx, Vec2Fx};
 use chassis::grid::TilePos;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 /// One tick's reported position in a continuous contact history.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,10 +82,13 @@ impl Tracking {
                 .map(|u| (u.tile(), Some(u.id))),
         );
         observations.sort_unstable_by_key(|(tile, unit)| (tile.y, tile.x, *unit));
-        let mut buckets: BTreeMap<(i32, i32), Vec<usize>> = BTreeMap::new();
-        for (i, (tile, _)) in observations.iter().enumerate() {
-            buckets.entry((tile.y, tile.x)).or_default().push(i);
-        }
+        // Sorted by tile, so a row's observations from `x0` through `x1` are
+        // one contiguous run.
+        let span = |y: i32, x0: i32, x1: i32| {
+            let start = observations.partition_point(|(t, _)| (t.y, t.x) < (y, x0));
+            let len = observations[start..].partition_point(|(t, _)| (t.y, t.x) <= (y, x1));
+            start..start + len
+        };
         let mut candidates = Vec::new();
         for (old, track) in self.tracks.iter().enumerate() {
             if track
@@ -98,29 +100,23 @@ impl Tracking {
             }
             let predicted = track.tile.center() + track.velocity();
             for dy in -1..=1 {
-                for dx in -1..=1 {
-                    let Some(indices) = buckets.get(&(track.tile.y + dy, track.tile.x + dx)) else {
+                for new in span(track.tile.y + dy, track.tile.x - 1, track.tile.x + 1) {
+                    let (tile, visible) = observations[new];
+                    if track.visible_unit.zip(visible).is_some_and(|(a, b)| a != b) {
                         continue;
-                    };
-                    for &new in indices {
-                        let (tile, visible) = observations[new];
-                        if track.visible_unit.zip(visible).is_some_and(|(a, b)| a != b) {
-                            continue;
-                        }
-                        let identified =
-                            track.visible_unit.is_some() && track.visible_unit == visible;
-                        candidates.push((
-                            !identified,
-                            predicted.dist_sq(tile.center()),
-                            track.tile.center().dist_sq(tile.center()),
-                            track.id,
-                            tile.y,
-                            tile.x,
-                            visible,
-                            old,
-                            new,
-                        ));
                     }
+                    let identified = track.visible_unit.is_some() && track.visible_unit == visible;
+                    candidates.push((
+                        !identified,
+                        predicted.dist_sq(tile.center()),
+                        track.tile.center().dist_sq(tile.center()),
+                        track.id,
+                        tile.y,
+                        tile.x,
+                        visible,
+                        old,
+                        new,
+                    ));
                 }
             }
         }
@@ -133,10 +129,14 @@ impl Tracking {
                 matches[new] = Some(old);
             }
         }
+        let mut previous: Vec<Option<ContactTrack>> = std::mem::take(&mut self.tracks)
+            .into_iter()
+            .map(Some)
+            .collect();
         let mut tracks = Vec::with_capacity(observations.len());
         for (new, (tile, visible_unit)) in observations.into_iter().enumerate() {
             let mut track = if let Some(old) = matches[new] {
-                self.tracks[old].clone()
+                previous[old].take().expect("a track matches at most once")
             } else {
                 let id = ContactId(self.next_id);
                 self.next_id += 1;
@@ -149,11 +149,16 @@ impl Tracking {
             };
             track.tile = tile;
             track.visible_unit = visible_unit;
-            // Refresh may run more than once at a scenario's initial tick.
-            track.history.retain(|sample| {
-                sample.tick < state.current_tick()
-                    && state.current_tick() - sample.tick <= u64::from(crate::TICKS_PER_SECOND)
-            });
+            // Samples are consecutive ticks, oldest first, so the ones kept
+            // form one run. Refresh may run more than once at a scenario's
+            // initial tick, so the current tick may already be recorded.
+            let now = state.current_tick();
+            let kept = track.history.partition_point(|sample| sample.tick < now);
+            track.history.truncate(kept);
+            let stale = track
+                .history
+                .partition_point(|sample| now - sample.tick > u64::from(crate::TICKS_PER_SECOND));
+            track.history.drain(..stale);
             track.history.push(ContactSample {
                 tick: state.current_tick(),
                 tile,
