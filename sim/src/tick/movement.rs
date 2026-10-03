@@ -21,8 +21,8 @@ use chassis::fx::{Fx, Vec2Fx, sqrt};
 use chassis::grid::TilePos;
 
 use crate::stats::{
-    COLLISION_ITERATIONS, COLLISION_MAX_STEP, SLIDE_LATERAL_SHARE, SLIDE_RADIAL_SHARE,
-    WAYPOINT_ACCEPT,
+    COLLISION_ITERATIONS, COLLISION_MAX_STEP, COLLISION_SLOP, SLIDE_LATERAL_SHARE,
+    SLIDE_RADIAL_SHARE, WAYPOINT_ACCEPT,
 };
 
 pub(super) fn steer_ground_heading(unit: &mut crate::state::Unit, direction: Vec2Fx) -> bool {
@@ -713,9 +713,12 @@ pub(super) fn resolve_collisions(
     // application must not always favor the same ids (see brain::run).
     let reversed = state.tick % 2 == 1;
     let owner_ranks = owner_local_ranks(state);
+    let Some(pairs) = collision_pairs(state, reversed, index, &owner_ranks) else {
+        return;
+    };
     let mut spent = vec![Fx::ZERO; state.units.len()];
     for _ in 0..COLLISION_ITERATIONS {
-        if !relaxation_pass(state, reversed, travel, index, &owner_ranks, &mut spent) {
+        if !relaxation_pass(state, travel, &owner_ranks, &mut spent, &pairs) {
             break;
         }
     }
@@ -819,17 +822,26 @@ impl Iterator for OrientedRow<'_> {
     }
 }
 
-fn collision_pair_key(
+/// The owner-rank part of a pair's resolution key. Ranks decide almost every
+/// comparison, so pairs sort on them first and on
+/// [`collision_pair_position`] only within a run of equal ranks.
+fn collision_pair_ranks(
     state: &State,
     owner_ranks: &[usize],
     i: usize,
     j: usize,
-) -> (usize, usize, bool, (Vec2Fx, Vec2Fx)) {
-    let ranks = if owner_ranks[i] <= owner_ranks[j] {
+) -> (usize, usize, bool) {
+    let (low, high) = if owner_ranks[i] <= owner_ranks[j] {
         (owner_ranks[i], owner_ranks[j])
     } else {
         (owner_ranks[j], owner_ranks[i])
     };
+    (low, high, state.units[i].player == state.units[j].player)
+}
+
+/// The geometric part of a pair's resolution key: the pair's canonical
+/// coordinates in whichever half-turn frame orders first.
+fn collision_pair_position(state: &State, i: usize, j: usize) -> (Vec2Fx, Vec2Fx) {
     let ordered = |a: Vec2Fx, b: Vec2Fx| if a <= b { (a, b) } else { (b, a) };
     let world = ordered(state.units[i].pos, state.units[j].pos);
     let center_twice = Vec2Fx::new(
@@ -840,36 +852,44 @@ fn collision_pair_key(
         center_twice - state.units[i].pos,
         center_twice - state.units[j].pos,
     );
-    (
-        ranks.0,
-        ranks.1,
-        state.units[i].player == state.units[j].player,
-        world.min(rotated),
-    )
+    world.min(rotated)
 }
 
-/// Whether a candidate pair can reach the overlap test of one relaxation
-/// pass. Bodies of different layers never do. A ground body moves no farther
-/// than its unspent [`COLLISION_MAX_STEP`] budget, so a ground pair farther
-/// apart than its full spacing plus both budgets never does either. Air
-/// corrections clamp to the flight envelope, which can carry a body farther,
-/// so air pairs always stay. Dropping pairs before the sort keeps the relative
-/// order of every pair that remains.
-fn may_touch_this_pass(state: &State, spent: &[Fx], i: usize, j: usize) -> bool {
-    let (a, b) = (&state.units[i], &state.units[j]);
-    let domain = a.domain();
-    if domain != b.domain() {
+/// Whether a candidate pair can reach the overlap test during this tick's
+/// passes. Bodies of different layers never do. A ground body moves no
+/// farther than [`COLLISION_MAX_STEP`] in a tick, so a ground pair farther
+/// apart than its full spacing plus both bodies' travel never does either.
+/// Air corrections clamp to the flight envelope, which can carry a body
+/// farther, so air pairs always stay.
+fn may_touch_this_tick(a: &Body, b: &Body) -> bool {
+    if a.domain != b.domain {
         return false;
     }
-    if domain == crate::stats::Domain::Air {
+    if a.domain == crate::stats::Domain::Air {
         return true;
     }
-    let reach = a.kind.stats().radius
-        + b.kind.stats().radius
-        + (COLLISION_MAX_STEP - spent[i])
-        + (COLLISION_MAX_STEP - spent[j])
-        + const { Fx::lit("0.015625") };
+    let reach = a.radius + b.radius + COLLISION_MAX_STEP * 2 + const { Fx::lit("0.015625") };
     a.pos.dist_sq(b.pos) < reach * reach
+}
+
+/// Whether a pair overlaps beyond [`COLLISION_SLOP`] right now.
+fn pressing(a: &Body, b: &Body) -> bool {
+    let rest = a.radius + b.radius - COLLISION_SLOP;
+    a.domain == b.domain && a.pos.dist_sq(b.pos) < rest * rest
+}
+
+/// What candidate gathering reads of one body, copied once per tick so the
+/// scan walks a small array instead of the whole unit table.
+#[derive(Clone, Copy)]
+struct Body {
+    pos: Vec2Fx,
+    radius: Fx,
+    domain: crate::stats::Domain,
+    alive: bool,
+    /// A heading-first airframe flies a committed arc that its steering has
+    /// already checked against the world; a shove would carry it faster than
+    /// its speed and off that arc, so such aircraft neither push nor yield.
+    shoveable: bool,
 }
 
 /// Candidate contacts in a seat-local order. A half-turn maps each pair to a
@@ -878,27 +898,39 @@ fn may_touch_this_pass(state: &State, spent: &[Fx], i: usize, j: usize) -> bool 
 /// while the orbit order around a crowded crossing is identical for both
 /// seats. Raw unit ids cannot provide that property because corresponding
 /// seats receive adjacent, not mirrored, global ids.
+///
+/// Gathered and ordered once per tick from the tick's starting positions;
+/// every pass walks the same list. Interaction reach is under one tile (radii
+/// sum < 1), so 3x3 tile neighborhoods suffice, and a pair that only comes
+/// into one through this tick's corrections waits for the next tick. `None`
+/// means no pair overlaps beyond [`COLLISION_SLOP`], so no pass could move
+/// anything and nothing is sorted.
 fn collision_pairs(
     state: &State,
     reversed: bool,
-    index: &super::spatial::UnitIndex,
+    index: &mut super::spatial::UnitIndex,
     owner_ranks: &[usize],
-    spent: &[Fx],
-) -> Vec<(usize, usize)> {
+) -> Option<Vec<(usize, usize)>> {
+    index.rebuild(&state.units);
     let mut pairs = Vec::new();
-    // A heading-first airframe flies a committed arc that its steering has
-    // already checked against the world; a shove would carry it faster than
-    // its speed and off that arc, so such aircraft neither push nor yield.
-    let shoveable = |i: usize| {
-        let unit = &state.units[i];
-        unit.kind.stats().turn_rate == 0 || unit.landed
-    };
-    for i in 0..state.units.len() {
-        if state.units[i].hp == 0 || !shoveable(i) {
+    let mut any_pressing = false;
+    let bodies: Vec<Body> = state
+        .units
+        .iter()
+        .map(|unit| Body {
+            pos: unit.pos,
+            radius: unit.kind.stats().radius,
+            domain: unit.domain(),
+            alive: unit.hp > 0,
+            shoveable: unit.kind.stats().turn_rate == 0 || unit.landed,
+        })
+        .collect();
+    for (i, body) in bodies.iter().enumerate() {
+        if !body.alive || !body.shoveable {
             continue;
         }
-        let home = state.units[i].tile();
-        let rotated_frame = uses_rotated_map_frame(state, state.units[i].pos);
+        let home = TilePos::containing(body.pos);
+        let rotated_frame = uses_rotated_map_frame(state, body.pos);
         for row_offset in 0..3 {
             let dy = if rotated_frame {
                 1 - row_offset
@@ -907,24 +939,30 @@ fn collision_pairs(
             };
             let row = index.row_span(home.y + dy, home.x - 1, home.x + 1);
             for j in OrientedRow::new(row, rotated_frame) {
-                if j > i && shoveable(j) && may_touch_this_pass(state, spent, i, j) {
+                if j > i && bodies[j].shoveable && may_touch_this_tick(body, &bodies[j]) {
+                    any_pressing |= pressing(body, &bodies[j]);
                     pairs.push((i, j));
                 }
             }
         }
     }
-    // Cached keys: `sort_by_key` re-evaluates the key on every comparison,
-    // and this key builds two ordered coordinate pairs per ask. Both sorts
-    // are stable, so the pair order — and the resolution order — is
-    // bit-identical.
-    pairs.sort_by_cached_key(|&(i, j)| collision_pair_key(state, owner_ranks, i, j));
+    if !any_pressing {
+        return None;
+    }
+    pairs.sort_by_cached_key(|&(i, j)| {
+        (
+            collision_pair_ranks(state, owner_ranks, i, j),
+            collision_pair_position(state, i, j),
+        )
+    });
     if reversed {
         pairs.reverse();
     }
-    pairs
+    Some(pairs)
 }
 
-/// One pass; returns whether any overlap was found.
+/// One pass over the tick's candidate pairs; returns whether any pair
+/// overlapped beyond [`COLLISION_SLOP`].
 ///
 /// Corrections apply *immediately*, pair by pair, in deterministic order
 /// (Gauss–Seidel, not Jacobi). Accumulating all pushes first looks tidier
@@ -936,23 +974,12 @@ fn collision_pairs(
 /// removal tick.
 fn relaxation_pass(
     state: &mut State,
-    reversed: bool,
     travel: &[Vec2Fx],
-    index: &mut super::spatial::UnitIndex,
     owner_ranks: &[usize],
     spent: &mut Vec<Fx>,
+    pairs: &[(usize, usize)],
 ) -> bool {
     let n = state.units.len();
-    if n < 2 {
-        return false;
-    }
-    // Tile buckets as a sorted list — no hash maps in sim code. Interaction
-    // reach is under one tile (radii sum < 1), so 3x3 neighborhoods suffice.
-    // Buckets are snapshotted at pass start; corrections are small enough
-    // (≤ COLLISION_MAX_STEP) that a newly-adjacent pair simply waits for
-    // the next pass.
-    index.rebuild(&state.units);
-
     let mut any_overlap = false;
     // One per-unit displacement budget spans all relaxation passes in a
     // tick. Clamping only per pair lets a unit in k overlaps move k × the
@@ -963,7 +990,7 @@ fn relaxation_pass(
         spent.clear();
         spent.resize(n, Fx::ZERO);
     }
-    for (i, j) in collision_pairs(state, reversed, index, owner_ranks, spent) {
+    for &(i, j) in pairs {
         let (pos_i, radius_i, dom_i) = {
             let u = &state.units[i];
             (u.pos, u.kind.stats().radius, u.domain())
@@ -990,7 +1017,8 @@ fn relaxation_pass(
         } else {
             full_spacing
         };
-        if dist_sq >= min_dist * min_dist {
+        let rest = min_dist - COLLISION_SLOP;
+        if dist_sq >= rest * rest {
             continue;
         }
         any_overlap = true;
@@ -1263,14 +1291,8 @@ mod tests {
                 }
                 let ranks = owner_local_ranks(&state);
                 let mut index = UnitIndex::new();
-                relaxation_pass(
-                    &mut state,
-                    false,
-                    &[Vec2Fx::ZERO; 4],
-                    &mut index,
-                    &ranks,
-                    &mut vec![],
-                );
+                let pairs = collision_pairs(&state, false, &mut index, &ranks).unwrap_or_default();
+                relaxation_pass(&mut state, &[Vec2Fx::ZERO; 4], &ranks, &mut vec![], &pairs);
                 for (a, b) in [(0, 2), (1, 3)] {
                     assert_eq!(
                         state.units[b].pos,
@@ -2028,16 +2050,11 @@ mod tests {
                 let mut index = UnitIndex::new();
                 let owner_ranks = owner_local_ranks(&state);
                 let mut spent = Vec::new();
+                let pairs = collision_pairs(&state, false, &mut index, &owner_ranks)
+                    .expect("the boundary pair overlaps");
 
                 assert!(
-                    relaxation_pass(
-                        &mut state,
-                        false,
-                        &travel,
-                        &mut index,
-                        &owner_ranks,
-                        &mut spent,
-                    ),
+                    relaxation_pass(&mut state, &travel, &owner_ranks, &mut spent, &pairs),
                     "{edge} pair with outside slot {outside_slot} was not visited"
                 );
                 assert_ne!(
@@ -2060,6 +2077,19 @@ mod tests {
         let travel = vec![Vec2Fx::ZERO; state.units.len()];
         resolve_collisions(&mut state, &travel, &mut UnitIndex::new());
         [0, 1].map(|slot| state.units[slot].pos.dist(before[slot]))
+    }
+
+    #[test]
+    fn a_contact_within_the_slop_rests_and_a_deeper_one_separates() {
+        let spacing = UnitKind::Sentinel.stats().radius * 2;
+        let resting = resting_overlap([UnitKind::Sentinel; 2], spacing - COLLISION_SLOP / 2);
+        assert_eq!(
+            resting,
+            [Fx::ZERO; 2],
+            "rounding-deep contact needs no push"
+        );
+        let [left, right] = resting_overlap([UnitKind::Sentinel; 2], spacing - COLLISION_SLOP * 2);
+        assert!(left > Fx::ZERO && right > Fx::ZERO);
     }
 
     #[test]

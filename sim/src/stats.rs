@@ -2350,6 +2350,12 @@ pub const ANCHORED_PUSH_SHARE: Fx = Fx::lit("0.1");
 /// while leaving enough separation headroom for dense armies to flow.
 pub const COLLISION_MAX_STEP: Fx = Fx::lit("0.155");
 
+/// Overlap two bodies may rest at without a correction. A correction lands
+/// a pair exactly at its spacing, and fixed-point rounding leaves the next
+/// check a hair inside it; without this allowance parked crowds were pushed
+/// apart by nothing on every pass of every tick.
+pub const COLLISION_SLOP: Fx = Fx::lit("0.00390625");
+
 /// The slide blend for a MOVING unit's collision correction: instead
 /// of a pure push along the contact normal (which a head-on pair's
 /// path following exactly undoes — the measured permanent freeze at
