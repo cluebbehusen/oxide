@@ -784,46 +784,54 @@ pub(super) fn acquire_target_from(
 
     let home = TilePos::containing(pos);
     let reach = acquisition_range.floor().to_num::<i32>() + 1;
+    let team = state.player(me).team;
     let mut unit_target: Option<(chassis::fx::Fx, UnitId)> = None;
-    for dy in -reach..=reach {
-        for &(_, slot) in index.row_span(home.y + dy, home.x - reach, home.x + reach) {
-            let u = &state.units[slot];
-            if !state.hostile(me, u.player)
-                || u.hp == 0
-                || !stats.can_target(u.domain())
-                || (needs_sight && !state.can_see(me, u.tile()))
-            {
-                continue;
-            }
-            let d = pos.dist_sq(u.pos);
-            let outside_dead_zone = stats.weapons.iter().any(|weapon| {
-                weapon.targets.covers(u.domain())
-                    && d >= weapon.minimum_range * weapon.minimum_range
-            });
-            if !(d <= aggro_sq
-                && outside_dead_zone
-                && unit_target.is_none_or(|best| (d, u.id) < best))
-            {
-                continue;
-            }
-            // A victim on ground the chaser cannot stand on needs a
-            // firing position to exist, the same test the chase applies
-            // one tick later: acquiring without it took an order the
-            // unit could only stall, cleared it, and re-acquired the
-            // next tick — one army of lancers on a coast logged 11,588
-            // NoFiringPosition stalls in a single three-minute window.
-            let victim_tile = u.tile();
-            if !state.passable_for(stats.domain, victim_tile) {
-                let range = stats
-                    .weapons
-                    .iter()
-                    .find(|w| w.targets.covers(u.domain()))
-                    .map_or(chassis::fx::Fx::ZERO, |w| w.range);
-                if chase_stand_ins(state, stats.domain, victim_tile, range).is_empty() {
+    // A building in acquisition range covers a tile within `reach` of the
+    // unit's tile, or the next one where its closest point sits on an edge.
+    let hostiles = index.hostiles_near(team, home, reach + 1);
+    // An army at rest far from any enemy is the common case: the survey
+    // proves the window holds no hostile body before any row is walked.
+    if hostiles.bodies {
+        for dy in -reach..=reach {
+            for &(_, slot) in index.row_span(home.y + dy, home.x - reach, home.x + reach) {
+                let u = &state.units[slot];
+                if !state.hostile(me, u.player)
+                    || u.hp == 0
+                    || !stats.can_target(u.domain())
+                    || (needs_sight && !state.can_see(me, u.tile()))
+                {
                     continue;
                 }
+                let d = pos.dist_sq(u.pos);
+                let outside_dead_zone = stats.weapons.iter().any(|weapon| {
+                    weapon.targets.covers(u.domain())
+                        && d >= weapon.minimum_range * weapon.minimum_range
+                });
+                if !(d <= aggro_sq
+                    && outside_dead_zone
+                    && unit_target.is_none_or(|best| (d, u.id) < best))
+                {
+                    continue;
+                }
+                // A victim on ground the chaser cannot stand on needs a
+                // firing position to exist, the same test the chase applies
+                // one tick later: acquiring without it took an order the
+                // unit could only stall, cleared it, and re-acquired the
+                // next tick — one army of lancers on a coast logged 11,588
+                // NoFiringPosition stalls in a single three-minute window.
+                let victim_tile = u.tile();
+                if !state.passable_for(stats.domain, victim_tile) {
+                    let range = stats
+                        .weapons
+                        .iter()
+                        .find(|w| w.targets.covers(u.domain()))
+                        .map_or(chassis::fx::Fx::ZERO, |w| w.range);
+                    if chase_stand_ins(state, stats.domain, victim_tile, range).is_empty() {
+                        continue;
+                    }
+                }
+                unit_target = Some((d, u.id));
             }
-            unit_target = Some((d, u.id));
         }
     }
     if let Some((_, uid)) = unit_target {
@@ -832,8 +840,12 @@ pub(super) fn acquire_target_from(
     if !stats.can_target(Domain::Ground) {
         return None;
     }
-    state
-        .buildings
+    let candidates = if hostiles.buildings {
+        state.buildings()
+    } else {
+        index.buildings_since_survey(state.buildings())
+    };
+    candidates
         .iter()
         .filter(|b| state.hostile(me, b.player) && b.hp > 0)
         .map(|b| (pos.dist_sq(b.closest_point_to(pos)), b))
@@ -2253,6 +2265,7 @@ mod tests {
                 .validate_invariants()
                 .expect("the accepted coordinate envelope includes border rows");
             index.rebuild(&state.units);
+            index.survey(&state);
 
             let indexed = acquire_target(&state, &index, attacker);
             assert_eq!(indexed, Some(Target::Unit(victim)));
@@ -2356,6 +2369,7 @@ mod tests {
         for _ in 0..400 {
             state.tick(&[]);
             index.rebuild(&state.units);
+            index.survey(&state);
             for unit in &state.units {
                 if unit.hp == 0 {
                     continue;
