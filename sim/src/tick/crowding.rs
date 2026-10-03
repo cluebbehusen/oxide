@@ -16,7 +16,7 @@ pub(crate) fn spacing(a: &Unit, b: &Unit) -> Fx {
     }
 }
 pub(crate) fn claimed(state: &State, id: UnitId, point: Vec2Fx, retained: bool) -> bool {
-    let pressure = Pressure::new(state, id);
+    let pressure = Pressure::new(state, id, point, Fx::ZERO);
     let (occupied, _, arriving) = pressure.rank(point, retained);
     occupied > 0 || arriving > 0
 }
@@ -31,8 +31,17 @@ struct Neighbor {
 struct Pressure {
     neighbors: Vec<Neighbor>,
 }
+/// How far from its body a neighbor's destination may lie and still count
+/// as a claim: the square root of the window in [`Pressure::new`].
+const ARRIVAL_WINDOW: Fx = Fx::lit("1.25");
+
 impl Pressure {
-    fn new(state: &State, id: UnitId) -> Self {
+    /// The neighbors that can affect [`rank`](Self::rank) at any point
+    /// within `reach` of `center`. A neighbor counts only through a body or
+    /// a destination closer to the point than their spacing, and a counted
+    /// destination lies within [`ARRIVAL_WINDOW`] of its body, so a body
+    /// farther than `reach` plus both from `center` never counts.
+    fn new(state: &State, id: UnitId, center: Vec2Fx, reach: Fx) -> Self {
         let unit = state.unit(id).expect("position owner");
         Self {
             neighbors: state
@@ -44,12 +53,20 @@ impl Pressure {
                         && !state.hostile(other.player, unit.player)
                         && other.domain() == unit.domain()
                 })
+                .filter(|other| {
+                    // Margin for fixed-point rounding in the squared distances.
+                    let bound =
+                        reach + spacing(unit, other) + ARRIVAL_WINDOW + const { Fx::lit("0.0625") };
+                    other.pos.dist_sq(center) < bound * bound
+                })
                 .map(|other| {
                     let destination = other
                         .path
                         .as_ref()
                         .map(|path| path.final_point.unwrap_or(path.goal.center()))
-                        .filter(|&point| other.pos.dist_sq(point) <= const { Fx::lit("1.5625") });
+                        .filter(|&point| {
+                            other.pos.dist_sq(point) <= ARRIVAL_WINDOW * ARRIVAL_WINDOW
+                        });
                     Neighbor {
                         pos: other.pos,
                         destination,
@@ -95,20 +112,26 @@ pub(crate) fn choose(
     open: impl Fn(chassis::grid::TilePos) -> bool,
     mut route: impl FnMut(chassis::grid::TilePos) -> Option<Vec<chassis::grid::TilePos>>,
 ) -> Option<crate::state::PathFollow> {
-    let pressure = Pressure::new(state, id);
+    let unit = state.unit(id).expect("position owner");
+    let push = unit.kind.stats().radius * 2 + const { Fx::lit("0.20") };
+    // Waiting positions sit at most `push` beyond the candidates.
+    let reach = candidates
+        .iter()
+        .map(|candidate| (candidate.point - center).length())
+        .max()
+        .unwrap_or(Fx::ZERO)
+        + push;
+    let pressure = Pressure::new(state, id, center, reach);
     candidates.sort_by_cached_key(|candidate| pressure.rank(candidate.point, false));
     if candidates
         .first()
         .is_some_and(|candidate| pressure.rank(candidate.point, false).0 > 0)
     {
-        let unit = state.unit(id).expect("position owner");
         let mut waiting = candidates.clone();
         for candidate in &mut waiting {
             let outward = candidate.point - center;
             if outward != Vec2Fx::ZERO {
-                candidate.point += outward
-                    * ((unit.kind.stats().radius * 2 + const { Fx::lit("0.20") })
-                        / outward.length());
+                candidate.point += outward * (push / outward.length());
                 candidate.goal = chassis::grid::TilePos::containing(candidate.point);
             }
         }
@@ -286,11 +309,31 @@ mod tests {
         assert!(claimed(&state, id, point, false));
         assert!(claimed(&state, id, point, true));
         assert_eq!(
-            Pressure::new(&state, id).neighbors[0].spacing,
+            Pressure::new(&state, id, point, Fx::ZERO).neighbors[0].spacing,
             UnitKind::Harvester.stats().radius * 2
         );
         state.players[1].team = state.players[0].team.wrapping_add(1);
         assert!(!claimed(&state, id, point, false));
+    }
+
+    #[test]
+    fn a_destination_claims_its_point_from_across_the_arrival_window() {
+        let mut state = Scenario::skirmish().build().unwrap();
+        state.units.clear();
+        let point = TilePos::new(15, 8).center();
+        let id = state.spawn_unit(PlayerId(0), UnitKind::Harvester, point);
+        let arriving = state.spawn_unit(
+            PlayerId(0),
+            UnitKind::Harvester,
+            point + Vec2Fx::new(Fx::lit("1.2"), Fx::ZERO),
+        );
+        state.unit_mut(arriving).unwrap().path = Some(PathFollow {
+            goal: TilePos::new(15, 8),
+            final_point: Some(point),
+            waypoints: vec![TilePos::new(15, 8)],
+            next: 0,
+        });
+        assert!(claimed(&state, id, point, false));
     }
 
     #[test]
@@ -430,5 +473,40 @@ mod tests {
         )
         .unwrap();
         assert_eq!(path.final_point, Some(busy));
+    }
+
+    /// Narrowing the neighbors to a query area must never change a rank
+    /// inside it.
+    #[test]
+    fn pressure_ranks_ignore_only_neighbors_beyond_reach() {
+        let mut state = Scenario::skirmish().build().expect("skirmish builds");
+        for _ in 0..120 {
+            state.tick(&[]);
+        }
+        let everywhere = Fx::from_num(4096);
+        let mut claims = 0;
+        for unit in state.units().iter().filter(|unit| unit.hp > 0) {
+            for reach in [Fx::ZERO, Fx::lit("1.5"), Fx::from_num(3)] {
+                let center = unit.pos;
+                let near = Pressure::new(&state, unit.id, center, reach);
+                let all = Pressure::new(&state, unit.id, center, everywhere);
+                for dy in -4..=4 {
+                    for dx in -4..=4 {
+                        let offset = Vec2Fx::new(Fx::from_num(dx), Fx::from_num(dy))
+                            * (reach / Fx::from_num(4));
+                        if offset.length() > reach {
+                            continue;
+                        }
+                        let point = center + offset;
+                        for retained in [false, true] {
+                            let rank = near.rank(point, retained);
+                            assert_eq!(rank, all.rank(point, retained), "{:?}", unit.id);
+                            claims += usize::from(rank != (0, 0, 0));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(claims > 0, "no neighbor ever pressed a probe");
     }
 }
