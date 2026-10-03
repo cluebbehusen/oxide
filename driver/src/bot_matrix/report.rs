@@ -4,8 +4,11 @@
 
 use super::{MapFamily, MatchMode, MatrixLabel, Pairing};
 use crate::bot_eval::{
-    Deliveries, EvaluationControllerKind, EvaluationLeg, INCOME_CHECKPOINTS, IncomeSample,
-    SeatFailures, SeatReactivity, Termination,
+    AttackCalibration, Deliveries, EvaluationControllerKind, EvaluationLeg, INCOME_CHECKPOINTS,
+    IncomeSample, SeatFailures, SeatReactivity, Termination,
+};
+use crate::ledger::{
+    LedgerPool, PairShares, SeatLedger, WorthShare, render_shares, team_shares, worth_shares,
 };
 use anyhow::{Context, Result, bail, ensure};
 use oxide_kit::recovery::BuildIdentity;
@@ -16,6 +19,9 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
+
+/// Unit and building kinds each controller's ledger table shows.
+const LEDGER_KINDS: usize = 10;
 
 /// The fields of one matrix row that scoring reads.
 #[derive(Debug, Clone, Deserialize)]
@@ -74,6 +80,14 @@ pub struct ScoredEvidence {
     /// before the detectors existed.
     #[serde(default)]
     pub reactivity: Option<SeatReactivity>,
+    /// What the seat's units and buildings did; absent from rows recorded
+    /// before the ledger existed.
+    #[serde(default)]
+    pub ledger: Option<SeatLedger>,
+    /// Attack calibration; absent for `oxide-bot` and from rows recorded
+    /// before it existed.
+    #[serde(default)]
+    pub attacks: Option<AttackCalibration>,
 }
 
 /// Reads matrix rows from JSONL files, in file and line order.
@@ -216,6 +230,13 @@ pub struct ControllerTally {
     pub income: Vec<IncomeMedian>,
     /// Placement in mixed legs; absent without any.
     pub placement: Option<Placement>,
+    /// Pooled impact ledgers over the seat-legs whose rows record one.
+    pub ledger: LedgerPool,
+    /// Attack calibration summed over the seat-legs whose rows record it;
+    /// absent when none do.
+    pub attacks: Option<AttackCalibration>,
+    /// Its side's share of net worth in head-to-head legs, by pair.
+    pub worth: Vec<WorthShare>,
 }
 
 /// One slice of the matrix.
@@ -317,6 +338,9 @@ struct ControllerBuilder {
     income: BTreeMap<u64, Vec<(u32, u32)>>,
     doubled_places: Vec<u64>,
     survival: Vec<u64>,
+    ledger: LedgerPool,
+    attacks: Option<AttackCalibration>,
+    worth: PairShares,
 }
 
 #[derive(Default)]
@@ -397,6 +421,15 @@ pub fn build_report(rows: &[ScoredRow]) -> Result<MatrixReport> {
         let teams: Vec<u8> = row.seats.iter().map(|seat| seat.team).collect();
         let mode = MatchMode::of(&teams).with_context(describe)?;
         let places = doubled_places(row);
+        let ledgers: Vec<Option<&SeatLedger>> = row
+            .evidence
+            .iter()
+            .map(|evidence| evidence.ledger.as_ref())
+            .collect();
+        let pair = format!(
+            "{} {} {} {} {}",
+            label.manifest, label.map, label.difficulty, label.stance, label.run
+        );
         let leg_outcome = match label.pairing {
             Pairing::HeadToHead | Pairing::Mixed => {
                 if label.pairing == Pairing::Mixed {
@@ -472,6 +505,24 @@ pub fn build_report(rows: &[ScoredRow]) -> Result<MatrixReport> {
                         .entry(sample.tick)
                         .or_default()
                         .push((sample.actual_per_minute, sample.saturation_per_minute));
+                }
+                if let Some(ledger) = &evidence.ledger {
+                    controller.ledger.add(ledger);
+                }
+                if let Some(attacks) = &evidence.attacks {
+                    controller
+                        .attacks
+                        .get_or_insert_with(AttackCalibration::default)
+                        .add(attacks);
+                }
+                if label.pairing == Pairing::HeadToHead
+                    && let Some(shares) = team_shares(&ledgers, &teams, seat.team)
+                {
+                    controller
+                        .worth
+                        .entry(pair.clone())
+                        .or_default()
+                        .push(shares);
                 }
                 if label.pairing == Pairing::Mixed {
                     controller.doubled_places.push(place);
@@ -678,6 +729,9 @@ fn finish((mode, key): (MatchMode, GroupKey), builder: GroupBuilder) -> GroupRep
                     / (2 * tally.doubled_places.len()) as f64,
                 median_survival_ticks: median(tally.survival).unwrap_or(0),
             }),
+            worth: worth_shares(&tally.worth),
+            ledger: tally.ledger,
+            attacks: tally.attacks,
         })
         .collect();
     controllers.sort_by_key(|tally| std::cmp::Reverse(tally.controller));
@@ -821,6 +875,7 @@ impl MatrixReport {
             }
         }
         self.render_reactivity(&mut out);
+        self.render_ledger(&mut out);
         let _ = writeln!(
             out,
             "\nincome per minute: median percent of saturation (actual/saturation, samples)"
@@ -934,6 +989,42 @@ impl MatrixReport {
                     switches as f64 * 10_000.0 / tally.reactivity_ticks as f64,
                     tally.reactivity_seat_legs
                 );
+            }
+        }
+    }
+
+    /// Each controller's ledger over the whole of each mode: its side's
+    /// share of net worth in head-to-head pairs, how its attacks went
+    /// against what it believed, and its most-bought units and buildings.
+    fn render_ledger(&self, out: &mut String) {
+        for group in self.groups.iter().filter(|group| group.group == "overall") {
+            for tally in &group.controllers {
+                if tally.ledger.seats == 0 {
+                    continue;
+                }
+                let _ = writeln!(
+                    out,
+                    "\nledger, {} {}: {} of {} seat-legs recorded",
+                    group.mode.as_str(),
+                    controller_name(tally.controller),
+                    tally.ledger.seats,
+                    tally.seat_legs
+                );
+                if !tally.worth.is_empty() {
+                    let _ = writeln!(
+                        out,
+                        "  its side's share of net worth, head-to-head pairs: {}",
+                        render_shares(&tally.worth)
+                    );
+                }
+                if let Some(attacks) = &tally.attacks {
+                    let _ = writeln!(
+                        out,
+                        "  attacks, by strength sent against the known defense:"
+                    );
+                    attacks.render(out, "    ");
+                }
+                tally.ledger.render(out, "  ", Some(LEDGER_KINDS));
             }
         }
     }
@@ -1062,6 +1153,8 @@ mod tests {
             deliveries: None,
             income,
             reactivity: None,
+            ledger: None,
+            attacks: None,
         }
     }
 
@@ -1657,5 +1750,84 @@ mod tests {
             "{error}"
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn ledgers_pool_by_controller_and_worth_compares_head_to_head_pairs() {
+        let ledger = |worth: u64, sentinels: u64| crate::ledger::SeatLedger {
+            units: [(
+                "sentinel".to_owned(),
+                crate::ledger::KindLedger {
+                    built: sentinels,
+                    paid: 90 * sentinels,
+                    ..Default::default()
+                },
+            )]
+            .into(),
+            worth: vec![worth; 6],
+            ..Default::default()
+        };
+        let mut rows = Vec::new();
+        for (leg, run) in [(EvaluationLeg::Forward, 0), (EvaluationLeg::Swapped, 0)] {
+            let mut row = duel(
+                label("skirmish", MapFamily::Open, run, Pairing::HeadToHead),
+                leg,
+                Some(N),
+            );
+            let new = usize::from(leg == EvaluationLeg::Swapped);
+            row.evidence[new].ledger = Some(ledger(600, 3));
+            row.evidence[1 - new].ledger = Some(ledger(400, 2));
+            row.evidence[new].attacks = Some(AttackCalibration::default());
+            rows.push(row);
+        }
+        rows.extend([EvaluationLeg::Forward, EvaluationLeg::Swapped].map(|leg| {
+            duel(
+                label("skirmish", MapFamily::Open, 1, Pairing::HeadToHead),
+                leg,
+                None,
+            )
+        }));
+        let report = build_report(&rows).unwrap();
+        let overall = report
+            .groups
+            .iter()
+            .find(|group| group.group == "overall")
+            .unwrap();
+        let tally = |controller| {
+            overall
+                .controllers
+                .iter()
+                .find(|tally| tally.controller == controller)
+                .unwrap()
+        };
+        let (new, old) = (tally(N), tally(O));
+        assert_eq!(
+            (new.ledger.seats, new.seat_legs),
+            (2, 4),
+            "rows without a ledger are unmeasured"
+        );
+        assert_eq!(new.ledger.units["sentinel"].built, 6);
+        assert_eq!(old.ledger.units["sentinel"].built, 4);
+        assert!(new.attacks.is_some() && old.attacks.is_none());
+        assert_eq!(
+            new.worth
+                .iter()
+                .map(|share| (share.tick, share.pairs))
+                .collect::<Vec<_>>(),
+            crate::ledger::WORTH_TICKS.map(|tick| (tick, 1)),
+            "a match that ended sooner carries its final worth"
+        );
+        assert!(
+            new.worth
+                .iter()
+                .all(|share| (share.mean - 0.6).abs() < 1e-9)
+        );
+        assert!((old.worth[0].mean - 0.4).abs() < 1e-9);
+        let rendered = report.render();
+        assert!(
+            rendered.contains("its side's share of net worth"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("sentinel"), "{rendered}");
     }
 }

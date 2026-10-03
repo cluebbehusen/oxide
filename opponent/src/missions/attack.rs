@@ -301,6 +301,23 @@ impl Missions {
         if recruits.is_empty() || !ledger.order(hunt(recruits.clone(), rally)) {
             return false;
         }
+        ledger.launched(super::Launch {
+            mission: self.next,
+            kind: Task::Attack {
+                target: target.objective(),
+                phase: AttackPhase::Gather,
+            }
+            .kind(),
+            defense: defense(plan.observation, plan.memory, target.approach),
+            margin: plan.margin,
+            need,
+            sent: recruits
+                .iter()
+                .filter_map(|id| mine(plan.observation, *id))
+                .map(striking)
+                .sum(),
+            units: recruits.clone(),
+        });
         self.list.push(Mission {
             id: self.next,
             since: plan.observation.tick,

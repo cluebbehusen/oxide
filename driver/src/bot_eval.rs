@@ -18,10 +18,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 mod batch;
+mod calibration;
 mod failures;
 mod income;
 mod reactivity;
 pub use batch::{EvaluationBatchOptions, EvaluationBatchResult, evaluate_batch};
+pub use calibration::{AttackBucket, AttackCalibration};
 pub use failures::{
     DELIVERY_TICKS, Deliveries, ENGAGE_MARGIN, EXEMPT_STALL_REASON, FAILURE_WINDOW_TICKS,
     FailureIncident, FailureTally, HOME_REACH, IDLE_ARMY_FLOOR, IDLE_TICKS, MAX_FAILURE_EXAMPLES,
@@ -481,6 +483,12 @@ pub struct SeatEvidence {
     /// Situations the seat met and how it answered them; absent for seats
     /// without a controller.
     pub reactivity: Option<SeatReactivity>,
+    /// What the seat's units and buildings did, valued in scrap; absent for
+    /// seats without a controller.
+    pub ledger: Option<crate::ledger::SeatLedger>,
+    /// What `oxide-opponent` believed when it launched each attack, against
+    /// how the attack went; absent for other seats.
+    pub attacks: Option<AttackCalibration>,
 }
 
 impl SeatEvidence {
@@ -499,6 +507,8 @@ impl SeatEvidence {
             deliveries: None,
             income: Vec::new(),
             reactivity: None,
+            ledger: None,
+            attacks: None,
         }
     }
 
@@ -737,7 +747,17 @@ fn evaluate_plan_artifact_impl(
     let watched: Vec<bool> = plan.controllers.iter().map(Option::is_some).collect();
     let mut failures = failures::FailureDetectors::new(watched.iter().copied());
     let mut reactions = reactivity::ReactivityDetectors::new(watched.iter().copied());
-    let mut income = income::IncomeTracker::new(&state, watched);
+    let mut income = income::IncomeTracker::new(&state, watched.clone());
+    let mut ledger = crate::ledger::ImpactLedger::new(&state);
+    let mut attacks = calibration::AttackFollower::new(bots.iter().fold(
+        vec![false; scenario.players.len()],
+        |mut opponents, bot| {
+            if matches!(bot, SeatController::Opponent { .. }) {
+                opponents[usize::from(bot.player().0)] = true;
+            }
+            opponents
+        },
+    ));
 
     let mut stall_loop = None;
     'run: while state.current_tick() < tick_limit && state.result().is_none() {
@@ -761,6 +781,7 @@ fn evaluate_plan_artifact_impl(
             oxide_kit::runner::step(&mut state, &mut bots, Some(&mut replay))
         };
         let tick = state.current_tick();
+        ledger.observe(&state, &report);
         failures.observe_events(&state, &report.events, tick);
         reactions.observe_events(&state, &report.events, tick);
         for event in &report.events {
@@ -790,19 +811,32 @@ fn evaluate_plan_artifact_impl(
                     let missions = controller.missions();
                     failures.check_missions(controller.player().0, tick, &missions);
                     reactions.check_missions(controller.player().0, tick, &missions);
+                    attacks.check(
+                        controller.player().0,
+                        tick,
+                        controller.launches(),
+                        &missions,
+                        &ledger,
+                    );
                 }
             }
             failures.check(&state, tick, &protected);
             reactions.check(&state, tick);
         }
     }
-    for (seat, (((evidence, report), income), reactivity)) in evidence
+    let calibrations = attacks.finish(&ledger);
+    let ledgers = ledger.finish(state.current_tick());
+    for (seat, (((((evidence, report), income), reactivity), seat_ledger), calibration)) in evidence
         .iter_mut()
         .zip(failures.finish())
         .zip(income.finish())
         .zip(reactions.finish())
+        .zip(ledgers)
+        .zip(calibrations)
         .enumerate()
     {
+        evidence.ledger = watched[seat].then_some(seat_ledger);
+        evidence.attacks = calibration;
         evidence.eliminated_at = state.players()[seat].eliminated_at;
         evidence.failures = report.failures;
         evidence.idle_producers = report.idle_producers;
@@ -2184,7 +2218,10 @@ mod tests {
         assert!(
             row.evidence
                 .iter()
-                .all(|seat| seat.failures == SeatFailures::default() && seat.income.is_empty()),
+                .all(|seat| seat.failures == SeatFailures::default()
+                    && seat.income.is_empty()
+                    && seat.ledger.is_none()
+                    && seat.attacks.is_none()),
             "seats without a controller are not watched"
         );
         assert_eq!(row.reference_digest, REFERENCE_DIGEST);
@@ -2219,7 +2256,31 @@ mod tests {
             };
             assert_eq!(sample.tick, INCOME_CHECKPOINTS[0]);
             assert!(sample.actual_per_minute > 0 && sample.saturation_per_minute > 0);
+            let ledger = seat
+                .ledger
+                .as_ref()
+                .expect("controlled seats keep a ledger");
+            assert_eq!(
+                ledger.worth.len() as u64,
+                INCOME_CHECKPOINTS[0] / crate::ledger::WORTH_PERIOD
+            );
+            assert!(ledger.units["harvester"].harvested > 0);
+            assert!(seat.attacks.is_none(), "oxide-bot reports no launches");
         }
+
+        let mut plan = plan;
+        for controller in plan.controllers.iter_mut().flatten() {
+            *controller = EvaluationController::configured(BotConfig::opponent(
+                BotDifficulty::Standard,
+                BotStance::Balanced,
+                73,
+            ));
+        }
+        let (row, _) = evaluate_plan_artifact(&plan, 600, "test-build").unwrap();
+        assert!(
+            row.evidence.iter().all(|seat| seat.attacks.is_some()),
+            "oxide-opponent seats are calibrated"
+        );
     }
 
     #[test]

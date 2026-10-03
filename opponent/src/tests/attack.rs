@@ -69,6 +69,36 @@ fn an_opportunity_above_the_stance_minimum_launches() {
 }
 
 #[test]
+fn a_launch_reports_what_the_seat_believed_until_the_next_decision() {
+    let scenario = armed(8, &[]);
+    let mut state = scenario.build().unwrap();
+    let mut opponent = seat(&scenario, 0);
+    let (commands, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
+    let mission = attack(&trace.unwrap().missions).expect("an attack forms");
+    let [launch] = opponent.launches() else {
+        panic!("{:?}", opponent.launches());
+    };
+    assert_eq!(launch.mission, mission.id);
+    assert_eq!(launch.kind, mission.kind);
+    assert_eq!(launch.defense, 0, "no enemy building is known yet");
+    assert!(launch.need > 0 && launch.margin > 0);
+    assert!(
+        launch.sent >= launch.need,
+        "an attack launches only once it can beat its need"
+    );
+    let mut sent = hunts(&commands)[0].0.clone();
+    sent.sort_unstable();
+    assert_eq!(launch.units, sent);
+
+    let checkpoint = serde_json::to_string(&opponent.checkpoint()).unwrap();
+    assert!(!checkpoint.contains("launch"), "never saved");
+    state.tick(&commands);
+    advance_to(&mut state, 12, &[]);
+    opponent.act(&state, &mut OwnEvents::default());
+    assert!(opponent.launches().is_empty(), "{:?}", opponent.launches());
+}
+
+#[test]
 fn an_army_below_the_stance_minimum_stays_home() {
     let scenario = armed(6, &[]);
     let state = scenario.build().unwrap();

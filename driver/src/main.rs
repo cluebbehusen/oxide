@@ -239,6 +239,20 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// The impact ledger over recorded games: what every unit and building
+    /// did, valued in scrap. Value dealt is damage done, credited to
+    /// whoever hit; enabled is damage friendly shooters dealt to targets
+    /// only that kind could see; income and payback cover the economy, and
+    /// spending is split by phase. Seats pool by faction and controller.
+    /// Accepts replays and match recordings, not player saves.
+    ReplayLedger {
+        /// Replay or match recording paths.
+        #[arg(required = true)]
+        replays: Vec<PathBuf>,
+        /// Print each game's ledgers as JSON instead of the pooled report.
+        #[arg(long)]
+        json: bool,
+    },
     /// Report rows written by `bot-ladder`.
     BotLadderReport {
         /// rows.jsonl files.
@@ -1044,6 +1058,20 @@ fn main() -> Result<()> {
             print_ladder_report(&[rows_path], json)?;
         }
         Cmd::BotLadderReport { rows, json } => print_ladder_report(&rows, json)?,
+        Cmd::ReplayLedger { replays, json } => {
+            let games = replays
+                .iter()
+                .map(|path| {
+                    let replay = oxide_driver::replay_ledger::load(path)?;
+                    oxide_driver::replay_ledger::ledger(path, &replay)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&games)?);
+            } else {
+                print!("{}", oxide_driver::replay_ledger::render(&games));
+            }
+        }
         Cmd::BotPressure {
             controller,
             dir,

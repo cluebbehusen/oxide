@@ -240,6 +240,28 @@ pub enum Phase {
     Fight,
 }
 
+/// An attack one decision launched, with what the seat believed when it
+/// launched it. Reported to hosts for evaluation; never saved and never
+/// read by a decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Launch {
+    /// The attack's mission id.
+    pub mission: u64,
+    /// The attack and the building it went after.
+    pub kind: MissionKind,
+    /// Known local defense at the target's approach, in scrap.
+    pub defense: u64,
+    /// Per mille of that defense the attack had to bring.
+    pub margin: u64,
+    /// Strength the attack needed: the defense times the margin, never under
+    /// the stance minimum.
+    pub need: u64,
+    /// Strength against buildings of the units sent.
+    pub sent: u64,
+    /// The units sent, by id.
+    pub units: Vec<UnitId>,
+}
+
 /// One mission as a decision left it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct MissionStatus {
