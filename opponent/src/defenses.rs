@@ -174,18 +174,20 @@ struct Approach {
     source: (i64, i64),
     /// The cover that holds the threat off at a sample, in army scrap.
     need: u64,
-    /// The threat along the way, in army scrap, and of it the known enemies'
-    /// reach against buildings with their value.
+    /// The threat along the way, in army scrap, how its known enemies reach
+    /// buildings, and whether they gather in clumps.
     threat: Threat,
 }
 
 /// The value of the armed enemies the seat remembers near a source, at least
-/// an army at the stance's minimum, and their reach against buildings with
-/// each one's value.
+/// an army at the stance's minimum, their reach against buildings with each
+/// one's value, and whether they gather in clumps a shell's splash hits
+/// several of.
 #[derive(Clone, Default)]
 struct Threat {
     value: u64,
     reaches: Vec<(Fx, u64)>,
+    clustered: bool,
 }
 
 impl Approach {
@@ -205,7 +207,7 @@ impl Approach {
             .map(|(_, value)| value)
             .sum();
         let value = self.threat.value.max(1);
-        cover.value * (value - unanswered.min(value)) / value
+        cover.value[usize::from(self.threat.clustered)] * (value - unanswered.min(value)) / value
     }
 }
 
@@ -236,8 +238,9 @@ type ThreatKey = ((i64, i64), Domain, Option<Vec<u32>>);
 #[derive(Clone, Copy)]
 struct Cover {
     centre: (i64, i64),
-    /// What the weapon holds off, in army scrap: see [`strength`].
-    value: u64,
+    /// What the weapon holds off, in army scrap, against a spread enemy and
+    /// a clustered one: see [`strength`].
+    value: [u64; 2],
     /// Squared doubled reach, and squared doubled minimum range.
     reach2: i64,
     min2: i64,
@@ -250,12 +253,11 @@ struct Cover {
 }
 
 impl Cover {
-    /// `targets` is how many enemies a splash shell hits, in thousandths.
-    fn of(kind: BuildingKind, tier: u8, anchor: TilePos, targets: u64) -> Option<Self> {
+    fn of(kind: BuildingKind, tier: u8, anchor: TilePos) -> Option<Self> {
         let stats = kind.tier_stats(tier);
         let mut cover = Cover {
             centre: footprint_centre(kind, anchor),
-            value: strength(stats, targets),
+            value: SPLASH_TARGETS.map(|targets| strength(stats, targets)),
             reach2: 0,
             min2: i64::MAX,
             range: Fx::ZERO,
@@ -309,8 +311,6 @@ struct Guard<'a> {
     assets: Vec<Asset>,
     /// The seat's own armed buildings, built or not.
     covers: Vec<Cover>,
-    /// How many enemies a splash shell hits, in thousandths.
-    targets: u64,
     /// Ground the seat's Harvesters stand on: only there can it build.
     crews: Vec<u32>,
     /// Whether the opening economy is up. Before then, a defense against a
@@ -333,14 +333,11 @@ impl<'a> Guard<'a> {
         stakes: Stakes,
     ) -> Option<Self> {
         let frame = HomeFrame::of(observation, map)?;
-        let targets = SPLASH_TARGETS[usize::from(composition::clustered(memory))];
         let covers: Vec<Cover> = observation
             .my_buildings
             .iter()
             .filter(|building| !building.provisional)
-            .filter_map(|building| {
-                Cover::of(building.kind, building.tier, building.anchor, targets)
-            })
+            .filter_map(|building| Cover::of(building.kind, building.tier, building.anchor))
             .collect();
         let sight: Vec<((i64, i64), i64)> = observation
             .my_buildings
@@ -463,7 +460,6 @@ impl<'a> Guard<'a> {
             frame,
             assets,
             covers,
-            targets,
             crews,
             settled,
             exposed,
@@ -780,7 +776,7 @@ impl<'a> Guard<'a> {
         guarded: impl Fn(&Asset) -> bool,
     ) -> Option<(TilePos, u64)> {
         let size = kind.base_stats().size;
-        let reach = Cover::of(kind, 0, TilePos::new(0, 0), self.targets);
+        let reach = Cover::of(kind, 0, TilePos::new(0, 0));
         let bastion = kind == BuildingKind::Bastion;
         // Each asset with the most any site beside it could be worth: every
         // sample still open, or every far point nobody sees.
@@ -963,7 +959,7 @@ fn upgrade(guard: &Guard<'_>, building: &BuildingObs, weight: u64) -> Option<(In
         return None;
     }
     let stats = building.kind.tier_stats(building.tier);
-    let cover = Cover::of(building.kind, building.tier, building.anchor, guard.targets);
+    let cover = Cover::of(building.kind, building.tier, building.anchor);
     let array = building.kind == BuildingKind::Array;
     if cover.is_none() && !array {
         return None;
@@ -1006,13 +1002,7 @@ fn upgrade(guard: &Guard<'_>, building: &BuildingObs, weight: u64) -> Option<(In
     let centre = footprint_centre(building.kind, building.anchor);
     // The next tier, where it reaches, and the strength it adds.
     let raised = cover.map(|cover| {
-        let next = Cover::of(
-            building.kind,
-            building.tier + 1,
-            building.anchor,
-            guard.targets,
-        )
-        .unwrap_or(cover);
+        let next = Cover::of(building.kind, building.tier + 1, building.anchor).unwrap_or(cover);
         (cover, next)
     });
     let worth: u64 = guard
@@ -1152,7 +1142,7 @@ fn threat(
     beside: Option<&[u32]>,
     stakes: Stakes,
 ) -> Threat {
-    let reaches: Vec<(Fx, u64)> = armed_near(memory, source, domain)
+    let units: Vec<&SeenUnit> = armed_near(memory, source, domain)
         .filter(|unit| {
             beside.is_none_or(|grounds| {
                 ring(unit.tile, (1, 1)).any(|tile| {
@@ -1161,12 +1151,16 @@ fn threat(
                 })
             })
         })
+        .collect();
+    let reaches: Vec<(Fx, u64)> = units
+        .iter()
         .map(|unit| (reach(unit.kind), unit.value(now)))
         .collect();
     let near: u64 = reaches.iter().map(|(_, value)| value).sum();
     Threat {
         value: near.max(stakes.minimum),
         reaches,
+        clustered: composition::clustered(units),
     }
 }
 
@@ -1819,9 +1813,7 @@ mod tests {
 
     #[test]
     fn a_gun_answers_only_enemies_it_can_fire_back_at() {
-        let gun = |kind: BuildingKind| {
-            Cover::of(kind, 0, TilePos::new(10, 10), SPLASH_TARGETS[0]).unwrap()
-        };
+        let gun = |kind: BuildingKind| Cover::of(kind, 0, TilePos::new(10, 10)).unwrap();
         let answers = |kind: BuildingKind, enemy: UnitKind| gun(kind).answers(reach(enemy));
         assert!(answers(BuildingKind::Turret, UnitKind::Sentinel));
         assert!(
@@ -1844,8 +1836,8 @@ mod tests {
     #[test]
     fn an_upgrade_adds_its_whole_strength_where_the_gun_did_not_reach() {
         let anchor = TilePos::new(10, 10);
-        let turret = Cover::of(BuildingKind::Turret, 0, anchor, SPLASH_TARGETS[0]).unwrap();
-        let heavy = Cover::of(BuildingKind::Turret, 1, anchor, SPLASH_TARGETS[0]).unwrap();
+        let turret = Cover::of(BuildingKind::Turret, 0, anchor).unwrap();
+        let heavy = Cover::of(BuildingKind::Turret, 1, anchor).unwrap();
         let centre = footprint_centre(BuildingKind::Turret, anchor);
         // Two, five and a half and eight tiles out, in doubled coordinates.
         let near = (centre.0 + 4, centre.1);
@@ -1853,9 +1845,9 @@ mod tests {
         let far = (centre.0 + 16, centre.1);
         assert!(turret.covers(Domain::Ground, near) && !turret.covers(Domain::Ground, edge));
         assert!(heavy.covers(Domain::Ground, edge) && !heavy.covers(Domain::Ground, far));
-        let raised = |point| raises(turret, heavy, Domain::Ground, point, |cover| cover.value);
-        assert_eq!(raised(near), heavy.value - turret.value);
-        assert_eq!(raised(edge), heavy.value);
+        let raised = |point| raises(turret, heavy, Domain::Ground, point, |cover| cover.value[0]);
+        assert_eq!(raised(near), heavy.value[0] - turret.value[0]);
+        assert_eq!(raised(edge), heavy.value[0]);
         assert_eq!(raised(far), 0);
     }
 

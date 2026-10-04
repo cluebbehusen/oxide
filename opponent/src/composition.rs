@@ -2,7 +2,7 @@
 //! enemy and what it owns, and the unit that best fills a role at a producer.
 //! Choices use coarse suitability, never a combat simulation.
 
-use crate::memory::Memory;
+use crate::memory::{Memory, SeenUnit};
 use crate::profile::PersonalityTraits;
 use chassis::fx::Fx;
 use oxide_sim::observation::ObservationData;
@@ -116,17 +116,17 @@ impl Enemy {
                 enemy.defenses += crate::missions::building_value(building);
             }
         }
-        enemy.clustered = clustered(memory);
+        enemy.clustered = clustered(memory.units());
         enemy
     }
 }
 
-/// Whether the enemy the seat remembers gathers in clumps: four within three
-/// tiles of one another, where a shell's splash hits several.
-pub(crate) fn clustered(memory: &Memory) -> bool {
+/// Whether `units` gather in clumps: four within three tiles of one another,
+/// where a shell's splash hits several.
+pub(crate) fn clustered<'a>(units: impl IntoIterator<Item = &'a SeenUnit>) -> bool {
     // The most recently seen units stand in for the rest: a computation
     // bound on a pairwise check, not a limit on what the seat knows.
-    let mut recent: Vec<_> = memory.units().iter().collect();
+    let mut recent: Vec<&SeenUnit> = units.into_iter().collect();
     recent.sort_by_key(|unit| (Reverse(unit.seen), unit.id));
     recent.truncate(32);
     recent.iter().any(|unit| {

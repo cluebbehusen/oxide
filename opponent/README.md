@@ -122,24 +122,24 @@ Turret against enemy buildings and starts across a chasm, whose units could
 land. Flak Turrets answer seen or remembered enemy aircraft or a known enemy
 Airworks. A gun holds off the army scrap of Sentinels that would match its
 damage and health in a fight, at its current tier, a splash shell counting
-several hits when the enemy the seat remembers gathers in clumps, and none of
-the share of the threat that can hit it from beyond its reach or from inside its
-minimum range. Guns hold a threat once together they hold off its value divided
-by the margin an attack is assumed to bring over a defense, the same at every
-difficulty; the threat is the armed enemies known behind the approach, on ground
-connected to the building unless they could only land, and at least an army at
-the stance's minimum. Each site is an investment worth the shortfall it closes
-at the points of the approach it covers, at most what the gun holds off at each,
-per scrap of its price, by the building's value, by how sure the seat is of the
-threat, and by personality: fortification for Turrets and Bastions,
-fortification and support for Flak Turrets. A seat under the stance's minimum
-army with no Turret puts one up before any tech, whatever its fortification: one
-gun holds an early rush that a tech building still going up would not. A Bastion
-counts only ground the seat's or an ally's buildings see. When the threat is
-only a guess from public facts, equal sites go to the one nearest the building;
-otherwise to the one nearest the threat. Sites go only on ground where one of
-the seat's Harvesters stands to build them, and a site the simulation refused is
-skipped for a while.
+several hits when the armed enemies behind that approach gather in clumps, and
+none of the share of the threat that can hit it from beyond its reach or from
+inside its minimum range. Guns hold a threat once together they hold off its
+value divided by the margin an attack is assumed to bring over a defense, the
+same at every difficulty; the threat is the armed enemies known behind the
+approach, on ground connected to the building unless they could only land, and
+at least an army at the stance's minimum. Each site is an investment worth the
+shortfall it closes at the points of the approach it covers, at most what the
+gun holds off at each, per scrap of its price, by the building's value, by how
+sure the seat is of the threat, and by personality: fortification for Turrets
+and Bastions, fortification and support for Flak Turrets. A seat under the
+stance's minimum army with no Turret puts one up before any tech, whatever its
+fortification: one gun holds an early rush that a tech building still going up
+would not. A Bastion counts only ground the seat's or an ally's buildings see.
+When the threat is only a guess from public facts, equal sites go to the one
+nearest the building; otherwise to the one nearest the threat. Sites go only on
+ground where one of the seat's Harvesters stands to build them, and a site the
+simulation refused is skipped for a while.
 
 Once the opening economy is up, a seat whose army is still under the stance's
 minimum weighs a hostile start nearly like seen enemies, so most seats put up an
