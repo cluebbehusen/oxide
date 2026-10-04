@@ -216,3 +216,41 @@ fn legacy_bot_setup_reaches_version_validation_and_the_archaeology_flag() {
         String::from_utf8_lossy(&allowed.stderr)
     );
 }
+
+#[test]
+fn hash_every_lines_repeat_exactly_and_end_at_the_final_hash() {
+    let mut replay = GameReplay::new(SIM_VERSION, Scenario::skirmish());
+    replay.meta.ticks = Some(25);
+    let id = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let file = TempReplay(
+        std::env::temp_dir().join(format!("oxide-hash-every-{}-{id}.json", std::process::id())),
+    );
+    replay.save(&file.0).unwrap();
+    let run = |extra: &[&str]| {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_oxide-driver"))
+            .arg("replay")
+            .arg(&file.0)
+            .args(extra)
+            .output()
+            .expect("run replay");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>()
+    };
+    let lines = run(&["--hash-every", "10"]);
+    assert_eq!(lines, run(&["--hash-every", "10"]));
+    let ticks: Vec<_> = lines.iter().map(|line| line["tick"].as_u64()).collect();
+    assert_eq!(ticks, [Some(10), Some(20), Some(25)]);
+    assert!(lines.iter().all(|line| line["events"].is_string()));
+    let plain = run(&[]);
+    assert_eq!(plain.len(), 1);
+    assert_eq!(lines[2]["hash"], plain[0]["hash"]);
+    assert!(plain[0].get("events").is_none());
+}
