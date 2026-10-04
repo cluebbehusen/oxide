@@ -121,22 +121,25 @@ the building, except that a seat under the stance's minimum army also puts up a
 Turret against enemy buildings and starts across a chasm, whose units could
 land. Flak Turrets answer seen or remembered enemy aircraft or a known enemy
 Airworks. A gun holds off the army scrap of Sentinels that would match its
-damage and health in a fight, at its current tier, and guns hold a threat once
-together they hold off its value divided by the margin an attack is assumed to
-bring over a defense, the same at every difficulty; the threat is the armed
-enemies known behind the approach, on ground connected to the building unless
-they could only land, and at least an army at the stance's minimum. Each site is
-an investment worth the shortfall it closes at the points of the approach it
-covers, at most what the gun holds off at each, per scrap of its price, by the
-building's value, by how sure the seat is of the threat, and by personality:
-fortification for Turrets and Bastions, fortification and support for Flak
-Turrets. A seat under the stance's minimum army with no Turret puts one up
-before any tech, whatever its fortification: one gun holds an early rush that a
-tech building still going up would not. A Bastion counts only ground the seat's
-or an ally's buildings see. When the threat is only a guess from public facts,
-equal sites go to the one nearest the building; otherwise to the one nearest the
-threat. Sites go only on ground where one of the seat's Harvesters stands to
-build them, and a site the simulation refused is skipped for a while.
+damage and health in a fight, at its current tier, a splash shell counting
+several hits when the enemy the seat remembers gathers in clumps, and none of
+the share of the threat that can hit it from beyond its reach or from inside its
+minimum range. Guns hold a threat once together they hold off its value divided
+by the margin an attack is assumed to bring over a defense, the same at every
+difficulty; the threat is the armed enemies known behind the approach, on ground
+connected to the building unless they could only land, and at least an army at
+the stance's minimum. Each site is an investment worth the shortfall it closes
+at the points of the approach it covers, at most what the gun holds off at each,
+per scrap of its price, by the building's value, by how sure the seat is of the
+threat, and by personality: fortification for Turrets and Bastions,
+fortification and support for Flak Turrets. A seat under the stance's minimum
+army with no Turret puts one up before any tech, whatever its fortification: one
+gun holds an early rush that a tech building still going up would not. A Bastion
+counts only ground the seat's or an ally's buildings see. When the threat is
+only a guess from public facts, equal sites go to the one nearest the building;
+otherwise to the one nearest the threat. Sites go only on ground where one of
+the seat's Harvesters stands to build them, and a site the simulation refused is
+skipped for a while.
 
 Once the opening economy is up, a seat whose army is still under the stance's
 minimum weighs a hostile start nearly like seen enemies, so most seats put up an
@@ -278,7 +281,8 @@ beyond the home reserve set out on a raid, those nearest the target until they
 are worth what it needs. Scuttlers and ground-attack aircraft too few for a
 strike go after the enemy Extractor or Foundry whose known defense they outweigh
 by the attack margin, least defended and then nearest first, Scuttlers only
-where no known, built enemy building's ground fire reaches, the aircraft flying
+where no known, built enemy building's ground fire reaches and the known guard
+is light (at most a quarter of the stance's minimum army), the aircraft flying
 around known anti-air. Sappers go after the most valuable known enemy building
 for its distance with little known defense that they are enough to blow up.
 Scuttlers and aircraft turn back once one is badly hurt, once the known fire
@@ -289,13 +293,13 @@ go after it.
 
 Once its income reaches a level that falls with guile, the seat keeps the
 Scuttlers, alive or queued and out on no other mission, that a raid on the least
-defended known harvest line no enemy gun guards needs. Once it has scrap to
-spare, less the more it leans on siege, it keeps a Sapper for each known enemy
-defense, in sight or remembered, that can hit ground around the targets of
-attacks under way and of the next attack. An attack on a target with such
-defenses takes a free Sapper along for each while it gathers or recovers, and
-once it fights sends each at the nearest such defense on its ground, leaving
-them to it when the rest of the army moves on.
+defended known harvest line no enemy gun guards and only a light guard holds
+needs. Once it has scrap to spare, less the more it leans on siege, it keeps a
+Sapper for each known enemy defense, in sight or remembered, that can hit ground
+around the targets of attacks under way and of the next attack. An attack on a
+target with such defenses takes a free Sapper along for each while it gathers or
+recovers, and once it fights sends each at the nearest such defense on its
+ground, leaving them to it when the rest of the army moves on.
 
 ## Scouting
 
@@ -326,26 +330,31 @@ Enemy buildings need no memory of its own: the observation keeps their ghosts.
 
 From that knowledge and its own army, alive and queued, it sets a deficit for
 each role: line fighters to match three quarters of the enemy's ground army or
-two fifths of its own, siege for known enemy defenses and by preference,
-anti-air to answer three quarters of the enemy air it has seen (a seen enemy
-Airworks counts as air), and air strikes by preference once it has an Airworks.
-Ground units count only while they can reach an enemy, by ground or by lift once
-an Airworks stands; before then, known enemy ground units on the seat's own
-ground still call for line units worth three quarters of them. While ground
-reaches no enemy, air strikes are wanted with or without an Airworks, at least
-what a strike needs against the easiest known target the seat has not given up
-on. The most wanted role goes first to the nearest ready producer that can
-afford a unit for it, then the next; ready producers left with nothing wanted
-train line units while ground units can reach an enemy. Each chooses the unit it
-can afford now by coarse suitability: reach against the enemy's usual reach,
-durability for the price, covering both enemy domains, splash against clustered
-enemies, affordability at the seat's income, variety (a kind that already makes
-up most of its role counts for less, so every kind of a role gets its turn), and
-personality. Scouts, carriers, Tenders, Scuttlers and Sappers are bought only
-for scouting, lift, support and raids. A role it needs but cannot train at all
-adds to the investment score of the cheapest building that would let it, and a
-role it can train adds to a producer it lacks whose unit would suit it better,
-as much as saving for that unit is worth.
+two fifths of its own, siege for known enemy defenses and, unless the army goes
+only by lift, for a share of its own army behind that line (half for Turtle and
+Balanced seats, a fifth for Aggressive ones, which attack early with small
+armies; more or less with its siege preference), anti-air to answer three
+quarters of the enemy air it has seen (a seen enemy Airworks counts as air), and
+air strikes by preference once it has an Airworks. Ground units count only while
+they can reach an enemy, by ground or by lift once an Airworks stands; before
+then, known enemy ground units on the seat's own ground still call for line
+units worth three quarters of them. While ground reaches no enemy, air strikes
+are wanted with or without an Airworks, at least what a strike needs against the
+easiest known target the seat has not given up on. The most wanted role goes
+first to the nearest ready producer that can afford a unit for it, then the
+next; ready producers left with nothing wanted train, while ground units can
+reach an enemy, for whichever of line and siege they serve is furthest below its
+share, line alone when the army goes only by lift. Each chooses the unit it can
+afford now by coarse suitability: reach against the enemy's usual reach, what
+its role is for at the price (firepower for siege, durability for the rest),
+covering both enemy domains, splash against clustered enemies, affordability at
+the seat's income, variety (a kind that already makes up most of its role counts
+for less, so every kind of a role gets its turn), and personality. Scouts,
+carriers, Tenders, Scuttlers and Sappers are bought only for scouting, lift,
+support and raids. A role it needs but cannot train at all adds to the
+investment score of the cheapest building that would let it, and a role it can
+train adds to a producer it lacks whose unit would suit it better, as much as
+saving for that unit is worth.
 
 ## Investments and saving
 

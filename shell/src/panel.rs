@@ -2548,7 +2548,7 @@ mod tests {
         let panel =
             build_for_palette(&game.view(), &BindingMap::classic(), false).expect("Bastion panel");
         assert_eq!(panel.title, "Bastion");
-        assert_eq!(stat(&panel, "Range").value, "2.5-9.5 tiles");
+        assert_eq!(stat(&panel, "Range").value, "2.5-11.0 tiles");
         assert_eq!(stat(&panel, "Sight").value, "6 tiles");
         assert_eq!(
             stat(&panel, "Ground").icon,

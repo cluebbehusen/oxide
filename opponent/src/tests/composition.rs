@@ -130,18 +130,39 @@ fn a_seen_enemy_airworks_raises_anti_air_before_any_flyer() {
     );
 }
 
+fn siege(kind: UnitKind) -> bool {
+    kind == UnitKind::Sapper || composition::role(kind) == Some(composition::Role::Siege)
+}
+
 #[test]
-fn known_defenses_bring_siege_or_sappers() {
-    let siege = |kinds: &[UnitKind]| {
-        kinds.iter().any(|kind| {
-            *kind == UnitKind::Sapper || composition::role(*kind) == Some(composition::Role::Siege)
-        })
+fn known_defenses_bring_siege_or_sappers_before_a_line() {
+    let first = |scenario: &Scenario| {
+        let state = scenario.build().unwrap();
+        trains(&seat(scenario, 0).act(&state, &mut OwnEvents::default()))
+            .first()
+            .map(|(_, kind)| *kind)
     };
-    assert!(siege(&fabricator_trains(&armed(
-        &[],
-        &[(BuildingKind::Turret, 12, 9)]
-    ))));
-    assert!(!siege(&fabricator_trains(&armed(&[], &[]))));
+    assert!(first(&armed(&[], &[(BuildingKind::Turret, 12, 9)])).is_some_and(siege));
+    assert!(
+        first(&armed(&[], &[])).is_some_and(|kind| !siege(kind)),
+        "with no guns known, a line comes first"
+    );
+}
+
+#[test]
+fn an_army_with_its_line_wants_siege_behind_it() {
+    let mut scenario = armed(&[], &[]);
+    scenario.units.extend((3..=8).map(|x| UnitSpec {
+        player: 0,
+        kind: UnitKind::Sentinel,
+        x,
+        y: 10,
+    }));
+    assert!(
+        fabricator_trains(&scenario)
+            .first()
+            .is_some_and(|kind| siege(*kind))
+    );
 }
 
 #[test]

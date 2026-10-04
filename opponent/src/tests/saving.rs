@@ -415,9 +415,9 @@ fn reclaimers_keep_coming_once_the_home_scrap_is_mined_out() {
     assert!(score(1_000) >= ADOPT, "but not once the nodes are gone");
 }
 
-/// The saturated arena with `scrap`, a West Crucible, and a West Kestrel in
-/// sight of East's army grown to outweigh West's line, out of reach of West's
-/// buildings.
+/// The saturated arena with `scrap`, a West Crucible, West Lancers making up
+/// its siege, and a West Kestrel in sight of East's army grown to outweigh
+/// West's line, out of reach of West's buildings.
 fn outlined(scrap: u32) -> Scenario {
     let mut scenario = saturated(scrap);
     scenario.buildings.push(BuildingSpec {
@@ -426,11 +426,14 @@ fn outlined(scrap: u32) -> Scenario {
         x: 5,
         y: 7,
     });
-    // West keeps just the Aggressive minimum army.
+    // West's line keeps just the Aggressive minimum army.
     scenario
         .units
         .retain(|unit| !(unit.player == 0 && unit.kind == UnitKind::Sentinel && unit.x >= 8));
     scenario.units.push(unit(0, UnitKind::Kestrel, 12, 6));
+    for x in 3..=7 {
+        scenario.units.push(unit(0, UnitKind::Lancer, x, 1));
+    }
     for x in 15..=20 {
         for y in 3..=4 {
             scenario.units.push(unit(1, UnitKind::Sentinel, x, y));

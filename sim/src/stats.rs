@@ -1556,7 +1556,11 @@ const BASTION: BuildingStats = BuildingStats {
     produces: &[],
     weapons: &[WeaponStats {
         damage: 40,
-        range: Fx::lit("9.5"), // artillery parity; full reach needs a spotter
+        // A building aims from its center while a gun firing at it measures
+        // to its nearest edge, so a Bombard's 9.5 plus this footprint's
+        // half-diagonal is what it takes to answer one from any side. Full
+        // reach needs a spotter.
+        range: Fx::lit("11"),
         minimum_range: Fx::lit("2.5"),
         cooldown_ticks: 90,
         targets: DomainMask::GROUND,
@@ -1991,9 +1995,10 @@ pub const WRECK_DECAY_TICKS: u64 = 300;
 /// approach corridor, providing persistent warning that a patrol cannot.
 pub const RADAR_DETECT_RADIUS: i32 = 20;
 
-/// Shell flight speed in tiles per tick. A full-range 9.5-tile lob takes
-/// about 32 ticks: path-aware aim catches a straight commitment, while a
-/// reacting Scuttler can change course by 4+ tiles before impact.
+/// Shell flight speed in tiles per tick. A Bombard's full-range 9.5-tile lob
+/// takes about 32 ticks and a Bastion's 11-tile one about 37: path-aware aim
+/// catches a straight commitment, while a reacting Scuttler can change course
+/// by 4+ tiles before impact.
 pub const SHELL_SPEED: Fx = Fx::lit("0.30");
 
 /// Ticks per scrap credited by each built Reclaimer. At this rate the

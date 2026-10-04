@@ -116,7 +116,7 @@ fn defense_stats_name_three_distinct_jobs() {
     assert_eq!(bastion.max_hp, 500);
     assert_eq!(bastion.vision, 6);
     assert_eq!(bastion.weapons[0].damage, 40);
-    assert_eq!(bastion.weapons[0].range, chassis::fx::Fx::lit("9.5"));
+    assert_eq!(bastion.weapons[0].range, chassis::fx::Fx::lit("11"));
     assert_eq!(
         bastion.weapons[0].minimum_range,
         chassis::fx::Fx::lit("2.5")
@@ -168,11 +168,13 @@ fn lancer_sieges_a_turret_from_outside_return_range() {
 }
 
 #[test]
-fn a_spotted_bombard_sieges_a_bastion_at_nominal_range_parity() {
-    assert_eq!(
-        UnitKind::Bombard.stats().weapons[0].range,
-        BuildingKind::Bastion.base_stats().weapons[0].range
-    );
+fn a_spotted_bastion_answers_a_bombard_sieging_it_from_full_range() {
+    // The Bombard measures to the Bastion's nearest edge and the Bastion
+    // from its center, so the Bastion needs the footprint's half-diagonal
+    // beyond the Bombard's range to answer it from any side.
+    let bombard_range = UnitKind::Bombard.stats().weapons[0].range;
+    let bastion_range = BuildingKind::Bastion.base_stats().weapons[0].range;
+    assert!(bastion_range >= bombard_range + chassis::fx::Fx::lit("1.42"));
     for defender in [0, 1] {
         let attacker = 1 - defender;
         let mut state = role_scenario(
@@ -200,31 +202,18 @@ fn a_spotted_bombard_sieges_a_bastion_at_nominal_range_parity() {
             .id;
         let events = attack_building(&mut state, attacker, &[bombard], bastion);
 
-        assert!(state.building(bastion).is_none());
-        assert_eq!(
-            state.unit(bombard).unwrap().hp,
-            UnitKind::Bombard.stats().max_hp
-        );
         assert!(
             events.iter().any(|event| matches!(
-                event,
-                Event::ShellLaunched {
-                    shooter: Target::Unit(unit),
-                    ..
-                } if *unit == bombard
-            )),
-            "the spotter must let the 9.5-tile gun speak"
-        );
-        assert!(
-            !events.iter().any(|event| matches!(
                 event,
                 Event::ShellLaunched {
                     shooter: Target::Building(building),
                     ..
                 } if *building == bastion
             )),
-            "the mobile gun reaches the footprint edge before the Bastion's centered gun reaches it"
+            "the spotted Bastion fires back at the gun shelling it"
         );
+        assert!(state.unit(bombard).is_none(), "and wins the duel");
+        assert!(state.building(bastion).is_some());
     }
 }
 

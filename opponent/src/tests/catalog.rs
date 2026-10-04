@@ -139,7 +139,9 @@ fn every_building_and_upgrade_is_bought_somewhere() {
         built.units.push(unit(1, UnitKind::Warden, x, y));
     }
     for x in 18..=21 {
-        built.units.push(unit(1, UnitKind::Darter, x, 2));
+        for y in 1..=3 {
+            built.units.push(unit(1, UnitKind::Darter, x, y));
+        }
     }
     built.buildings.extend([
         building(0, BuildingKind::Fabricator, 3, 1),

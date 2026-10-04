@@ -6,6 +6,7 @@ use crate::memory::Memory;
 use crate::profile::PersonalityTraits;
 use chassis::fx::Fx;
 use oxide_sim::observation::ObservationData;
+use oxide_sim::scenario::BotStance;
 use oxide_sim::stats::{Domain, Role as Kind};
 use oxide_sim::{BuildingKind, UnitKind};
 use std::cmp::Reverse;
@@ -115,20 +116,26 @@ impl Enemy {
                 enemy.defenses += crate::missions::building_value(building);
             }
         }
-        // The most recently seen units stand in for the rest: a computation
-        // bound on a pairwise check, not a limit on what the seat knows.
-        let mut recent: Vec<_> = memory.units().iter().collect();
-        recent.sort_by_key(|unit| (Reverse(unit.seen), unit.id));
-        recent.truncate(32);
-        enemy.clustered = recent.iter().any(|unit| {
-            recent
-                .iter()
-                .filter(|other| other.tile.chebyshev(unit.tile) <= 3)
-                .count()
-                >= 4
-        });
+        enemy.clustered = clustered(memory);
         enemy
     }
+}
+
+/// Whether the enemy the seat remembers gathers in clumps: four within three
+/// tiles of one another, where a shell's splash hits several.
+pub(crate) fn clustered(memory: &Memory) -> bool {
+    // The most recently seen units stand in for the rest: a computation
+    // bound on a pairwise check, not a limit on what the seat knows.
+    let mut recent: Vec<_> = memory.units().iter().collect();
+    recent.sort_by_key(|unit| (Reverse(unit.seen), unit.id));
+    recent.truncate(32);
+    recent.iter().any(|unit| {
+        recent
+            .iter()
+            .filter(|other| other.tile.chebyshev(unit.tile) <= 3)
+            .count()
+            >= 4
+    })
 }
 
 /// Deficits by role, in scrap, and the weight personality gives each role.
@@ -138,6 +145,8 @@ pub(crate) struct Needs {
     /// Whether ground units can reach an enemy: a building or start, or
     /// invaders on the seat's own ground.
     ground: bool,
+    /// Whether ground units reach an enemy only by lift.
+    lifted: bool,
     enemy: Enemy,
     traits: PersonalityTraits,
     income: u32,
@@ -151,11 +160,29 @@ pub(crate) fn weight(trait_value: u8) -> u64 {
     750 + 5 * u64::from(trait_value)
 }
 
+/// Per mille of the army the siege role holds at a middling siege trait: a
+/// stance limit on ranged units behind a line that screens them. Turtle and
+/// Balanced seats, which attack with their army massed, hold half; three
+/// quarters left the line too thin. An Aggressive seat attacks early with
+/// small armies, which slow, fragile siege only weakens.
+fn siege_share(stance: BotStance) -> i64 {
+    match stance {
+        BotStance::Turtle | BotStance::Balanced => 500,
+        BotStance::Aggressive => 200,
+    }
+}
+
+/// Per mille of the army each point of the siege trait away from 50 moves
+/// the siege share: a personality limit.
+const SIEGE_SHARE_PER_TRAIT: i64 = 3;
+
 /// Where the seat's army can go.
 pub(crate) struct Outlet {
     /// Ground units can reach an enemy building or start: by ground, or by
     /// lift once an Airworks stands.
     pub(crate) ground: bool,
+    /// Ground units reach an enemy only by lift.
+    pub(crate) lifted: bool,
     /// Value of the known enemy ground units on the seat's own ground, which
     /// its ground units reach even where they reach no enemy building.
     pub(crate) invaders: u64,
@@ -169,11 +196,14 @@ pub(crate) struct Outlet {
 /// Needs from what the seat has seen and owns and where its army can go.
 /// Ground roles are wanted only while ground units can reach an enemy
 /// building or start; until then line units are wanted only against
-/// invaders on the seat's own ground.
+/// invaders on the seat's own ground. A seat that delivers its ground army
+/// only by lift wants siege only against known defenses: Lancers and
+/// Bombards carry less scrap a Skyhook seat than Sentinels.
 pub(crate) fn needs(
     observation: &ObservationData,
     memory: &Memory,
     traits: PersonalityTraits,
+    stance: BotStance,
     income: u32,
     outlet: Outlet,
 ) -> Needs {
@@ -199,8 +229,13 @@ pub(crate) fn needs(
     let mut need = [0_i64; 4];
     if outlet.ground {
         need[Role::Line as usize] = (3 * ground / 4).max(2 * army / 5) - own[Role::Line as usize];
+        let share = if outlet.lifted {
+            0
+        } else {
+            siege_share(stance) + SIEGE_SHARE_PER_TRAIT * (i64::from(traits.siege) - 50)
+        };
         need[Role::Siege as usize] =
-            defenses / 2 + army * i64::from(traits.siege) / 400 - own[Role::Siege as usize];
+            defenses / 2 + army * share / 1_000 - own[Role::Siege as usize];
     } else {
         let invaders = i64::try_from(outlet.invaders).unwrap_or(i64::MAX);
         need[Role::Line as usize] = 3 * invaders / 4 - own[Role::Line as usize];
@@ -214,6 +249,7 @@ pub(crate) fn needs(
     Needs {
         need,
         ground: outlet.ground || outlet.invaders > 0,
+        lifted: outlet.lifted,
         weight: [
             1_000,
             weight(traits.siege),
@@ -225,6 +261,28 @@ pub(crate) fn needs(
         income,
         kinds,
     }
+}
+
+/// Per mille: `kind`'s damage per second per 100 scrap against ground,
+/// 1000 at ten, within a band narrow enough that variety still gives every
+/// kind its turn. A Lancer's rail tops it; a Bombard's single slow shell
+/// sits at the floor until splash and reach lift it.
+fn firepower(kind: UnitKind) -> u64 {
+    let stats = kind.stats();
+    let per_second: u64 = stats
+        .weapons
+        .iter()
+        .filter(|weapon| weapon.targets.ground)
+        .map(|weapon| {
+            u64::from(weapon.damage)
+                * u64::from(weapon.salvo.max(1))
+                * u64::from(oxide_sim::TICKS_PER_SECOND)
+                * 1_000
+                / u64::from(weapon.cooldown_ticks.max(1))
+        })
+        .sum();
+    let per_hundred = per_second * 100 / u64::from(stats.cost.max(1));
+    (500 + per_hundred / 20).clamp(900, 1_100)
 }
 
 /// `kind`'s position in `UnitKind::ALL`.
@@ -248,10 +306,26 @@ impl Needs {
         wanted
     }
 
-    /// Whether an idle producer with no wanted role still trains line units:
-    /// only while ground units can reach an enemy.
+    /// Whether an idle producer with no wanted role still trains ground
+    /// units: only while ground units can reach an enemy.
     pub(crate) fn fallback(&self) -> bool {
         self.ground
+    }
+
+    /// The ground role an idle producer with no wanted role trains for: of
+    /// line and siege, the one it serves furthest below its target, line
+    /// on a tie, and line alone for a seat that lifts its ground army.
+    /// `None` when it serves neither.
+    pub(crate) fn fallback_role(
+        &self,
+        observation: &ObservationData,
+        producer: BuildingKind,
+    ) -> Option<Role> {
+        [Role::Line, Role::Siege]
+            .into_iter()
+            .filter(|role| *role == Role::Line || !self.lifted)
+            .filter(|role| serves(observation, producer, *role))
+            .max_by_key(|role| (self.need[*role as usize], Reverse(*role as usize)))
     }
 
     /// The best unit `producer` can train now for `role` within `budget`. A
@@ -382,9 +456,11 @@ impl Needs {
     }
 
     /// A product of coarse per-mille factors: reach against the enemy's
-    /// usual reach, durability for the price, covering both of the enemy's
-    /// domains, splash against clustered enemies, affordability at the seat's
-    /// income, variety within the role, and personality.
+    /// usual reach, what the role is for at the price (a siege unit's
+    /// firepower; any other's health, which keeps it fighting), covering
+    /// both of the enemy's domains, splash against clustered enemies,
+    /// affordability at the seat's income, variety within the role, and
+    /// personality.
     fn suitability(&self, kind: UnitKind, role: Role) -> u64 {
         let stats = kind.stats();
         let reach = match (reach(kind), self.enemy.reach) {
@@ -392,8 +468,13 @@ impl Needs {
             (Some(own), Some(enemy)) if own < enemy => 750,
             _ => 1_000,
         };
-        let durability = (750 + 5 * (i64::from(stats.max_hp) * 100 / i64::from(stats.cost) - 50))
-            .clamp(750, 1_250) as u64;
+        let worth = match role {
+            Role::Siege => firepower(kind),
+            Role::Line | Role::AntiAir | Role::AirStrike => {
+                (750 + 5 * (i64::from(stats.max_hp) * 100 / i64::from(stats.cost) - 50))
+                    .clamp(750, 1_250) as u64
+            }
+        };
         let hits = |air: bool| {
             stats.weapons.iter().any(|weapon| {
                 if air {
@@ -421,7 +502,7 @@ impl Needs {
         };
         [
             reach,
-            durability,
+            worth,
             coverage,
             splash,
             affordable,
@@ -535,6 +616,7 @@ mod tests {
             need: [0; 4],
             weight: [1_000; 4],
             ground: true,
+            lifted: false,
             enemy: Enemy {
                 air: 0,
                 ground: 1_000,
@@ -553,6 +635,45 @@ mod tests {
             income: 1_000,
             kinds: [0; UnitKind::ALL.len()],
         }
+    }
+
+    #[test]
+    fn a_seat_wants_siege_behind_its_line_by_stance_unless_it_lifts_its_army() {
+        use oxide_sim::{PlayerId, Scenario};
+        let state = Scenario::skirmish().build().unwrap();
+        let mut observation = ObservationData::fog_honest(&state, PlayerId(0));
+        let template = observation.my_units[0].clone();
+        observation
+            .my_units
+            .extend((0..8).map(|_| oxide_sim::observation::UnitObs {
+                kind: UnitKind::Sentinel,
+                ..template.clone()
+            }));
+        let memory = Memory::default();
+        let siege = |stance, lifted| {
+            let outlet = Outlet {
+                ground: true,
+                lifted,
+                invaders: 0,
+                air_strikes: false,
+                strike: 0,
+            };
+            super::needs(
+                &observation,
+                &memory,
+                needs(None, false).traits,
+                stance,
+                0,
+                outlet,
+            )
+            .need[Role::Siege as usize]
+        };
+        assert!(siege(BotStance::Balanced, false) > 0);
+        assert!(siege(BotStance::Aggressive, false) < siege(BotStance::Balanced, false));
+        assert!(
+            siege(BotStance::Balanced, true) <= 0,
+            "no known defenses call for siege a Skyhook must carry"
+        );
     }
 
     #[test]

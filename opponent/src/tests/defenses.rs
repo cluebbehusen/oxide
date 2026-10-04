@@ -137,21 +137,21 @@ fn a_fortified_seat_guards_its_foundry_toward_the_enemy_and_a_thrifty_one_does_n
     );
 }
 
-#[test]
-fn turrets_and_bastions_share_a_watched_approach_by_what_they_hold_per_scrap() {
-    // An Array watches the way in, so a Bastion fires as far as it reaches,
-    // and a known army of Wardens outweighs any one gun.
+/// The Turrets and Bastions West lays one after another, best first, with an
+/// Array watching the way in so a Bastion fires as far as it reaches, against
+/// a known East army of `enemy` at `tiles`.
+fn guns_laid(enemy: UnitKind, tiles: &[(i32, i32)]) -> Vec<BuildingKind> {
     let mut scenario = settled(0);
-    // Room for the guns along the standing army's row.
+    // Room for the guns along the standing army's row, and only `enemy` known.
     scenario
         .units
-        .retain(|unit| !(unit.player == 0 && unit.kind == UnitKind::Sentinel));
+        .retain(|unit| unit.kind != UnitKind::Sentinel);
     scenario
         .buildings
         .push(building(0, BuildingKind::Array, 9, 3));
     scenario.units.push(unit(0, UnitKind::Kestrel, 10, 5));
-    for (x, y) in [(13, 4), (13, 5), (13, 6), (14, 4), (14, 5), (14, 6)] {
-        scenario.units.push(unit(1, UnitKind::Warden, x, y));
+    for (x, y) in tiles {
+        scenario.units.push(unit(1, enemy, *x, *y));
     }
     let mut laid = Vec::new();
     for _ in 0..6 {
@@ -172,8 +172,39 @@ fn turrets_and_bastions_share_a_watched_approach_by_what_they_hold_per_scrap() {
             .buildings
             .push(building(0, kind, anchor.x, anchor.y));
     }
-    assert_eq!(laid.first(), Some(&BuildingKind::Turret), "{laid:?}");
-    assert!(laid.contains(&BuildingKind::Bastion), "{laid:?}");
+    laid
+}
+
+const SPREAD: [(i32, i32); 6] = [(13, 1), (13, 5), (13, 9), (17, 1), (17, 5), (17, 9)];
+const CLUMPED: [(i32, i32); 6] = [(13, 4), (13, 5), (13, 6), (14, 4), (14, 5), (14, 6)];
+
+#[test]
+fn turrets_and_bastions_share_a_watched_approach_by_what_they_hold_per_scrap() {
+    // A known army of Wardens outweighs any one gun.
+    let bastion = |laid: &[BuildingKind]| {
+        laid.iter()
+            .position(|kind| *kind == BuildingKind::Bastion)
+            .unwrap_or_else(|| panic!("{laid:?}"))
+    };
+    let spread = guns_laid(UnitKind::Warden, &SPREAD);
+    assert_eq!(spread.first(), Some(&BuildingKind::Turret), "{spread:?}");
+    let clumped = guns_laid(UnitKind::Warden, &CLUMPED);
+    assert!(
+        bastion(&clumped) < bastion(&spread),
+        "a clump draws a Bastion sooner, its shells hitting several: {clumped:?} against {spread:?}"
+    );
+}
+
+#[test]
+fn a_gun_an_army_outranges_is_not_built_against_it() {
+    for tiles in [SPREAD, CLUMPED] {
+        let laid = guns_laid(UnitKind::Lancer, &tiles);
+        assert_eq!(laid.first(), Some(&BuildingKind::Bastion), "{laid:?}");
+        assert!(
+            !laid.contains(&BuildingKind::Turret),
+            "Lancers outrange a Turret: {laid:?}"
+        );
+    }
 }
 
 #[test]
