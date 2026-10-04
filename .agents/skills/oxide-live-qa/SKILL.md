@@ -26,7 +26,8 @@ boundary between simulation evidence and presentation evidence.
   headless tick throughput or session screenshots for GPU-shell profiling.
 - Use `driver tick-scan` to find costly stretches of a replay and
   `driver tick-profile` to see where simulation time goes inside a window of
-  recorded ticks. Both measure the simulation alone, never frame timing.
+  recorded ticks. Both measure the simulation alone, never frame timing; the
+  simulation-performance skill covers that work.
 - Use `driver smoke --spawn` for an isolated end-to-end shell check.
 - Use `driver shots` only as a local per-machine visual regression gate. Its
   gitignored references are not portable CI goldens.

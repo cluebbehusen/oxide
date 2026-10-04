@@ -98,6 +98,10 @@ contract. Follow the hash/version approval rules in `AGENTS.md`, using any
 applicable approval already given in the session. No version bump is implied by
 permission to fix behavior.
 
+For work aimed at simulation cost, follow the `simulation-performance` skill to
+locate the cost, prove an optimization exact, and judge one that alters
+behavior.
+
 ## Verify the real report
 
 Headless tests prove rule behavior, not that the shell exposes it clearly. If a
