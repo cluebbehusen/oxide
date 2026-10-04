@@ -10,8 +10,8 @@ use oxide_sim::{BuildingKind, PlayerId, Scenario};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
-/// Empty tiles between a home spot and the start Foundry.
-const SPOT_GAPS: std::ops::RangeInclusive<i32> = 2..=5;
+/// Empty tiles between a Foundry and the nearest spot beside it.
+const SPOT_GAP: i32 = 2;
 
 /// Chebyshev reach from a start that counts as its home scrap.
 const HOME_REACH: i32 = 12;
@@ -45,8 +45,12 @@ pub struct MapModel {
     cover: Grid<Cover>,
     /// Each seat's authored Foundry anchor, by player index.
     starts: Vec<Option<TilePos>>,
-    /// Each seat's home building spots, by player index.
-    spots: Vec<Vec<TilePos>>,
+    /// Anchors of two-by-two footprints of open ground on one component,
+    /// off every frame and a tile clear of starting scrap.
+    spot: Grid<bool>,
+    /// Each ground component's bounding box, as its lowest and highest
+    /// corners, by component.
+    extents: Vec<(TilePos, TilePos)>,
     /// Each seat's starting scrap nodes near its start, with their amounts.
     home_nodes: Vec<Vec<(TilePos, u32)>>,
     /// Ground distance from each seat's start, in tenths of a tile.
@@ -104,13 +108,11 @@ impl MapModel {
             }
         }
         let mut starts = vec![None; seats];
-        let mut spots = vec![Vec::new(); seats];
         let mut home_nodes = vec![Vec::new(); seats];
         let mut distances = vec![None; seats];
         for (player, anchor) in anchors {
             let seat = usize::from(player.0);
             starts[seat] = Some(*anchor);
-            spots[seat] = home_spots(map, &components, *anchor);
             home_nodes[seat] = map
                 .iter()
                 .filter(|(tile, cell)| {
@@ -121,11 +123,14 @@ impl MapModel {
             distances[seat] = Some(distance_field(&components, *anchor));
         }
         let sites = sites(map, &components, anchors);
+        let spot = spot_grid(map, &components);
+        let extents = extents(&components);
         Self {
             components,
             cover,
             starts,
-            spots,
+            spot,
+            extents,
             home_nodes,
             distances,
             teams,
@@ -178,14 +183,71 @@ impl MapModel {
         self.starts.get(usize::from(player.0)).copied().flatten()
     }
 
-    /// Anchors for the seat's home buildings, nearest its start first. Each
-    /// is a two-by-two footprint of open ground in the start's component, off
-    /// every frame and a tile clear of starting scrap; smaller buildings use
-    /// its top-left corner.
-    pub(crate) fn spots(&self, player: PlayerId) -> &[TilePos] {
-        self.spots
-            .get(usize::from(player.0))
-            .map_or(&[], Vec::as_slice)
+    /// Anchors for the seat's buildings beside `foundries`, nearest first:
+    /// every spot at one gap from each Foundry in turn before any at the
+    /// next, out to the edge of that Foundry's ground, each listed once at
+    /// its nearest Foundry and none nearer any than the first gap. A spot is a two-by-two
+    /// footprint of open ground on its Foundry's ground, off every frame and
+    /// a tile clear of starting scrap; smaller buildings use its top-left
+    /// corner. Within a gap, spots go in the seat's frame, so mirrored seats
+    /// list mirrored spots.
+    pub(crate) fn spots(
+        &self,
+        player: PlayerId,
+        foundries: Vec<TilePos>,
+    ) -> impl Iterator<Item = TilePos> + '_ {
+        let (width, height) = self.size();
+        let frame = self
+            .start(player)
+            .map(|start| HomeFrame::at(start, width, height));
+        let foundries: Vec<(TilePos, u32, i32)> = foundries
+            .into_iter()
+            .filter_map(|foundry| {
+                let ground = self.component(foundry)?;
+                let (low, high) = self.extents.get(ground as usize - 1)?;
+                let reach = (foundry.x - low.x)
+                    .max(high.x - foundry.x)
+                    .max(foundry.y - low.y)
+                    .max(high.y - foundry.y);
+                Some((foundry, ground, reach))
+            })
+            .collect();
+        let furthest = foundries
+            .iter()
+            .map(|(_, _, reach)| *reach)
+            .max()
+            .unwrap_or(0);
+        (SPOT_GAP + 2..=furthest).flat_map(move |distance| {
+            let mut spots: Vec<TilePos> = Vec::new();
+            let Some(frame) = frame else {
+                return spots;
+            };
+            for (foundry, ground, reach) in &foundries {
+                if distance > *reach {
+                    continue;
+                }
+                let nearest = |anchor: TilePos| {
+                    foundries
+                        .iter()
+                        .map(|(other, _, _)| chebyshev(anchor, *other))
+                        .min()
+                        .unwrap_or(distance)
+                };
+                let mut ring: Vec<TilePos> = ring(*foundry, distance)
+                    .filter(|anchor| {
+                        self.spot.get(*anchor) == Some(&true)
+                            && self.component(*anchor) == Some(*ground)
+                            && nearest(*anchor) == distance
+                            && !spots.contains(anchor)
+                    })
+                    .collect();
+                ring.sort_by_key(|anchor| {
+                    frame.rank(frame.home, footprint_centre(BuildingKind::Foundry, *anchor))
+                });
+                spots.extend(ring);
+            }
+            spots
+        })
     }
 
     /// The seat's starting scrap nodes near its start, with their starting
@@ -227,35 +289,72 @@ impl MapModel {
     }
 }
 
-/// Home spots around `start`, ordered by their gap to the start Foundry and
-/// then in the seat's frame, so mirrored seats list mirrored spots.
-fn home_spots(map: &Map, components: &Grid<u32>, start: TilePos) -> Vec<TilePos> {
-    let Some(home) = components.get(start).copied().filter(|label| *label != 0) else {
-        return Vec::new();
-    };
-    let frame = HomeFrame::at(start, map.width(), map.height());
-    let reach = SPOT_GAPS.end() + 2;
-    let mut spots: Vec<(i32, TilePos)> = Vec::new();
-    for y in start.y - reach..=start.y + reach {
-        for x in start.x - reach..=start.x + reach {
+/// Anchors of two-by-two footprints of open ground on one component, off
+/// every frame and a tile clear of starting scrap, where Harvesters still
+/// get through.
+fn spot_grid(map: &Map, components: &Grid<u32>) -> Grid<bool> {
+    let mut spot = Grid::new(map.width(), map.height(), false);
+    for y in 0..map.height() {
+        for x in 0..map.width() {
             let anchor = TilePos::new(x, y);
-            let gap = (anchor.x - start.x).abs().max((anchor.y - start.y).abs()) - 2;
-            let footprint = (0..2).flat_map(|dy| (0..2).map(move |dx| anchor.offset(dx, dy)));
-            let open = footprint.clone().all(|tile| {
-                components.get(tile) == Some(&home) && !map.tile_in_extractor_frame(tile)
+            let ground = components.get(anchor).copied().filter(|label| *label != 0);
+            let open = (0..2).all(|dy| {
+                (0..2).all(|dx| {
+                    let tile = anchor.offset(dx, dy);
+                    ground.is_some()
+                        && components.get(tile).copied() == ground
+                        && !map.tile_in_extractor_frame(tile)
+                })
             });
             let clear =
                 (-1..=2).all(|dy| (-1..=2).all(|dx| map.scrap_at(anchor.offset(dx, dy)) == 0));
-            if SPOT_GAPS.contains(&gap) && open && clear {
-                spots.push((gap, anchor));
+            if open
+                && clear
+                && let Some(slot) = spot.get_mut(anchor)
+            {
+                *slot = true;
             }
         }
     }
-    spots.sort_by_key(|(gap, anchor)| {
-        let centre = footprint_centre(BuildingKind::Foundry, *anchor);
-        (*gap, frame.rank(frame.home, centre))
-    });
-    spots.into_iter().map(|(_, anchor)| anchor).collect()
+    spot
+}
+
+/// Each ground component's bounding box, by component.
+fn extents(components: &Grid<u32>) -> Vec<(TilePos, TilePos)> {
+    let mut extents: Vec<(TilePos, TilePos)> = Vec::new();
+    for y in 0..components.height() {
+        for x in 0..components.width() {
+            let tile = TilePos::new(x, y);
+            let Some(label) = components.get(tile).copied().filter(|label| *label != 0) else {
+                continue;
+            };
+            let index = label as usize - 1;
+            if extents.len() <= index {
+                extents.resize(index + 1, (tile, tile));
+            }
+            let (low, high) = &mut extents[index];
+            *low = TilePos::new(low.x.min(x), low.y.min(y));
+            *high = TilePos::new(high.x.max(x), high.y.max(y));
+        }
+    }
+    extents
+}
+
+fn chebyshev(a: TilePos, b: TilePos) -> i32 {
+    (a.x - b.x).abs().max((a.y - b.y).abs())
+}
+
+/// The anchors `distance` tiles from `centre` by Chebyshev distance.
+fn ring(centre: TilePos, distance: i32) -> impl Iterator<Item = TilePos> {
+    let side = -distance..=distance;
+    let rows = [-distance, distance]
+        .into_iter()
+        .flat_map(move |dy| side.clone().map(move |dx| (dx, dy)));
+    let columns = [-distance, distance]
+        .into_iter()
+        .flat_map(move |dx| (1 - distance..distance).map(move |dy| (dx, dy)));
+    rows.chain(columns)
+        .map(move |(dx, dy)| centre.offset(dx, dy))
 }
 
 /// Ground distance from a start Foundry's footprint over open ground, with
@@ -526,7 +625,7 @@ mod tests {
     }
 
     #[test]
-    fn home_spots_leave_room_around_the_start_and_mirror_between_seats() {
+    fn spots_leave_room_around_a_foundry_and_mirror_between_seats() {
         const ROOM: [&str; 16] = [
             "####################",
             "#..................#",
@@ -546,20 +645,68 @@ mod tests {
             "####################",
         ];
         let model = model(&ROOM);
-        let west = model.spots(PlayerId(0));
-        let east = model.spots(PlayerId(1));
+        let spots = |seat: u8| {
+            let start = model.start(PlayerId(seat)).unwrap();
+            model.spots(PlayerId(seat), vec![start]).collect::<Vec<_>>()
+        };
+        let (west, east) = (spots(0), spots(1));
         assert!(!west.is_empty());
         let start = model.start(PlayerId(0)).unwrap();
-        for spot in west {
-            let gap = (spot.x - start.x).abs().max((spot.y - start.y).abs()) - 2;
-            assert!(SPOT_GAPS.contains(&gap), "{spot:?}");
+        let gaps: Vec<i32> = west
+            .iter()
+            .map(|spot| (spot.x - start.x).abs().max((spot.y - start.y).abs()) - 2)
+            .collect();
+        assert!(gaps.iter().all(|gap| *gap >= SPOT_GAP), "{gaps:?}");
+        assert!(gaps.is_sorted(), "nearest first: {gaps:?}");
+        for spot in &west {
             let crowds =
                 (spot.x - 1..=spot.x + 2).contains(&3) && (spot.y - 1..=spot.y + 2).contains(&3);
             assert!(!crowds, "{spot:?} crowds the scrap");
         }
         let rotate = |anchor: TilePos| TilePos::new(20 - 2 - anchor.x, 16 - 2 - anchor.y);
         assert_eq!(west.iter().copied().map(rotate).collect::<Vec<_>>(), east);
-        assert_eq!(model.spots(PlayerId(2)), &[] as &[TilePos]);
+        assert_eq!(
+            model.spots(PlayerId(2), vec![TilePos::new(9, 7)]).count(),
+            0,
+            "a seat without a start lists none"
+        );
+    }
+
+    #[test]
+    fn spots_beside_every_foundry_come_before_further_ones_beside_any() {
+        const FIELD: [&str; 12] = [
+            "########################################",
+            "#......................................#",
+            "#......................................#",
+            "#......................................#",
+            "#......................................#",
+            "#...1..............................2...#",
+            "#......................................#",
+            "#......................................#",
+            "#......................................#",
+            "#......................................#",
+            "#......................................#",
+            "########################################",
+        ];
+        let model = model(&FIELD);
+        let start = model.start(PlayerId(0)).unwrap();
+        let expansion = TilePos::new(20, 5);
+        let distance = |a: TilePos, b: TilePos| (a.x - b.x).abs().max((a.y - b.y).abs());
+        let spots: Vec<TilePos> = model.spots(PlayerId(0), vec![start, expansion]).collect();
+        let nearest = |spot: TilePos| distance(spot, start).min(distance(spot, expansion));
+        let rings: Vec<i32> = spots.iter().map(|spot| nearest(*spot)).collect();
+        assert!(rings.is_sorted(), "{rings:?}");
+        assert!(
+            spots
+                .iter()
+                .any(|spot| distance(*spot, expansion) == SPOT_GAP + 2),
+            "the expansion has spots at the first gap too"
+        );
+        assert_eq!(
+            spots.first().map(|spot| distance(*spot, start)),
+            Some(SPOT_GAP + 2),
+            "home goes first at a gap"
+        );
     }
 
     #[test]
@@ -594,7 +741,11 @@ mod tests {
                 let start = model.start(PlayerId(seat as u8)).unwrap();
                 assert!(model.component(start).is_some(), "{}", path.display());
                 assert!(
-                    model.spots(PlayerId(seat as u8)).len() >= 8,
+                    model
+                        .spots(PlayerId(seat as u8), vec![start])
+                        .take(8)
+                        .count()
+                        == 8,
                     "{} seat {seat}",
                     path.display()
                 );

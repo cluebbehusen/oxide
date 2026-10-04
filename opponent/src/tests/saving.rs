@@ -470,6 +470,13 @@ fn a_seat_saves_for_the_dear_unit_its_line_prefers_and_trains_it() {
             .any(|(_, kind)| *kind == UnitKind::Breaker),
         "premise: not yet affordable"
     );
+    assert!(
+        !trains(&commands).iter().any(|(building, kind)| {
+            *building == crucible(&state)
+                || crate::composition::role(*kind) == Some(crate::composition::Role::Line)
+        }),
+        "the Crucible waits, and no cheaper line unit takes the scrap: {commands:?}"
+    );
     let json = serde_json::to_value(opponent.checkpoint()).unwrap();
     assert_eq!(
         json["saving"]["target"]["investment"],
@@ -742,16 +749,22 @@ fn mirrored_seats_rank_equal_extractor_frames_alike() {
 }
 
 #[test]
-fn a_target_with_nowhere_to_stand_protects_nothing() {
+fn a_building_with_nowhere_to_stand_is_not_saved_for() {
     for bank in [130, 100] {
         let (commands, trace, foundry) = nowhere_to_stand(bank);
-        assert!(trace.target.is_some(), "premise: a target is adopted");
         assert!(builds(&commands).is_empty(), "premise: no spot can take it");
-        assert_eq!(trace.protected, 0, "bank {bank}");
-        assert_eq!(
-            trains(&commands),
-            [(foundry, UnitKind::Sentinel)],
-            "bank {bank}"
+        assert!(
+            !matches!(
+                trace.target.map(|target| target.investment),
+                Some(Investment::Tech(_) | Investment::Capacity(_) | Investment::Reclaimer)
+            ),
+            "bank {bank}: {trace:?}"
+        );
+        assert!(
+            trains(&commands)
+                .iter()
+                .any(|(building, _)| *building == foundry),
+            "production goes on: {commands:?}"
         );
     }
 }
@@ -761,13 +774,10 @@ fn a_target_with_nowhere_to_stand_protects_nothing() {
 fn nowhere_to_stand(bank: u32) -> (Vec<PlayerCommand>, Trace, BuildingId) {
     let mut scenario = saturated(bank);
     let model = map(&scenario);
-    let occupied: Vec<TilePos> = scenario
-        .units
-        .iter()
-        .map(|unit| TilePos::new(unit.x, unit.y))
-        .collect();
-    for anchor in model.spots(PlayerId(0)) {
-        if occupied.contains(anchor) {
+    let start = model.start(PlayerId(0)).unwrap();
+    let spots: Vec<TilePos> = model.spots(PlayerId(0), vec![start]).collect();
+    for anchor in spots {
+        if occupied(&scenario, anchor) {
             continue;
         }
         scenario.buildings.push(BuildingSpec {
@@ -781,6 +791,80 @@ fn nowhere_to_stand(bank: u32) -> (Vec<PlayerCommand>, Trace, BuildingId) {
     let (commands, trace) =
         seat_with(&scenario, 0, thrifty()).act_traced(&state, &mut OwnEvents::default());
     (commands, trace.unwrap(), foundries(&state, PlayerId(0))[0])
+}
+
+/// Whether a unit or building of `scenario` stands on `tile`.
+fn occupied(scenario: &Scenario, tile: TilePos) -> bool {
+    let state = scenario.build().unwrap();
+    scenario
+        .units
+        .iter()
+        .any(|unit| TilePos::new(unit.x, unit.y) == tile)
+        || state.buildings().iter().any(|building| {
+            let (width, height) = building.kind.base_stats().size;
+            (building.anchor.x..building.anchor.x + width).contains(&tile.x)
+                && (building.anchor.y..building.anchor.y + height).contains(&tile.y)
+        })
+}
+
+#[test]
+fn a_seat_whose_home_is_full_builds_beside_its_other_foundry() {
+    let mut scenario = saturated(400);
+    let expansion = TilePos::new(10, 8);
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Foundry,
+        x: expansion.x,
+        y: expansion.y,
+    });
+    let model = map(&scenario);
+    let start = model.start(PlayerId(0)).unwrap();
+    let distance = |a: TilePos, b: TilePos| (a.x - b.x).abs().max((a.y - b.y).abs());
+    let home: Vec<TilePos> = model
+        .spots(PlayerId(0), vec![start, expansion])
+        .filter(|anchor| distance(*anchor, start) < distance(*anchor, expansion))
+        .collect();
+    for anchor in home {
+        if occupied(&scenario, anchor) {
+            continue;
+        }
+        scenario.buildings.push(BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Turret,
+            x: anchor.x,
+            y: anchor.y,
+        });
+    }
+    let state = scenario.build().unwrap();
+    let (commands, trace) =
+        seat_with(&scenario, 0, thrifty()).act_traced(&state, &mut OwnEvents::default());
+    let homes: Vec<(BuildingKind, TilePos)> = builds(&commands)
+        .into_iter()
+        .filter(|(kind, _)| {
+            matches!(
+                kind,
+                BuildingKind::Fabricator
+                    | BuildingKind::Airworks
+                    | BuildingKind::Crucible
+                    | BuildingKind::Reclaimer
+            )
+        })
+        .collect();
+    assert!(!homes.is_empty(), "{trace:?}");
+    // The nearest spot an expansion Foundry leaves room for.
+    let beside = model
+        .spots(PlayerId(0), vec![expansion])
+        .map(|anchor| distance(anchor, expansion))
+        .next()
+        .unwrap();
+    for (kind, anchor) in homes {
+        assert_eq!(
+            distance(anchor, expansion),
+            beside,
+            "{kind:?} at {anchor:?}"
+        );
+        assert!(distance(anchor, start) > beside, "{kind:?} at {anchor:?}");
+    }
 }
 
 #[test]

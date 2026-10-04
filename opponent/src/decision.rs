@@ -6,7 +6,7 @@ use crate::defenses;
 use crate::events::OwnEvent;
 use crate::frame::{HomeFrame, footprint_centre, gap};
 use crate::income::Income;
-use crate::investments::{self, Investment, Situation, Step};
+use crate::investments::{self, Candidate, Investment, Situation, Step};
 use crate::map::MapModel;
 use crate::memory::Memory;
 use crate::missions::{Missions, Scratch, Shortfall};
@@ -368,7 +368,14 @@ pub(crate) fn decide(
         units,
         waiting,
     };
-    let candidates = investments::candidates(&situation);
+    let mut candidates = investments::candidates(&situation);
+    sited(
+        observation,
+        map,
+        &persistent.memory,
+        &mut candidates,
+        persistent.saving.investment(),
+    );
     let share = share(observation, profile);
     persistent.saving.settle(
         observation,
@@ -548,7 +555,11 @@ pub(crate) fn decide(
                 &mut ledger,
             );
         }
-        produce(observation, &producers, &mut needs, &mut ledger);
+        let saving = match persistent.saving.investment() {
+            Some(Investment::Unit(kind)) => Some(kind),
+            _ => None,
+        };
+        produce(observation, &producers, &mut needs, &mut ledger, saving);
         if short {
             arm(observation, map, &producers, shortfalls, &mut ledger);
         }
@@ -577,7 +588,7 @@ pub(crate) fn decide(
 
 /// Buys the saving target's next step once the whole uncommitted bank covers
 /// it: an upgrade, a unit at the nearest ready producer that trains it, or a
-/// building on the first home spot the seat's knowledge allows, raised by the
+/// building on the first spot the seat's knowledge allows, raised by the
 /// nearest free Harvester.
 fn buy(
     observation: &ObservationData,
@@ -635,31 +646,30 @@ fn buy(
             }
         }
         Step::Build(kind) => {
-            let anchors: Vec<TilePos> = investments::anchors(map, observation, investment, kind)
-                .into_iter()
-                .filter(|anchor| !persistent.memory.failed(kind, *anchor, tick))
-                .collect();
-            let site = anchors.iter().copied().find_map(|anchor| {
-                placement::check(observation, kind, anchor, &ledger.planned)
-                    .ok()
-                    .map(|allowed| (anchor, allowed))
-            });
-            let Some((anchor, allowed)) = site else {
+            let (anchor, allowed) = match site(
+                observation,
+                map,
+                &persistent.memory,
+                investment,
+                kind,
+                &ledger.planned,
+            ) {
+                Site::At(anchor, allowed) => (anchor, allowed),
+                Site::Unseen(anchor) => {
+                    if affordable {
+                        explore(observation, map, frame, anchor, kind, ledger);
+                    }
+                    return;
+                }
                 // With nowhere left to look, protecting scrap for a building
                 // that cannot be placed would starve production. This is
                 // checked before the bank covers the price, or the protection
                 // would keep building up toward it.
-                match unexplored(observation, &anchors, kind) {
-                    None => {
-                        ledger.protected = 0;
-                        persistent.saving.keep_at_most(0);
-                    }
-                    Some(anchor) if affordable => {
-                        explore(observation, map, frame, anchor, kind, ledger);
-                    }
-                    Some(_) => {}
+                Site::Nowhere => {
+                    ledger.protected = 0;
+                    persistent.saving.keep_at_most(0);
+                    return;
                 }
-                return;
             };
             if !affordable {
                 return;
@@ -682,17 +692,66 @@ fn buy(
     }
 }
 
-/// The first of `anchors` whose footprint the seat has not fully seen, which
-/// may turn out placeable once explored.
-fn unexplored(
+/// Where a building of `kind` toward `investment` would stand, as far as the
+/// seat knows.
+enum Site {
+    /// The best anchor the seat's knowledge allows.
+    At(TilePos, placement::Allowed),
+    /// A better anchor the seat has not fully seen, which may turn out
+    /// placeable once explored.
+    Unseen(TilePos),
+    /// Nowhere the seat knows of or could look.
+    Nowhere,
+}
+
+/// The first of the anchors toward `investment` that the seat's knowledge
+/// allows or has not fully seen, skipping those refused lately.
+fn site(
     observation: &ObservationData,
-    anchors: &[TilePos],
+    map: &MapModel,
+    memory: &Memory,
+    investment: Investment,
     kind: BuildingKind,
-) -> Option<TilePos> {
-    let (width, height) = kind.base_stats().size;
-    anchors.iter().copied().find(|anchor| {
-        (0..height).any(|dy| (0..width).any(|dx| !observation.explored(anchor.offset(dx, dy))))
-    })
+    planned: &[(BuildingKind, TilePos)],
+) -> Site {
+    let tick = observation.tick;
+    investments::anchors(map, observation, investment, kind)
+        .filter(|anchor| !memory.failed(kind, *anchor, tick))
+        .find_map(
+            |anchor| match placement::check(observation, kind, anchor, planned) {
+                Ok(allowed) => Some(Site::At(anchor, allowed)),
+                Err(placement::Refusal::Unexplored) => Some(Site::Unseen(anchor)),
+                Err(_) => None,
+            },
+        )
+        .unwrap_or(Site::Nowhere)
+}
+
+/// Drops the investments the seat could not place anywhere, from the best
+/// down until one it could, along with `current` if it cannot: a target with
+/// nowhere to stand would hold the saving no other purchase could use.
+fn sited(
+    observation: &ObservationData,
+    map: &MapModel,
+    memory: &Memory,
+    candidates: &mut Vec<Candidate>,
+    current: Option<Investment>,
+) {
+    let mut found = false;
+    candidates.retain(|candidate| {
+        if found && Some(candidate.investment) != current {
+            return true;
+        }
+        let placeable = match investments::step(observation, candidate.investment) {
+            Some((Step::Build(kind), _)) => !matches!(
+                site(observation, map, memory, candidate.investment, kind, &[]),
+                Site::Nowhere
+            ),
+            _ => true,
+        };
+        found |= placeable;
+        placeable
+    });
 }
 
 /// Sends the nearest free Harvester to look at `anchor`.
@@ -917,17 +976,34 @@ fn producers(observation: &ObservationData, frame: HomeFrame, interval: u64) -> 
 /// Gives the most wanted role first claim on ready producers, from
 /// unprotected scrap: in turn, the nearest ready producer that can afford a
 /// unit for it queues the best one, and a role no ready producer can afford
-/// gives way to the next. Ready producers left with no wanted role train line
-/// units while ground units can reach an enemy.
+/// gives way to the next. While the seat saves for `saving`, a unit, the
+/// producers that train it wait for it and no other producer trains a
+/// cheaper unit of its role. Ready producers left with no wanted role train
+/// ground units while ground units can reach an enemy, unless another
+/// producer serves a wanted role: the scrap waits for it.
 fn produce(
     observation: &ObservationData,
     producers: &[Producer<'_>],
     needs: &mut Needs,
     ledger: &mut Ledger,
+    saving: Option<UnitKind>,
 ) {
+    let saved_for = |producer: &Producer<'_>| {
+        saving.is_some_and(|unit| {
+            composition::producible(observation, producer.building.kind).any(|kind| kind == unit)
+        })
+    };
+    let instead = |kind: UnitKind| {
+        saving.is_some_and(|unit| {
+            kind != unit
+                && composition::role(kind).is_some()
+                && composition::role(kind) == composition::role(unit)
+        })
+    };
     let mut idle: Vec<&Producer<'_>> = producers
         .iter()
         .filter(|producer| producer.ready && !ledger.queued_at(producer.building.id))
+        .filter(|producer| !saved_for(producer))
         .collect();
     while let Some((index, kind)) = needs.wanted().into_iter().find_map(|role| {
         idle.iter().enumerate().find_map(|(index, producer)| {
@@ -938,6 +1014,7 @@ fn produce(
                     role,
                     ledger.spendable(),
                 )
+                .filter(|kind| !instead(*kind))
                 .map(|kind| (index, kind))
         })
     }) {
@@ -952,14 +1029,16 @@ fn produce(
     for producer in idle {
         let kind = producer.building.kind;
         let wanted = needs.wanted();
-        if wanted
-            .iter()
-            .any(|role| composition::serves(observation, kind, *role))
-        {
+        if producers.iter().any(|other| {
+            wanted
+                .iter()
+                .any(|role| composition::serves(observation, other.building.kind, *role))
+        }) {
             continue;
         }
         if let Some(role) = needs.fallback_role(observation, kind)
             && let Some(unit) = needs.unit(observation, kind, role, ledger.spendable())
+            && !instead(unit)
             && ledger.train(producer.building.id, unit)
         {
             needs.queued(unit);

@@ -420,3 +420,53 @@ fn a_working_foundry_or_crucible_asks_for_another_at_home() {
         "with nothing wanted, income alone buys no producer: {offered:?}"
     );
 }
+
+#[test]
+fn an_idle_foundry_leaves_its_scrap_for_a_busy_producer_of_a_wanted_role() {
+    // An army of line units, so siege is wanted and the line is not.
+    let line = |scenario: &mut Scenario| {
+        scenario.units.extend(workforce(0));
+        scenario
+            .units
+            .extend((3..=10).map(|x| unit(0, UnitKind::Sentinel, x, 10)));
+    };
+    let foundry_trains = |scenario: &Scenario, busy: bool| {
+        let mut state = scenario.build().unwrap();
+        if busy {
+            let fabricator = fabricator(&state);
+            state.tick(&[PlayerCommand {
+                player: PlayerId(0),
+                command: Command::Train {
+                    building: fabricator,
+                    kind: UnitKind::Lancer,
+                },
+            }]);
+            advance_to(
+                &mut state,
+                crate::decision_interval(BotDifficulty::Standard),
+                &[],
+            );
+        }
+        let foundry = foundries(&state, PlayerId(0))[0];
+        trains(&seat(scenario, 0).act(&state, &mut OwnEvents::default()))
+            .into_iter()
+            .filter(|(building, _)| *building == foundry)
+            .map(|(_, kind)| kind)
+            .collect::<Vec<_>>()
+    };
+    let mut lone = arena(2_000);
+    line(&mut lone);
+    assert!(
+        foundry_trains(&lone, false)
+            .iter()
+            .any(|kind| composition::role(*kind) == Some(composition::Role::Line)),
+        "premise: with nothing else to train siege, the Foundry trains its line"
+    );
+    let mut fabricated = armed(&[], &[]);
+    line(&mut fabricated);
+    assert_eq!(
+        foundry_trains(&fabricated, true),
+        [],
+        "the scrap waits for the Fabricator"
+    );
+}
