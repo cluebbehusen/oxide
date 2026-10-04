@@ -72,11 +72,12 @@ Other sessions load this machine, so wall time can swing by tens of percent.
   load-independent, and cycles elapsed follow real cost, including branch and
   cache effects that instruction counts miss. Report both when they disagree.
 - To isolate one stretch's instructions, subtract two runs:
-  `"$driver" replay <replay> --ticks <end>` minus the same with
-  `--ticks <start>`. Instruction counts barely vary between runs, so the
-  difference stays tight. For wall time over a stretch, use the window timings
-  from `tick-scan` or `tick-profile` instead; subtracting wall times amplifies
-  noise.
+  `"$driver" replay <replay> --until <end>` minus the same with
+  `--until <start>`; `--until` runs a prefix, while `--ticks` claims the full
+  length and fails if commands remain. Instruction counts barely vary between
+  runs, so the difference stays tight. For wall time over a stretch, use the
+  window timings from `tick-scan` or `tick-profile` instead; subtracting wall
+  times amplifies noise.
 - Interleave candidate and control runs in three or more pairs, note `uptime`
   load, and report the pairs or their minimum, median and maximum, not only the
   best run. Never compare runs taken minutes apart under different load.

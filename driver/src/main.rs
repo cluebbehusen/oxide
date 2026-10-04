@@ -367,6 +367,11 @@ enum Cmd {
         /// Override the tick count from the replay metadata.
         #[arg(long)]
         ticks: Option<u64>,
+        /// Stop at this tick, a prefix of the recording: later commands stay
+        /// unplayed and the run still succeeds. `--ticks` instead sets the
+        /// full length and fails if commands remain after it.
+        #[arg(long)]
+        until: Option<u64>,
         /// Fail unless the final hash equals this (0x-prefixed hex).
         #[arg(long)]
         expect_hash: Option<String>,
@@ -1192,6 +1197,7 @@ fn main() -> Result<()> {
         Cmd::Replay {
             path,
             ticks,
+            until,
             expect_hash,
             hash_every,
             allow_version_mismatch,
@@ -1202,6 +1208,7 @@ fn main() -> Result<()> {
             let state = runner::run_replay_observed(
                 &replay,
                 ticks,
+                until,
                 allow_version_mismatch,
                 allow_long,
                 |state, report| {

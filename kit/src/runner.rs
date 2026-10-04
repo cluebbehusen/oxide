@@ -136,17 +136,21 @@ pub fn run_replay_bounded(
     run_replay_observed(
         replay,
         ticks_override,
+        None,
         allow_version_mismatch,
         allow_long,
         |_, _| {},
     )
 }
 
-/// [`run_replay_bounded`], handing the state after each tick and that tick's
-/// report to `observe`.
+/// [`run_replay_bounded`], stopping at `until` when it falls short of the run's
+/// length and handing the state after each tick and that tick's report to
+/// `observe`. A stop short of the length is a prefix: commands after it stay
+/// unplayed. Only a run to its full length must consume every command.
 pub fn run_replay_observed(
     replay: &GameReplay,
     ticks_override: Option<u64>,
+    until: Option<u64>,
     allow_version_mismatch: bool,
     allow_long: bool,
     mut observe: impl FnMut(&State, &oxide_sim::TickReport),
@@ -160,7 +164,8 @@ pub fn run_replay_observed(
         }
         Err(err) => return Err(err.into()),
     }
-    let total = ticks_override.unwrap_or_else(|| crate::replay_duration(replay));
+    let length = ticks_override.unwrap_or_else(|| crate::replay_duration(replay));
+    let total = until.map_or(length, |until| until.min(length));
     anyhow::ensure!(
         allow_long || total <= MAX_REPLAY_TICKS,
         "replay claims {total} ticks (limit {MAX_REPLAY_TICKS}); pass --allow-long to run it anyway"
@@ -175,7 +180,7 @@ pub fn run_replay_observed(
         let report = playback.step(&mut state);
         observe(&state, &report);
     }
-    if !playback.is_finished() {
+    if total == length && !playback.is_finished() {
         anyhow::bail!(
             "playback of {total} ticks left recorded commands unconsumed — \
              the replay's duration metadata is wrong"

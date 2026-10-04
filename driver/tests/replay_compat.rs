@@ -254,3 +254,48 @@ fn hash_every_lines_repeat_exactly_and_end_at_the_final_hash() {
     assert_eq!(lines[2]["hash"], plain[0]["hash"]);
     assert!(plain[0].get("events").is_none());
 }
+
+#[test]
+fn until_runs_a_prefix_while_a_short_ticks_override_still_refuses() {
+    use chassis::replay::Replay;
+    use oxide_sim::{Command, PlayerCommand, PlayerId, UnitId};
+    let mut replay: GameReplay = Replay::new(SIM_VERSION, Scenario::skirmish());
+    replay.record(
+        100,
+        PlayerCommand {
+            player: PlayerId(0),
+            command: Command::Stop {
+                units: vec![UnitId(0)],
+            },
+        },
+    );
+    replay.meta.ticks = Some(200);
+    let id = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let file = TempReplay(
+        std::env::temp_dir().join(format!("oxide-until-{}-{id}.json", std::process::id())),
+    );
+    replay.save(&file.0).unwrap();
+    let run = |extra: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_oxide-driver"))
+            .arg("replay")
+            .arg(&file.0)
+            .args(extra)
+            .output()
+            .expect("run replay")
+    };
+    let prefix = run(&["--until", "50", "--hash-every", "25"]);
+    assert!(
+        prefix.status.success(),
+        "{}",
+        String::from_utf8_lossy(&prefix.stderr)
+    );
+    let ticks: Vec<_> = String::from_utf8(prefix.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap()["tick"].as_u64())
+        .collect();
+    assert_eq!(ticks, [Some(25), Some(50), Some(50)]);
+    let truncated = run(&["--ticks", "50"]);
+    assert!(!truncated.status.success());
+    assert!(String::from_utf8_lossy(&truncated.stderr).contains("unconsumed"));
+}
