@@ -8,6 +8,7 @@
 //! difficulty. A comparison passes once the higher rung's share of decided
 //! legs reaches its gate over at least the manifest's number of decided pairs.
 
+use crate::bot_eval::AttackCalibration;
 use crate::bot_eval::{
     DEFAULT_STALL_LOOP_LIMIT, EvaluationBatchOptions, EvaluationLeg, EvaluationPlan, Termination,
     ensure_unique_execution_plans, evaluate_batch,
@@ -15,6 +16,9 @@ use crate::bot_eval::{
 use crate::bot_matrix::{
     ManifestMap, MapFamily, MatchMode, REPLAY_INDEX_FILE, distinct, load_scenarios, seat_teams,
     seated_plan,
+};
+use crate::ledger::{
+    LedgerPool, PairShares, SeatLedger, WorthShare, render_shares, team_shares, worth_shares,
 };
 use anyhow::{Context, Result, bail, ensure};
 use oxide_sim::Scenario;
@@ -24,6 +28,9 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
+
+/// Unit and building kinds each rung's ledger table shows.
+const LEDGER_KINDS: usize = 8;
 
 /// One rung against a lower one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -303,6 +310,21 @@ pub struct ScoredLadderRow {
     pub winner_seats: Vec<u8>,
     /// Configuration by seat.
     pub seats: Vec<LadderSeat>,
+    /// QA evidence by seat; rows recorded before the ledger existed carry
+    /// none of the fields scoring reads here.
+    #[serde(default)]
+    pub evidence: Vec<LadderEvidence>,
+}
+
+/// The fields of a seat's evidence the ladder report reads.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LadderEvidence {
+    /// What the seat's units and buildings did.
+    #[serde(default)]
+    pub ledger: Option<SeatLedger>,
+    /// What it believed when it launched each attack, and how they went.
+    #[serde(default)]
+    pub attacks: Option<AttackCalibration>,
 }
 
 /// A seat's configured controller.
@@ -427,6 +449,22 @@ pub struct ComparisonReport {
     pub stances: Vec<(BotStance, Tally)>,
     /// By map family, in family order.
     pub families: Vec<(MapFamily, Tally)>,
+    /// The higher rung's share of net worth, by pair; empty for rows
+    /// recorded before the ledger existed.
+    pub worth: Vec<WorthShare>,
+}
+
+/// One rung's pooled ledger and attack calibration in one manifest.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RungLedger {
+    /// Manifest whose rows these are.
+    pub manifest: String,
+    /// The rung.
+    pub rung: BotDifficulty,
+    /// Its seats' ledgers, pooled over every comparison it plays.
+    pub ledger: LedgerPool,
+    /// Its attack calibration, summed; absent when no row records one.
+    pub attacks: Option<AttackCalibration>,
 }
 
 /// Every manifest's comparisons, in the order rows first name them.
@@ -434,6 +472,8 @@ pub struct ComparisonReport {
 pub struct LadderReport {
     /// Comparisons.
     pub comparisons: Vec<ComparisonReport>,
+    /// Each rung's ledger, by manifest and then from the lowest rung up.
+    pub rungs: Vec<RungLedger>,
 }
 
 /// Which rung won a leg: `Some(true)` for the higher rung, `Some(false)` for
@@ -498,8 +538,60 @@ fn winner(row: &ScoredLadderRow) -> Result<Won> {
 pub fn build_report(rows: &[ScoredLadderRow]) -> Result<LadderReport> {
     type PairKey = (String, String, String, String, String, u64);
     let mut pairs: BTreeMap<PairKey, PairLegs> = BTreeMap::new();
+    type ComparisonKey = (String, String, String);
+    let mut worth: BTreeMap<ComparisonKey, PairShares> = BTreeMap::new();
+    let mut rungs: BTreeMap<(String, usize), RungLedger> = BTreeMap::new();
     for (index, row) in rows.iter().enumerate() {
         let label = &row.ladder;
+        let ledgers: Vec<Option<&SeatLedger>> = row
+            .evidence
+            .iter()
+            .map(|evidence| evidence.ledger.as_ref())
+            .collect();
+        let higher_seat = match row.leg {
+            EvaluationLeg::Swapped => 1,
+            _ => 0,
+        };
+        if ledgers.len() == row.seats.len()
+            && let Some(shares) = team_shares(&ledgers, &[0, 1], higher_seat)
+        {
+            worth
+                .entry((
+                    label.manifest.clone(),
+                    label.higher.to_string(),
+                    label.lower.to_string(),
+                ))
+                .or_default()
+                .entry(format!("{} {} {}", label.map, label.stance, label.run))
+                .or_default()
+                .push(shares);
+        }
+        for (seat, evidence) in row.seats.iter().zip(&row.evidence) {
+            let Some(config) = seat.config else {
+                continue;
+            };
+            let rank = BotDifficulty::ALL
+                .iter()
+                .position(|rung| *rung == config.difficulty)
+                .unwrap_or(0);
+            let pooled = rungs
+                .entry((label.manifest.clone(), rank))
+                .or_insert_with(|| RungLedger {
+                    manifest: label.manifest.clone(),
+                    rung: config.difficulty,
+                    ledger: LedgerPool::default(),
+                    attacks: None,
+                });
+            if let Some(ledger) = &evidence.ledger {
+                pooled.ledger.add(ledger);
+            }
+            if let Some(attacks) = &evidence.attacks {
+                pooled
+                    .attacks
+                    .get_or_insert_with(AttackCalibration::default)
+                    .add(attacks);
+            }
+        }
         let key = (
             label.manifest.clone(),
             label.map.clone(),
@@ -568,6 +660,7 @@ pub fn build_report(rows: &[ScoredLadderRow]) -> Result<LadderReport> {
                     overall: Tally::default(),
                     stances: Vec::new(),
                     families: Vec::new(),
+                    worth: Vec::new(),
                 });
                 comparisons.len() - 1
             }
@@ -583,6 +676,13 @@ pub fn build_report(rows: &[ScoredLadderRow]) -> Result<LadderReport> {
             .stances
             .sort_by_key(|(stance, _)| BotStance::ALL.iter().position(|each| each == stance));
         report.families.sort_by_key(|(family, _)| *family);
+        if let Some(pairs) = worth.get(&(
+            report.manifest.clone(),
+            report.higher.to_string(),
+            report.lower.to_string(),
+        )) {
+            report.worth = worth_shares(pairs);
+        }
         let tally = &report.overall;
         report.verdict = if tally.pairs.decided() < report.min_decided_pairs.max(1) {
             Verdict::TooFewPairs
@@ -594,7 +694,13 @@ pub fn build_report(rows: &[ScoredLadderRow]) -> Result<LadderReport> {
             Verdict::Fail
         };
     }
-    Ok(LadderReport { comparisons })
+    Ok(LadderReport {
+        comparisons,
+        rungs: rungs
+            .into_values()
+            .filter(|rung| rung.ledger.seats > 0)
+            .collect(),
+    })
 }
 
 /// The tally for `key`, added on first use.
@@ -639,6 +745,30 @@ impl LadderReport {
                     .unwrap_or_default();
                 line(&mut out, &format!("family {name}"), tally, report);
             }
+            if !report.worth.is_empty() {
+                let _ = writeln!(
+                    out,
+                    "  {} share of net worth, by pair: {}",
+                    report.higher,
+                    render_shares(&report.worth)
+                );
+            }
+            out.push('\n');
+        }
+        for rung in &self.rungs {
+            let _ = writeln!(
+                out,
+                "{}: {} ledger, {} seat-legs",
+                rung.manifest, rung.rung, rung.ledger.seats
+            );
+            if let Some(attacks) = &rung.attacks {
+                let _ = writeln!(
+                    out,
+                    "  attacks, by strength sent against the known defense:"
+                );
+                attacks.render(&mut out, "    ");
+            }
+            rung.ledger.render(&mut out, "  ", Some(LEDGER_KINDS));
             out.push('\n');
         }
         out
@@ -859,6 +989,7 @@ mod tests {
                     config: Some(BotConfig::opponent(difficulty, BotStance::Balanced, 9000)),
                 })
                 .collect(),
+            evidence: Vec::new(),
         }
     }
 
@@ -988,5 +1119,48 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(error.contains("disagree on the gate"), "{error}");
+    }
+
+    #[test]
+    fn worth_shares_follow_the_higher_rung_and_ledgers_pool_by_rung() {
+        use BotDifficulty::{Prime, Standard};
+        let ledger = |worth: u64| SeatLedger {
+            worth: vec![worth; 6],
+            ..SeatLedger::default()
+        };
+        let mut rows: Vec<ScoredLadderRow> = pair(0, Some(Prime), Some(Prime)).into();
+        for row in &mut rows {
+            let higher = usize::from(row.leg == EvaluationLeg::Swapped);
+            let mut evidence: Vec<LadderEvidence> = (0..2)
+                .map(|_| LadderEvidence {
+                    ledger: Some(ledger(300)),
+                    attacks: None,
+                })
+                .collect();
+            evidence[higher].ledger = Some(ledger(700));
+            evidence[higher].attacks = Some(AttackCalibration::default());
+            row.evidence = evidence;
+        }
+        rows.extend(pair(1, Some(Standard), None));
+        let report = build_report(&rows).unwrap();
+        let shares = &report.comparisons[0].worth;
+        assert_eq!(shares.len(), crate::ledger::WORTH_TICKS.len());
+        assert!(
+            shares
+                .iter()
+                .all(|share| share.pairs == 1 && (share.mean - 0.7).abs() < 1e-9),
+            "rows without a ledger add no pair: {shares:?}"
+        );
+        let rungs: Vec<(BotDifficulty, u64, bool)> = report
+            .rungs
+            .iter()
+            .map(|rung| (rung.rung, rung.ledger.seats, rung.attacks.is_some()))
+            .collect();
+        assert_eq!(
+            rungs,
+            [(Standard, 2, false), (Prime, 2, true)],
+            "lowest rung first"
+        );
+        assert!(report.render().contains("prime share of net worth"));
     }
 }

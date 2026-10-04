@@ -25,6 +25,8 @@ use oxide_sim::{BuildingId, BuildingKind, Command, PlayerCommand, PlayerId, Unit
 #[derive(Default)]
 pub(crate) struct Decision {
     pub(crate) commands: Vec<PlayerCommand>,
+    /// Attacks launched, for hosts; nothing reads them back.
+    pub(crate) launches: Vec<crate::missions::Launch>,
     pub(crate) spent: u32,
     pub(crate) purchases: Vec<Purchase>,
     pub(crate) unit_orders: u32,
@@ -132,6 +134,11 @@ impl Ledger {
     /// Issues one unit order while the allowance lasts, leaving out units
     /// sitting out orders. An order left with no units issues nothing and
     /// counts as given. Purchases never count against the allowance.
+    /// Reports an attack this decision launched.
+    pub(crate) fn launched(&mut self, launch: crate::missions::Launch) {
+        self.decision.launches.push(launch);
+    }
+
     pub(crate) fn order(&mut self, mut command: Command) -> bool {
         if self.decision.unit_orders == self.decision.allowance {
             return false;
