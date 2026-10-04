@@ -356,6 +356,27 @@ fn a_line_guarded_beyond_the_raiders_by_the_margin_draws_no_raid() {
 }
 
 #[test]
+fn scuttlers_leave_a_well_guarded_line_to_attacks_however_many_wait() {
+    let raided = |guards: i32| {
+        let mut scenario = outpost(UnitKind::Scuttler, BuildingKind::Foundry);
+        for y in 5..=16 {
+            scenario.units.push(unit(0, UnitKind::Scuttler, 17, y));
+        }
+        for y in 10..10 + guards {
+            scenario.units.push(unit(1, UnitKind::Sentinel, 24, y));
+        }
+        let state = scenario.build().unwrap();
+        let (_, trace) = seat(&scenario, 0).act_traced(&state, &mut OwnEvents::default());
+        raid(&trace.unwrap().missions).is_some()
+    };
+    assert!(raided(1), "premise: a lightly guarded line draws a raid");
+    assert!(
+        !raided(3),
+        "fourteen Scuttlers outweigh three Sentinels, but it is an attack's work"
+    );
+}
+
+#[test]
 fn scuttlers_leave_a_line_under_known_guns_however_many_wait() {
     let raided = |turret: bool| {
         let mut scenario = outpost(UnitKind::Scuttler, BuildingKind::Foundry);

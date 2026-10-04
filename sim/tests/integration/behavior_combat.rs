@@ -1658,10 +1658,9 @@ fn turret_fires_at_its_stated_cadence() {
 #[test]
 fn bastion_has_artillery_reach_and_a_real_close_pressure_dead_zone() {
     let bastion_weapon = BuildingKind::Bastion.base_stats().weapons[0];
-    assert_eq!(
-        bastion_weapon.range,
-        UnitKind::Bombard.stats().weapons[0].range,
-        "the emplacement must threaten the same nominal envelope as mobile artillery"
+    assert!(
+        bastion_weapon.range > UnitKind::Bombard.stats().weapons[0].range,
+        "the emplacement must reach mobile artillery firing at its edge"
     );
     assert!(
         bastion_weapon.minimum_range > chassis::fx::Fx::ZERO,

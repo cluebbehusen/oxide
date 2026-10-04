@@ -85,9 +85,9 @@ fn array_true_sight_lets_a_bastion_shell_a_visible_building_footprint() {
 fn bastion_building_acquisition_honors_both_range_edges_and_peak_cover() {
     for (name, target) in [
         ("inside the dead zone", TilePos::new(8, 7)),
-        ("beyond maximum range", TilePos::new(16, 7)),
+        ("beyond maximum range", TilePos::new(18, 7)),
     ] {
-        let mut state = bastion_and_target(target, Some(TilePos::new(12, 11)), None);
+        let mut state = bastion_and_target(target, Some(TilePos::new(13, 11)), None);
         let bastion = building_id(&state, PlayerId(0), BuildingKind::Bastion);
         assert!(
             state.can_see(PlayerId(0), target),

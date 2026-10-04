@@ -21,6 +21,7 @@ use crate::profile::ResolvedProfile;
 use chassis::grid::TilePos;
 
 use oxide_sim::observation::{BuildingObs, ObservationData, UnitObs};
+use oxide_sim::scenario::BotStance;
 use oxide_sim::stats::SAPPER_STRUCTURE_DAMAGE;
 use oxide_sim::{AttackTarget, BuildingKind, Command, RememberedBuilding, UnitId, UnitKind};
 use std::cmp::Reverse;
@@ -79,6 +80,17 @@ struct Foray<'a> {
     held: Vec<Objective>,
     /// Per mille of a target's known guard a raid must bring.
     margin: u64,
+    /// The most known guard a Scuttler raid takes on: a line guarded beyond
+    /// it is an attack's work, not a raid's.
+    light: u64,
+}
+
+/// The most known guard a Scuttler raid takes on, as a share of the
+/// stance's attack minimum: a stance limit on what counts as lightly
+/// defended. Scuttlers sent at a real guard die before they reach the
+/// workers.
+fn light(stance: BotStance) -> u64 {
+    minimum(stance) / 4
 }
 
 impl Missions {
@@ -119,6 +131,7 @@ impl Missions {
             reserve: scratch.reserve,
             held: Vec::new(),
             margin: margin(profile.difficulty),
+            light: light(profile.stance),
         };
         let mut done: Vec<Objective> = Vec::new();
         for id in self.ids(raiding_kind) {
@@ -162,6 +175,7 @@ impl Missions {
             reserve: scratch.reserve,
             held: Vec::new(),
             margin: margin(profile.difficulty),
+            light: light(profile.stance),
         };
         foray
             .target(Raider::Scuttler, u64::MAX)
@@ -430,7 +444,8 @@ impl Foray<'_> {
                         _ => defense(observation, self.memory, goal),
                     };
                     let need = (guarded * self.margin / 1_000).max(1);
-                    (need <= strength).then_some((guarded, target, goal, need))
+                    (need <= strength && (kind != Raider::Scuttler || guarded <= self.light))
+                        .then_some((guarded, target, goal, need))
                 })
                 .min_by_key(|(guarded, target, _, _)| (*guarded, distance(target), rank(target)))
                 .map(|(_, target, goal, need)| (target, goal, need)),

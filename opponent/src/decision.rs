@@ -298,6 +298,7 @@ pub(crate) fn decide(
     // only against invaders already on its ground.
     let outlet = composition::Outlet {
         ground: !scratch.severed || airworks,
+        lifted: scratch.severed,
         invaders: scratch.invaders,
         air_strikes: airworks || scratch.severed,
         strike: if scratch.severed {
@@ -310,6 +311,7 @@ pub(crate) fn decide(
         observation,
         &persistent.memory,
         profile.traits,
+        profile.stance,
         income,
         outlet,
     );
@@ -956,12 +958,9 @@ fn produce(
         {
             continue;
         }
-        if let Some(unit) = needs.unit(
-            observation,
-            kind,
-            composition::Role::Line,
-            ledger.spendable(),
-        ) && ledger.train(producer.building.id, unit)
+        if let Some(role) = needs.fallback_role(observation, kind)
+            && let Some(unit) = needs.unit(observation, kind, role, ledger.spendable())
+            && ledger.train(producer.building.id, unit)
         {
             needs.queued(unit);
         }

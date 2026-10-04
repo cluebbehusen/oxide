@@ -14,6 +14,7 @@ use crate::memory::{Memory, SeenUnit};
 use crate::placement;
 use crate::profile::{PersonalityTraits, ResolvedProfile};
 use crate::workers;
+use chassis::fx::Fx;
 use chassis::grid::TilePos;
 use oxide_sim::observation::{BuildingObs, ObservationData};
 use oxide_sim::stats::{
@@ -173,12 +174,40 @@ struct Approach {
     source: (i64, i64),
     /// The cover that holds the threat off at a sample, in army scrap.
     need: u64,
+    /// The threat along the way, in army scrap, how its known enemies reach
+    /// buildings, and whether they gather in clumps.
+    threat: Threat,
+}
+
+/// The value of the armed enemies the seat remembers near a source, at least
+/// an army at the stance's minimum, their reach against buildings with each
+/// one's value, and whether they gather in clumps a shell's splash hits
+/// several of.
+#[derive(Clone, Default)]
+struct Threat {
+    value: u64,
+    reaches: Vec<(Fx, u64)>,
+    clustered: bool,
 }
 
 impl Approach {
     /// The army scrap still missing at a sample `open` thousandths short.
     fn shortfall(&self, open: u64) -> u64 {
         self.need * open / 2_000
+    }
+
+    /// What `cover` holds off along this way in: its strength, less the
+    /// share of the threat it cannot fire back at.
+    fn held(&self, cover: &Cover) -> u64 {
+        let unanswered: u64 = self
+            .threat
+            .reaches
+            .iter()
+            .filter(|(reach, _)| !cover.answers(*reach))
+            .map(|(_, value)| value)
+            .sum();
+        let value = self.threat.value.max(1);
+        cover.value[usize::from(self.threat.clustered)] * (value - unanswered.min(value)) / value
     }
 }
 
@@ -209,11 +238,16 @@ type ThreatKey = ((i64, i64), Domain, Option<Vec<u32>>);
 #[derive(Clone, Copy)]
 struct Cover {
     centre: (i64, i64),
-    /// What the weapon holds off, in army scrap: see [`strength`].
-    value: u64,
+    /// What the weapon holds off, in army scrap, against a spread enemy and
+    /// a clustered one: see [`strength`].
+    value: [u64; 2],
     /// Squared doubled reach, and squared doubled minimum range.
     reach2: i64,
     min2: i64,
+    /// Reach and minimum range, from the footprint centre.
+    range: Fx,
+    minimum: Fx,
+    size: (i32, i32),
     ground: bool,
     air: bool,
 }
@@ -223,9 +257,12 @@ impl Cover {
         let stats = kind.tier_stats(tier);
         let mut cover = Cover {
             centre: footprint_centre(kind, anchor),
-            value: strength(stats),
+            value: SPLASH_TARGETS.map(|targets| strength(stats, targets)),
             reach2: 0,
             min2: i64::MAX,
+            range: Fx::ZERO,
+            minimum: Fx::MAX,
+            size: stats.size,
             ground: false,
             air: false,
         };
@@ -234,10 +271,25 @@ impl Cover {
             let min = (weapon.minimum_range + weapon.minimum_range).to_num::<i64>();
             cover.reach2 = cover.reach2.max(reach * reach);
             cover.min2 = cover.min2.min(min * min);
+            cover.range = cover.range.max(weapon.range);
+            cover.minimum = cover.minimum.min(weapon.minimum_range);
             cover.ground |= weapon.targets.ground;
             cover.air |= weapon.targets.air;
         }
         (cover.ground || cover.air).then_some(cover)
+    }
+
+    /// Whether the gun fires back at an enemy of `reach` attacking it. The
+    /// enemy measures to the footprint's nearest edge and the gun from its
+    /// centre, so the gun must reach the enemy at a corner, and the enemy
+    /// at a flat side must stand clear of the gun's minimum range.
+    fn answers(self, reach: Fx) -> bool {
+        let (width, height) = (i64::from(self.size.0), i64::from(self.size.1));
+        let past = self.range - reach;
+        // Four squared half-diagonals, against four squared reach to spare.
+        let corner = Fx::from_num(width * width + height * height);
+        let side = Fx::from_num(width.min(height)) / 2;
+        past >= Fx::ZERO && past * past * 4 >= corner && side + reach >= self.minimum
     }
 
     fn covers(self, domain: Domain, point: (i64, i64)) -> bool {
@@ -334,7 +386,7 @@ impl<'a> Guard<'a> {
             walkers,
         };
         // Many buildings share a threat's source.
-        let mut threats: Vec<(ThreatKey, u64)> = Vec::new();
+        let mut threats: Vec<(ThreatKey, Threat)> = Vec::new();
         for asset in &mut assets {
             let centre = asset.centre;
             let around = grounds(map, asset.anchor, asset.size);
@@ -356,9 +408,9 @@ impl<'a> Guard<'a> {
                     .find(|((source, of, on), _)| {
                         *source == approach.source && *of == domain && on.as_ref() == beside
                     })
-                    .map(|(_, value)| *value);
-                let value = known.unwrap_or_else(|| {
-                    let value = threat(
+                    .map(|(_, threat)| threat.clone());
+                approach.threat = known.unwrap_or_else(|| {
+                    let threat = threat(
                         memory,
                         map,
                         observation.tick,
@@ -366,25 +418,26 @@ impl<'a> Guard<'a> {
                         beside.map(Vec::as_slice),
                         stakes,
                     );
-                    threats.push(((approach.source, domain, beside.cloned()), value));
-                    value
+                    threats.push(((approach.source, domain, beside.cloned()), threat.clone()));
+                    threat
                 });
-                let need = value * 1_000 / ATTACKER_MARGIN;
+                let need = approach.threat.value * 1_000 / ATTACKER_MARGIN;
                 approach.need = need;
-                approach.open = approach
+                let open = approach
                     .samples
                     .iter()
                     .map(|point| {
                         let covered: u64 = covers
                             .iter()
                             .filter(|cover: &&Cover| cover.covers(domain, *point))
-                            .map(|cover| cover.value)
+                            .map(|cover| approach.held(cover))
                             .sum();
                         (2_000 * need.saturating_sub(covered))
                             .checked_div(need)
                             .unwrap_or(0)
                     })
                     .collect();
+                approach.open = open;
                 approach.spotted = approach.samples.iter().map(|point| seen(*point)).collect();
                 approach.far = along(centre, approach.source, &FAR)
                     .into_iter()
@@ -473,7 +526,7 @@ impl<'a> Guard<'a> {
             .filter(|((point, _), spotted)| {
                 cover.covers(domain, **point) && (!bastion || **spotted)
             })
-            .map(|((_, open), _)| approach.shortfall(*open).min(cover.value))
+            .map(|((_, open), _)| approach.shortfall(*open).min(approach.held(&cover)))
             .sum()
     }
 
@@ -967,9 +1020,13 @@ fn upgrade(guard: &Guard<'_>, building: &BuildingObs, weight: u64) -> Option<(In
                         .iter()
                         .zip(&approach.open)
                         .map(|(point, open)| {
-                            approach
-                                .shortfall(*open)
-                                .min(raises(cover, next, domain, *point))
+                            approach.shortfall(*open).min(raises(
+                                cover,
+                                next,
+                                domain,
+                                *point,
+                                |cover| approach.held(cover),
+                            ))
                         })
                         .sum();
                     asset.value * short * approach.evidence.weight() / 1_000
@@ -1073,10 +1130,10 @@ pub(crate) fn emergency(
     }
 }
 
-/// The value of the armed enemies in `domain` the seat remembers near
-/// `source`, by how sure it is they are still there, and at least an army at
-/// the stance's minimum. Given `beside`, only those standing beside one of
-/// those grounds count.
+/// The armed enemies in `domain` the seat remembers near `source`, valued by
+/// how sure it is they are still there, and at least an army at the stance's
+/// minimum. Given `beside`, only those standing beside one of those grounds
+/// count.
 fn threat(
     memory: &Memory,
     map: &MapModel,
@@ -1084,8 +1141,8 @@ fn threat(
     (source, domain): ((i64, i64), Domain),
     beside: Option<&[u32]>,
     stakes: Stakes,
-) -> u64 {
-    let near: u64 = armed_near(memory, source, domain)
+) -> Threat {
+    let units: Vec<&SeenUnit> = armed_near(memory, source, domain)
         .filter(|unit| {
             beside.is_none_or(|grounds| {
                 ring(unit.tile, (1, 1)).any(|tile| {
@@ -1094,9 +1151,17 @@ fn threat(
                 })
             })
         })
-        .map(|unit| unit.value(now))
-        .sum();
-    near.max(stakes.minimum)
+        .collect();
+    let reaches: Vec<(Fx, u64)> = units
+        .iter()
+        .map(|unit| (reach(unit.kind), unit.value(now)))
+        .collect();
+    let near: u64 = reaches.iter().map(|(_, value)| value).sum();
+    Threat {
+        value: near.max(stakes.minimum),
+        reaches,
+        clustered: composition::clustered(units),
+    }
 }
 
 /// The health of the armed ground enemies the seat remembers near `source`,
@@ -1112,6 +1177,17 @@ fn health(memory: &Memory, now: u64, source: (i64, i64), stakes: Stakes) -> u64 
         .sum();
     let sentinel = UnitKind::Sentinel.stats();
     near.max(stakes.minimum * u64::from(sentinel.max_hp) / u64::from(sentinel.cost))
+}
+
+/// How far `kind` fires at buildings.
+fn reach(kind: UnitKind) -> Fx {
+    kind.stats()
+        .weapons
+        .iter()
+        .filter(|weapon| weapon.targets.ground)
+        .map(|weapon| weapon.range)
+        .max()
+        .unwrap_or(Fx::ZERO)
 }
 
 /// The armed enemies in `domain` the seat remembers near `source`.
@@ -1384,6 +1460,7 @@ fn approach(known: &Known<'_>, asset: &Asset, domain: Domain) -> Option<Approach
         evidence,
         source,
         need: 0,
+        threat: Threat::default(),
     })
 }
 
@@ -1627,15 +1704,29 @@ fn chebyshev(a: (i64, i64), b: (i64, i64)) -> i64 {
     (a.0 - b.0).abs().max((a.1 - b.1).abs())
 }
 
+/// How many enemies a splash shell hits, in thousandths, against a spread
+/// enemy and a clustered one. A spread enemy stands too far apart for a
+/// shell to hit two. Staged fights of a lone Bastion against Sentinels
+/// matched about one and a third hits a shell in a column and four and a
+/// half in a clump; both count as clustered, so a clustered enemy counts
+/// three.
+const SPLASH_TARGETS: [u64; 2] = [1_000, 3_000];
+
 /// What a gun holds off, in army scrap: the price of the Sentinels that would
 /// match it under Lanchester's square law, from the product of its damage per
-/// tick and health against a Sentinel's. Splash is not counted.
-fn strength(stats: &BuildingStats) -> u64 {
+/// tick and health against a Sentinel's, with a splash shell counting
+/// `targets` thousandths of hits.
+fn strength(stats: &BuildingStats, targets: u64) -> u64 {
     // Damage per tick, in thousandths.
-    fn rate<'a>(weapons: impl Iterator<Item = &'a WeaponStats>) -> u64 {
+    fn rate<'a>(weapons: impl Iterator<Item = &'a WeaponStats>, targets: u64) -> u64 {
         weapons
             .map(|weapon| {
-                u64::from(weapon.damage) * u64::from(weapon.salvo.max(1)) * 1_000
+                let hits = if weapon.splash.is_some() {
+                    targets
+                } else {
+                    1_000
+                };
+                u64::from(weapon.damage) * u64::from(weapon.salvo.max(1)) * hits
                     / u64::from(weapon.cooldown_ticks.max(1))
             })
             .sum()
@@ -1646,22 +1737,29 @@ fn strength(stats: &BuildingStats) -> u64 {
             .weapons
             .iter()
             .filter(|weapon| weapon.targets.ground),
+        1_000,
     ) * u64::from(sentinel.max_hp);
-    let gun = rate(stats.weapons.iter()) * u64::from(stats.max_hp);
+    let gun = rate(stats.weapons.iter(), targets) * u64::from(stats.max_hp);
     let ratio = (gun * 1_000_000).checked_div(reference).unwrap_or(0);
     u64::from(sentinel.cost) * ratio.isqrt() / 1_000
 }
 
-/// The strength a gun's next tier `next` adds at `point` over the gun today
-/// `cover`: all of it where the gun does not reach yet, the difference where
-/// it does, none beyond the next tier's reach.
-fn raises(cover: Cover, next: Cover, domain: Domain, point: (i64, i64)) -> u64 {
+/// What a gun's next tier `next` adds at `point` over the gun today `cover`,
+/// each holding off what `held` says: all of it where the gun does not reach
+/// yet, the difference where it does, none beyond the next tier's reach.
+fn raises(
+    cover: Cover,
+    next: Cover,
+    domain: Domain,
+    point: (i64, i64),
+    held: impl Fn(&Cover) -> u64,
+) -> u64 {
     if !next.covers(domain, point) {
         0
     } else if cover.covers(domain, point) {
-        next.value.saturating_sub(cover.value)
+        held(&next).saturating_sub(held(&cover))
     } else {
-        next.value
+        held(&next)
     }
 }
 
@@ -1683,15 +1781,55 @@ mod tests {
 
     #[test]
     fn a_gun_holds_off_what_its_firepower_and_health_match_not_its_price() {
-        let gun = |kind: BuildingKind, tier: u8| strength(kind.tier_stats(tier));
-        let turret = gun(BuildingKind::Turret, 0);
-        let bastion = gun(BuildingKind::Bastion, 0);
-        assert!(turret < bastion, "{turret} against {bastion}");
-        assert!(bastion < gun(BuildingKind::Turret, 1));
-        assert!(gun(BuildingKind::Turret, 1) < gun(BuildingKind::Turret, 2));
+        let [spread, clumped] = SPLASH_TARGETS;
+        let gun =
+            |kind: BuildingKind, tier: u8, targets: u64| strength(kind.tier_stats(tier), targets);
+        let turret = gun(BuildingKind::Turret, 0, spread);
+        assert_eq!(
+            turret,
+            gun(BuildingKind::Turret, 0, clumped),
+            "one hit a shot"
+        );
+        assert!(turret < gun(BuildingKind::Turret, 1, spread));
+        assert!(gun(BuildingKind::Turret, 1, spread) < gun(BuildingKind::Turret, 2, spread));
+        // Per scrap, a lone Bastion holds off fewer spread Sentinels than a
+        // Turret, as staged fights found, and a clump lifts it.
+        let per_scrap =
+            |strength: u64, kind: BuildingKind| strength * 1_000 / price(kind.base_stats());
+        let turret = per_scrap(turret, BuildingKind::Turret);
+        let bastion = |targets| {
+            per_scrap(
+                gun(BuildingKind::Bastion, 0, targets),
+                BuildingKind::Bastion,
+            )
+        };
         assert!(
-            bastion < 2 * turret,
-            "a Bastion costs over twice a Turret but does not hold twice as much"
+            bastion(spread) < turret,
+            "{} against {turret}",
+            bastion(spread)
+        );
+        assert!(bastion(clumped) > bastion(spread) * 3 / 2);
+    }
+
+    #[test]
+    fn a_gun_answers_only_enemies_it_can_fire_back_at() {
+        let gun = |kind: BuildingKind| Cover::of(kind, 0, TilePos::new(10, 10)).unwrap();
+        let answers = |kind: BuildingKind, enemy: UnitKind| gun(kind).answers(reach(enemy));
+        assert!(answers(BuildingKind::Turret, UnitKind::Sentinel));
+        assert!(
+            !answers(BuildingKind::Turret, UnitKind::Lancer),
+            "outranged"
+        );
+        assert!(!answers(BuildingKind::Turret, UnitKind::Bombard));
+        assert!(answers(BuildingKind::Bastion, UnitKind::Sentinel));
+        assert!(answers(BuildingKind::Bastion, UnitKind::Lancer));
+        assert!(
+            answers(BuildingKind::Bastion, UnitKind::Bombard),
+            "even at a corner"
+        );
+        assert!(
+            !answers(BuildingKind::Bastion, UnitKind::Scuttler),
+            "a Scuttler bites from inside the minimum range"
         );
     }
 
@@ -1707,9 +1845,9 @@ mod tests {
         let far = (centre.0 + 16, centre.1);
         assert!(turret.covers(Domain::Ground, near) && !turret.covers(Domain::Ground, edge));
         assert!(heavy.covers(Domain::Ground, edge) && !heavy.covers(Domain::Ground, far));
-        let raised = |point| raises(turret, heavy, Domain::Ground, point);
-        assert_eq!(raised(near), heavy.value - turret.value);
-        assert_eq!(raised(edge), heavy.value);
+        let raised = |point| raises(turret, heavy, Domain::Ground, point, |cover| cover.value[0]);
+        assert_eq!(raised(near), heavy.value[0] - turret.value[0]);
+        assert_eq!(raised(edge), heavy.value[0]);
         assert_eq!(raised(far), 0);
     }
 
