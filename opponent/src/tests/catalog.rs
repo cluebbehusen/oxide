@@ -155,9 +155,10 @@ fn every_building_and_upgrade_is_bought_somewhere() {
 
     // Bulwarks and Deep Arrays once a Crucible stands.
     let mut crucible = built.clone();
+    // Behind the Foundry, so the guns standing still face the base's edge.
     crucible
         .buildings
-        .push(building(0, BuildingKind::Crucible, 12, 2));
+        .push(building(0, BuildingKind::Crucible, 1, 5));
     let state = tiered(&crucible.build().unwrap(), BuildingKind::Turret, 1);
     offer(&crucible, &state, 3_000);
 
