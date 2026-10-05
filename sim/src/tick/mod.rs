@@ -187,10 +187,10 @@ impl State {
             brain::logistics::resolve(self, boardings, &mut events);
             movement::evict_claimed_ground(self);
             let air_positions = aircraft_crashes::capture_positions(self);
-            let travel = movement::run(self);
+            let (travel, refused) = movement::run(self);
             let driven: Vec<_> = self.units.iter().map(|unit| unit.pos).collect();
             movement::resolve_collisions(self, &travel, &mut index);
-            movement::note_stalls(self, &travel, &driven);
+            movement::note_stalls(self, &travel, &refused, &driven);
             motion.extend(self.units.iter().zip(&travel).zip(driven).filter_map(
                 |((unit, &propulsion), driven)| {
                     let correction = unit.pos - driven;
@@ -1225,7 +1225,7 @@ mod tests {
         assert_calibration_open_symmetry(&stage("logistics"), state, unit_pairs);
         movement::evict_claimed_ground(state);
         let air_positions = aircraft_crashes::capture_positions(state);
-        let travel = movement::run(state);
+        let (travel, _) = movement::run(state);
         assert_calibration_open_symmetry(&stage("movement"), state, unit_pairs);
         movement::resolve_collisions(state, &travel, &mut index);
         assert_calibration_open_symmetry(&stage("collisions"), state, unit_pairs);

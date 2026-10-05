@@ -22,9 +22,14 @@ fn approach_building(state: &mut State, id: UnitId, building: BuildingId) -> boo
     {
         return approach_rect(state, id, anchor, size);
     }
+    // A held position stays only while it is still free and admissible:
+    // ground claimed beside it since it was chosen can leave the motor
+    // unable to land there.
     if unit.path.as_ref().is_some_and(|path| {
-        path.final_point
-            .is_some_and(|point| !crowding::claimed(state, id, point, true))
+        path.final_point.is_some_and(|point| {
+            !crowding::claimed(state, id, point, true)
+                && admissible(state, unit, b, path.goal, point)
+        })
     }) {
         return true;
     }
@@ -80,15 +85,25 @@ pub(in crate::tick) fn endpoint(
     entry: Vec2Fx,
 ) -> Option<Vec2Fx> {
     let unit = state.unit(id)?;
-    let surface = state.contact_surface(state.building(building)?);
-    let point = surface.stance(entry, clearance(unit));
-    let goal = TilePos::containing(entry);
-    (point.dist_sq(goal.center()) <= const { Fx::lit("2.25") }
+    let b = state.building(building)?;
+    let point = state.contact_surface(b).stance(entry, clearance(unit));
+    admissible(state, unit, b, TilePos::containing(entry), point).then_some(point)
+}
+
+/// Whether a contact position can be driven to straight from its goal
+/// tile's center, the way the motor finishes every final approach.
+fn admissible(
+    state: &State,
+    unit: &crate::Unit,
+    building: &crate::Building,
+    goal: TilePos,
+    point: Vec2Fx,
+) -> bool {
+    point.dist_sq(goal.center()) <= const { Fx::lit("2.25") }
         && state
             .ground_terrain()
-            .with_contact(Some(surface))
-            .contact_clear(goal.center(), point, collision_radius(unit)))
-    .then_some(point)
+            .with_contact(Some(state.contact_surface(building)))
+            .contact_clear(goal.center(), point, collision_radius(unit))
 }
 
 pub(in crate::tick) fn collision_radius(unit: &crate::Unit) -> Fx {
@@ -150,6 +165,14 @@ pub(in crate::tick) fn surface_for(
     Some(state.contact_surface(b))
 }
 
+/// A worker that already reaches the surface stops where it stands instead
+/// of finishing the walk to its chosen position, so a position it cannot
+/// land on never keeps it from working.
 pub(super) fn approach_worker(state: &mut State, id: UnitId, building: BuildingId) -> bool {
+    let unit = state.unit(id).expect("contact unit");
+    if state.in_building_work_reach(unit, building) {
+        state.unit_mut(id).expect("contact unit").path = None;
+        return true;
+    }
     approach_building(state, id, building)
 }

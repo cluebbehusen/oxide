@@ -135,6 +135,16 @@ fn route_target(
         {
             point = path.goal.center();
         }
+        // A body docked on a footprint tile was routed by tile rules, but
+        // the surface it rests against still bounds its hull. When the
+        // straight leg would graze that surface it backs out first; off the
+        // footprint, the leg is judged by tile rules again.
+        if !terrain.open(here)
+            && !terrain.contact_clear(unit.pos, point, contact_radius)
+            && let Some(exit) = terrain.contact_exit(unit.pos, contact_radius)
+        {
+            point = exit;
+        }
         // Waypoints the straight leg has already carried the body past are
         // reached: the cursor never trails behind the hull's own plane.
         let ahead = point - unit.pos;
@@ -150,7 +160,8 @@ fn route_target(
     }
 }
 
-/// One tick of the ground motor: steer, throttle, roll, and land.
+/// One tick of the ground motor: steer, throttle, roll, and land. Returns
+/// whether the step its route asked for was refused.
 ///
 /// A rolling hull turns toward its target every tick at the chassis turn
 /// rate and keeps rolling through the bend, easing off as the heading error
@@ -159,7 +170,7 @@ fn route_target(
 /// bearing before it rolls. Off the exact bearing the body travels along
 /// its heading, so a bend is a real arc; within eight compass steps it
 /// tracks the target point directly and lands on it exactly.
-pub(super) fn advance(unit: &mut Unit, terrain: &GroundTerrain, parked: &ParkedBodies) {
+pub(super) fn advance(unit: &mut Unit, terrain: &GroundTerrain, parked: &ParkedBodies) -> bool {
     let target = route_target(unit, terrain, parked);
     let max_speed = unit.kind.stats().speed;
     let turn_rate = unit.kind.ground_turn_rate();
@@ -242,6 +253,7 @@ pub(super) fn advance(unit: &mut Unit, terrain: &GroundTerrain, parked: &ParkedB
     } else {
         there == here || (terrain.open(there) && super::early_advance_safe(here, there, terrain))
     };
+    let refused = !allowed && proposed != unit.pos;
     if allowed {
         unit.pos = proposed;
     } else {
@@ -253,10 +265,15 @@ pub(super) fn advance(unit: &mut Unit, terrain: &GroundTerrain, parked: &ParkedB
         if final_point {
             unit.path = None;
             unit.drive_speed = Fx::ZERO;
-        } else if let Some(path) = unit.path.as_mut() {
+        } else if let Some(path) = unit.path.as_mut()
+            // A stand-in point steered for instead, such as a contact exit,
+            // does not pass the waypoint it stood in for.
+            && point == path_point(path, index)
+        {
             path.next = (index + 1).min(path.waypoints.len() - 1) as u32;
         }
     }
+    refused
 }
 
 #[cfg(test)]
