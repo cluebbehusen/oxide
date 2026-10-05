@@ -694,10 +694,11 @@ fn an_array_deepens_once_a_crucible_stands() {
         scenario
             .buildings
             .push(building(0, BuildingKind::Array, 7, 5));
+        // Behind the Foundry, so the base's edge stays where it was.
         if crucible {
             scenario
                 .buildings
-                .push(building(0, BuildingKind::Crucible, 3, 1));
+                .push(building(0, BuildingKind::Crucible, 3, 8));
         }
         if bombard {
             scenario.units.extend([
@@ -1161,4 +1162,274 @@ fn an_army_across_a_chasm_adds_nothing_to_a_raider_on_the_seat_s_ground() {
         .0;
     let alone = staged(false, Some(first)).map(|(_, score)| score);
     assert_eq!(staged(true, Some(first)).map(|(_, score)| score), alone);
+}
+
+#[test]
+fn guns_stand_in_front_of_a_packed_base_off_its_lanes() {
+    let mut scenario = settled(400);
+    scenario.buildings.extend([
+        building(0, BuildingKind::Fabricator, 9, 4),
+        building(0, BuildingKind::Crucible, 9, 6),
+    ]);
+    let state = scenario.build().unwrap();
+    let (turret, _) = offer(
+        &wanted(&scenario, &state, &Memory::default(), 85),
+        BuildingKind::Turret,
+    )
+    .expect("a Turret guards the base");
+    assert!(turret.x >= 11, "beyond the Crucible: {turret:?}");
+    assert!(!map(&scenario).lane_of(&[FOUNDRY], turret), "{turret:?}");
+}
+
+/// Two rooms joined by a corridor, each seat's workforce along its room's
+/// back wall, a Kestrel watching its end of the corridor and a Fabricator
+/// out of the way.
+fn corridor() -> Scenario {
+    rooms(crate::map::tests::CORRIDOR.map(str::to_owned).to_vec())
+}
+
+/// [`corridor`]'s staging on two rooms joined however `map` joins them.
+fn rooms(map: Vec<String>) -> Scenario {
+    let mut scenario = arena(400);
+    scenario.map = map;
+    scenario.units = (1..=13)
+        .flat_map(|y| [(1, y), (2, y)])
+        .flat_map(|(x, y)| [harvester(0, x, y), harvester(1, 39 - x, 14 - y)])
+        .collect();
+    scenario.units.extend([
+        unit(0, UnitKind::Kestrel, 14, 7),
+        unit(1, UnitKind::Kestrel, 25, 7),
+    ]);
+    scenario.buildings = vec![
+        building(0, BuildingKind::Fabricator, 8, 11),
+        building(1, BuildingKind::Fabricator, 30, 2),
+    ];
+    scenario
+}
+
+#[test]
+fn a_choke_draws_guns_on_its_home_side_and_charges_across_it() {
+    let scenario = corridor();
+    let state = scenario.build().unwrap();
+    let model = map(&scenario);
+    let cut = model.cut(PlayerId(0), PlayerId(1), 0).unwrap();
+    let gate = &cut.gates[0];
+    let offered = wanted(&scenario, &state, &Memory::default(), 85);
+    let (turret, _) = offer(&offered, BuildingKind::Turret).expect("a Turret holds the gate");
+    let distance = model.distance(PlayerId(0), turret);
+    assert!(
+        distance < cut.distance && distance + 50 > cut.distance,
+        "{turret:?} at {distance}, the gate at {}",
+        cut.distance
+    );
+    let (charge, _) = offer(&offered, BuildingKind::ScuttleCharge).expect("charges mine the gate");
+    assert!(gate.tiles.contains(&charge), "{charge:?} off {gate:?}");
+}
+
+#[test]
+fn a_gate_inside_the_base_leaves_the_guns_to_its_edge() {
+    let mut scenario = corridor();
+    let reclaimer = TilePos::new(20, 7);
+    scenario.buildings.push(building(
+        0,
+        BuildingKind::Reclaimer,
+        reclaimer.x,
+        reclaimer.y,
+    ));
+    let state = scenario.build().unwrap();
+    let model = map(&scenario);
+    let (turret, _) = offer(
+        &wanted(&scenario, &state, &Memory::default(), 85),
+        BuildingKind::Turret,
+    )
+    .expect("a Turret guards the base");
+    assert!(
+        model.distance(PlayerId(0), turret) > model.distance(PlayerId(0), reclaimer),
+        "in front of the furthest building: {turret:?}"
+    );
+}
+
+#[test]
+fn mirrored_seats_hold_mirrored_gates() {
+    let scenario = corridor();
+    let state = scenario.build().unwrap();
+    let west = wanted_by(0, true, &scenario, &state, &Memory::default(), 85);
+    let east = wanted_by(1, true, &scenario, &state, &Memory::default(), 85);
+    for kind in [BuildingKind::Turret, BuildingKind::ScuttleCharge] {
+        let (west, _) = offer(&west, kind).unwrap();
+        let (east, _) = offer(&east, kind).unwrap();
+        assert_eq!(TilePos::new(39 - west.x, 14 - west.y), east, "{kind:?}");
+    }
+}
+
+#[test]
+fn an_extractor_out_on_its_own_is_guarded_beside_it() {
+    let frame = TilePos::new(20, 4);
+    let mut scenario = arena(400);
+    scenario.map = super::expansion::FRONTIER.map(str::to_owned).to_vec();
+    let mut row: Vec<char> = scenario.map[4].chars().collect();
+    row[20] = 'E';
+    scenario.map[4] = row.into_iter().collect();
+    scenario.units = vec![harvester(0, 4, 3), harvester(0, 5, 3), harvester(1, 35, 10)];
+    // Guns already hold the base's way in.
+    scenario.buildings = vec![
+        building(0, BuildingKind::Extractor, frame.x, frame.y),
+        building(0, BuildingKind::Bastion, 6, 4),
+        building(0, BuildingKind::Bastion, 6, 8),
+        building(0, BuildingKind::Bastion, 9, 2),
+        building(0, BuildingKind::Bastion, 9, 10),
+        building(0, BuildingKind::Bastion, 10, 6),
+    ];
+    let state = scenario.build().unwrap();
+    let offered = wanted(&scenario, &state, &Memory::default(), 85);
+    let (turret, _) = offer(&offered, BuildingKind::Turret).expect("a Turret is wanted");
+    assert!(
+        (2..=3).contains(&crate::frame::gap(frame, (2, 2), turret, (1, 1))) && turret.x > frame.x,
+        "beside the Extractor, toward the threat: {turret:?}, {offered:?}"
+    );
+}
+
+#[test]
+fn an_extractor_out_on_its_own_leaves_the_base_edge_at_its_buildings() {
+    let frame = TilePos::new(20, 4);
+    let mut scenario = arena(400);
+    scenario.map = super::expansion::FRONTIER.map(str::to_owned).to_vec();
+    let mut row: Vec<char> = scenario.map[4].chars().collect();
+    row[20] = 'E';
+    scenario.map[4] = row.into_iter().collect();
+    scenario.units = vec![harvester(0, 4, 3), harvester(0, 5, 3), harvester(1, 35, 10)];
+    scenario.buildings = vec![building(0, BuildingKind::Extractor, frame.x, frame.y)];
+    let state = scenario.build().unwrap();
+    let (turret, _) = offer(
+        &wanted(&scenario, &state, &Memory::default(), 85),
+        BuildingKind::Turret,
+    )
+    .expect("a Turret guards the base");
+    let start = map(&scenario).start(PlayerId(0)).unwrap();
+    assert!(
+        (2..=3).contains(&crate::frame::gap(start, (2, 2), turret, (1, 1))),
+        "beside the Foundry, not out by the Extractor: {turret:?}"
+    );
+}
+
+#[test]
+fn every_gate_of_a_cut_draws_its_own_gun_and_charges() {
+    // Too far apart for one gun to hold both.
+    let mut scenario = rooms(crate::map::tests::ways(&[1, 2, 12, 13]));
+    let model = map(&scenario);
+    let cut = model.cut(PlayerId(0), PlayerId(1), 0).unwrap();
+    assert_eq!(cut.gates.len(), 2, "premise: two ways through the wall");
+    // The gate a site stands nearest.
+    let holds = |anchor: TilePos| {
+        (0..cut.gates.len()).min_by_key(|index| {
+            cut.gates[*index]
+                .tiles
+                .iter()
+                .map(|tile| tile.chebyshev(anchor))
+                .min()
+        })
+    };
+    let offered = |scenario: &Scenario, kind: BuildingKind| {
+        let state = scenario.build().unwrap();
+        offer(&wanted(scenario, &state, &Memory::default(), 85), kind)
+            .map(|(anchor, _)| anchor)
+            .unwrap_or_else(|| panic!("a {kind:?} is wanted"))
+    };
+    for kind in [BuildingKind::Turret, BuildingKind::ScuttleCharge] {
+        let first = offered(&scenario, kind);
+        let held = holds(first).unwrap_or_else(|| panic!("{kind:?} at {first:?}"));
+        scenario.buildings.push(building(0, kind, first.x, first.y));
+        let second = offered(&scenario, kind);
+        assert_eq!(
+            holds(second),
+            Some(1 - held),
+            "{kind:?} at {first:?}, then {second:?}"
+        );
+    }
+}
+
+#[test]
+fn a_threat_on_the_home_side_of_a_cut_is_met_at_the_base() {
+    // A dead end off the west room, reaching further from home than the
+    // corridor's gate does.
+    let mut map: Vec<String> = crate::map::tests::CORRIDOR.map(str::to_owned).to_vec();
+    for row in [1, 2] {
+        let mut cells: Vec<char> = map[row].chars().collect();
+        for cell in &mut cells[15..=20] {
+            *cell = '.';
+        }
+        map[row] = cells.into_iter().collect();
+    }
+    let charge = |enemy: TilePos| {
+        let mut scenario = rooms(map.clone());
+        scenario.units.extend([
+            unit(0, UnitKind::Kestrel, 17, 2),
+            unit(1, UnitKind::Sentinel, enemy.x, enemy.y),
+        ]);
+        let state = scenario.build().unwrap();
+        let mut memory = Memory::default();
+        memory.observe(&ObservationData::fog_honest(&state, PlayerId(0)));
+        offer(
+            &wanted(&scenario, &state, &memory, 85),
+            BuildingKind::ScuttleCharge,
+        )
+        .map(|(anchor, _)| anchor)
+        .expect("a charge is wanted")
+    };
+    let model = map_model(&map);
+    let cut = model.cut(PlayerId(0), PlayerId(1), 0).unwrap();
+    let gated = |tile: TilePos| cut.gates.iter().any(|gate| gate.tiles.contains(&tile));
+    assert!(
+        gated(charge(TilePos::new(30, 7))),
+        "premise: a threat beyond is met at the gate"
+    );
+    let pocket = TilePos::new(20, 1);
+    assert!(
+        model.distance(PlayerId(0), pocket) > cut.distance + 20,
+        "premise: further from home than the cut, yet on its home side"
+    );
+    assert!(
+        !gated(charge(pocket)),
+        "a threat in the dead end is met at the base"
+    );
+}
+
+/// The map model of `rows` with [`corridor`]'s seats.
+fn map_model(rows: &[String]) -> std::sync::Arc<crate::map::MapModel> {
+    map(&rooms(rows.to_vec()))
+}
+
+#[test]
+fn charges_go_first_to_the_gate_the_guns_leave_open() {
+    let mut scenario = rooms(crate::map::tests::ways(&[1, 2, 12, 13]));
+    let model = map(&scenario);
+    let cut = model.cut(PlayerId(0), PlayerId(1), 0).unwrap();
+    let holds = |anchor: TilePos| {
+        (0..cut.gates.len()).min_by_key(|index| {
+            cut.gates[*index]
+                .tiles
+                .iter()
+                .map(|tile| tile.chebyshev(anchor))
+                .min()
+        })
+    };
+    let charge = |scenario: &Scenario| {
+        let state = scenario.build().unwrap();
+        offer(
+            &wanted(scenario, &state, &Memory::default(), 85),
+            BuildingKind::ScuttleCharge,
+        )
+        .map(|(anchor, _)| anchor)
+        .expect("a charge is wanted")
+    };
+    let first = holds(charge(&scenario)).unwrap();
+    // Turrets along the way through the gate the first charge went to.
+    let gate = &cut.gates[first];
+    let mouth = *gate.tiles.iter().min().unwrap();
+    for step in [-2, 4, 8] {
+        scenario
+            .buildings
+            .push(building(0, BuildingKind::Turret, mouth.x + step, mouth.y));
+    }
+    assert_eq!(holds(charge(&scenario)), Some(1 - first));
 }

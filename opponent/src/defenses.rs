@@ -9,7 +9,7 @@ use crate::composition;
 use crate::decision::Ledger;
 use crate::frame::{HomeFrame, doubled, footprint_centre, gap, ring};
 use crate::investments::Investment;
-use crate::map::MapModel;
+use crate::map::{Gate, MapModel, UNREACHABLE};
 use crate::memory::{Memory, SeenUnit};
 use crate::placement::{self, Layout};
 use crate::profile::{PersonalityTraits, ResolvedProfile};
@@ -20,14 +20,20 @@ use oxide_sim::observation::{BuildingObs, ObservationData};
 use oxide_sim::stats::{
     BuildingStats, CHARGE_DAMAGE, Domain, FOUNDRY_REPAIR_PRICE, REPAIR_BAY_RADIUS, WeaponStats,
 };
-use oxide_sim::{BuildingKind, UnitKind};
+use oxide_sim::{BuildingKind, PlayerId, UnitKind};
 use std::cell::OnceCell;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
-/// What one of several Foundries is worth guarding; a lone Foundry is worth
-/// more, and nothing else is worth as much.
+/// What one of several bases is worth guarding; a lone one is worth more.
 const FOUNDRY_VALUE: u64 = 12;
+
+/// What an Extractor out on its own is worth guarding.
+const OUTLYING_VALUE: u64 = 6;
+
+/// Empty tiles between an Extractor and the nearest Foundry beyond which it
+/// is guarded on its own rather than with that Foundry's base.
+const OUTLYING_GAP: i32 = 8;
 
 /// Tiles from a building's centre toward a threat sampled as its approach.
 const APPROACH: [i64; 4] = [3, 6, 9, 12];
@@ -38,8 +44,8 @@ const FAR: [i64; 4] = [9, 12, 15, 18];
 /// Tiles an Array's radar reaches.
 const RADAR: i64 = 20;
 
-/// Tiles from a Foundry's centre along its approach where its Scuttle
-/// Charges start.
+/// Tiles beyond a base's edge along its approach where its Scuttle Charges
+/// start.
 const MINEFIELD_START: i64 = 3;
 
 /// Tiles either side of a Foundry's straight way in that its Scuttle Charges
@@ -54,6 +60,9 @@ const OBSTACLE_POINTS: u64 = 16;
 
 /// Empty tiles between a building and a defense guarding it.
 const STANDOFF: [i32; 2] = [2, 3];
+
+/// Tiles on its home side inside which defenses holding a gate stand.
+const GATE_DEPTH: u16 = 4;
 
 /// Scrap of missing health a Repair Bay's aura must reach to be worth
 /// building.
@@ -154,8 +163,17 @@ impl Evidence {
 
 /// Where a building is attacked from in one domain.
 struct Approach {
-    /// Points along the way in, in doubled coordinates.
+    /// How far the asset's buildings reach toward the threat beyond its
+    /// Foundry or Extractor: a step along the straight way in, in doubled
+    /// coordinates, measured as [`along`] measures; none at a cut.
+    edge: i64,
+    /// The cut the way in runs through, held instead of the base's edge.
+    cut: Option<Held>,
+    /// Points along the way in, beyond the edge or from each of the cut's
+    /// gates, in doubled coordinates.
     samples: Vec<(i64, i64)>,
+    /// At a cut, the gate each sample leads from.
+    gate_of: Vec<usize>,
     /// For each sample, in thousandths, how far own weapons covering it fall
     /// short of holding off the threat along the way: two thousand where none
     /// covers it, none once they hold.
@@ -173,6 +191,15 @@ struct Approach {
     /// The threat along the way, in army scrap, how its known enemies reach
     /// buildings, and whether they gather in clumps.
     threat: Threat,
+}
+
+/// A cut on the way in to the seat's start, held by guns on the home side of
+/// each of its gates and charges across them.
+struct Held {
+    gates: Vec<Gate>,
+    /// Ground distance from the seat's start to its near side, in tenths of
+    /// a tile.
+    distance: u16,
 }
 
 /// The value of the armed enemies the seat remembers near a source, at least
@@ -207,12 +234,16 @@ impl Approach {
     }
 }
 
-/// A building worth guarding.
+/// What the seat guards: a base, grown from its Foundry, or an Extractor out
+/// on its own.
 struct Asset {
     anchor: TilePos,
     size: (i32, i32),
     centre: (i64, i64),
     value: u64,
+    /// The buildings guarded together, as anchors and sizes, the Foundry or
+    /// the Extractor first.
+    members: Vec<(TilePos, (i32, i32))>,
     ground: Option<Approach>,
     air: Option<Approach>,
 }
@@ -326,6 +357,7 @@ impl<'a> Guard<'a> {
         observation: &'a ObservationData,
         map: &'a MapModel,
         memory: &'a Memory,
+        scope: Scope,
         settled: bool,
         exposed: bool,
         stakes: Stakes,
@@ -367,7 +399,10 @@ impl<'a> Guard<'a> {
                 .any(|(centre, reach2)| distance2(*centre, point) <= *reach2)
         };
         let current = in_sight(observation, map);
-        let mut assets = assets(observation, frame);
+        let mut assets = match scope {
+            Scope::Bases => bases(observation, map, frame),
+            Scope::Buildings => buildings(observation, frame),
+        };
         let mut walkers: Vec<Walkers> = Vec::new();
         for asset in &assets {
             let around = grounds(map, asset.anchor, asset.size);
@@ -384,6 +419,7 @@ impl<'a> Guard<'a> {
             memory,
             frame,
             exposed,
+            gates: matches!(scope, Scope::Bases),
             current: &current,
             bases: OnceCell::new(),
             aircraft: OnceCell::new(),
@@ -443,10 +479,15 @@ impl<'a> Guard<'a> {
                     .collect();
                 approach.open = open;
                 approach.spotted = approach.samples.iter().map(|point| seen(*point)).collect();
-                approach.far = along(centre, approach.source, &FAR)
-                    .into_iter()
-                    .map(|point| (point, seen(point)))
-                    .collect();
+                let far = match &approach.cut {
+                    Some(cut) => cut
+                        .gates
+                        .iter()
+                        .flat_map(|gate| along(gate.centre, approach.source, 0, &FAR))
+                        .collect(),
+                    None => along(centre, approach.source, approach.edge, &FAR),
+                };
+                approach.far = far.into_iter().map(|point| (point, seen(point))).collect();
             }
         }
         let mut crews: Vec<u32> = observation
@@ -600,12 +641,12 @@ impl<'a> Guard<'a> {
         first_placeable(sites, |tile| self.placeable(BuildingKind::Barricade, tile))
     }
 
-    /// The best spot for a Scuttle Charge: on the straight way in to a
-    /// Foundry whose field still falls short of its threat, nearest the
-    /// Foundry, clear of other own charges. A field holds enough charges to
-    /// deal the health of the threat along the way divided by the attacker margin, one
-    /// body to a blast, in the share the guns covering the way leave open;
-    /// every spot is worth the same until it does.
+    /// The best spot for a Scuttle Charge: on the straight way in to a base or
+    /// an Extractor out on its own whose field still falls short of its
+    /// threat, nearest its edge. A field holds enough charges to deal the
+    /// health of the threat along the way divided by the attacker margin,
+    /// one body to a blast, in the share the guns covering the way leave
+    /// open; every spot is worth the same until it does.
     fn charge(&self) -> Option<(TilePos, u64)> {
         let observation = self.observation;
         let charges: Vec<TilePos> = observation
@@ -615,11 +656,7 @@ impl<'a> Guard<'a> {
             .map(|building| building.anchor)
             .collect();
         let mut sites = Vec::new();
-        for asset in self
-            .assets
-            .iter()
-            .filter(|asset| asset.value >= FOUNDRY_VALUE)
-        {
+        for asset in &self.assets {
             let Some(approach) = asset.approach(Domain::Ground) else {
                 continue;
             };
@@ -627,19 +664,75 @@ impl<'a> Guard<'a> {
                 continue;
             }
             let health = health(self.memory, observation.tick, approach.source, self.stakes);
-            // Only the share of the approach the guns leave open.
-            let open = approach.open.iter().sum::<u64>() / approach.open.len().max(1) as u64;
-            let need = (health * 1_000 / ATTACKER_MARGIN * open / 2_000)
-                .div_ceil(u64::from(CHARGE_DAMAGE));
-            let field = Field::of(asset.centre, approach.source);
+            // Charges deal the threat's health in the share of the way the
+            // guns covering it leave open, of the samples `counts`, one body
+            // to a blast.
+            let need = |counts: &dyn Fn(usize) -> bool, share: (u64, u64)| {
+                let open: Vec<u64> = approach
+                    .open
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| counts(*index))
+                    .map(|(_, open)| *open)
+                    .collect();
+                let open = open.iter().sum::<u64>() / open.len().max(1) as u64;
+                (health * 1_000 / ATTACKER_MARGIN * open / 2_000 * share.0 / share.1.max(1))
+                    .div_ceil(u64::from(CHARGE_DAMAGE))
+            };
+            let worth = asset.value * 2 * self.weight(approach, BuildingKind::ScuttleCharge);
+            if let Some(cut) = &approach.cut {
+                // Each gate holds its share of the threat by width, less what
+                // the guns covering its own way on hold.
+                let total = cut.gates.iter().map(|gate| gate.width() as u64).sum();
+                let rank =
+                    |tile: &TilePos| (self.frame.rank(approach.source, doubled(*tile)), *tile);
+                let mut short: Vec<(Reverse<u64>, _, &Gate)> = cut
+                    .gates
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, gate)| {
+                        let laid = charges
+                            .iter()
+                            .filter(|charge| gate.tiles.contains(charge))
+                            .count() as u64;
+                        let need = need(
+                            &|sample| approach.gate_of.get(sample) == Some(&index),
+                            (gate.width() as u64, total),
+                        );
+                        (laid < need).then(|| {
+                            (
+                                Reverse(need - laid),
+                                self.frame.rank(approach.source, gate.centre),
+                                gate,
+                            )
+                        })
+                    })
+                    .collect();
+                short.sort_by_key(|(short, rank, _)| (*short, *rank));
+                let tile = short.into_iter().find_map(|(_, _, gate)| {
+                    let mut tiles = gate.tiles.clone();
+                    tiles.sort_by_key(rank);
+                    tiles
+                        .into_iter()
+                        .find(|tile| self.placeable(BuildingKind::ScuttleCharge, *tile))
+                });
+                if let Some(tile) = tile {
+                    sites.push((Reverse(worth), 0, rank(&tile).0, tile));
+                }
+                continue;
+            }
+            let field = Field::of(
+                asset.centre,
+                approach.source,
+                approach.edge + 2 * MINEFIELD_START,
+            );
             let laid = charges
                 .iter()
                 .filter(|charge| field.holds(doubled(**charge)))
                 .count() as u64;
-            if laid >= need {
+            if laid >= need(&|_| true, (1, 1)) {
                 continue;
             }
-            let worth = asset.value * 2 * self.weight(approach, BuildingKind::ScuttleCharge);
             let Some((row, tile)) = field.first(
                 |tile| self.placeable(BuildingKind::ScuttleCharge, tile),
                 |tile| self.frame.rank(approach.source, doubled(tile)),
@@ -715,9 +808,9 @@ impl<'a> Guard<'a> {
         }
         let mut sites = Vec::new();
         let margin = 2 * i64::from(STANDOFF[1] + size.0.max(size.1));
-        for asset in &self.assets {
-            // Every site around the asset lies within this span.
-            let span = Span::of(asset.size, asset.anchor);
+        for (member, footprint) in self.assets.iter().flat_map(|asset| &asset.members) {
+            // Every site around the building lies within this span.
+            let span = Span::of(*footprint, *member);
             let around = Span {
                 x: (span.x.0 - margin, span.x.1 + margin),
                 y: (span.y.0 - margin, span.y.1 + margin),
@@ -729,7 +822,11 @@ impl<'a> Guard<'a> {
             if near.iter().map(|(_, missing)| missing).sum::<u64>() < BAY_WOUNDS {
                 continue;
             }
-            for anchor in sites_around(asset, size) {
+            let at = (
+                2 * i64::from(member.x) + i64::from(footprint.0),
+                2 * i64::from(member.y) + i64::from(footprint.1),
+            );
+            for anchor in sites_around(*member, *footprint, size) {
                 let bay = Span::of(size, anchor);
                 let reached: u64 = near
                     .iter()
@@ -738,7 +835,7 @@ impl<'a> Guard<'a> {
                     .sum();
                 if reached >= BAY_WOUNDS {
                     let centre = footprint_centre(BuildingKind::RepairBay, anchor);
-                    sites.push((reached, self.frame.rank(asset.centre, centre), anchor));
+                    sites.push((reached, self.frame.rank(at, centre), anchor));
                 }
             }
         }
@@ -749,8 +846,9 @@ impl<'a> Guard<'a> {
 
     /// Whether `kind` may go at `anchor` as far as the seat knows, on ground
     /// a Harvester of the seat stands on, and was not refused there lately:
-    /// off the lanes of the base's layout, or for a buried Scuttle Charge,
-    /// which blocks nothing, only on them, clear of the blocks' slots.
+    /// off the lanes of the base's layout and the seat's gates, or for a
+    /// buried Scuttle Charge, which blocks nothing, only on them, clear of the
+    /// blocks' slots, unless no Foundry lays out its ground.
     fn placeable(&self, kind: BuildingKind, anchor: TilePos) -> bool {
         let crewed = self
             .map
@@ -762,9 +860,17 @@ impl<'a> Guard<'a> {
                 .flat_map(|dy| (0..width).map(move |dx| anchor.offset(dx, dy)))
                 .any(|tile| self.map.lane_of(&self.foundries, tile))
         };
+        let me = self.observation.me;
         crewed
             && !self.memory.failed(kind, anchor, self.observation.tick)
-            && laned() == (kind == BuildingKind::ScuttleCharge)
+            && if kind == BuildingKind::ScuttleCharge {
+                self.map.gated(me, anchor) || !self.map.laid_out(&self.foundries, anchor) || laned()
+            } else {
+                !laned()
+                    && (0..height)
+                        .flat_map(|dy| (0..width).map(move |dx| anchor.offset(dx, dy)))
+                        .all(|tile| !self.map.gated(me, tile))
+            }
             && placement::check(self.observation, kind, anchor, &[], Layout::Apart).is_ok()
     }
 
@@ -784,7 +890,6 @@ impl<'a> Guard<'a> {
         kind: BuildingKind,
         guarded: impl Fn(&Asset) -> bool,
     ) -> Option<(TilePos, u64)> {
-        let size = kind.base_stats().size;
         let reach = Cover::of(kind, 0, TilePos::new(0, 0));
         let bastion = kind == BuildingKind::Bastion;
         // Each asset with the most any site beside it could be worth: every
@@ -830,14 +935,8 @@ impl<'a> Guard<'a> {
                     break;
                 }
             }
-            for anchor in sites_around(asset, size) {
+            for anchor in guard_sites(self.map, self.observation.me, asset, approach, kind) {
                 let centre = footprint_centre(kind, anchor);
-                let facing = (centre.0 - asset.centre.0) * (approach.source.0 - asset.centre.0)
-                    + (centre.1 - asset.centre.1) * (approach.source.1 - asset.centre.1)
-                    > 0;
-                if !facing {
-                    continue;
-                }
                 let worth = asset.value
                     * self.gain(asset, kind, anchor, reach)
                     * self.weight(approach, kind)
@@ -894,7 +993,15 @@ pub(crate) fn investments(
     exposed: bool,
     stakes: Stakes,
 ) -> Vec<(Investment, u32)> {
-    let Some(guard) = Guard::new(observation, map, memory, settled, exposed, stakes) else {
+    let Some(guard) = Guard::new(
+        observation,
+        map,
+        memory,
+        Scope::Bases,
+        settled,
+        exposed,
+        stakes,
+    ) else {
         return Vec::new();
     };
     let fortification = u64::from(traits.fortification);
@@ -1084,7 +1191,15 @@ pub(crate) fn emergency(
     stakes: Stakes,
     ledger: &mut Ledger,
 ) {
-    let Some(guard) = Guard::new(observation, map, memory, true, true, stakes) else {
+    let Some(guard) = Guard::new(
+        observation,
+        map,
+        memory,
+        Scope::Buildings,
+        true,
+        true,
+        stakes,
+    ) else {
         return;
     };
     for (domain, kind) in [
@@ -1092,18 +1207,26 @@ pub(crate) fn emergency(
         (Domain::Air, BuildingKind::FlakTurret),
     ] {
         let size = kind.base_stats().size;
-        // An unfinished one beside the building already answers it.
+        // An unfinished one beside its buildings already answers it.
         let unanswered = |asset: &Asset| {
             !observation.my_buildings.iter().any(|building| {
                 building.kind == kind
                     && !building.built
-                    && gap(asset.anchor, asset.size, building.anchor, size) <= STANDOFF[1]
+                    && asset.members.iter().any(|(anchor, footprint)| {
+                        gap(*anchor, *footprint, building.anchor, size) <= STANDOFF[1]
+                    })
             })
         };
         let pressed = |asset: &Asset| {
             asset.approach(domain).is_some_and(|approach| {
                 approach.evidence == Evidence::Current
-                    && chebyshev(approach.source, asset.centre) <= 2 * EMERGENCY_TILES
+                    && asset.members.iter().any(|(anchor, footprint)| {
+                        let centre = (
+                            2 * i64::from(anchor.x) + i64::from(footprint.0),
+                            2 * i64::from(anchor.y) + i64::from(footprint.1),
+                        );
+                        chebyshev(approach.source, centre) <= 2 * EMERGENCY_TILES
+                    })
                     && approach
                         .samples
                         .iter()
@@ -1261,10 +1384,20 @@ fn grounds(map: &MapModel, anchor: TilePos, size: (i32, i32)) -> Vec<u32> {
     grounds
 }
 
-/// The seat's built buildings worth guarding, most valuable first: its
-/// Foundries, tech and production buildings, Extractors (more beside a
-/// Foundry) and Reclaimers.
-fn assets(observation: &ObservationData, frame: HomeFrame) -> Vec<Asset> {
+/// What a guard looks after.
+#[derive(Clone, Copy)]
+enum Scope {
+    /// Bases and Extractors out on their own, defended in front of their
+    /// edges.
+    Bases,
+    /// Each building on its own, as an attack on one is answered beside it.
+    Buildings,
+}
+
+/// The seat's built buildings worth guarding each on its own, most valuable
+/// first: its Foundries, tech and production buildings, Extractors (more
+/// beside a Foundry) and Reclaimers.
+fn buildings(observation: &ObservationData, frame: HomeFrame) -> Vec<Asset> {
     let foundries: Vec<&BuildingObs> = observation
         .my_buildings
         .iter()
@@ -1275,6 +1408,7 @@ fn assets(observation: &ObservationData, frame: HomeFrame) -> Vec<Asset> {
         .iter()
         .filter(|building| building.built)
         .filter_map(|building| {
+            let size = building.kind.base_stats().size;
             let value = match building.kind {
                 BuildingKind::Foundry if foundries.len() == 1 => 16,
                 BuildingKind::Foundry => FOUNDRY_VALUE,
@@ -1287,19 +1421,20 @@ fn assets(observation: &ObservationData, frame: HomeFrame) -> Vec<Asset> {
                             foundry.anchor,
                             foundry.kind.base_stats().size,
                             building.anchor,
-                            building.kind.base_stats().size,
-                        ) <= 8
+                            size,
+                        ) <= OUTLYING_GAP
                     });
-                    if supported { 8 } else { 6 }
+                    if supported { 8 } else { OUTLYING_VALUE }
                 }
                 BuildingKind::Reclaimer => 5,
                 _ => return None,
             };
             Some(Asset {
                 anchor: building.anchor,
-                size: building.kind.base_stats().size,
+                size,
                 centre: footprint_centre(building.kind, building.anchor),
                 value,
+                members: vec![(building.anchor, size)],
                 ground: None,
                 air: None,
             })
@@ -1307,6 +1442,114 @@ fn assets(observation: &ObservationData, frame: HomeFrame) -> Vec<Asset> {
         .collect();
     assets.sort_by_key(|asset| (Reverse(asset.value), frame.rank(frame.home, asset.centre)));
     assets
+}
+
+/// What the seat guards, most valuable first: each base, and each Extractor
+/// more than eight tiles from every Foundry on its own. A base grows from the
+/// seat's start Foundry, a Foundry founded on an expansion site, or failing
+/// those any Foundry on its ground, and holds every other built building but
+/// defenses nearest it on that ground.
+fn bases(observation: &ObservationData, map: &MapModel, frame: HomeFrame) -> Vec<Asset> {
+    let size = |building: &BuildingObs| building.kind.base_stats().size;
+    let foundries: Vec<&BuildingObs> = observation
+        .my_buildings
+        .iter()
+        .filter(|building| building.kind == BuildingKind::Foundry && building.built)
+        .collect();
+    let start = map.start(observation.me);
+    let founded = |anchor: TilePos| {
+        Some(anchor) == start
+            || map
+                .sites()
+                .iter()
+                .any(|site| site.anchors.contains(&anchor))
+    };
+    let mut origins: Vec<&BuildingObs> = foundries
+        .iter()
+        .copied()
+        .filter(|foundry| founded(foundry.anchor))
+        .collect();
+    for foundry in &foundries {
+        let ground = map.component(foundry.anchor);
+        if !origins
+            .iter()
+            .any(|origin| map.component(origin.anchor) == ground)
+        {
+            origins.push(foundry);
+        }
+    }
+    let value = if foundries.len() == 1 {
+        16
+    } else {
+        FOUNDRY_VALUE
+    };
+    let mut assets: Vec<Asset> = origins
+        .iter()
+        .map(|origin| Asset {
+            anchor: origin.anchor,
+            size: size(origin),
+            centre: footprint_centre(origin.kind, origin.anchor),
+            value,
+            members: vec![(origin.anchor, size(origin))],
+            ground: None,
+            air: None,
+        })
+        .collect();
+    for building in observation.my_buildings.iter().filter(|building| {
+        building.built
+            && !defense(building.kind)
+            && !origins.iter().any(|origin| origin.id == building.id)
+    }) {
+        let (anchor, footprint) = (building.anchor, size(building));
+        let outlying = building.kind == BuildingKind::Extractor
+            && !foundries.iter().any(|foundry| {
+                gap(foundry.anchor, size(foundry), anchor, footprint) <= OUTLYING_GAP
+            });
+        if outlying {
+            assets.push(Asset {
+                anchor,
+                size: footprint,
+                centre: footprint_centre(building.kind, anchor),
+                value: OUTLYING_VALUE,
+                members: vec![(anchor, footprint)],
+                ground: None,
+                air: None,
+            });
+            continue;
+        }
+        let ground = map.component(anchor);
+        let centre = footprint_centre(building.kind, anchor);
+        let nearest = origins
+            .iter()
+            .zip(&mut assets)
+            .filter(|(origin, _)| map.component(origin.anchor) == ground)
+            .min_by_key(|(origin, base)| {
+                (
+                    gap(origin.anchor, size(origin), anchor, footprint),
+                    frame.rank(centre, base.centre),
+                )
+            });
+        if let Some((_, base)) = nearest {
+            base.members.push((anchor, footprint));
+        }
+    }
+    assets.sort_by_key(|asset| (Reverse(asset.value), frame.rank(frame.home, asset.centre)));
+    assets
+}
+
+/// Whether `kind` is a defense the seat places to guard others, not one of
+/// the buildings it guards.
+fn defense(kind: BuildingKind) -> bool {
+    matches!(
+        kind,
+        BuildingKind::Turret
+            | BuildingKind::FlakTurret
+            | BuildingKind::Bastion
+            | BuildingKind::Array
+            | BuildingKind::Barricade
+            | BuildingKind::ScuttleCharge
+            | BuildingKind::RepairBay
+    )
 }
 
 /// What one decision knows about where threats come from.
@@ -1317,6 +1560,8 @@ struct Known<'a> {
     frame: HomeFrame,
     /// Whether the seat has no army to speak of.
     exposed: bool,
+    /// Whether the start's base holds its ground way in at a gate.
+    gates: bool,
     current: &'a [Enemy],
     /// What an approach falls back on, worked out when one first does, since
     /// many buildings share it: known enemy buildings and hostile starts,
@@ -1459,12 +1704,41 @@ fn approach(known: &Known<'_>, asset: &Asset, domain: Domain) -> Option<Approach
         .map(|source| (source, Evidence::Current))
         .or_else(|| remembered().map(|source| (source, Evidence::Remembered)))
         .or_else(prior)?;
-    let mut samples = along(centre, source, &APPROACH);
+    let cut = (known.gates
+        && domain == Domain::Ground
+        && evidence != Evidence::Landing
+        && map.start(observation.me) == Some(asset.anchor))
+    .then(|| held(known, asset, source))
+    .flatten();
+    let (edge, mut samples, gate_of): (i64, Vec<(i64, i64)>, Vec<usize>) = match &cut {
+        // Each gate, and the way on from it.
+        Some(cut) => {
+            let (samples, gate_of) = cut
+                .gates
+                .iter()
+                .enumerate()
+                .flat_map(|(index, gate)| {
+                    let mut samples = vec![gate.centre];
+                    samples.extend(along(gate.centre, source, 0, &APPROACH));
+                    samples.truncate(APPROACH.len());
+                    samples.into_iter().map(move |sample| (sample, index))
+                })
+                .unzip();
+            (0, samples, gate_of)
+        }
+        None => {
+            let edge = edge(asset, source);
+            (edge, along(centre, source, edge, &APPROACH), Vec::new())
+        }
+    };
     if samples.is_empty() {
         samples.push(source);
     }
     Some(Approach {
+        edge,
+        cut,
         samples,
+        gate_of,
         open: Vec::new(),
         spotted: Vec::new(),
         far: Vec::new(),
@@ -1475,38 +1749,115 @@ fn approach(known: &Known<'_>, asset: &Asset, domain: Domain) -> Option<Approach
     })
 }
 
-/// Points `tiles` tiles from `centre` toward `source`, short of it, in
-/// doubled coordinates. Integer division truncates toward zero, so a
-/// mirrored seat's points mirror these.
-fn along(centre: (i64, i64), source: (i64, i64), tiles: &[i64]) -> Vec<(i64, i64)> {
+/// The cut the start's base holds on its way in from `source`: the narrowest
+/// beyond the reach of its buildings across the way to the hostile start
+/// nearest `source`, while the threat stands beyond it, so that its way in
+/// crosses it.
+fn held(known: &Known<'_>, asset: &Asset, source: (i64, i64)) -> Option<Held> {
+    let (map, me) = (known.map, known.observation.me);
+    let reach = asset
+        .members
+        .iter()
+        .flat_map(|(anchor, (width, height))| {
+            (0..*height).flat_map(move |dy| (0..*width).map(move |dx| anchor.offset(dx, dy)))
+        })
+        .map(|tile| map.distance(me, tile))
+        .filter(|distance| *distance != UNREACHABLE)
+        .max()?;
+    let hostile = map
+        .hostiles(me)
+        .filter_map(|hostile| {
+            let centre = footprint_centre(BuildingKind::Foundry, map.start(hostile)?);
+            Some((
+                chebyshev(centre, source),
+                known.frame.rank(source, centre),
+                hostile,
+            ))
+        })
+        .min_by_key(|(distance, rank, _)| (*distance, *rank))?
+        .2;
+    let cut = map.cut(me, hostile, reach.saturating_add(20))?;
+    let at = TilePos::new(
+        i32::try_from(source.0.div_euclid(2)).ok()?,
+        i32::try_from(source.1.div_euclid(2)).ok()?,
+    );
+    (!cut.holds(at)).then(|| Held {
+        gates: cut.gates.clone(),
+        distance: cut.distance,
+    })
+}
+
+/// Points `tiles` tiles beyond the step `edge` from `centre` toward
+/// `source`, short of it, in doubled coordinates. Steps are measured along
+/// the straight line by its larger axis. Integer division truncates toward
+/// zero, so a mirrored seat's points mirror these.
+fn along(centre: (i64, i64), source: (i64, i64), edge: i64, tiles: &[i64]) -> Vec<(i64, i64)> {
     let (dx, dy) = (source.0 - centre.0, source.1 - centre.1);
     let length = dx.abs().max(dy.abs());
     tiles
         .iter()
-        .map(|tiles| 2 * tiles)
+        .map(|tiles| edge + 2 * tiles)
         .filter(|step| *step < length)
         .map(|step| (centre.0 + dx * step / length, centre.1 + dy * step / length))
         .collect()
 }
 
-/// A Foundry's minefield: a band about a blast wide either side of its
-/// straight way in, from a few tiles out toward the threat, in doubled
-/// coordinates.
+/// How far along the straight line from `centre` toward `source` `point`
+/// lies: its projection, as a step [`along`] measures.
+fn ahead(centre: (i64, i64), source: (i64, i64), point: (i64, i64)) -> i64 {
+    let (dx, dy) = (source.0 - centre.0, source.1 - centre.1);
+    let length = dx.abs().max(dy.abs());
+    let squared = dx * dx + dy * dy;
+    let dot = (point.0 - centre.0) * dx + (point.1 - centre.1) * dy;
+    (dot * length).checked_div(squared).unwrap_or(0)
+}
+
+/// How far a footprint of `size` at `anchor` reaches along the straight line
+/// from `centre` toward `source`: its furthest corner's projection.
+fn furthest(centre: (i64, i64), source: (i64, i64), anchor: TilePos, size: (i32, i32)) -> i64 {
+    let (x, y) = (2 * i64::from(anchor.x), 2 * i64::from(anchor.y));
+    let (w, h) = (2 * i64::from(size.0), 2 * i64::from(size.1));
+    [(x, y), (x + w, y), (x, y + h), (x + w, y + h)]
+        .into_iter()
+        .map(|corner| ahead(centre, source, corner))
+        .max()
+        .unwrap_or(0)
+}
+
+/// How far `asset`'s buildings besides its first reach toward `source`, as a
+/// step [`along`] measures; none for an asset of one building.
+fn edge(asset: &Asset, source: (i64, i64)) -> i64 {
+    asset
+        .members
+        .iter()
+        .skip(1)
+        .map(|(anchor, size)| furthest(asset.centre, source, *anchor, *size))
+        .max()
+        .unwrap_or(0)
+        .max(0)
+}
+
+/// A minefield: a band about a blast wide either side of an asset's straight
+/// way in, from a step along it toward the threat, in doubled coordinates.
 struct Field {
     centre: (i64, i64),
-    /// From the Foundry's centre to the threat.
+    /// From the asset's centre to the threat.
     toward: (i64, i64),
+    /// The step along the way in where the field starts, as [`along`]
+    /// measures.
+    start: i64,
 }
 
 impl Field {
-    fn of(centre: (i64, i64), source: (i64, i64)) -> Self {
+    fn of(centre: (i64, i64), source: (i64, i64), start: i64) -> Self {
         Field {
             centre,
             toward: (source.0 - centre.0, source.1 - centre.1),
+            start,
         }
     }
 
-    /// Whether `point` lies ahead of the Foundry, short of the threat and
+    /// Whether `point` lies past the field's start, short of the threat and
     /// within the band: among the tiles `first` tries, allowing for their
     /// rounding to tile centres.
     fn holds(&self, point: (i64, i64)) -> bool {
@@ -1518,12 +1869,13 @@ impl Field {
         let ahead = px * dx + py * dy;
         let across = (px * dy - py * dx).abs();
         ahead > 0
+            && ahead * length >= (self.start - 1) * squared
             && ahead <= squared + slack
             && across * length <= 2 * MINEFIELD_WIDTH * squared + slack * length
     }
 
-    /// The first tile that `fits`, a row at a time from nearest the Foundry
-    /// outward, as its row and the tile; within a row, the least by `rank`.
+    /// The first tile that `fits`, a row at a time from the field's start
+    /// outward, as its step and the tile; within a row, the least by `rank`.
     fn first<R: Ord>(
         &self,
         fits: impl Fn(TilePos) -> bool,
@@ -1531,11 +1883,11 @@ impl Field {
     ) -> Option<(i64, TilePos)> {
         let (dx, dy) = self.toward;
         let length = dx.abs().max(dy.abs());
-        let mut row = MINEFIELD_START;
-        while 2 * row < length {
+        let mut row = self.start;
+        while row < length {
             let (ax, ay) = (
-                self.centre.0 + dx * 2 * row / length,
-                self.centre.1 + dy * 2 * row / length,
+                self.centre.0 + dx * row / length,
+                self.centre.1 + dy * row / length,
             );
             let mut tiles: Vec<TilePos> = (-MINEFIELD_WIDTH..=MINEFIELD_WIDTH)
                 .flat_map(|side| {
@@ -1547,7 +1899,7 @@ impl Field {
             if let Some(tile) = tiles.into_iter().find(|tile| fits(*tile)) {
                 return Some((row, tile));
             }
-            row += 1;
+            row += 2;
         }
         None
     }
@@ -1750,14 +2102,93 @@ impl Span {
     }
 }
 
-/// Anchors for a `size` footprint standing off `asset` by the standoff
-/// gaps.
-fn sites_around(asset: &Asset, size: (i32, i32)) -> impl Iterator<Item = TilePos> + '_ {
+/// Anchors for a `size` footprint standing off a building of `footprint` at
+/// `anchor` by the standoff gaps.
+fn sites_around(
+    anchor: TilePos,
+    footprint: (i32, i32),
+    size: (i32, i32),
+) -> impl Iterator<Item = TilePos> {
     let low = -(STANDOFF[1] + size.0.max(size.1));
-    let high = STANDOFF[1] + asset.size.0.max(asset.size.1);
+    let high = STANDOFF[1] + footprint.0.max(footprint.1);
     (low..=high)
-        .flat_map(move |dy| (low..=high).map(move |dx| asset.anchor.offset(dx, dy)))
-        .filter(move |tile| STANDOFF.contains(&gap(asset.anchor, asset.size, *tile, size)))
+        .flat_map(move |dy| (low..=high).map(move |dx| anchor.offset(dx, dy)))
+        .filter(move |tile| STANDOFF.contains(&gap(anchor, footprint, *tile, size)))
+}
+
+/// Anchors for a `size` defense holding `gate` from its home side: within
+/// [`GATE_DEPTH`] tiles short of it, off it.
+fn gate_sites(
+    map: &MapModel,
+    me: PlayerId,
+    gate: &Gate,
+    distance: u16,
+    size: (i32, i32),
+) -> Vec<TilePos> {
+    let (low, high) =
+        gate.tiles
+            .iter()
+            .fold((gate.tiles[0], gate.tiles[0]), |(low, high), tile| {
+                (
+                    TilePos::new(low.x.min(tile.x), low.y.min(tile.y)),
+                    TilePos::new(high.x.max(tile.x), high.y.max(tile.y)),
+                )
+            });
+    let margin = i32::from(GATE_DEPTH) + size.0.max(size.1);
+    let inside = distance.saturating_sub(10 * GATE_DEPTH)..distance;
+    (low.y - margin..=high.y + margin)
+        .flat_map(|y| (low.x - margin..=high.x + margin).map(move |x| TilePos::new(x, y)))
+        .filter(|anchor| {
+            (0..size.1)
+                .flat_map(|dy| (0..size.0).map(move |dx| anchor.offset(dx, dy)))
+                .all(|tile| inside.contains(&map.distance(me, tile)) && !map.gated(me, tile))
+        })
+        .collect()
+}
+
+/// Anchors for a defense of `kind` standing off one of `asset`'s buildings,
+/// on the side `approach` comes from and no nearer than the asset's edge
+/// along it, so a defense stands in front of a whole base rather than among
+/// its buildings.
+fn guard_sites(
+    map: &MapModel,
+    me: PlayerId,
+    asset: &Asset,
+    approach: &Approach,
+    kind: BuildingKind,
+) -> Vec<TilePos> {
+    let size = kind.base_stats().size;
+    if let Some(cut) = &approach.cut {
+        let mut sites: Vec<TilePos> = cut
+            .gates
+            .iter()
+            .flat_map(|gate| gate_sites(map, me, gate, cut.distance, size))
+            .collect();
+        sites.sort_unstable();
+        sites.dedup();
+        return sites;
+    }
+    // A site stands at most this far, as a step, beyond its building.
+    let beyond = 3 * i64::from(STANDOFF[1] + size.0.max(size.1) + 1);
+    let mut sites: Vec<TilePos> = asset
+        .members
+        .iter()
+        .filter(|(anchor, footprint)| {
+            furthest(asset.centre, approach.source, *anchor, *footprint) + beyond >= approach.edge
+        })
+        .flat_map(|(anchor, footprint)| sites_around(*anchor, *footprint, size))
+        .filter(|anchor| {
+            let step = ahead(
+                asset.centre,
+                approach.source,
+                footprint_centre(kind, *anchor),
+            );
+            step > 0 && step >= approach.edge
+        })
+        .collect();
+    sites.sort_unstable();
+    sites.dedup();
+    sites
 }
 
 /// The domain a defense of `kind` fires at.

@@ -148,10 +148,11 @@ purchase as failed.
 The simulation paths units itself, so the bot needs map knowledge only for
 reachability, distance, placement and danger. It builds a small static model
 once per match (ground-connected components, a region graph, distance fields
-from home and enemy starts, candidate sites) and shares it between clones.
-Danger is coarse known weapon coverage. Placement uses a fog-honest check over
-the observation. A stall or rejection triggers a re-plan instead of the order
-being proven in advance.
+from home and enemy starts, candidate sites, and the narrow passages every
+ground way from each start to a hostile start runs through) and shares it
+between clones. Danger is coarse known weapon coverage. Placement uses a
+fog-honest check over the observation. A stall or rejection triggers a re-plan
+instead of the order being proven in advance.
 
 ## Computation
 

@@ -46,6 +46,25 @@ const FRAME_REACH: i32 = 8;
 /// Distance to a tile no ground route reaches.
 pub(crate) const UNREACHABLE: u16 = u16::MAX;
 
+/// Tiles from a start inside which no cut counts: its own block and the
+/// lanes around it.
+const CUT_FROM: u16 = 4;
+
+/// Tiles from a start out to which cuts are looked for, and never past half
+/// the way to the hostile start: ground a base can hold.
+const CUT_REACH: u16 = 24;
+
+/// Tiles across beyond which a passage is open ground, not a gate: a few
+/// units abreast. Also bounds each passage's flood fill.
+const GATE_WIDTH: usize = 8;
+
+/// Passages beyond which a cut is open ground broken up, not gates to hold.
+const CUT_GATES: usize = 3;
+
+/// Tiles a route between two starts may run longer than the shortest and
+/// still count as one an attack would take.
+const CUT_SLACK: u16 = 20;
+
 /// Public map facts one match's `oxide-opponent` seats share.
 #[derive(Debug)]
 pub struct MapModel {
@@ -72,6 +91,62 @@ pub struct MapModel {
     teams: Vec<Option<u8>>,
     /// Starting scrap fields away from every start.
     sites: Vec<Site>,
+    /// Each seat's cuts, by player index.
+    cuts: Vec<Vec<Cut>>,
+    /// Each seat's gate tiles, sorted, where it never builds.
+    gated: Vec<Vec<TilePos>>,
+}
+
+/// A few narrow passages that every ground route from a seat's start to a
+/// hostile start runs through, at one distance from the seat's start.
+#[derive(Debug)]
+pub(crate) struct Cut {
+    /// The hostile seat whose way in it lies across.
+    pub(crate) hostile: PlayerId,
+    /// Ground distance from the seat's start to its near side, in tenths of
+    /// a tile.
+    pub(crate) distance: u16,
+    /// Its passages, in tile order.
+    pub(crate) gates: Vec<Gate>,
+    /// The ground the seat's start reaches without crossing it, one bit a
+    /// tile in row order.
+    home: Vec<u64>,
+    /// The map's width, to find a tile's bit.
+    width: i32,
+}
+
+impl Cut {
+    /// Whether `tile` lies on the start's side of the cut.
+    pub(crate) fn holds(&self, tile: TilePos) -> bool {
+        (0..self.width).contains(&tile.x)
+            && tile.y >= 0
+            && usize::try_from(tile.y * self.width + tile.x).is_ok_and(|bit| {
+                self.home
+                    .get(bit / 64)
+                    .is_some_and(|word| word >> (bit % 64) & 1 == 1)
+            })
+    }
+
+    /// Tiles across all its passages together.
+    pub(crate) fn width(&self) -> usize {
+        self.gates.iter().map(Gate::width).sum()
+    }
+}
+
+/// One passage of a cut: two tiles deep across the way.
+#[derive(Debug, Clone)]
+pub(crate) struct Gate {
+    /// Its tiles, sorted.
+    pub(crate) tiles: Vec<TilePos>,
+    /// Its middle, in doubled coordinates: the centre of its bounding box.
+    pub(crate) centre: (i64, i64),
+}
+
+impl Gate {
+    /// Tiles across it.
+    pub(crate) fn width(&self) -> usize {
+        self.tiles.len().div_ceil(2)
+    }
 }
 
 /// What terrain does to a shot crossing a tile.
@@ -139,7 +214,21 @@ impl MapModel {
         let spot = spot_grid(map, &components, 2);
         let tile_spot = spot_grid(map, &components, 1);
         let extents = extents(&components);
-        Self {
+        // Ground the map fixes buildings on: Extractor frames and expansion
+        // anchors, which no gate may hold.
+        let mut fixed: Vec<TilePos> = map
+            .iter()
+            .filter(|(tile, _)| map.tile_in_extractor_frame(*tile))
+            .map(|(tile, _)| tile)
+            .chain(sites.iter().flat_map(|site| {
+                site.anchors.iter().flat_map(|anchor| {
+                    (0..2).flat_map(move |dy| (0..2).map(move |dx| anchor.offset(dx, dy)))
+                })
+            }))
+            .collect();
+        fixed.sort_unstable();
+        fixed.dedup();
+        let mut model = Self {
             components,
             cover,
             starts,
@@ -150,7 +239,272 @@ impl MapModel {
             distances,
             teams,
             sites,
+            cuts: Vec::new(),
+            gated: Vec::new(),
+        };
+        model.cuts = (0..seats)
+            .map(|seat| model.find_cuts(PlayerId(seat as u8), &fixed))
+            .collect();
+        model.gated = model
+            .cuts
+            .iter()
+            .map(|cuts| {
+                let mut tiles: Vec<TilePos> = cuts
+                    .iter()
+                    .flat_map(|cut| &cut.gates)
+                    .flat_map(|gate| gate.tiles.iter().copied())
+                    .collect();
+                tiles.sort_unstable();
+                tiles.dedup();
+                tiles
+            })
+            .collect();
+        model
+    }
+
+    /// The cuts across the seat's ground ways to each hostile start: for
+    /// every two-tile-deep band of ground at one distance from its start,
+    /// where the tiles on routes to that hostile start no more than
+    /// [`CUT_SLACK`] longer than the shortest fall in at most [`CUT_GATES`]
+    /// connected pieces of the band, each no more than [`GATE_WIDTH`]
+    /// across, together narrower than their distance from the start, off
+    /// the `fixed` ground the map puts buildings on, and with them closed no
+    /// ground way left from the start to that hostile start at all; a piece
+    /// the others close every way without is left out. Open
+    /// ground around a start at that distance is wider than that, even in a
+    /// corner.
+    fn find_cuts(&self, player: PlayerId, fixed: &[TilePos]) -> Vec<Cut> {
+        let seat = usize::from(player.0);
+        let (Some(home), Some(start)) = (
+            self.distances.get(seat).and_then(Option::as_ref),
+            self.start(player),
+        ) else {
+            return Vec::new();
+        };
+        let ground = self.component(start);
+        let (width, height) = self.size();
+        let tiles = || (0..height).flat_map(move |y| (0..width).map(move |x| TilePos::new(x, y)));
+        let near = |tile: TilePos| home.get(tile).copied().unwrap_or(UNREACHABLE);
+        let mut cuts = Vec::new();
+        // Hostile starts often share a cut's gates: each closed set is
+        // flooded once.
+        let mut flooded: Vec<(Vec<TilePos>, Vec<u64>)> = Vec::new();
+        for hostile in self.hostiles(player) {
+            let Some(away) = self
+                .distances
+                .get(usize::from(hostile.0))
+                .and_then(Option::as_ref)
+            else {
+                continue;
+            };
+            if self
+                .start(hostile)
+                .and_then(|anchor| self.component(anchor))
+                != ground
+            {
+                continue;
+            }
+            let far = |tile: TilePos| away.get(tile).copied().unwrap_or(UNREACHABLE);
+            let route = |tile: TilePos| {
+                (near(tile) != UNREACHABLE && far(tile) != UNREACHABLE)
+                    .then(|| u32::from(near(tile)) + u32::from(far(tile)))
+            };
+            let Some(shortest) = tiles().filter_map(route).min() else {
+                continue;
+            };
+            let band: Vec<TilePos> = tiles()
+                .filter(|tile| {
+                    route(*tile)
+                        .is_some_and(|length| length <= shortest + 10 * u32::from(CUT_SLACK))
+                })
+                .collect();
+            // Never past half the way to the hostile start, in tiles.
+            let half = u16::try_from(shortest / 20).unwrap_or(u16::MAX);
+            for level in CUT_FROM..=CUT_REACH.min(half.saturating_sub(2)) {
+                let shell = |tile: TilePos| {
+                    self.component(tile) == ground
+                        && (level..level + 2).contains(&(near(tile) / 10))
+                };
+                let Some(mut gates) = self.gates_across(&band, shell) else {
+                    continue;
+                };
+                let Some(their) = self.start(hostile) else {
+                    continue;
+                };
+                // The ground the start reaches with `gates` closed, if that
+                // leaves no way to the hostile start.
+                let mut separate = |gates: &[Gate]| {
+                    let mut tiles: Vec<TilePos> = gates
+                        .iter()
+                        .flat_map(|gate| gate.tiles.iter().copied())
+                        .collect();
+                    tiles.sort_unstable();
+                    let home = match flooded.iter().find(|(closed, _)| *closed == tiles) {
+                        Some((_, home)) => home.clone(),
+                        None => {
+                            let home = self.reach_without(start, &tiles);
+                            flooded.push((tiles, home.clone()));
+                            home
+                        }
+                    };
+                    let cut = Cut {
+                        hostile,
+                        distance: level * 10,
+                        gates: Vec::new(),
+                        home,
+                        width,
+                    };
+                    (!cut.holds(their)).then_some(cut.home)
+                };
+                let Some(mut home) = separate(&gates) else {
+                    continue;
+                };
+                // A gate the others separate the starts without, such as a
+                // dead end's mouth, holds no way in.
+                let mut index = 0;
+                while index < gates.len() && gates.len() > 1 {
+                    let mut others = gates.clone();
+                    others.remove(index);
+                    match separate(&others) {
+                        Some(without) => {
+                            gates = others;
+                            home = without;
+                        }
+                        None => index += 1,
+                    }
+                }
+                if gates.iter().map(Gate::width).sum::<usize>() >= usize::from(level)
+                    || gates
+                        .iter()
+                        .flat_map(|gate| &gate.tiles)
+                        .any(|tile| fixed.binary_search(tile).is_ok())
+                {
+                    continue;
+                }
+                cuts.push(Cut {
+                    hostile,
+                    distance: level * 10,
+                    gates,
+                    home,
+                    width,
+                });
+            }
         }
+        cuts
+    }
+
+    /// The ground a unit at `start` reaches with `closed` tiles, sorted,
+    /// walled off, one bit a tile in row order. [`distance_field`] steps
+    /// diagonally only between two open sides, so steps along the axes reach
+    /// the same ground.
+    fn reach_without(&self, start: TilePos, closed: &[TilePos]) -> Vec<u64> {
+        let (width, height) = self.size();
+        let bit = |tile: TilePos| usize::try_from(tile.y * width + tile.x).ok();
+        let mut reached = vec![0_u64; usize::try_from(width * height).unwrap_or(0).div_ceil(64)];
+        let open =
+            |tile: TilePos| self.component(tile).is_some() && closed.binary_search(&tile).is_err();
+        let mut frontier: Vec<TilePos> = (0..2)
+            .flat_map(|dy| (0..2).map(move |dx| start.offset(dx, dy)))
+            .filter(|tile| open(*tile))
+            .collect();
+        let mark = |reached: &mut Vec<u64>, tile: TilePos| {
+            bit(tile).is_some_and(|at| {
+                let fresh = reached[at / 64] >> (at % 64) & 1 == 0;
+                reached[at / 64] |= 1 << (at % 64);
+                fresh
+            })
+        };
+        for tile in &frontier {
+            mark(&mut reached, *tile);
+        }
+        while let Some(tile) = frontier.pop() {
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let next = tile.offset(dx, dy);
+                if open(next) && mark(&mut reached, next) {
+                    frontier.push(next);
+                }
+            }
+        }
+        reached
+    }
+
+    /// The pieces of the band `shell` holds that the tiles of `band` in it
+    /// fall in, as gates, unless there are none, more than [`CUT_GATES`], or
+    /// one is wider than [`GATE_WIDTH`].
+    fn gates_across(&self, band: &[TilePos], shell: impl Fn(TilePos) -> bool) -> Option<Vec<Gate>> {
+        let mut gates: Vec<Gate> = Vec::new();
+        for first in band.iter().copied().filter(|tile| shell(*tile)) {
+            if gates.iter().any(|gate| gate.tiles.contains(&first)) {
+                continue;
+            }
+            if gates.len() == CUT_GATES {
+                return None;
+            }
+            let mut piece = vec![first];
+            let mut index = 0;
+            while index < piece.len() {
+                if piece.len() > 2 * GATE_WIDTH {
+                    return None;
+                }
+                let tile = piece[index];
+                index += 1;
+                for (dx, dy) in [
+                    (1, 0),
+                    (-1, 0),
+                    (0, 1),
+                    (0, -1),
+                    (1, 1),
+                    (1, -1),
+                    (-1, 1),
+                    (-1, -1),
+                ] {
+                    let next = tile.offset(dx, dy);
+                    let squeezed = dx != 0
+                        && dy != 0
+                        && !(self.component(tile.offset(dx, 0)).is_some()
+                            && self.component(tile.offset(0, dy)).is_some());
+                    if shell(next) && !squeezed && !piece.contains(&next) {
+                        piece.push(next);
+                    }
+                }
+            }
+            if piece.len() > 2 * GATE_WIDTH {
+                return None;
+            }
+            piece.sort_unstable();
+            let (low, high) = piece
+                .iter()
+                .fold((piece[0], piece[0]), |(low, high), tile| {
+                    (
+                        TilePos::new(low.x.min(tile.x), low.y.min(tile.y)),
+                        TilePos::new(high.x.max(tile.x), high.y.max(tile.y)),
+                    )
+                });
+            gates.push(Gate {
+                centre: (i64::from(low.x + high.x + 1), i64::from(low.y + high.y + 1)),
+                tiles: piece,
+            });
+        }
+        gates.sort_by_key(|gate| gate.tiles[0]);
+        (!gates.is_empty()).then_some(gates)
+    }
+
+    /// The narrowest of the seat's cuts across its way to `hostile` whose
+    /// near side lies further than `beyond` tenths of a tile from its start,
+    /// the nearest of equals.
+    pub(crate) fn cut(&self, player: PlayerId, hostile: PlayerId, beyond: u16) -> Option<&Cut> {
+        self.cuts
+            .get(usize::from(player.0))?
+            .iter()
+            .filter(|cut| cut.hostile == hostile && cut.distance > beyond)
+            .min_by_key(|cut| (cut.width(), cut.distance))
+    }
+
+    /// Whether `tile` lies in one of the seat's gates, where it never builds.
+    pub(crate) fn gated(&self, player: PlayerId, tile: TilePos) -> bool {
+        self.gated
+            .get(usize::from(player.0))
+            .is_some_and(|tiles| tiles.binary_search(&tile).is_ok())
     }
 
     /// The map's width and height in tiles.
@@ -206,8 +560,8 @@ impl MapModel {
     /// two-by-two building a slot, and a smaller one a slot's tiles beside a
     /// lane, slot by slot. Once those run out, any place off the lanes
     /// follows, so cramped ground still takes every building that fits. A
-    /// spot is open ground on its Foundry's ground, off every frame and a
-    /// tile clear of starting scrap. Within a gap, spots go in the seat's
+    /// spot is open ground on its Foundry's ground, off every frame and the
+    /// seat's gates and a tile clear of starting scrap. Within a gap, spots go in the seat's
     /// frame, so mirrored seats list mirrored spots.
     pub(crate) fn spots(
         &self,
@@ -275,7 +629,11 @@ impl MapModel {
                             })
                 };
                 let open = |grid: &Grid<bool>, anchor: TilePos, size: (i32, i32)| {
-                    grid.get(anchor) == Some(&true) && claims(anchor, size)
+                    grid.get(anchor) == Some(&true)
+                        && claims(anchor, size)
+                        && (0..size.1)
+                            .flat_map(|dy| (0..size.0).map(move |dx| anchor.offset(dx, dy)))
+                            .all(|tile| !self.gated(player, tile))
                 };
                 let laid_slot = |anchor: TilePos| {
                     slot(*foundry, anchor) && open(&self.spot, anchor, foundry_size)
@@ -457,6 +815,15 @@ pub(crate) fn lane(foundry: TilePos, tile: TilePos) -> bool {
 }
 
 impl MapModel {
+    /// Whether any of `foundries` stands on `tile`'s ground, laying it out.
+    pub(crate) fn laid_out(&self, foundries: &[TilePos], tile: TilePos) -> bool {
+        let ground = self.component(tile);
+        ground.is_some()
+            && foundries
+                .iter()
+                .any(|foundry| self.component(*foundry) == ground)
+    }
+
     /// Whether `tile` lies on a lane of the layout of its nearest Foundry
     /// among `foundries` on its ground, any of them tied.
     pub(crate) fn lane_of(&self, foundries: &[TilePos], tile: TilePos) -> bool {
@@ -751,7 +1118,7 @@ fn components(map: &Map) -> Grid<u32> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     const SPLIT: [&str; 7] = [
@@ -1056,4 +1423,188 @@ mod tests {
             }
         }
     }
+
+    /// Two rooms joined by a corridor three tiles wide.
+    pub(crate) const CORRIDOR: [&str; 15] = [
+        "########################################",
+        "#..............##########..............#",
+        "#..............##########..............#",
+        "#..s...........##########...........s..#",
+        "#..............##########..............#",
+        "#..............##########..............#",
+        "#................................2.....#",
+        "#....1.................................#",
+        "#......................................#",
+        "#..............##########..............#",
+        "#..............##########..............#",
+        "#..s...........##########...........s..#",
+        "#..............##########..............#",
+        "#..............##########..............#",
+        "########################################",
+    ];
+
+    /// [`CORRIDOR`] with the corridor walled up and `rows` opened across the
+    /// wall instead.
+    pub(crate) fn ways(rows: &[usize]) -> Vec<String> {
+        let mut map = CORRIDOR.map(str::to_owned);
+        for row in [6, 7, 8] {
+            let mut cells: Vec<char> = map[row].chars().collect();
+            for cell in &mut cells[15..=24] {
+                *cell = '#';
+            }
+            map[row] = cells.into_iter().collect();
+        }
+        for row in rows {
+            map[*row] = map[*row].replace("##########", "..........");
+        }
+        map.to_vec()
+    }
+
+    /// Each seat's narrowest cut across its way to the other, from any
+    /// distance.
+    fn cuts(rows: &[String]) -> Vec<Option<(u16, Vec<Vec<TilePos>>)>> {
+        let rows: Vec<&str> = rows.iter().map(String::as_str).collect();
+        let model = model(&rows);
+        (0..2)
+            .map(|seat| {
+                model.cut(PlayerId(seat), PlayerId(1 - seat), 0).map(|cut| {
+                    (
+                        cut.distance,
+                        cut.gates.iter().map(|gate| gate.tiles.clone()).collect(),
+                    )
+                })
+            })
+            .collect()
+    }
+
+    /// `gates` turned a half-turn about the middle of a 40 by 15 map.
+    fn rotated(gates: &[Vec<TilePos>]) -> Vec<Vec<TilePos>> {
+        let mut rotated: Vec<Vec<TilePos>> = gates
+            .iter()
+            .map(|tiles| {
+                let mut tiles: Vec<TilePos> = tiles
+                    .iter()
+                    .map(|tile| TilePos::new(39 - tile.x, 14 - tile.y))
+                    .collect();
+                tiles.sort_unstable();
+                tiles
+            })
+            .collect();
+        rotated.sort_by_key(|tiles| tiles[0]);
+        rotated
+    }
+
+    #[test]
+    fn a_corridor_between_two_rooms_is_a_cut_mirrored_between_seats() {
+        let corridor: Vec<String> = CORRIDOR.map(str::to_owned).to_vec();
+        let cuts = cuts(&corridor);
+        let (distance, west) = cuts[0].clone().expect("the corridor is a cut");
+        assert_eq!(west.len(), 1, "{west:?}");
+        assert!(
+            west[0]
+                .iter()
+                .all(|tile| (15..=24).contains(&tile.x) && (6..=8).contains(&tile.y)),
+            "{west:?}"
+        );
+        assert_eq!(west[0].len(), 6, "three across, two deep: {west:?}");
+        assert_eq!(cuts[1], Some((distance, rotated(&west))));
+        let model = model(&CORRIDOR);
+        assert!(model.gated(PlayerId(0), west[0][0]));
+        assert!(!model.gated(PlayerId(0), TilePos::new(5, 3)));
+        assert!(
+            model
+                .cut(PlayerId(0), PlayerId(1), distance + 200)
+                .is_none(),
+            "no cut lies past half the way"
+        );
+    }
+
+    #[test]
+    fn two_ways_through_a_wall_are_one_cut_of_two_gates() {
+        let cuts = cuts(&ways(&[3, 4, 10, 11]));
+        let (distance, west) = cuts[0].clone().expect("the two ways are a cut");
+        assert_eq!(west.len(), 2, "{west:?}");
+        for (gate, rows) in west.iter().zip([3..=4, 10..=11]) {
+            assert!(
+                gate.iter()
+                    .all(|tile| (15..=24).contains(&tile.x) && rows.contains(&tile.y)),
+                "{west:?}"
+            );
+        }
+        assert_eq!(cuts[1], Some((distance, rotated(&west))));
+    }
+
+    #[test]
+    fn a_corridor_with_a_long_way_round_is_no_cut() {
+        // A path from the west room's corner down, along the bottom and up
+        // into the east room, far longer than the corridor.
+        let mut map: Vec<String> = CORRIDOR.map(str::to_owned).to_vec();
+        let mut last: Vec<char> = map[14].chars().collect();
+        last[1] = '.';
+        last[38] = '.';
+        map[14] = last.into_iter().collect();
+        for _ in 0..8 {
+            map.push(format!("#.{}.#", "#".repeat(36)));
+        }
+        map.push(format!("#{}#", ".".repeat(38)));
+        map.push("#".repeat(40));
+        let rows: Vec<&str> = map.iter().map(String::as_str).collect();
+        let model = model(&rows);
+        assert!(model.cut(PlayerId(0), PlayerId(1), 0).is_none());
+    }
+
+    #[test]
+    fn no_gate_holds_an_extractor_frame() {
+        let mut map: Vec<String> = CORRIDOR.map(str::to_owned).to_vec();
+        let mut row: Vec<char> = map[7].chars().collect();
+        row[15] = 'E';
+        map[7] = row.into_iter().collect();
+        let rows: Vec<&str> = map.iter().map(String::as_str).collect();
+        let model = model(&rows);
+        let cut = model
+            .cut(PlayerId(0), PlayerId(1), 0)
+            .expect("the corridor further on is still a cut");
+        assert!(
+            cut.gates
+                .iter()
+                .flat_map(|gate| &gate.tiles)
+                .all(|tile| !(15..=16).contains(&tile.x) || !(7..=8).contains(&tile.y)),
+            "{cut:?}"
+        );
+    }
+
+    #[test]
+    fn open_ground_and_many_ways_have_no_cut() {
+        let open: Vec<String> = CORRIDOR
+            .iter()
+            .map(|row| row.replace("##########", ".........."))
+            .collect();
+        let narrow: Vec<String> = ARENA_ROWS.iter().map(|row| (*row).to_owned()).collect();
+        for rows in [open, narrow, ways(&[2, 5, 9, 12])] {
+            let rows: Vec<&str> = rows.iter().map(String::as_str).collect();
+            let model = model(&rows);
+            for seat in 0..2 {
+                assert!(
+                    model.cut(PlayerId(seat), PlayerId(1 - seat), 0).is_none(),
+                    "{rows:#?}"
+                );
+            }
+        }
+    }
+
+    /// A field ten tiles across all the way: narrow, but no narrower anywhere.
+    const ARENA_ROWS: [&str; 12] = [
+        "########################",
+        "#......................#",
+        "#...............s......#",
+        "#......s...............#",
+        "#......................#",
+        "#..1...............2...#",
+        "#......................#",
+        "#......................#",
+        "#...............s......#",
+        "#......s...............#",
+        "#......................#",
+        "########################",
+    ];
 }
