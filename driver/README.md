@@ -27,8 +27,9 @@ records as the frozen reference it compares against.
   controllers and queued input without replaying earlier ticks. The existing CLI
   and debug save/load commands continue to use replay files.
 - `recovery-inspect <session-directory> [--export <new-report-directory>]`
-  verifies an interrupted journal and exports its completed replay prefix plus
-  available diagnostic sidecars without needing a responsive shell.
+  verifies an interrupted journal, reports how its session ended, and exports
+  its completed replay prefix plus incident logs without needing a responsive
+  shell.
 - `replay_inspect` and `replay_summary` provide exact snapshots and compact
   match narratives. Checkpoint-origin recordings report their first available
   absolute tick, and summaries and inactivity windows cover only that segment.

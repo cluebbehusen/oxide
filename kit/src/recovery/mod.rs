@@ -4,6 +4,8 @@
 mod tests;
 mod writer;
 
+pub use crate::diagnostics::Ending;
+use crate::diagnostics::INCIDENTS;
 use crate::{GameReplay, MAX_REPLAY_TICKS};
 use anyhow::{Context, Result, bail, ensure};
 use oxide_sim::{PlayerCommand, SIM_VERSION};
@@ -61,7 +63,8 @@ pub enum RecordingKind {
     /// A live match's completed command history.
     #[default]
     LiveMatch,
-    /// The complete source replay retained for playback diagnostics.
+    /// A watched replay, recorded by earlier builds for playback diagnostics.
+    /// Still read so those records can be exported and retired.
     Playback,
 }
 
@@ -512,6 +515,24 @@ pub(crate) fn session_directories(root: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// How the recorded session ended. A report keeps the ending it was exported with.
+pub fn ending(directory: &Path, record: &Inspection) -> Ending {
+    let journal = directory.join("recovery.bin").exists();
+    if !journal
+        && let Some(ending) = std::fs::read(directory.join("manifest.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .and_then(|manifest| serde_json::from_value(manifest["ending"].clone()).ok())
+    {
+        return ending;
+    }
+    crate::diagnostics::ending(
+        directory,
+        record.clean,
+        journal && read_lease(directory).is_none(),
+    )
+}
+
 /// Export a consistent verified prefix and available diagnostics to a new report directory.
 /// Existing destinations are refused; named saves and source records are never replaced.
 pub fn export(directory: &Path, destination: &Path, running_build: &BuildIdentity) -> Result<()> {
@@ -533,7 +554,7 @@ pub fn export(directory: &Path, destination: &Path, running_build: &BuildIdentit
         record.replay.save(destination.join("replay.json"))?;
         #[cfg(test)]
         tests::fault("export");
-        let manifest = serde_json::json!({ "format": 1, "complete": true, "kind": record.kind, "replay_digest": chassis::hash::state_hash(&record.replay), "session": record.session, "build": record.build, "running_build": running_build, "sim_version": SIM_VERSION, "ticks": record.replay.meta.ticks, "clean": record.clean, "issue": record.issue, "prepared_tick": record.prepared.as_ref().map(|_| record.replay.meta.ticks), "prepared_commands": record.prepared });
+        let manifest = serde_json::json!({ "format": 1, "complete": true, "kind": record.kind, "replay_digest": chassis::hash::state_hash(&record.replay), "session": record.session, "build": record.build, "running_build": running_build, "sim_version": SIM_VERSION, "ticks": record.replay.meta.ticks, "clean": record.clean, "ending": ending(directory, &record), "issue": record.issue, "prepared_tick": record.prepared.as_ref().map(|_| record.replay.meta.ticks), "prepared_commands": record.prepared });
         let mut manifest = manifest;
         if let Some(checkpoint) = &record.checkpoint {
             manifest["checkpoint"] = serde_json::to_value(checkpoint)?;
@@ -542,18 +563,20 @@ pub fn export(directory: &Path, destination: &Path, running_build: &BuildIdentit
             pretty_size(&manifest)? <= MAX_BYTES as usize,
             "report manifest too large"
         );
-        for name in [
-            "timings.json",
-            "watchdog.json",
-            "context.json",
+        // Only a recording root holds the log of incidents outside any recording.
+        let unattached = directory
+            .parent()
+            .filter(|root| root.join("budget.lock").exists())
+            .map(|root| (root.join(INCIDENTS), "unattached-incidents.json"));
+        let sidecars = [
+            INCIDENTS,
             "status.json",
             "previous-manifest.json",
-            "previous-timings.json",
-            "previous-watchdog.json",
-            "previous-context.json",
+            "previous-incidents.json",
             "previous-status.json",
-        ] {
-            let source = directory.join(name);
+        ]
+        .map(|name| (directory.join(name), name));
+        for (source, name) in sidecars.into_iter().chain(unattached) {
             if let Ok(metadata) = std::fs::symlink_metadata(&source) {
                 ensure!(
                     metadata.is_file() && metadata.len() <= 16 * 1024 * 1024,

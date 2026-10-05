@@ -173,14 +173,13 @@ enum Row {
     OpponentAi,
     LeftHandedPreset,
     Controls,
-    Diagnostics,
     OpenDiagnostics,
     ExportDiagnostics,
 }
 
 impl Row {
     /// Every row, in the order the menu shows them.
-    const ALL: [Row; 19] = [
+    const ALL: [Row; 18] = [
         Row::MasterVolume,
         Row::EffectsVolume,
         Row::UiVolume,
@@ -197,7 +196,6 @@ impl Row {
         Row::OpponentAi,
         Row::LeftHandedPreset,
         Row::Controls,
-        Row::Diagnostics,
         Row::OpenDiagnostics,
         Row::ExportDiagnostics,
     ];
@@ -251,7 +249,6 @@ impl Row {
             ),
             Row::LeftHandedPreset => "Apply left-handed bindings".to_string(),
             Row::Controls => "Controls...".to_string(),
-            Row::Diagnostics => format!("Diagnostics: {}", onoff(config.diagnostics)),
             Row::OpenDiagnostics => "Open diagnostics folder".to_string(),
             Row::ExportDiagnostics => "Export diagnostic report".to_string(),
         }
@@ -326,7 +323,6 @@ fn cycle_setting(config: &mut Config, row: Row) -> bool {
             config.control_groups = !config.control_groups;
             render::set_control_groups(config.control_groups);
         }
-        Row::Diagnostics => config.diagnostics = !config.diagnostics,
         Row::MarkerTiming => {
             config.markers.cycle_timing();
             crate::strategic_markers::set_prefs(config.markers);
@@ -1317,33 +1313,31 @@ mod tests {
     }
 
     #[test]
-    fn diagnostics_is_opt_in_and_keeps_existing_settings_rows_stable() {
-        let mut config = Config::default();
-        assert!(!config.diagnostics);
-        assert_eq!(
-            settings_menu(&config).items[Row::Diagnostics.index()],
-            "Diagnostics: off"
-        );
-        assert!(cycle_setting(&mut config, Row::Diagnostics));
-        assert!(config.diagnostics);
-        assert_eq!(
-            settings_menu(&config).items[Row::Diagnostics.index()],
-            "Diagnostics: on"
+    fn diagnostics_rows_survive_without_a_capture_toggle() {
+        let config = Config::default();
+        let menu = settings_menu(&config);
+        assert!(
+            !menu
+                .items
+                .iter()
+                .any(|item| item.starts_with("Diagnostics:"))
         );
         assert_eq!(
-            settings_menu(&config).items[Row::OpenDiagnostics.index()],
+            menu.items[Row::OpenDiagnostics.index()],
             "Open diagnostics folder"
         );
         assert_eq!(
-            settings_menu(&config).items[Row::ExportDiagnostics.index()],
+            menu.items[Row::ExportDiagnostics.index()],
             "Export diagnostic report"
         );
-        assert_eq!(
-            settings_menu(&config).items[Row::Controls.index()],
-            "Controls..."
-        );
+        assert_eq!(menu.items[Row::Controls.index()], "Controls...");
         let mut old = serde_json::to_value(&config).unwrap();
-        old.as_object_mut().unwrap().remove("diagnostics");
-        assert!(!serde_json::from_value::<Config>(old).unwrap().diagnostics);
+        old.as_object_mut()
+            .unwrap()
+            .insert("diagnostics".into(), true.into());
+        assert!(
+            serde_json::from_value::<Config>(old).is_ok(),
+            "a config saved with the old toggle still loads"
+        );
     }
 }

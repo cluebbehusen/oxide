@@ -133,10 +133,6 @@ struct Args {
     #[arg(long)]
     trace_startup: bool,
 
-    /// Persist optional diagnostics without enabling the debug server.
-    #[arg(long)]
-    diagnostics: bool,
-
     /// Collect bounded native GPU-shell frame timings for
     /// query_performance. Off by default so ordinary play pays no timing or
     /// sample-retention cost.

@@ -282,9 +282,7 @@ impl RestoredGame {
             recovery_root: None,
             recovery,
             recovery_warned: false,
-            diagnostics_warned: false,
             recovery_source: None,
-            diagnostics: None,
         }
     }
 }

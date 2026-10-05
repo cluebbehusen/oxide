@@ -1,230 +1,97 @@
-//! Optional bounded timing and independent progress monitoring. Never replay input.
+//! Always-on crash and freeze evidence for the native shell.
+//!
+//! A process installs one [`Monitor`]. The main thread and each bot seat
+//! publish their current stage, tick and progress through atomics. A watchdog
+//! thread records a stall when one stops progressing, and a panic hook records
+//! the panic with a backtrace. Recent frame timing stays in memory and is
+//! written only with an incident, so nothing reaches the disk while play is
+//! healthy. Diagnostics are observational and never become replay input.
 
-use crate::recovery::RecoveryWriter;
-use oxide_bot::observer::{BotPhase, PhaseObserver, PlanningWorkStats};
-use serde::Serialize;
+use crate::recovery::{BuildIdentity, RecoveryWriter};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
 use std::{
-    cell::{Cell, RefCell},
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
+    path::{Path, PathBuf},
     sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
-        mpsc::{self, SyncSender},
+        Arc, Mutex, MutexGuard, OnceLock, TryLockError,
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     },
-    time::{Duration, Instant},
+    thread::ThreadId,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-const SLOTS: usize = 33;
-const DEPTH: usize = 16;
-const MAX_EVENTS: usize = 32768;
-/// Coarse shell operations, distinct from actual GPU execution time.
-#[derive(Debug, Clone, Copy)]
+/// Incident log name, inside a recording directory or at the recovery root.
+pub const INCIDENTS: &str = "incidents.json";
+const STALL: Duration = Duration::from_secs(5);
+const RECENT_SECONDS: u64 = 30;
+const RECENT_FRAMES: usize = 60;
+const MAX_INCIDENTS: usize = 16;
+const MAX_LOG_BYTES: usize = 1024 * 1024;
+const MAX_BACKTRACE_BYTES: usize = 32 * 1024;
+const SEATS: usize = oxide_sim::scenario::MAX_PLAYERS;
+const STAGES: usize = Stage::ALL.len();
+
+/// What the main thread is doing. Time outside a named stage counts as `Frame`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub enum Phase {
-    /// Hardware or injected input and debug request handling.
-    Input = 10,
-    /// Ordered collection of all bot-seat command batches.
+pub enum Stage {
+    /// Main-thread work outside a named stage.
+    Frame,
+    /// Input polling, debug requests and screen logic.
+    Input,
+    /// Collecting a tick's bot commands, including waiting on bot workers.
     Bots,
     /// The authoritative state transition.
     Simulation,
-    /// Presentation and statistics updates after a completed tick.
+    /// Presentation and statistics updates after a tick.
     Presentation,
-    /// Screen update, drawing and audio preparation.
-    Screen,
-    /// Waiting for the next frame; may include OS or presentation delay.
-    FrameWait,
-    /// Replay loading and controller reconstruction.
+    /// Screen updates, drawing and audio.
+    Draw,
+    /// Waiting for the next frame, including presentation and OS delay.
+    Present,
+    /// Rebuilding a live session from a replay.
     ReplayLoad,
-    /// Ordinary explicit save/leave persistence.
-    Save,
-    /// Entire native frame CPU work before presentation handoff.
-    Frame,
-    /// Snapshot creation and early worker submission on the frame thread.
-    BotDispatch = 28,
-    /// Residual wait for a previously dispatched decision.
-    BotJoin = 31,
-}
-#[derive(Default)]
-struct Slot {
-    phases: [AtomicU8; DEPTH],
-    children: [AtomicU64; DEPTH],
-    depth: AtomicUsize,
-    tick: AtomicU64,
-    progress: AtomicU64,
-}
-#[derive(Serialize, Clone)]
-struct Timing {
-    end_us: u64,
-    duration_us: u64,
-    exclusive_us: u64,
-    slot: usize,
-    phase: u8,
-    tick: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    planning_work: Option<PlanningWorkStats>,
-}
-#[derive(Clone, Serialize)]
-struct Progress {
-    slot: usize,
-    tick: u64,
-    phases: Vec<u8>,
-    idle_ms: u64,
 }
 
-struct PanicRecord {
-    file: [u8; 256],
-    message: [u8; 512],
-    line: u32,
-    column: u32,
-}
-impl PanicRecord {
-    fn capture(info: &std::panic::PanicHookInfo<'_>) -> Self {
-        fn copy<const N: usize>(value: &str) -> [u8; N] {
-            let mut bytes = [0; N];
-            let length = value.len().min(N);
-            bytes[..length].copy_from_slice(&value.as_bytes()[..length]);
-            bytes
-        }
-        let location = info.location();
-        let message = info
-            .payload()
-            .downcast_ref::<&str>()
+impl Stage {
+    const ALL: [Self; 8] = [
+        Self::Frame,
+        Self::Input,
+        Self::Bots,
+        Self::Simulation,
+        Self::Presentation,
+        Self::Draw,
+        Self::Present,
+        Self::ReplayLoad,
+    ];
+
+    fn from_index(index: u8) -> Self {
+        Self::ALL
+            .get(usize::from(index))
             .copied()
-            .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
-            .unwrap_or("non-text panic payload");
-        Self {
-            file: copy(location.map_or("unknown", |value| value.file())),
-            message: copy(message),
-            line: location.map_or(0, |value| value.line()),
-            column: location.map_or(0, |value| value.column()),
-        }
+            .unwrap_or(Self::Frame)
     }
-    fn json(&self) -> serde_json::Value {
-        fn text(bytes: &[u8]) -> String {
-            String::from_utf8_lossy(
-                &bytes[..bytes
-                    .iter()
-                    .position(|byte| *byte == 0)
-                    .unwrap_or(bytes.len())],
-            )
-            .into_owned()
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Frame => "frame",
+            Self::Input => "input",
+            Self::Bots => "bots",
+            Self::Simulation => "simulation",
+            Self::Presentation => "presentation",
+            Self::Draw => "draw",
+            Self::Present => "present",
+            Self::ReplayLoad => "replay_load",
         }
-        serde_json::json!({"file":text(&self.file),"message":text(&self.message),"line":self.line,"column":self.column})
     }
 }
 
-struct Inner {
-    start: Instant,
-    slots: [Slot; SLOTS],
-    enabled: AtomicBool,
-    stop: AtomicBool,
-    dropped: AtomicU64,
-    frame_tick: AtomicU64,
-    last_frame: AtomicU64,
-    capture_started: AtomicU64,
-    units: AtomicUsize,
-    buildings: AtomicUsize,
-    mode: AtomicU8,
-    paused: AtomicBool,
-    minimized: AtomicU8,
-    speed_bits: AtomicU64,
-    width: AtomicU64,
-    height: AtomicU64,
-    dpi: AtomicU64,
-    recording: Arc<RecoveryWriter>,
-    sender: SyncSender<Timing>,
-    panic: SyncSender<PanicRecord>,
-}
-impl Inner {
-    fn micros(&self) -> u64 {
-        self.start.elapsed().as_micros().min(u64::MAX as u128) as u64
-    }
-    fn begin(&self, slot: usize, phase: u8, tick: u64) {
-        let Some(slot) = self.slots.get(slot) else {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
-            return;
-        };
-        let depth = slot.depth.load(Ordering::Relaxed);
-        if depth < DEPTH {
-            slot.phases[depth].store(phase, Ordering::Relaxed);
-            slot.children[depth].store(0, Ordering::Relaxed);
-        }
-        slot.tick.store(tick, Ordering::Relaxed);
-        slot.progress.store(self.micros(), Ordering::Relaxed);
-        slot.depth.store(depth + 1, Ordering::Release);
-    }
-    fn end(
-        &self,
-        slot: usize,
-        phase: u8,
-        tick: u64,
-        start: u64,
-        planning_work: Option<PlanningWorkStats>,
-    ) {
-        let Some(state) = self.slots.get(slot) else {
-            return;
-        };
-        let end = self.micros();
-        let depth = state.depth.fetch_sub(1, Ordering::AcqRel).saturating_sub(1);
-        state.progress.store(end, Ordering::Release);
-        let duration_us = end.saturating_sub(start);
-        let children = state
-            .children
-            .get(depth)
-            .map_or(0, |value| value.load(Ordering::Relaxed));
-        if depth > 0
-            && let Some(parent) = state.children.get(depth - 1)
-        {
-            parent.fetch_add(duration_us, Ordering::Relaxed);
-        }
-        if self
-            .sender
-            .try_send(Timing {
-                end_us: end,
-                duration_us,
-                exclusive_us: duration_us.saturating_sub(children),
-                slot,
-                phase,
-                tick,
-                planning_work,
-            })
-            .is_err()
-        {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-    fn progress(&self, now: u64) -> Vec<Progress> {
-        self.slots
-            .iter()
-            .enumerate()
-            .filter_map(|(index, slot)| {
-                let depth = slot.depth.load(Ordering::Acquire).min(DEPTH);
-                if depth == 0 {
-                    return None;
-                }
-                Some(Progress {
-                    slot: index,
-                    tick: slot.tick.load(Ordering::Relaxed),
-                    phases: slot.phases[..depth]
-                        .iter()
-                        .map(|phase| phase.load(Ordering::Relaxed))
-                        .collect(),
-                    idle_ms: now.saturating_sub(slot.progress.load(Ordering::Acquire)) / 1000,
-                })
-            })
-            .collect()
-    }
-    fn context(&self) -> serde_json::Value {
-        let phase_names = serde_json::json!({"1":"bot observation","2":"bot maintenance","3":"bot strategy","4":"bot allocation","5":"bot defense","6":"bot economy","7":"bot executive","10":"input/debug requests","11":"bot collection wall time","12":"simulation","13":"presentation/statistics","14":"screen/draw/audio","15":"presentation/OS wait","16":"replay reconstruction","17":"save","18":"frame CPU work","19":"frame start interval (not exclusive)","20":"bot seat total","21":"bot Foundry assessment","22":"bot standing force","23":"bot portfolio selection","24":"bot combined layouts","25":"bot reconnaissance maintenance","26":"bot support demand","27":"bot rollback snapshot","28":"bot early dispatch","30":"bot ready lead (not exclusive)","31":"bot residual join"});
-        serde_json::json!({"format":1,"capture_started_us":self.capture_started.load(Ordering::Relaxed),"build":self.recording.build(),"diagnostics":self.enabled.load(Ordering::Acquire),"live_tick":self.frame_tick.load(Ordering::Relaxed),"units":self.units.load(Ordering::Relaxed),"buildings":self.buildings.load(Ordering::Relaxed),"screen":self.mode.load(Ordering::Relaxed),"paused":self.paused.load(Ordering::Relaxed),"reported_minimized":match self.minimized.load(Ordering::Relaxed) { 1 => Some(false), 2 => Some(true), _ => None },"speed":f64::from_bits(self.speed_bits.load(Ordering::Relaxed)),"window":[self.width.load(Ordering::Relaxed),self.height.load(Ordering::Relaxed)],"dpi":f64::from_bits(self.dpi.load(Ordering::Relaxed)),"writer":self.recording.status(),"dropped_timing_events":self.dropped.load(Ordering::Relaxed),"phase_names":phase_names,"screen_names":{"0":"other","1":"playing","2":"paused","3":"playback","4":"home","5":"settings","6":"wizard","7":"codex","8":"replays","9":"results","10":"final_map","11":"lobby"}})
-    }
-}
-
-/// Observational display context attached to diagnostic records.
+/// Display context sampled once per frame and attached to incidents.
 pub struct FrameContext<'a> {
-    /// Current screen's stable name.
-    pub mode: &'a str,
-    /// Current completed tick.
+    /// Visible screen's stable name.
+    pub screen: &'static str,
+    /// Visible session's current tick.
     pub tick: u64,
     /// Visible session's unit count.
     pub units: usize,
@@ -240,382 +107,689 @@ pub struct FrameContext<'a> {
     pub dpi: f64,
     /// Whether the visible session is paused.
     pub paused: bool,
-    /// Last reported native minimize state; None means unknown.
+    /// Last reported native minimize state; `None` means unknown.
     pub minimized: Option<bool>,
+    /// The visible live match's recording. Incidents go to its directory while
+    /// it is open, and to the recovery root otherwise.
+    pub recording: Option<&'a Arc<RecoveryWriter>>,
 }
 
-/// Per-match optional observer. Its writer and watchdog hold no gameplay locks.
-pub struct Recorder {
-    inner: Arc<Inner>,
+/// How a recording's session ended, from its journal and incident log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Ending {
+    /// The journal closed cleanly.
+    Clean,
+    /// A live writer still holds the recording.
+    InProgress,
+    /// The last incident was a panic.
+    Panic,
+    /// A recorded stall never resumed.
+    Froze,
+    /// Only the main thread's wait for its next frame never resumed: the OS
+    /// suspended or hid the app, or presentation hung.
+    AwaitingFrame,
+    /// No clean close, panic or unresolved stall: a native crash, a kill or
+    /// power loss.
+    Abnormal,
 }
-impl Recorder {
-    /// Start independent timing persistence and watchdog workers.
-    pub fn start(recording: Arc<RecoveryWriter>) -> std::io::Result<Self> {
-        let (sender, receiver) = mpsc::sync_channel(4096);
-        let (panic, panics) = mpsc::sync_channel(4);
-        let inner = Arc::new(Inner {
-            start: Instant::now(),
-            slots: std::array::from_fn(|_| Slot::default()),
-            enabled: AtomicBool::new(true),
-            stop: AtomicBool::new(false),
-            dropped: AtomicU64::new(0),
-            frame_tick: AtomicU64::new(0),
-            last_frame: AtomicU64::new(0),
-            capture_started: AtomicU64::new(0),
-            units: AtomicUsize::new(0),
-            buildings: AtomicUsize::new(0),
-            mode: AtomicU8::new(0),
-            paused: AtomicBool::new(false),
-            minimized: AtomicU8::new(0),
-            speed_bits: AtomicU64::new(1f64.to_bits()),
-            width: AtomicU64::new(0),
-            height: AtomicU64::new(0),
-            dpi: AtomicU64::new(1f64.to_bits()),
-            recording,
-            sender,
-            panic,
-        });
-        let writer = inner.clone();
-        std::thread::Builder::new()
-            .name("oxide-diagnostic-writer".into())
-            .spawn(move || write_timings(writer, receiver))?;
-        let watchdog = inner.clone();
-        if let Err(error) = std::thread::Builder::new()
-            .name("oxide-watchdog".into())
-            .spawn(move || watch(watchdog, panics))
+
+/// Classify a recording from its journal state and incident log.
+pub fn ending(directory: &Path, clean: bool, active: bool) -> Ending {
+    if clean {
+        return Ending::Clean;
+    }
+    if active {
+        return Ending::InProgress;
+    }
+    let incidents = read_log(&directory.join(INCIDENTS))
+        .map(|log| log.incidents)
+        .unwrap_or_default();
+    concluding(&incidents)
+}
+
+fn concluding(incidents: &[Value]) -> Ending {
+    if incidents.last().is_some_and(|last| last["kind"] == "panic") {
+        return Ending::Panic;
+    }
+    let mut open = BTreeMap::new();
+    for incident in incidents {
+        let thread = incident["thread"].as_str().unwrap_or_default();
+        match incident["kind"].as_str() {
+            Some("stall") => {
+                open.insert(thread, incident["stage"].as_str());
+            }
+            Some("resumed") => {
+                open.remove(thread);
+            }
+            _ => {}
+        }
+    }
+    if open.is_empty() {
+        Ending::Abnormal
+    } else if open
+        .iter()
+        .all(|(thread, stage)| *thread == "main" && *stage == Some(Stage::Present.name()))
+    {
+        Ending::AwaitingFrame
+    } else {
+        Ending::Froze
+    }
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct IncidentLog {
+    format: u32,
+    incidents: Vec<Value>,
+    dropped: u64,
+}
+
+fn read_log(path: &Path) -> Option<IncidentLog> {
+    let bytes = std::fs::read(path).ok()?;
+    (bytes.len() <= MAX_LOG_BYTES * 2)
+        .then(|| serde_json::from_slice(&bytes).ok())
+        .flatten()
+}
+
+/// Append to a bounded incident log, dropping the oldest entries first.
+fn append(directory: &Path, incident: Value) -> std::io::Result<()> {
+    let path = directory.join(INCIDENTS);
+    let mut log = read_log(&path).unwrap_or_default();
+    log.format = 1;
+    log.incidents.push(incident);
+    loop {
+        while log.incidents.len() > MAX_INCIDENTS {
+            log.incidents.remove(0);
+            log.dropped += 1;
+        }
+        let bytes = serde_json::to_vec_pretty(&log).map_err(std::io::Error::other)?;
+        if bytes.len() <= MAX_LOG_BYTES || log.incidents.len() <= 1 {
+            return chassis::fsx::write_atomic(path, |writer| {
+                std::io::Write::write_all(writer, &bytes)
+            });
+        }
+        log.incidents.remove(0);
+        log.dropped += 1;
+    }
+}
+
+#[derive(Default)]
+struct Main {
+    stage: AtomicU8,
+    tick: AtomicU64,
+    /// Microseconds since start at the last stage change or progress report.
+    progress: AtomicU64,
+    /// Start of the current stage's running segment.
+    segment: AtomicU64,
+    /// Exclusive time per stage since the last frame boundary.
+    spent: [AtomicU64; STAGES],
+    /// Set by the first frame, so startup work is never reported as a stall.
+    armed: AtomicBool,
+}
+
+#[derive(Default)]
+struct Seat {
+    /// Decision start in microseconds plus one; zero while idle.
+    started: AtomicU64,
+    tick: AtomicU64,
+}
+
+struct Second {
+    second: u64,
+    frames: u32,
+    ticks: u64,
+    longest_us: u64,
+    spent: [u64; STAGES],
+}
+
+struct FrameRecord {
+    at_us: u64,
+    interval_us: Option<u64>,
+    tick: u64,
+    spent: [u64; STAGES],
+}
+
+#[derive(Default)]
+struct Recent {
+    context: Option<Value>,
+    last_frame: Option<u64>,
+    last_tick: u64,
+    seconds: VecDeque<Second>,
+    frames: VecDeque<FrameRecord>,
+}
+
+impl Recent {
+    fn push(&mut self, now: u64, tick: u64, spent: [u64; STAGES]) {
+        let interval_us = self.last_frame.map(|last| now.saturating_sub(last));
+        let ticks = if self.last_frame.is_some() {
+            tick.saturating_sub(self.last_tick)
+        } else {
+            0
+        };
+        self.last_frame = Some(now);
+        self.last_tick = tick;
+        let second = now / 1_000_000;
+        if self
+            .seconds
+            .back()
+            .is_none_or(|current| current.second != second)
         {
-            inner.stop.store(true, Ordering::Release);
-            return Err(error);
+            self.seconds.push_back(Second {
+                second,
+                frames: 0,
+                ticks: 0,
+                longest_us: 0,
+                spent: [0; STAGES],
+            });
         }
-        Ok(Self { inner })
-    }
-    /// Turn detailed capture on or off at a frame boundary.
-    pub fn set_enabled(&self, enabled: bool) {
-        let previous = self.inner.enabled.swap(enabled, Ordering::AcqRel);
-        if previous != enabled {
-            self.inner.last_frame.store(0, Ordering::Relaxed);
-            if enabled {
-                self.inner
-                    .capture_started
-                    .store(self.inner.micros(), Ordering::Relaxed);
+        if let Some(current) = self.seconds.back_mut() {
+            current.frames += 1;
+            current.ticks += ticks;
+            current.longest_us = current.longest_us.max(interval_us.unwrap_or(0));
+            for (total, value) in current.spent.iter_mut().zip(spent) {
+                *total += value;
             }
         }
-    }
-    /// Whether new operations should be observed.
-    pub fn enabled(&self) -> bool {
-        self.inner.enabled.load(Ordering::Acquire)
-    }
-    /// Update immutable display context once per frame.
-    pub fn frame(&self, context: FrameContext<'_>) {
-        let FrameContext {
-            mode,
+        while self
+            .seconds
+            .front()
+            .is_some_and(|oldest| oldest.second + RECENT_SECONDS <= second)
+        {
+            self.seconds.pop_front();
+        }
+        self.frames.push_back(FrameRecord {
+            at_us: now,
+            interval_us,
             tick,
-            units,
-            buildings,
-            speed,
-            width,
-            height,
-            dpi,
-            paused,
-            minimized,
-        } = context;
-        if self.enabled() {
-            let end = self.inner.micros();
-            let previous = self.inner.last_frame.swap(end, Ordering::AcqRel);
-            if previous > 0
-                && self
-                    .inner
-                    .sender
-                    .try_send(Timing {
-                        end_us: end,
-                        duration_us: end.saturating_sub(previous),
-                        exclusive_us: 0,
-                        slot: 0,
-                        phase: 19,
-                        tick,
-                        planning_work: None,
-                    })
-                    .is_err()
-            {
-                self.inner.dropped.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-        self.inner.frame_tick.store(tick, Ordering::Relaxed);
-        self.inner.units.store(units, Ordering::Relaxed);
-        self.inner.buildings.store(buildings, Ordering::Relaxed);
-        self.inner.mode.store(
-            match mode {
-                "playing" => 1,
-                "pause_menu" | "pause" => 2,
-                "playback" => 3,
-                "home" => 4,
-                "settings" => 5,
-                "wizard" => 6,
-                "codex" => 7,
-                "replays" => 8,
-                "results" => 9,
-                "final_map" => 10,
-                "lobby" => 11,
-                _ => 0,
-            },
-            Ordering::Relaxed,
-        );
-        self.inner
-            .speed_bits
-            .store(speed.to_bits(), Ordering::Relaxed);
-        self.inner.width.store(width as u64, Ordering::Relaxed);
-        self.inner.height.store(height as u64, Ordering::Relaxed);
-        self.inner.dpi.store(dpi.to_bits(), Ordering::Relaxed);
-        self.inner.paused.store(paused, Ordering::Relaxed);
-        self.inner.minimized.store(
-            minimized.map_or(0, |value| if value { 2 } else { 1 }),
-            Ordering::Relaxed,
-        );
-    }
-    /// Publish progress within a long reconstruction without ending its phase.
-    pub fn replay_progress(&self, tick: u64) {
-        if self.enabled() {
-            self.inner.slots[0].tick.store(tick, Ordering::Relaxed);
-            self.inner.slots[0]
-                .progress
-                .store(self.inner.micros(), Ordering::Release);
-            self.inner.frame_tick.store(tick, Ordering::Relaxed);
+            spent,
+        });
+        if self.frames.len() > RECENT_FRAMES {
+            self.frames.pop_front();
         }
     }
-    /// Begin a main-thread operation. Dropping its guard records completion.
-    pub fn span(&self, phase: Phase, tick: u64) -> Option<Span> {
-        self.enabled().then(|| {
-            self.inner.begin(0, phase as u8, tick);
-            Span {
-                inner: self.inner.clone(),
-                slot: 0,
-                phase: phase as u8,
-                tick,
-                start: self.inner.micros(),
-                planning_work: None,
-            }
+
+    fn json(&self) -> Value {
+        json!({
+            "seconds": self.seconds.iter().map(|second| json!({
+                "uptime_s": second.second,
+                "frames": second.frames,
+                "ticks": second.ticks,
+                "longest_frame_us": second.longest_us,
+                "stages_us": stage_times(&second.spent),
+            })).collect::<Vec<_>>(),
+            "frames": self.frames.iter().map(|frame| json!({
+                "uptime_us": frame.at_us,
+                "interval_us": frame.interval_us,
+                "tick": frame.tick,
+                "stages_us": stage_times(&frame.spent),
+            })).collect::<Vec<_>>(),
         })
     }
-    /// Observe one seat locally on its existing worker, preserving ordinary scheduling.
-    pub fn bot_commands(
-        &self,
-        state: &oxide_sim::State,
-        bot: &mut crate::controller::SeatController,
-    ) -> Vec<oxide_sim::PlayerCommand> {
-        if !self.enabled() {
-            return bot.act(state);
-        }
-        let observer = BotObserver {
-            inner: &self.inner,
-            slot: usize::from(bot.player().0) + 1,
-            tick: state.current_tick(),
-            stack: RefCell::new(Vec::with_capacity(8)),
-            planning_work: Cell::new(None),
-        };
-        self.inner.begin(observer.slot, 20, observer.tick);
-        let mut scope = Span {
-            inner: self.inner.clone(),
-            slot: observer.slot,
-            phase: 20,
-            tick: observer.tick,
-            start: self.inner.micros(),
-            planning_work: None,
-        };
-        let commands = bot.act_observed(state, &observer);
-        scope.planning_work = observer.planning_work.get();
-        commands
+}
+
+fn stage_times(spent: &[u64; STAGES]) -> Value {
+    Value::Object(
+        Stage::ALL
+            .iter()
+            .zip(spent)
+            .filter(|(_, value)| **value > 0)
+            .map(|(stage, value)| (stage.name().to_owned(), json!(value)))
+            .collect::<Map<_, _>>(),
+    )
+}
+
+struct Inner {
+    start: Instant,
+    root: Option<PathBuf>,
+    build: BuildIdentity,
+    stall: Duration,
+    main_thread: ThreadId,
+    main: Main,
+    seats: [Seat; SEATS],
+    minimized: AtomicBool,
+    recent: Mutex<Recent>,
+    target: Mutex<Option<Arc<RecoveryWriter>>>,
+    writing: Mutex<()>,
+    stop: AtomicBool,
+}
+
+impl Inner {
+    fn micros(&self) -> u64 {
+        u64::try_from(self.start.elapsed().as_micros()).unwrap_or(u64::MAX)
     }
-    /// Time a prepared decision was ready before the tick requested it. This
-    /// observational interval is not nested frame work; zero includes late jobs.
-    pub(crate) fn bot_lead(&self, tick: u64, lead: Duration) {
-        if self.enabled()
-            && self
-                .inner
-                .sender
-                .try_send(Timing {
-                    end_us: self.inner.micros(),
-                    duration_us: lead.as_micros() as u64,
-                    exclusive_us: 0,
-                    slot: 0,
-                    phase: 30,
-                    tick,
-                    planning_work: None,
+
+    fn on_main(&self) -> bool {
+        std::thread::current().id() == self.main_thread
+    }
+
+    /// Credit the running segment to the current stage and start a new one.
+    fn close_segment(&self, now: u64) {
+        let current = usize::from(self.main.stage.load(Ordering::Relaxed));
+        let segment = self.main.segment.swap(now, Ordering::Relaxed);
+        if let Some(spent) = self.main.spent.get(current) {
+            spent.fetch_add(now.saturating_sub(segment), Ordering::Relaxed);
+        }
+    }
+
+    /// Enter `stage`, returning the stage it replaces.
+    fn switch(&self, stage: Stage, tick: Option<u64>) -> Stage {
+        let now = self.micros();
+        self.close_segment(now);
+        let previous = Stage::from_index(self.main.stage.swap(stage as u8, Ordering::Relaxed));
+        if let Some(tick) = tick {
+            self.main.tick.store(tick, Ordering::Relaxed);
+        }
+        self.main.progress.store(now, Ordering::Release);
+        previous
+    }
+
+    fn frame(&self, context: FrameContext<'_>) {
+        let now = self.micros();
+        self.close_segment(now);
+        let spent = std::array::from_fn(|index| self.main.spent[index].swap(0, Ordering::Relaxed));
+        self.main.tick.store(context.tick, Ordering::Relaxed);
+        self.main.progress.store(now, Ordering::Release);
+        self.main.armed.store(true, Ordering::Release);
+        self.minimized
+            .store(context.minimized == Some(true), Ordering::Relaxed);
+        if let Ok(mut target) = self.target.lock() {
+            let unchanged = match (target.as_ref(), context.recording) {
+                (Some(current), Some(next)) => Arc::ptr_eq(current, next),
+                (current, next) => current.is_none() && next.is_none(),
+            };
+            if !unchanged {
+                *target = context.recording.cloned();
+            }
+        }
+        if let Ok(mut recent) = self.recent.lock() {
+            recent.context = Some(json!({
+                "screen": context.screen,
+                "tick": context.tick,
+                "units": context.units,
+                "buildings": context.buildings,
+                "speed": context.speed,
+                "window": [context.width, context.height],
+                "dpi": context.dpi,
+                "paused": context.paused,
+                "minimized": context.minimized,
+            }));
+            recent.push(now, context.tick, spent);
+        }
+    }
+
+    fn heartbeats(&self, now: u64) -> (Value, Value) {
+        let main = json!({
+            "stage": Stage::from_index(self.main.stage.load(Ordering::Relaxed)).name(),
+            "tick": self.main.tick.load(Ordering::Relaxed),
+            "idle_ms": now.saturating_sub(self.main.progress.load(Ordering::Acquire)) / 1000,
+        });
+        let seats = self
+            .seats
+            .iter()
+            .enumerate()
+            .filter_map(|(seat, slot)| {
+                let started = slot.started.load(Ordering::Acquire);
+                (started > 0).then(|| {
+                    json!({
+                        "seat": seat,
+                        "tick": slot.tick.load(Ordering::Relaxed),
+                        "busy_ms": now.saturating_sub(started - 1) / 1000,
+                    })
                 })
-                .is_err()
+            })
+            .collect();
+        (main, Value::Array(seats))
+    }
+
+    fn incident(&self, kind: &str, thread: &str, details: Map<String, Value>) -> Value {
+        let now = self.micros();
+        let (main, seats) = self.heartbeats(now);
+        let mut incident = Map::new();
+        incident.insert("kind".into(), json!(kind));
+        incident.insert(
+            "at_unix_ms".into(),
+            json!(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_or(0, |time| time.as_millis())
+            ),
+        );
+        incident.insert("uptime_ms".into(), json!(now / 1000));
+        incident.insert("process".into(), json!(std::process::id()));
+        incident.insert("build".into(), json!(self.build));
+        incident.insert("thread".into(), json!(thread));
+        incident.extend(details);
+        incident.insert("main".into(), main);
+        incident.insert("seats".into(), seats);
+        if kind != "resumed"
+            && let Some(recent) = lock_briefly(&self.recent)
         {
-            self.inner.dropped.fetch_add(1, Ordering::Relaxed);
+            incident.insert(
+                "context".into(),
+                recent.context.clone().unwrap_or(Value::Null),
+            );
+            incident.insert("recent".into(), recent.json());
+        }
+        Value::Object(incident)
+    }
+
+    /// Write to the open recording's directory, falling back to the recovery root.
+    fn record(&self, incident: Value) {
+        let _writing = lock_briefly(&self.writing);
+        let session = lock_briefly(&self.target)
+            .and_then(|target| target.clone())
+            .filter(|writer| {
+                let status = writer.status();
+                status.ready && !status.clean
+            })
+            .map(|writer| writer.directory().to_owned());
+        for directory in session.into_iter().chain(self.root.clone()) {
+            if std::fs::create_dir_all(&directory).is_ok()
+                && append(&directory, incident.clone()).is_ok()
+            {
+                return;
+            }
         }
     }
-    /// Register this recorder with a single chained, nonblocking panic hook.
-    pub fn install_panic_hook(&self) {
-        static TARGET: std::sync::Mutex<std::sync::Weak<Inner>> =
-            std::sync::Mutex::new(std::sync::Weak::new());
-        static INSTALL: std::sync::Once = std::sync::Once::new();
-        if let Ok(mut target) = TARGET.lock() {
-            *target = Arc::downgrade(&self.inner);
+
+    fn record_panic(&self, message: &str, location: Option<String>, backtrace: String) {
+        let thread = std::thread::current();
+        let mut details = Map::new();
+        details.insert(
+            "panic".into(),
+            json!({
+                "message": message,
+                "location": location,
+                "backtrace": truncate(backtrace, MAX_BACKTRACE_BYTES),
+            }),
+        );
+        self.record(self.incident("panic", thread.name().unwrap_or("unnamed"), details));
+    }
+
+    fn check_main(&self, now: u64, open: &mut Option<OpenStall>) {
+        if !self.main.armed.load(Ordering::Acquire) {
+            return;
         }
-        INSTALL.call_once(|| {
+        let progress = self.main.progress.load(Ordering::Acquire);
+        let stage = Stage::from_index(self.main.stage.load(Ordering::Relaxed));
+        match open {
+            Some(stall) if stall.progress != progress => {
+                self.report(
+                    "resumed",
+                    "main",
+                    stall,
+                    progress.saturating_sub(stall.progress),
+                );
+                *open = None;
+            }
+            None if now.saturating_sub(progress) >= self.stall_us()
+                // A minimized window can legitimately withhold frames.
+                && !(stage == Stage::Present && self.minimized.load(Ordering::Relaxed)) =>
+            {
+                let stall = OpenStall {
+                    progress,
+                    stage: Some(stage),
+                    tick: self.main.tick.load(Ordering::Relaxed),
+                };
+                self.report("stall", "main", &stall, now.saturating_sub(progress));
+                *open = Some(stall);
+            }
+            _ => {}
+        }
+    }
+
+    fn check_seat(&self, seat: usize, now: u64, open: &mut Option<OpenStall>) {
+        let slot = &self.seats[seat];
+        let started = slot.started.load(Ordering::Acquire);
+        let thread = format!("bot seat {seat}");
+        match open {
+            Some(stall) if stall.progress != started => {
+                self.report(
+                    "resumed",
+                    &thread,
+                    stall,
+                    now.saturating_sub(stall.progress - 1),
+                );
+                *open = None;
+            }
+            None if started > 0 && now.saturating_sub(started - 1) >= self.stall_us() => {
+                let stall = OpenStall {
+                    progress: started,
+                    stage: None,
+                    tick: slot.tick.load(Ordering::Relaxed),
+                };
+                self.report("stall", &thread, &stall, now.saturating_sub(started - 1));
+                *open = Some(stall);
+            }
+            _ => {}
+        }
+    }
+
+    fn report(&self, kind: &str, thread: &str, stall: &OpenStall, elapsed_us: u64) {
+        let mut details = Map::new();
+        if let Some(stage) = stall.stage {
+            details.insert("stage".into(), json!(stage.name()));
+        }
+        details.insert("tick".into(), json!(stall.tick));
+        details.insert("stalled_ms".into(), json!(elapsed_us / 1000));
+        self.record(self.incident(kind, thread, details));
+    }
+
+    fn stall_us(&self) -> u64 {
+        u64::try_from(self.stall.as_micros()).unwrap_or(u64::MAX)
+    }
+}
+
+struct OpenStall {
+    /// The progress value that stopped changing.
+    progress: u64,
+    stage: Option<Stage>,
+    tick: u64,
+}
+
+fn watch(inner: Arc<Inner>) {
+    let poll = (inner.stall / 4).min(Duration::from_millis(250));
+    let mut main = None;
+    let mut seats: [Option<OpenStall>; SEATS] = std::array::from_fn(|_| None);
+    while !inner.stop.load(Ordering::Acquire) {
+        std::thread::sleep(poll);
+        let now = inner.micros();
+        inner.check_main(now, &mut main);
+        for (seat, open) in seats.iter_mut().enumerate() {
+            inner.check_seat(seat, now, open);
+        }
+    }
+}
+
+/// Never block indefinitely: a panic can arrive while its own thread holds the lock.
+fn lock_briefly<T>(mutex: &Mutex<T>) -> Option<MutexGuard<'_, T>> {
+    let deadline = Instant::now() + Duration::from_millis(500);
+    loop {
+        match mutex.try_lock() {
+            Ok(guard) => return Some(guard),
+            Err(TryLockError::Poisoned(poisoned)) => return Some(poisoned.into_inner()),
+            Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(TryLockError::WouldBlock) => return None,
+        }
+    }
+}
+
+fn truncate(mut text: String, limit: usize) -> String {
+    if text.len() > limit {
+        let mut end = limit;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
+    text
+}
+
+/// Main-thread stage tracking, bot seat heartbeats, a stall watchdog and panic
+/// capture for one process. Its watchdog never takes gameplay locks.
+pub struct Monitor {
+    inner: Arc<Inner>,
+}
+
+impl Monitor {
+    /// Start monitoring with the calling thread as the main thread. Incidents
+    /// outside an open recording go to `root`; without one they are not kept.
+    pub fn start(root: Option<PathBuf>, build: BuildIdentity) -> std::io::Result<Self> {
+        Self::start_with(root, build, STALL)
+    }
+
+    fn start_with(
+        root: Option<PathBuf>,
+        build: BuildIdentity,
+        stall: Duration,
+    ) -> std::io::Result<Self> {
+        let inner = Arc::new(Inner {
+            start: Instant::now(),
+            root,
+            build,
+            stall,
+            main_thread: std::thread::current().id(),
+            main: Main::default(),
+            seats: std::array::from_fn(|_| Seat::default()),
+            minimized: AtomicBool::new(false),
+            recent: Mutex::default(),
+            target: Mutex::default(),
+            writing: Mutex::default(),
+            stop: AtomicBool::new(false),
+        });
+        let watchdog = inner.clone();
+        std::thread::Builder::new()
+            .name("oxide-watchdog".into())
+            .spawn(move || watch(watchdog))?;
+        Ok(Self { inner })
+    }
+
+    /// Make this the process's monitor and record panics through it. Only the
+    /// first call succeeds; a rejected monitor is returned.
+    pub fn install(self) -> Result<&'static Self, Self> {
+        static HOOK: std::sync::Once = std::sync::Once::new();
+        PROCESS.set(self)?;
+        HOOK.call_once(|| {
             let previous = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |info| {
-                if let Ok(target) = TARGET.try_lock()
-                    && let Some(inner) = target.upgrade()
-                    && inner.enabled.load(Ordering::Acquire)
-                {
-                    let _ = inner.panic.try_send(PanicRecord::capture(info));
+                if let Some(monitor) = PROCESS.get() {
+                    let message = info
+                        .payload()
+                        .downcast_ref::<&str>()
+                        .copied()
+                        .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
+                        .unwrap_or("non-text panic payload");
+                    let location = info.location().map(|location| {
+                        format!(
+                            "{}:{}:{}",
+                            location.file(),
+                            location.line(),
+                            location.column()
+                        )
+                    });
+                    monitor.inner.record_panic(
+                        message,
+                        location,
+                        std::backtrace::Backtrace::force_capture().to_string(),
+                    );
                 }
                 previous(info);
             }));
         });
+        Ok(PROCESS.get().expect("installed monitor"))
     }
-}
-impl Drop for Recorder {
-    fn drop(&mut self) {
-        self.inner.stop.store(true, Ordering::Release);
+
+    /// Enter a main-thread stage until the guard drops. Other threads get `None`.
+    pub fn stage(&self, stage: Stage, tick: u64) -> Option<StageGuard<'_>> {
+        self.inner.on_main().then(|| StageGuard {
+            inner: &self.inner,
+            previous: self.inner.switch(stage, Some(tick)),
+        })
     }
-}
-/// A main-thread diagnostic span. It never owns gameplay data or locks.
-pub struct Span {
-    inner: Arc<Inner>,
-    slot: usize,
-    phase: u8,
-    tick: u64,
-    start: u64,
-    planning_work: Option<PlanningWorkStats>,
-}
-impl Drop for Span {
-    fn drop(&mut self) {
-        self.inner.end(
-            self.slot,
-            self.phase,
-            self.tick,
-            self.start,
-            self.planning_work,
-        );
-    }
-}
-struct BotObserver<'a> {
-    inner: &'a Inner,
-    slot: usize,
-    tick: u64,
-    stack: RefCell<Vec<u64>>,
-    planning_work: Cell<Option<PlanningWorkStats>>,
-}
-impl PhaseObserver for BotObserver<'_> {
-    fn planning_work(&self, work: PlanningWorkStats) {
-        self.planning_work.set(Some(work));
-    }
-    fn enter(&self, phase: BotPhase) {
-        self.inner.begin(self.slot, phase as u8, self.tick);
-        self.stack.borrow_mut().push(self.inner.micros());
-    }
-    fn exit(&self, phase: BotPhase) {
-        if let Some(start) = self.stack.borrow_mut().pop() {
+
+    /// Report progress within a long main-thread stage without leaving it.
+    pub fn progress(&self, tick: u64) {
+        if self.inner.on_main() {
+            self.inner.main.tick.store(tick, Ordering::Relaxed);
             self.inner
-                .end(self.slot, phase as u8, self.tick, start, None);
+                .main
+                .progress
+                .store(self.inner.micros(), Ordering::Release);
         }
     }
-}
-fn write_timings(writer: Arc<Inner>, receiver: mpsc::Receiver<Timing>) {
-    let mut events = VecDeque::new();
-    let mut slow = VecDeque::new();
-    let mut last = Instant::now();
-    let mut was_enabled = true;
-    let mut evicted = 0u64;
-    loop {
-        let first = receiver.recv_timeout(Duration::from_millis(250)).ok();
-        for event in first.into_iter().chain(receiver.try_iter().take(4096)) {
-            if event.duration_us >= 100_000 {
-                slow.push_back(event.clone());
-                if slow.len() > 256 {
-                    slow.pop_front();
-                }
-            }
-            events.push_back(event);
-        }
-        let now = writer.micros();
-        while events.len() > MAX_EVENTS
-            || events
-                .front()
-                .is_some_and(|event: &Timing| now.saturating_sub(event.end_us) > 60_000_000)
-        {
-            events.pop_front();
-            evicted += 1;
-        }
-        let stop = writer.stop.load(Ordering::Acquire);
-        let enabled = writer.enabled.load(Ordering::Acquire);
-        if stop
-            || (enabled && last.elapsed() >= Duration::from_secs(1))
-            || (was_enabled && !enabled)
-        {
-            if writer.recording.status().ready {
-                let data = serde_json::json!({"format":1,"at_us":now,"capture_stopped":stop,"active_spans":writer.progress(now),"events":events,"slow_operations":slow,"evicted":evicted,"dropped":writer.dropped.load(Ordering::Relaxed)});
-                persist(&writer, "timings.json", &data);
-                persist(&writer, "context.json", &writer.context());
-            }
-            last = Instant::now();
-        }
-        was_enabled = enabled;
-        if stop {
-            break;
-        }
+
+    /// Mark a bot seat's decision as running until the guard drops.
+    pub fn seat(&self, seat: u8, tick: u64) -> Option<SeatGuard<'_>> {
+        let slot = self.inner.seats.get(usize::from(seat))?;
+        slot.tick.store(tick, Ordering::Relaxed);
+        slot.started
+            .store(self.inner.micros().saturating_add(1), Ordering::Release);
+        Some(SeatGuard { slot })
     }
-}
-fn watch(watchdog: Arc<Inner>, panics: mpsc::Receiver<PanicRecord>) {
-    let mut incidents = VecDeque::new();
-    let mut stalled = Vec::new();
-    while !watchdog.stop.load(Ordering::Acquire) {
-        std::thread::sleep(Duration::from_millis(250));
-        let progress = watchdog.progress(watchdog.micros());
-        let enabled = watchdog.enabled.load(Ordering::Acquire);
-        let now_stalled: Vec<_> = progress
-            .iter()
-            .filter(|slot| enabled && slot.idle_ms >= 5000)
-            .map(|slot| slot.slot)
-            .collect();
-        let panic = panics.try_recv().ok();
-        if now_stalled != stalled || panic.is_some() {
-            let kind = if panic.is_some() {
-                "panic observed"
-            } else if !now_stalled.is_empty() {
-                "suspected stall"
-            } else if !enabled {
-                "capture disabled"
-            } else {
-                "progress resumed"
-            };
-            incidents.push_back(serde_json::json!({"at_us":watchdog.micros(),"kind":kind,"panic":panic.as_ref().map(PanicRecord::json),"progress":progress,"context":watchdog.context()}));
-            if incidents.len() > 32 {
-                incidents.pop_front();
-            }
-            // This path deliberately does not take the journal's budget/writer lock.
-            persist(&watchdog, "watchdog.json", &incidents);
-            stalled = now_stalled;
+
+    /// Close a main-thread frame: fold its stage times into recent timing and
+    /// sample display context. Other threads are ignored.
+    pub fn frame(&self, context: FrameContext<'_>) {
+        if self.inner.on_main() {
+            self.inner.frame(context);
         }
     }
 }
 
-fn persist(inner: &Inner, name: &str, value: &impl Serialize) {
-    if !inner.recording.directory().join("lease").exists() {
-        inner.dropped.fetch_add(1, Ordering::Relaxed);
-        return;
+impl Drop for Monitor {
+    fn drop(&mut self) {
+        self.inner.stop.store(true, Ordering::Release);
     }
-    if let Ok(bytes) = serde_json::to_vec(value)
-        && bytes.len()
-            <= if name == "timings.json" {
-                8 * 1024 * 1024
-            } else {
-                256 * 1024
-            }
-    {
-        if chassis::fsx::write_atomic(inner.recording.directory().join(name), |writer| {
-            std::io::Write::write_all(writer, &bytes)
-        })
-        .is_err()
-        {
-            inner.dropped.fetch_add(1, Ordering::Relaxed);
-        }
-    } else {
-        inner.dropped.fetch_add(1, Ordering::Relaxed);
+}
+
+static PROCESS: OnceLock<Monitor> = OnceLock::new();
+
+/// Enter a stage on the installed monitor; `None` without one or off the main thread.
+pub fn stage(stage: Stage, tick: u64) -> Option<StageGuard<'static>> {
+    PROCESS.get()?.stage(stage, tick)
+}
+
+/// Report long-stage progress to the installed monitor.
+pub fn progress(tick: u64) {
+    if let Some(monitor) = PROCESS.get() {
+        monitor.progress(tick);
+    }
+}
+
+/// Mark a bot seat's decision on the installed monitor.
+pub fn seat(seat: u8, tick: u64) -> Option<SeatGuard<'static>> {
+    PROCESS.get()?.seat(seat, tick)
+}
+
+/// Close a frame on the installed monitor.
+pub fn frame(context: FrameContext<'_>) {
+    if let Some(monitor) = PROCESS.get() {
+        monitor.frame(context);
+    }
+}
+
+/// Restores the previous main-thread stage when dropped.
+pub struct StageGuard<'a> {
+    inner: &'a Inner,
+    previous: Stage,
+}
+
+impl Drop for StageGuard<'_> {
+    fn drop(&mut self) {
+        self.inner.switch(self.previous, None);
+    }
+}
+
+/// Marks a bot seat idle when dropped.
+pub struct SeatGuard<'a> {
+    slot: &'a Seat,
+}
+
+impl Drop for SeatGuard<'_> {
+    fn drop(&mut self) {
+        self.slot.started.store(0, Ordering::Release);
     }
 }
 

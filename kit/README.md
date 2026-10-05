@@ -82,10 +82,9 @@ cargo test -p oxide-driver --test golden --locked
 cargo clippy -p oxide-kit --all-targets --locked -- -D warnings
 ```
 
-`diagnostics` optionally observes coarse shell operations and bot phases through
-the existing parallel executor. It retains bounded timing history and runs an
-independent atomic-progress watchdog. Diagnostic output is observational;
-recovery's prepared/completed journal alone determines the playable prefix.
-Bot-total timings include incremental planning work counters when a decision
-runs. The counters cover shared field and site refinement, not every synchronous
-planner operation; phase durations remain necessary for finding other stalls.
+`diagnostics` is the process's crash and freeze monitor: main-thread stages and
+bot seat heartbeats published through atomics, a stall watchdog, and a panic
+hook that records a backtrace. Recent frame timing stays in memory and is
+written only with an incident, to the open recording or the recovery root.
+Diagnostic output is observational; recovery's prepared/completed journal alone
+determines the playable prefix.

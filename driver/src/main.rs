@@ -758,7 +758,8 @@ fn main() -> Result<()> {
                     "running_build": build_identity(),
                     "scenario": record.replay.setup.name, "ticks": record.replay.meta.ticks,
                     "commands": record.replay.commands.len(), "prepared_commands": record.prepared.as_ref().map(Vec::len),
-                    "clean": record.clean, "issue": record.issue, "kind": record.kind
+                    "clean": record.clean, "ending": oxide_kit::recovery::ending(&directory, &record),
+                    "issue": record.issue, "kind": record.kind
                 }))?
             );
         }
