@@ -660,6 +660,153 @@ fn a_hidden_artillery_hit_diverts_autonomous_work_without_revealing_the_gun() {
 }
 
 #[test]
+fn a_seen_raider_leaves_no_caution_behind_once_it_is_gone() {
+    let node = TilePos::new(9, 2);
+    let mut state = state_with_salvage(
+        24,
+        &[(node, 100)],
+        &[],
+        vec![
+            unit(0, UnitKind::Harvester, 5, 2),
+            unit(1, UnitKind::Sentinel, 7, 2),
+            unit(0, UnitKind::Sentinel, 14, 8),
+        ],
+        vec![],
+    );
+    let (worker, raider, defender) = (
+        state.units()[0].id,
+        state.units()[1].id,
+        state.units()[2].id,
+    );
+    assert!(
+        state.can_see(PlayerId(0), state.unit(raider).unwrap().tile()),
+        "the victim's team watches the raider"
+    );
+    let max_hp = UnitKind::Harvester.stats().max_hp;
+    state.tick(&[cmd(
+        1,
+        Command::Attack {
+            units: vec![raider],
+            target: Target::Unit(worker).into(),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 100, |state, _| {
+        state.unit(worker).unwrap().hp < max_hp
+    });
+    let mut doc = serde_json::to_value(&state).unwrap();
+    assert!(
+        doc["vision"][0].get("salvage_incidents").is_none(),
+        "a hit from a visible shooter is live danger, not remembered danger"
+    );
+
+    let raider_slot = state
+        .units()
+        .iter()
+        .position(|unit| unit.id == raider)
+        .expect("raider exists");
+    doc["units"][raider_slot]["hp"] = json!(1);
+    state = serde_json::from_value(doc).unwrap();
+    state.tick(&[cmd(
+        0,
+        Command::Attack {
+            units: vec![defender],
+            target: Target::Unit(raider).into(),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 200, |state, _| state.unit(raider).is_none());
+    state = set_cargo(
+        state,
+        worker,
+        UnitKind::Harvester.stats().harvest.unwrap().capacity,
+    );
+    state.tick(&[cmd(
+        0,
+        Command::Harvest {
+            units: vec![worker],
+            node,
+            queue: false,
+        },
+    )]);
+    let events = run_until(&mut state, 60, |_, events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                Event::ScrapDeposited {
+                    player: PlayerId(0),
+                    ..
+                }
+            )
+        })
+    });
+    assert!(
+        !events.iter().any(|event| matches!(
+            event,
+            Event::OrderStalled {
+                reason: oxide_sim::StallReason::DangerHold,
+                ..
+            }
+        )),
+        "nothing remembered the gone raider's hits near the Foundry"
+    );
+}
+
+#[test]
+fn a_hidden_gun_is_remembered_even_when_its_old_launch_tile_is_seen() {
+    let mut state = state_with_salvage(
+        32,
+        &[],
+        &[],
+        vec![
+            unit(0, UnitKind::Harvester, 12, 5),
+            unit(1, UnitKind::Bombard, 21, 5),
+            unit(1, UnitKind::Harvester, 16, 5),
+        ],
+        vec![],
+    );
+    let (worker, bombard) = (state.units()[0].id, state.units()[1].id);
+    state.tick(&[cmd(
+        1,
+        Command::Attack {
+            units: vec![bombard],
+            target: Target::Unit(worker).into(),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 100, |state, _| !state.shells().is_empty());
+    state.tick(&[cmd(
+        1,
+        Command::Stop {
+            units: vec![bombard],
+        },
+    )]);
+    // Stand in for a gun that moved after firing: the shell now launched
+    // from ground the victim's team watches while the gun stays hidden.
+    let launch = state.unit(worker).unwrap().pos;
+    let mut doc = serde_json::to_value(&state).unwrap();
+    doc["shells"][0]["launch"] = serde_json::to_value(launch).unwrap();
+    state = serde_json::from_value(doc).unwrap();
+    assert!(state.can_see(PlayerId(0), TilePos::containing(launch)));
+
+    let before = state.unit(worker).unwrap().hp;
+    run_until(&mut state, 100, |state, _| {
+        state.unit(worker).unwrap().hp < before
+    });
+    assert!(
+        !state.can_see(PlayerId(0), state.unit(bombard).unwrap().tile()),
+        "the gun stayed hidden through the impact"
+    );
+    let doc = serde_json::to_value(&state).unwrap();
+    assert!(
+        doc["vision"][0]["salvage_incidents"]
+            .as_array()
+            .is_some_and(|incidents| !incidents.is_empty()),
+        "an unseen shooter's hit is remembered wherever its shell launched"
+    );
+}
+
+#[test]
 fn an_own_loss_retires_a_worker_home_before_it_surfaces_idle() {
     let anchor = TilePos::new(13, 5);
     let exposed = TilePos::new(15, 5);

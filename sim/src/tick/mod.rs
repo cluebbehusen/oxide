@@ -841,6 +841,12 @@ mod tests {
             state.unit_mut(unit_id).unwrap().turret_heading =
                 Some(chassis::compass::heading_of(direction));
         }
+        // Only unseen fire is remembered, and a Sentinel cannot outrange a
+        // Fabricator's sight, so each victim's team loses sight of its shooter.
+        for (viewer, shooter) in [(0, state.units[1].id), (1, state.units[0].id)] {
+            let tile = state.unit(shooter).unwrap().tile();
+            state.vision[viewer].conceal(tile);
+        }
         let report = state.tick(&[]);
         assert!(
             report.events.iter().any(|event| matches!(

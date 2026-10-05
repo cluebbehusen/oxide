@@ -170,16 +170,21 @@ fn fog_honest_observation_exposes_only_live_anonymous_salvage_incidents() {
     let incident_tile = TilePos::new(7, 5);
     let mut state = open_arena(vec![
         unit(0, UnitKind::Harvester, incident_tile.x, incident_tile.y),
-        unit(1, UnitKind::Sentinel, 10, 5),
+        unit(1, UnitKind::Bombard, 16, 5),
+        unit(1, UnitKind::Harvester, 11, 5),
     ])
     .build()
     .unwrap();
-    let sentinel = state
+    let bombard = state
         .units()
         .iter()
-        .find(|unit| unit.player == PlayerId(1))
+        .find(|unit| unit.kind == UnitKind::Bombard)
         .unwrap()
         .id;
+    assert!(
+        !state.can_see(PlayerId(0), state.unit(bombard).unwrap().tile()),
+        "only fire from an unseen attacker leaves an incident"
+    );
 
     let mut observed = None;
     for _ in 0..200 {
@@ -190,7 +195,7 @@ fn fog_honest_observation_exposes_only_live_anonymous_salvage_incidents() {
             break;
         }
     }
-    let observation = observed.expect("the nearby Sentinel hits the Harvester");
+    let observation = observed.expect("the spotted Bombard hits the Harvester");
     assert_eq!(observation.salvage_incidents, vec![incident_tile]);
     assert!(
         Observation::fog_honest(&state, PlayerId(1))
@@ -207,7 +212,7 @@ fn fog_honest_observation_exposes_only_live_anonymous_salvage_incidents() {
     state.tick(&[cmd(
         1,
         Command::Run {
-            units: vec![sentinel],
+            units: vec![bombard],
             goal: TilePos::new(19, 9),
             queue: false,
         },

@@ -1,7 +1,7 @@
 {
   "sim_version": "0.17.0",
   "hashes": {
-    "air#attack": "0x96d33f3f9c34c362",
+    "air#attack": "0x5d5ceb948232f6d2",
     "air#boarded": "0x54dcec47d13e8ef9",
     "air#delivered": "0xb0e4a0d53716802b",
     "air#landed": "0x3cd454e3e1231134",
@@ -15,8 +15,8 @@
     "fog#radar-fire": "0xad3794cf64c5531f",
     "fog#remembered": "0x73c4006b2e2e1b4f",
     "ground#arrival": "0x970fe039be12f564",
-    "ground#damage": "0x621e7f09a77b3ade",
-    "ground#wreck": "0xf3f3b298194effed",
+    "ground#damage": "0x16d5e43ea1c49dc5",
+    "ground#wreck": "0xc602787b1002b159",
     "teams#ally-survives": "0x78cd505407259268",
     "teams#post-result": "0x4d9ff284a49d674a",
     "teams#shared-sight": "0xe037220f445be0b4",
