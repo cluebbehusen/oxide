@@ -6,6 +6,7 @@
 
 use super::Scratch;
 use super::air::{self, Hazard};
+
 use super::attack::{FIT, healthy, margin, minimum, opposed, striking};
 use super::{
     LiftPhase, MISSION_CAP, Mission, Missions, Objective, Task, UNIT_CAP, approach, hunt, mine,
@@ -187,7 +188,7 @@ impl Missions {
             return false;
         };
         let need = lifting.need(drop.landing);
-        if value < need {
+        if value < need || !lifting.looked(drop.target) {
             return false;
         }
         let (mut units, _) = send(loads, u64::MAX, UNIT_CAP, ledger);
@@ -262,10 +263,9 @@ impl Missions {
     }
 
     /// Whether the seat's `have` carriers, alive and queued, fall short of
-    /// lifting what the best landing no lift holds needs, or the stance
-    /// minimum while none is known, with the free riders at home packed as a
-    /// lift packs them: `None` when they do not, and otherwise whether some of
-    /// those riders already have no room. A seat wants at least one carrier.
+    /// lifting every free rider at home at once, packed as a lift packs
+    /// them: `None` when they do not, and otherwise whether some of those
+    /// riders already have no room. A seat wants at least one carrier.
     pub(crate) fn carriers_short(
         &self,
         observation: &ObservationData,
@@ -295,14 +295,7 @@ impl Missions {
             reached.map_or(rooms.len(), |index| index + 1).max(1) as u64
         };
         let full = have >= rooms.len() as u64;
-        if have >= carry(u64::MAX) {
-            return None;
-        }
-        let minimum = minimum(profile.stance);
-        if have < carry(minimum) {
-            return Some(!full);
-        }
-        (have < carry(lifting.rough_need())).then_some(!full)
+        (have < carry(u64::MAX)).then_some(!full)
     }
 
     fn advance_lift(
@@ -361,11 +354,11 @@ impl Missions {
     }
 
     /// Sends every free carrier and rider while boarding lasts, and waits
-    /// while riders walk to their carriers. Once
-    /// none is walking and none was sent, or time runs out, flies with
-    /// everyone aboard or at least half the need, and otherwise sets everyone
-    /// down and lets them go. A rider that stopped short of its carrier could
-    /// not board it and is not sent again.
+    /// while riders walk to their carriers. Once none is walking and none was
+    /// sent, or time runs out, flies when what is aboard meets the landing's
+    /// need as now known, and otherwise sets everyone down and lets them go.
+    /// A rider that stopped short of its carrier could not board it and is
+    /// not sent again.
     fn board(&mut self, flight: &Flight<'_>, lifting: &Lifting<'_>, ledger: &mut Ledger) {
         let waiting = &flight.grounded;
         let need = lifting.need(flight.landing);
@@ -383,8 +376,7 @@ impl Missions {
         if waiting.iter().any(|unit| !unit.idle) && flight.age < LOAD_TICKS {
             return;
         }
-        let enough = waiting.is_empty() || flight.loaded * 2 >= need;
-        if flight.aboard > 0 && enough {
+        if flight.aboard > 0 && flight.loaded >= need {
             self.take_off(flight, lifting, ledger);
             return;
         }
@@ -642,26 +634,22 @@ impl<'a> Lifting<'a> {
         })
     }
 
-    /// Army value the lift [`best_drop`](Self::best_drop) would choose needs,
-    /// with the defense around its target standing in for its landing's so no
-    /// landing is ranked.
-    fn rough_need(&self) -> u64 {
-        targets(
-            self.objectives,
-            self.observation,
-            self.map,
-            self.frame,
-            self.memory,
-        )
-        .into_iter()
-        .filter(|target| !self.held.contains(target))
-        .find(|target| self.landings(*target).next().is_some())
-        .map_or(0, |target| {
-            opposed(self.observation, self.map, self.memory, target.anchor)
-                * margin(self.profile.difficulty)
-                / 1_000
-        })
-        .max(minimum(self.profile.stance))
+    /// Whether the scouting point nearest `target` on its island was in
+    /// sight recently enough to know the army a landing would meet. An
+    /// island no point lies on cannot be looked at, so it counts as known.
+    fn looked(&self, target: Objective) -> bool {
+        let island = self.map.component(target.anchor);
+        super::points(self.map, self.observation.me)
+            .iter()
+            .enumerate()
+            .filter(|(_, point)| self.map.component(point.anchor) == island)
+            .min_by_key(|(_, point)| {
+                (
+                    point.anchor.chebyshev(target.anchor),
+                    self.frame.rank(self.frame.home, doubled(point.anchor)),
+                )
+            })
+            .is_none_or(|(index, _)| self.memory.looked(index, self.observation.tick))
     }
 
     /// Army value a lift to `landing` needs: the known army it would meet

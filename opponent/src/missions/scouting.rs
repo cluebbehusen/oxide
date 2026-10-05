@@ -26,7 +26,7 @@ pub(super) const TRAVEL_TICKS: u64 = 1_800;
 
 /// A place worth seeing, as a Foundry footprint.
 pub(crate) struct Point {
-    anchor: TilePos,
+    pub(crate) anchor: TilePos,
     value: u64,
 }
 
@@ -84,14 +84,6 @@ impl Missions {
         };
         let hazards = &scratch.air;
         let scouted = memory.scouted(points.len());
-        for (point, seen) in points.iter().zip(scouted.iter_mut()) {
-            let (width, height) = BuildingKind::Foundry.base_stats().size;
-            let visible = (0..height)
-                .any(|dy| (0..width).any(|dx| observation.visible(point.anchor.offset(dx, dy))));
-            if visible {
-                *seen = now;
-            }
-        }
 
         let scouting: fn(&Task) -> bool = |task| matches!(task, Task::Scout { .. });
         let held = |missions: &Self, except: Option<u64>| -> Vec<u16> {
@@ -205,6 +197,22 @@ impl Missions {
                     && u16::try_from(*index).is_ok_and(|point| !taken.contains(&point))
             })
             .count()
+    }
+}
+
+/// Counts every scouting point in sight now as seen, before any mission
+/// reads when each was last seen.
+pub(crate) fn look(observation: &ObservationData, map: &MapModel, memory: &mut Memory) {
+    let now = observation.tick;
+    let points = points(map, observation.me);
+    let scouted = memory.scouted(points.len());
+    let (width, height) = BuildingKind::Foundry.base_stats().size;
+    for (point, seen) in points.iter().zip(scouted.iter_mut()) {
+        let visible = (0..height)
+            .any(|dy| (0..width).any(|dx| observation.visible(point.anchor.offset(dx, dy))));
+        if visible {
+            *seen = now;
+        }
     }
 }
 
