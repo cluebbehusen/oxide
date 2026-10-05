@@ -329,7 +329,7 @@ fn resolve_hits(
                     let relevant_loss =
                         hit.damage >= v.hp && v.domain() == crate::stats::Domain::Ground;
                     if v.hp > 0 && hit.damage > 0 && (relevant_hit || relevant_loss) {
-                        incidents.push((v.player, v.tile(), hit.origin));
+                        incidents.push((v.player, v.tile(), hit));
                     }
                     super::damage::unit(v, hit.damage, events);
                 }
@@ -356,18 +356,24 @@ fn resolve_hits(
                         && (relevant_hit || relevant_loss)
                         && let Some(tile) = incident_tile
                     {
-                        incidents.push((b.player, tile, hit.origin));
+                        incidents.push((b.player, tile, hit));
                     }
                     super::damage::building(b, hit.damage, events);
                 }
             }
         }
     }
-    for (victim, tile, origin) in incidents {
+    for (victim, tile, hit) in incidents {
         // A shooter the victim's team can see is already live danger, which
         // ends when it dies or leaves sight. Incident memory stands in only
-        // for fire from out of sight.
-        if !state.can_see(victim, chassis::grid::TilePos::containing(origin)) {
+        // for fire from out of sight. A shell's shooter may move in flight,
+        // so only a dead one is judged by where it fired from.
+        let shooter = match hit.attacker {
+            Target::Unit(id) => state.unit(id).map(|unit| unit.pos),
+            Target::Building(id) => state.building(id).map(|building| building.center()),
+        }
+        .unwrap_or(hit.origin);
+        if !state.can_see(victim, chassis::grid::TilePos::containing(shooter)) {
             state.record_salvage_incident(victim, tile);
         }
     }

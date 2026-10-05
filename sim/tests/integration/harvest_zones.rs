@@ -753,6 +753,60 @@ fn a_seen_raider_leaves_no_caution_behind_once_it_is_gone() {
 }
 
 #[test]
+fn a_hidden_gun_is_remembered_even_when_its_old_launch_tile_is_seen() {
+    let mut state = state_with_salvage(
+        32,
+        &[],
+        &[],
+        vec![
+            unit(0, UnitKind::Harvester, 12, 5),
+            unit(1, UnitKind::Bombard, 21, 5),
+            unit(1, UnitKind::Harvester, 16, 5),
+        ],
+        vec![],
+    );
+    let (worker, bombard) = (state.units()[0].id, state.units()[1].id);
+    state.tick(&[cmd(
+        1,
+        Command::Attack {
+            units: vec![bombard],
+            target: Target::Unit(worker).into(),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 100, |state, _| !state.shells().is_empty());
+    state.tick(&[cmd(
+        1,
+        Command::Stop {
+            units: vec![bombard],
+        },
+    )]);
+    // Stand in for a gun that moved after firing: the shell now launched
+    // from ground the victim's team watches while the gun stays hidden.
+    let launch = state.unit(worker).unwrap().pos;
+    let mut doc = serde_json::to_value(&state).unwrap();
+    doc["shells"][0]["launch"] = serde_json::to_value(launch).unwrap();
+    state = serde_json::from_value(doc).unwrap();
+    assert!(state.can_see(PlayerId(0), TilePos::containing(launch)));
+
+    let before = state.unit(worker).unwrap().hp;
+    run_until(&mut state, 100, |state, _| {
+        state.unit(worker).unwrap().hp < before
+    });
+    assert!(
+        !state.can_see(PlayerId(0), state.unit(bombard).unwrap().tile()),
+        "the gun stayed hidden through the impact"
+    );
+    let doc = serde_json::to_value(&state).unwrap();
+    assert!(
+        doc["vision"][0]["salvage_incidents"]
+            .as_array()
+            .is_some_and(|incidents| !incidents.is_empty()),
+        "an unseen shooter's hit is remembered wherever its shell launched"
+    );
+}
+
+#[test]
 fn an_own_loss_retires_a_worker_home_before_it_surfaces_idle() {
     let anchor = TilePos::new(13, 5);
     let exposed = TilePos::new(15, 5);
