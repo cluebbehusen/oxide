@@ -369,10 +369,12 @@ pub(crate) fn decide(
         waiting,
     };
     let mut candidates = investments::candidates(&situation);
+    let danger = placement::Danger::of(observation, &persistent.memory);
     sited(
         observation,
         map,
         &persistent.memory,
+        &danger,
         &mut candidates,
         persistent.saving.investment(),
     );
@@ -653,40 +655,55 @@ fn buy(
             }
         }
         Step::Build(kind) => {
-            let (anchor, allowed) = match site(
-                observation,
-                map,
-                &persistent.memory,
-                investment,
-                kind,
-                &ledger.planned,
-            ) {
-                Site::At(anchor, allowed) => (anchor, allowed),
-                Site::Unseen(anchor) => {
-                    if affordable {
-                        explore(observation, map, frame, anchor, kind, ledger);
+            let packed = investments::layout(investment, kind) == placement::Layout::Packed;
+            let danger = placement::Danger::of(observation, &persistent.memory);
+            let (anchor, allowed) = loop {
+                let (anchor, allowed) = match site(
+                    observation,
+                    map,
+                    &persistent.memory,
+                    &danger,
+                    investment,
+                    kind,
+                    &ledger.planned,
+                ) {
+                    Site::At(anchor, allowed) => (anchor, allowed),
+                    Site::Unseen(anchor) => {
+                        if affordable {
+                            explore(observation, map, frame, anchor, kind, ledger);
+                        }
+                        return;
                     }
+                    // With nowhere left to look, protecting scrap for a
+                    // building that cannot be placed would starve
+                    // production. This is checked before the bank covers the
+                    // price, or the protection would keep building up toward
+                    // it.
+                    Site::Nowhere => {
+                        ledger.protected = 0;
+                        persistent.saving.keep_at_most(0);
+                        return;
+                    }
+                };
+                if !affordable {
                     return;
                 }
-                // With nowhere left to look, protecting scrap for a building
-                // that cannot be placed would starve production. This is
-                // checked before the bank covers the price, or the protection
-                // would keep building up toward it.
-                Site::Nowhere => {
+                // A footprint that would close a way out is refused for a
+                // while: a packed building tries the next spot, and a
+                // Barricade, whose spot is its own, gives the scrap back.
+                if (packed || kind == BuildingKind::Barricade)
+                    && !defenses::keeps_paths(observation, map, kind, anchor, &ledger.planned)
+                {
+                    persistent.memory.fail(kind, anchor, tick);
+                    if packed {
+                        continue;
+                    }
                     ledger.protected = 0;
                     persistent.saving.keep_at_most(0);
                     return;
                 }
+                break (anchor, allowed);
             };
-            if !affordable {
-                return;
-            }
-            if kind == BuildingKind::Barricade && !defenses::keeps_paths(observation, map, anchor) {
-                persistent.memory.fail(kind, anchor, tick);
-                ledger.protected = 0;
-                persistent.saving.keep_at_most(0);
-                return;
-            }
             let centre = footprint_centre(kind, anchor);
             let Some(builder) = workers::builder(observation, map, frame, anchor, centre, ledger)
             else {
@@ -712,25 +729,36 @@ enum Site {
 }
 
 /// The first of the anchors toward `investment` that the seat's knowledge
-/// allows or has not fully seen, skipping those refused lately.
+/// allows or has not fully seen, skipping those refused lately and, but for
+/// a defense, those something the seat knows of could hit.
 fn site(
     observation: &ObservationData,
     map: &MapModel,
     memory: &Memory,
+    danger: &placement::Danger,
     investment: Investment,
     kind: BuildingKind,
     planned: &[(BuildingKind, TilePos)],
 ) -> Site {
     let tick = observation.tick;
+    let defense =
+        matches!(investment, Investment::Defense { kind: defense, .. } if defense == kind);
     investments::anchors(map, observation, investment, kind)
         .filter(|anchor| !memory.failed(kind, *anchor, tick))
-        .find_map(
-            |anchor| match placement::check(observation, kind, anchor, planned) {
+        .filter(|anchor| defense || !danger.hits(kind, *anchor))
+        .find_map(|anchor| {
+            match placement::check(
+                observation,
+                kind,
+                anchor,
+                planned,
+                investments::layout(investment, kind),
+            ) {
                 Ok(allowed) => Some(Site::At(anchor, allowed)),
                 Err(placement::Refusal::Unexplored) => Some(Site::Unseen(anchor)),
                 Err(_) => None,
-            },
-        )
+            }
+        })
         .unwrap_or(Site::Nowhere)
 }
 
@@ -741,6 +769,7 @@ fn sited(
     observation: &ObservationData,
     map: &MapModel,
     memory: &Memory,
+    danger: &placement::Danger,
     candidates: &mut Vec<Candidate>,
     current: Option<Investment>,
 ) {
@@ -751,7 +780,15 @@ fn sited(
         }
         let placeable = match investments::step(observation, candidate.investment) {
             Some((Step::Build(kind), _)) => !matches!(
-                site(observation, map, memory, candidate.investment, kind, &[]),
+                site(
+                    observation,
+                    map,
+                    memory,
+                    danger,
+                    candidate.investment,
+                    kind,
+                    &[]
+                ),
                 Site::Nowhere
             ),
             _ => true,

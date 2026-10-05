@@ -831,9 +831,28 @@ fn nowhere_to_stand(bank: u32) -> (Vec<PlayerCommand>, Trace, BuildingId) {
     let mut scenario = saturated(bank);
     let model = map(&scenario);
     let start = model.start(PlayerId(0)).unwrap();
-    let spots: Vec<TilePos> = model.spots(PlayerId(0), vec![start]).collect();
+    fill(&mut scenario, &model, vec![start], |_| true);
+    let state = scenario.build().unwrap();
+    let (commands, trace) =
+        seat_with(&scenario, 0, thrifty()).act_traced(&state, &mut OwnEvents::default());
+    (commands, trace.unwrap(), foundries(&state, PlayerId(0))[0])
+}
+
+/// Stands a Turret on every spot beside `foundries` that `keep` keeps, for
+/// two-by-two buildings and smaller ones alike.
+fn fill(
+    scenario: &mut Scenario,
+    model: &MapModel,
+    foundries: Vec<TilePos>,
+    keep: impl Fn(TilePos) -> bool,
+) {
+    let spots: Vec<TilePos> = [BuildingKind::Fabricator, BuildingKind::Reclaimer]
+        .into_iter()
+        .flat_map(|kind| model.spots(PlayerId(0), foundries.clone(), kind))
+        .filter(|anchor| keep(*anchor))
+        .collect();
     for anchor in spots {
-        if occupied(&scenario, anchor) {
+        if occupied(scenario, anchor) {
             continue;
         }
         scenario.buildings.push(BuildingSpec {
@@ -843,10 +862,6 @@ fn nowhere_to_stand(bank: u32) -> (Vec<PlayerCommand>, Trace, BuildingId) {
             y: anchor.y,
         });
     }
-    let state = scenario.build().unwrap();
-    let (commands, trace) =
-        seat_with(&scenario, 0, thrifty()).act_traced(&state, &mut OwnEvents::default());
-    (commands, trace.unwrap(), foundries(&state, PlayerId(0))[0])
 }
 
 /// Whether a unit or building of `scenario` stands on `tile`.
@@ -876,21 +891,9 @@ fn a_seat_whose_home_is_full_builds_beside_its_other_foundry() {
     let model = map(&scenario);
     let start = model.start(PlayerId(0)).unwrap();
     let distance = |a: TilePos, b: TilePos| (a.x - b.x).abs().max((a.y - b.y).abs());
-    let home: Vec<TilePos> = model
-        .spots(PlayerId(0), vec![start, expansion])
-        .filter(|anchor| distance(*anchor, start) < distance(*anchor, expansion))
-        .collect();
-    for anchor in home {
-        if occupied(&scenario, anchor) {
-            continue;
-        }
-        scenario.buildings.push(BuildingSpec {
-            player: 0,
-            kind: BuildingKind::Turret,
-            x: anchor.x,
-            y: anchor.y,
-        });
-    }
+    fill(&mut scenario, &model, vec![start, expansion], |anchor| {
+        distance(anchor, start) < distance(anchor, expansion)
+    });
     let state = scenario.build().unwrap();
     let (commands, trace) =
         seat_with(&scenario, 0, thrifty()).act_traced(&state, &mut OwnEvents::default());
@@ -907,19 +910,21 @@ fn a_seat_whose_home_is_full_builds_beside_its_other_foundry() {
         })
         .collect();
     assert!(!homes.is_empty(), "{trace:?}");
-    // The nearest spot an expansion Foundry leaves room for.
+    // The nearest blocks an expansion Foundry leaves room for.
     let beside = model
-        .spots(PlayerId(0), vec![expansion])
+        .spots(PlayerId(0), vec![expansion], BuildingKind::Fabricator)
         .map(|anchor| distance(anchor, expansion))
         .next()
         .unwrap();
     for (kind, anchor) in homes {
-        assert_eq!(
-            distance(anchor, expansion),
-            beside,
+        assert!(
+            distance(anchor, expansion) <= beside + 1,
             "{kind:?} at {anchor:?}"
         );
-        assert!(distance(anchor, start) > beside, "{kind:?} at {anchor:?}");
+        assert!(
+            distance(anchor, start) > distance(anchor, expansion),
+            "{kind:?} at {anchor:?}"
+        );
     }
 }
 

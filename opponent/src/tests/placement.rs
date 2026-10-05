@@ -1,5 +1,5 @@
 use super::*;
-use crate::placement::{Allowed, Refusal, check};
+use crate::placement::{Allowed, Layout, Refusal, check};
 
 /// A west base with a frame, a scrap node, a sealed two-by-two pocket and a
 /// visible hostile Sentinel; the east seat stays out of sight.
@@ -44,7 +44,7 @@ fn yard() -> Scenario {
 
 fn verdict(state: &State, kind: BuildingKind, x: i32, y: i32) -> Result<Allowed, Refusal> {
     let observation = ObservationData::fog_honest(state, PlayerId(0));
-    check(&observation, kind, TilePos::new(x, y), &[])
+    check(&observation, kind, TilePos::new(x, y), &[], Layout::Apart)
 }
 
 #[test]
@@ -82,7 +82,13 @@ fn each_known_obstacle_refuses_a_footprint_for_its_own_reason() {
     let observation = ObservationData::fog_honest(&state, PlayerId(0));
     let planned = [(fabricator, TilePos::new(5, 1))];
     assert_eq!(
-        check(&observation, fabricator, TilePos::new(6, 1), &planned),
+        check(
+            &observation,
+            fabricator,
+            TilePos::new(6, 1),
+            &planned,
+            Layout::Apart
+        ),
         Err(Refusal::Claimed)
     );
     assert_eq!(
@@ -146,13 +152,25 @@ fn explored_ground_out_of_sight_is_claimed_as_a_scaffold() {
     let mut observation = ObservationData::fog_honest(&state, PlayerId(0));
     let anchor = TilePos::new(6, 1);
     assert_eq!(
-        check(&observation, BuildingKind::Fabricator, anchor, &[]),
+        check(
+            &observation,
+            BuildingKind::Fabricator,
+            anchor,
+            &[],
+            Layout::Apart
+        ),
         Ok(Allowed { defer: false })
     );
     let index = usize::try_from(anchor.y * observation.map_width + anchor.x).unwrap();
     observation.visible[index] = false;
     assert_eq!(
-        check(&observation, BuildingKind::Fabricator, anchor, &[]),
+        check(
+            &observation,
+            BuildingKind::Fabricator,
+            anchor,
+            &[],
+            Layout::Apart
+        ),
         Ok(Allowed { defer: true })
     );
 }
