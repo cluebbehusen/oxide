@@ -248,16 +248,21 @@ pub(super) fn evict_claimed_ground(state: &mut State) {
 }
 
 /// After collisions: a ground body whose contact cancelled most of its
-/// intended progress toward its waypoint for
-/// [`crate::stats::STALL_REPLAN_TICKS`] running ticks drops its route, so
-/// its brain plans again from where the body actually is. `travel` and
-/// `driven` are this tick's propulsion and post-propulsion positions,
-/// indexed like `state.units`.
-pub(super) fn note_stalls(state: &mut State, travel: &[Vec2Fx], driven: &[Vec2Fx]) {
+/// intended progress toward its waypoint, or whose motor refused the step
+/// outright, for [`crate::stats::STALL_REPLAN_TICKS`] running ticks drops
+/// its route, so its brain plans again from where the body actually is.
+/// `travel`, `refused` and `driven` are this tick's propulsion, motor
+/// refusals and post-propulsion positions, indexed like `state.units`.
+pub(super) fn note_stalls(
+    state: &mut State,
+    travel: &[Vec2Fx],
+    refused: &[bool],
+    driven: &[Vec2Fx],
+) {
     for (slot, unit) in state.units.iter_mut().enumerate() {
         let stalled = unit.hp > 0
             && unit.domain() == crate::stats::Domain::Ground
-            && travel[slot] != Vec2Fx::ZERO
+            && (refused[slot] || travel[slot] != Vec2Fx::ZERO)
             && unit
                 .path
                 .as_ref()
@@ -267,6 +272,9 @@ pub(super) fn note_stalls(state: &mut State, travel: &[Vec2Fx], driven: &[Vec2Fx
                         .map(|_| ground::path_point(path, path.next as usize))
                 })
                 .is_some_and(|point| {
+                    if refused[slot] {
+                        return true;
+                    }
                     let before = driven[slot] - travel[slot];
                     let toward = point - before;
                     let net = unit.pos - before;
@@ -299,13 +307,14 @@ pub(super) fn forget_stalls_without_routes(state: &mut State) {
 }
 
 /// Advances every unit along its path by its speed, returning each
-/// unit's displacement this tick (indexed like `state.units`) — the
+/// unit's displacement this tick and whether the ground motor refused the
+/// step its route asked for (both indexed like `state.units`) — the
 /// collision resolver reads travel to slide movers around each other
 /// instead of grinding them head-on. Intermediate waypoints are accepted
 /// within [`WAYPOINT_ACCEPT`], or after a nearby collision deflection has
 /// carried the body across the onward plane, so a unit does not turn back
 /// toward a center it already passed. Final waypoints are landed exactly.
-pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
+pub(super) fn run(state: &mut State) -> (Vec<Vec2Fx>, Vec<bool>) {
     let contacts: Vec<_> = state
         .units
         .iter()
@@ -330,6 +339,7 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
     } = state;
     let terrain = GroundTerrain::new(map, building_occupancy);
     let mut travel = vec![Vec2Fx::ZERO; units.len()];
+    let mut refused = vec![false; units.len()];
     for (slot, unit) in units.iter_mut().enumerate() {
         if unit.hp == 0 || unit.brace_ticks > 0 {
             continue;
@@ -350,7 +360,7 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
             continue;
         }
         if stats.domain == crate::stats::Domain::Ground {
-            ground::advance(
+            refused[slot] = ground::advance(
                 unit,
                 &terrain.with_contact(contacts[slot]),
                 &parked[unit.player.0 as usize],
@@ -409,7 +419,7 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
         }
         travel[slot] = direction;
     }
-    travel
+    (travel, refused)
 }
 
 /// Turn-limited flight: the body advances along its heading and only
@@ -1214,6 +1224,7 @@ mod tests {
                 .collect();
             // Propulsion carried the body east; contact shoved it back to where
             // it started, cancelling the whole step.
+            let refused = vec![false; state.units.len()];
             let driven: Vec<Vec2Fx> = state
                 .units
                 .iter()
@@ -1221,27 +1232,66 @@ mod tests {
                 .map(|(unit, &step)| unit.pos + step)
                 .collect();
             for tick in 1..crate::stats::STALL_REPLAN_TICKS {
-                note_stalls(&mut state, &travel, &driven);
+                note_stalls(&mut state, &travel, &refused, &driven);
                 assert_eq!(state.units[slot].stall_ticks, tick);
                 assert!(state.units[slot].path.is_some());
             }
             // One tick of real progress clears the count.
             state.units[slot].pos += travel[slot];
-            note_stalls(&mut state, &travel, &driven);
+            note_stalls(&mut state, &travel, &refused, &driven);
             assert_eq!(state.units[slot].stall_ticks, 0);
             assert!(state.units[slot].path.is_some());
             state.units[slot].pos -= travel[slot];
             for _ in 1..crate::stats::STALL_REPLAN_TICKS {
-                note_stalls(&mut state, &travel, &driven);
+                note_stalls(&mut state, &travel, &refused, &driven);
             }
             assert!(state.units[slot].path.is_some());
-            note_stalls(&mut state, &travel, &driven);
+            note_stalls(&mut state, &travel, &refused, &driven);
             assert!(
                 state.units[slot].path.is_none(),
                 "the stalled route was kept"
             );
             assert_eq!(state.units[slot].stall_ticks, 0);
         }
+    }
+
+    /// A refused step moves the body nowhere, so no deflection measures it;
+    /// it still counts toward the bound, while a tick spent pivoting in
+    /// place does not.
+    #[test]
+    fn refused_steps_drop_the_route_after_the_stall_bound() {
+        let mut state = Scenario::skirmish().build().unwrap();
+        let waypoint = TilePos::new(20, 12);
+        let slot = 0;
+        state.units[slot].path = Some(PathFollow {
+            final_point: None,
+            goal: waypoint,
+            waypoints: vec![waypoint],
+            next: 0,
+        });
+        let travel = vec![Vec2Fx::ZERO; state.units.len()];
+        let driven: Vec<Vec2Fx> = state.units.iter().map(|unit| unit.pos).collect();
+        let pivoting = vec![false; state.units.len()];
+        let mut refused = pivoting.clone();
+        refused[slot] = true;
+        note_stalls(&mut state, &travel, &pivoting, &driven);
+        assert_eq!(state.units[slot].stall_ticks, 0);
+        for tick in 1..crate::stats::STALL_REPLAN_TICKS {
+            note_stalls(&mut state, &travel, &refused, &driven);
+            assert_eq!(state.units[slot].stall_ticks, tick);
+        }
+        note_stalls(&mut state, &travel, &pivoting, &driven);
+        assert_eq!(state.units[slot].stall_ticks, 0);
+        for _ in 1..crate::stats::STALL_REPLAN_TICKS {
+            note_stalls(&mut state, &travel, &refused, &driven);
+        }
+        assert!(state.units[slot].path.is_some());
+        note_stalls(&mut state, &travel, &refused, &driven);
+        assert!(
+            state.units[slot].path.is_none(),
+            "the refused route was kept"
+        );
+        assert_eq!(state.units[slot].stall_ticks, 0);
     }
 
     #[test]
@@ -1257,13 +1307,14 @@ mod tests {
         });
         let mut travel = vec![Vec2Fx::ZERO; state.units.len()];
         travel[slot] = Vec2Fx::new(Fx::lit("0.1"), Fx::ZERO);
+        let refused = vec![false; state.units.len()];
         let driven: Vec<Vec2Fx> = state
             .units
             .iter()
             .zip(&travel)
             .map(|(unit, &step)| unit.pos + step)
             .collect();
-        note_stalls(&mut state, &travel, &driven);
+        note_stalls(&mut state, &travel, &refused, &driven);
         assert_eq!(state.units[slot].stall_ticks, 1);
         state
             .validate_invariants()
@@ -2016,7 +2067,7 @@ mod tests {
     fn mirrored_crossing_armies_remain_exact_half_turns_through_collision() {
         let mut state = replay_center_crossing();
         assert_replay_pairs_are_half_turns(&state);
-        let travel = run(&mut state);
+        let (travel, _) = run(&mut state);
         assert_replay_pairs_are_half_turns(&state);
         let mut index = UnitIndex::new();
 
@@ -2435,7 +2486,7 @@ mod tests {
 
         let mut index = UnitIndex::new();
         for _ in 0..80 {
-            let travel = run(&mut state);
+            let (travel, _) = run(&mut state);
             resolve_collisions(&mut state, &travel, &mut index);
             state.tick += 1;
         }

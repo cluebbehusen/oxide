@@ -750,6 +750,9 @@ impl ParkedBodies {
     }
 }
 
+/// How far beyond a body's radius a contact surface governs its motion.
+const CONTACT_BAND: Fx = Fx::lit("0.25");
+
 /// Ground passability for one moment: terrain plus the derived building
 /// occupancy grid. Equivalent to [`State::passable`] for every tile.
 #[derive(Clone, Copy)]
@@ -778,10 +781,25 @@ impl<'a> GroundTerrain<'a> {
 
     pub(crate) fn at_contact(&self, pos: Vec2Fx, radius: Fx) -> bool {
         self.contact.is_some_and(|surface| {
-            let reach = radius + const { Fx::lit("0.25") };
+            let reach = radius + CONTACT_BAND;
             pos.dist_sq(surface.closest(pos)) <= reach * reach
                 && self.contact_clear(pos, pos, radius)
         })
+    }
+
+    /// The point straight out from the contact surface just past the band
+    /// where it governs motion, when the body rests in that band, clear of
+    /// the surface, and can back out to it.
+    pub(crate) fn contact_exit(&self, pos: Vec2Fx, radius: Fx) -> Option<Vec2Fx> {
+        let surface = self.contact?;
+        // In the band, the body is at least its radius off the surface, so
+        // the outward projection is well defined.
+        if !self.at_contact(pos, radius) {
+            return None;
+        }
+        // Margin for the rounding in the projected point.
+        let exit = surface.stance(pos, radius + CONTACT_BAND + const { Fx::lit("0.015625") });
+        self.contact_clear(pos, exit, radius).then_some(exit)
     }
 
     pub(crate) fn contact_clear(&self, from: Vec2Fx, to: Vec2Fx, radius: Fx) -> bool {
