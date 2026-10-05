@@ -3,9 +3,11 @@
 //! can never change its verdict; the simulation re-checks on arrival and a
 //! refused order is re-planned.
 
+use crate::map::MapModel;
 use crate::memory::Memory;
-use chassis::fx::Fx;
+use chassis::fx::{Fx, Vec2Fx};
 use chassis::grid::TilePos;
+use chassis::path::line_blocked;
 use oxide_sim::BuildingKind;
 use oxide_sim::observation::{BuildingObs, ObservationData};
 use oxide_sim::stats::{Domain, HARVEST_INCIDENT_DANGER_RADIUS};
@@ -225,10 +227,10 @@ impl Footprint {
 /// What the seat knows can hit a building it would raise: known enemy guns,
 /// remembered armed enemy units, and where it lately took losses. Built once
 /// a decision, from the seat's own knowledge only.
-pub(crate) struct Danger {
-    /// Each known enemy gun that fires at ground: its centre and its reach
-    /// either side, doubled.
-    guns: Vec<((i64, i64), i64, i64)>,
+pub(crate) struct Danger<'a> {
+    map: &'a MapModel,
+    /// Each known enemy gun's weapons that fire at ground.
+    guns: Vec<Gun>,
     /// Each remembered armed enemy unit's tile centre and longest reach at
     /// buildings, doubled.
     units: Vec<((i64, i64), i64)>,
@@ -236,8 +238,18 @@ pub(crate) struct Danger {
     incidents: Vec<TilePos>,
 }
 
-impl Danger {
-    pub(crate) fn of(observation: &ObservationData, memory: &Memory) -> Self {
+/// A known enemy gun's weapon, by its centre and its reach either side,
+/// doubled, and whether rock in the way stops its fire, as it does a direct
+/// shot at a building.
+struct Gun {
+    centre: (i64, i64),
+    minimum: i64,
+    range: i64,
+    direct: bool,
+}
+
+impl<'a> Danger<'a> {
+    pub(crate) fn of(observation: &ObservationData, map: &'a MapModel, memory: &Memory) -> Self {
         let doubled = |range: Fx| (range + range).to_num::<i64>();
         let guns = observation
             .enemy_buildings
@@ -255,8 +267,11 @@ impl Danger {
                     .weapons
                     .iter()
                     .filter(|weapon| weapon.targets.ground)
-                    .map(move |weapon| {
-                        (centre, doubled(weapon.minimum_range), doubled(weapon.range))
+                    .map(move |weapon| Gun {
+                        centre,
+                        minimum: doubled(weapon.minimum_range),
+                        range: doubled(weapon.range),
+                        direct: !weapon.indirect,
                     })
             })
             .collect();
@@ -275,6 +290,7 @@ impl Danger {
             .filter(|(_, reach)| *reach > 0)
             .collect();
         Danger {
+            map,
             guns,
             units,
             incidents: observation.salvage_incidents.clone(),
@@ -292,18 +308,22 @@ impl Danger {
                 i64::from(2 * (anchor.y + footprint.height)),
             ),
         );
-        // Squared doubled distances from `point` to the footprint's nearest
-        // and furthest points.
+        // The footprint's point nearest `point`, which a gun aims at and
+        // measures its range to, and its squared doubled distance.
+        let nearest =
+            |point: (i64, i64)| (point.0.clamp(low.0, high.0), point.1.clamp(low.1, high.1));
         let near = |point: (i64, i64)| {
-            let axis = |v: i64, low: i64, high: i64| (low - v).max(v - high).max(0);
-            axis(point.0, low.0, high.0).pow(2) + axis(point.1, low.1, high.1).pow(2)
+            let (x, y) = nearest(point);
+            (point.0 - x).pow(2) + (point.1 - y).pow(2)
         };
-        let far = |point: (i64, i64)| {
-            let axis = |v: i64, low: i64, high: i64| (v - low).abs().max((high - v).abs());
-            axis(point.0, low.0, high.0).pow(2) + axis(point.1, low.1, high.1).pow(2)
-        };
-        let gun = self.guns.iter().any(|(centre, minimum, range)| {
-            near(*centre) <= range * range && far(*centre) >= minimum * minimum
+        let world = |(x, y): (i64, i64)| Vec2Fx::new(Fx::from_num(x) / 2, Fx::from_num(y) / 2);
+        let gun = self.guns.iter().any(|gun| {
+            let distance = near(gun.centre);
+            distance <= gun.range * gun.range
+                && distance >= gun.minimum * gun.minimum
+                && !line_blocked(world(gun.centre), world(nearest(gun.centre)), |tile| {
+                    self.map.shot_crosses(tile, gun.direct)
+                })
         });
         let unit = self
             .units

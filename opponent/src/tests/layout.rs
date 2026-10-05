@@ -366,14 +366,15 @@ fn a_gun_out_of_sight_changes_no_building() {
 #[test]
 fn danger_covers_reach_minimum_range_and_recent_losses() {
     let scenario = saturated(400);
+    let model = map(&scenario);
     let state = scenario.build().unwrap();
     let mut observation = ObservationData::fog_honest(&state, PlayerId(0));
-    let quiet = Danger::of(&observation, &Memory::default());
+    let quiet = Danger::of(&observation, &model, &Memory::default());
     let spot = TilePos::new(9, 6);
     assert!(!quiet.hits(BuildingKind::Fabricator, spot));
 
     observation.salvage_incidents = vec![TilePos::new(14, 6)];
-    let lost = Danger::of(&observation, &Memory::default());
+    let lost = Danger::of(&observation, &model, &Memory::default());
     assert!(lost.hits(BuildingKind::Fabricator, spot), "four tiles off");
     assert!(
         !lost.hits(BuildingKind::Fabricator, TilePos::new(7, 6)),
@@ -384,11 +385,15 @@ fn danger_covers_reach_minimum_range_and_recent_losses() {
     put(&mut gunned, 1, BuildingKind::Bastion, TilePos::new(12, 6));
     let state = gunned.build().unwrap();
     let observation = ObservationData::fog_honest(&state, PlayerId(0));
-    let danger = Danger::of(&observation, &Memory::default());
-    assert!(danger.hits(BuildingKind::Fabricator, spot));
+    let danger = Danger::of(&observation, &model, &Memory::default());
+    assert!(danger.hits(BuildingKind::Fabricator, TilePos::new(7, 6)));
     assert!(
         !danger.hits(BuildingKind::Reclaimer, TilePos::new(14, 6)),
         "inside its minimum range"
+    );
+    assert!(
+        !danger.hits(BuildingKind::Fabricator, TilePos::new(14, 8)),
+        "the nearest point inside its minimum range, as the gun measures"
     );
     assert!(
         !danger.hits(BuildingKind::Fabricator, TilePos::new(12, 20)),
@@ -403,13 +408,100 @@ fn a_frame_within_a_known_guns_reach_waits() {
     let mut row: Vec<char> = scenario.map[7].chars().collect();
     row[9] = 'E';
     scenario.map[7] = row.into_iter().collect();
+    let model = map(&scenario);
     let state = scenario.build().unwrap();
     let observation = ObservationData::fog_honest(&state, PlayerId(0));
-    assert!(!Danger::of(&observation, &Memory::default()).hits(BuildingKind::Extractor, frame));
+    assert!(
+        !Danger::of(&observation, &model, &Memory::default()).hits(BuildingKind::Extractor, frame)
+    );
     put(&mut scenario, 1, BuildingKind::Turret, TilePos::new(13, 6));
     let state = scenario.build().unwrap();
     let observation = ObservationData::fog_honest(&state, PlayerId(0));
-    assert!(Danger::of(&observation, &Memory::default()).hits(BuildingKind::Extractor, frame));
+    assert!(
+        Danger::of(&observation, &model, &Memory::default()).hits(BuildingKind::Extractor, frame)
+    );
+}
+
+#[test]
+fn a_gun_behind_rock_cannot_hit_what_its_fire_cannot_reach() {
+    let spot = TilePos::new(9, 6);
+    let danger = |rock: bool| {
+        let mut scenario = saturated(400);
+        if rock {
+            for row in 5..=7 {
+                let mut cells: Vec<char> = scenario.map[row].chars().collect();
+                cells[11] = '#';
+                scenario.map[row] = cells.into_iter().collect();
+            }
+        }
+        put(&mut scenario, 1, BuildingKind::Turret, TilePos::new(13, 6));
+        let model = map(&scenario);
+        let state = scenario.build().unwrap();
+        let observation = ObservationData::fog_honest(&state, PlayerId(0));
+        assert!(
+            !observation.enemy_buildings.is_empty(),
+            "premise: West sees the gun"
+        );
+        Danger::of(&observation, &model, &Memory::default()).hits(BuildingKind::Reclaimer, spot)
+    };
+    assert!(danger(false), "premise: in range on open ground");
+    assert!(!danger(true), "the rock stops its direct fire");
+}
+
+#[test]
+fn a_charge_on_its_way_closes_no_path() {
+    let mut scenario = saturated(400);
+    scenario.map = MOUTH.map(str::to_owned).to_vec();
+    for unit in &mut scenario.units {
+        if (unit.x, unit.y) == (9, 10) {
+            (unit.x, unit.y) = (4, 9);
+        }
+    }
+    let model = map(&scenario);
+    let state = scenario.build().unwrap();
+    let observation = ObservationData::fog_honest(&state, PlayerId(0));
+    let charges = [
+        (BuildingKind::ScuttleCharge, TilePos::new(9, 6)),
+        (BuildingKind::ScuttleCharge, TilePos::new(9, 7)),
+    ];
+    let keeps = |planned: &[(BuildingKind, TilePos)]| {
+        defenses::keeps_paths(
+            &observation,
+            &model,
+            BuildingKind::Reclaimer,
+            TilePos::new(4, 2),
+            planned,
+        )
+    };
+    assert!(keeps(&[]), "premise");
+    assert!(keeps(&charges), "charges across the corridor block nothing");
+    let walls = charges.map(|(_, tile)| (BuildingKind::Barricade, tile));
+    assert!(!keeps(&walls), "premise: Barricades there would");
+}
+
+#[test]
+fn a_foundry_ringed_shut_keeps_no_path() {
+    let mut scenario = arena(400);
+    scenario
+        .buildings
+        .extend(
+            crate::frame::ring(TilePos::new(3, 5), (2, 2)).map(|tile| BuildingSpec {
+                player: 0,
+                kind: BuildingKind::Reclaimer,
+                x: tile.x,
+                y: tile.y,
+            }),
+        );
+    let model = map(&scenario);
+    let state = scenario.build().unwrap();
+    let observation = ObservationData::fog_honest(&state, PlayerId(0));
+    assert!(!defenses::keeps_paths(
+        &observation,
+        &model,
+        BuildingKind::Reclaimer,
+        TilePos::new(12, 5),
+        &[]
+    ));
 }
 
 #[test]
