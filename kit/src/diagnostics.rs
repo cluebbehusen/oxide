@@ -11,6 +11,7 @@ use crate::recovery::{BuildIdentity, RecoveryWriter};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::{
+    cell::Cell,
     collections::{BTreeMap, VecDeque},
     path::{Path, PathBuf},
     sync::{
@@ -29,6 +30,8 @@ const RECENT_FRAMES: usize = 60;
 const MAX_INCIDENTS: usize = 16;
 const MAX_LOG_BYTES: usize = 1024 * 1024;
 const MAX_BACKTRACE_BYTES: usize = 32 * 1024;
+/// Long enough to outlast a slow `fsync` in another incident write.
+const WRITE_WAIT: Duration = Duration::from_secs(5);
 const SEATS: usize = oxide_sim::scenario::MAX_PLAYERS;
 const STAGES: usize = Stage::ALL.len();
 
@@ -134,17 +137,27 @@ pub enum Ending {
     Abnormal,
 }
 
-/// Classify a recording from its journal state and incident log.
-pub fn ending(directory: &Path, clean: bool, active: bool) -> Ending {
+/// Classify a recording from its journal state, its incident log, and any
+/// incidents for it that reached `root`'s log before its directory was ready.
+pub fn ending(directory: &Path, root: Option<&Path>, clean: bool, active: bool) -> Ending {
     if clean {
         return Ending::Clean;
     }
     if active {
         return Ending::InProgress;
     }
-    let incidents = read_log(&directory.join(INCIDENTS))
+    let session = directory.file_name().and_then(|name| name.to_str());
+    let mut incidents: Vec<Value> = read_log(&directory.join(INCIDENTS))
         .map(|log| log.incidents)
         .unwrap_or_default();
+    incidents.extend(
+        root.and_then(|root| read_log(&root.join(INCIDENTS)))
+            .map(|log| log.incidents)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|incident| session.is_some() && incident["session"].as_str() == session),
+    );
+    incidents.sort_by_key(|incident| incident["uptime_ms"].as_u64().unwrap_or(0));
     concluding(&incidents)
 }
 
@@ -390,8 +403,6 @@ impl Inner {
         self.main.tick.store(context.tick, Ordering::Relaxed);
         self.main.progress.store(now, Ordering::Release);
         self.main.armed.store(true, Ordering::Release);
-        self.minimized
-            .store(context.minimized == Some(true), Ordering::Relaxed);
         if let Ok(mut target) = self.target.lock() {
             let unchanged = match (target.as_ref(), context.recording) {
                 (Some(current), Some(next)) => Arc::ptr_eq(current, next),
@@ -473,17 +484,27 @@ impl Inner {
         Value::Object(incident)
     }
 
-    /// Write to the open recording's directory, falling back to the recovery root.
-    fn record(&self, incident: Value) {
-        let _writing = lock_briefly(&self.writing);
-        let session = lock_briefly(&self.target)
-            .and_then(|target| target.clone())
-            .filter(|writer| {
-                let status = writer.status();
-                status.ready && !status.clean
-            })
-            .map(|writer| writer.directory().to_owned());
-        for directory in session.into_iter().chain(self.root.clone()) {
+    /// Write to the open recording's directory, falling back to the recovery
+    /// root. A recording whose directory is not ready yet only names itself, so
+    /// its ending can still find the incident.
+    fn record(&self, mut incident: Value) {
+        let nested = Writing::enter();
+        // A panic while this thread writes re-enters holding the lock, and the
+        // interrupted write never finishes.
+        let _writing = (!nested.0).then(|| lock_briefly_for(&self.writing, WRITE_WAIT));
+        let mut recording = None;
+        if let Some(writer) = lock_briefly(&self.target).and_then(|target| target.clone()) {
+            let status = writer.status();
+            if !status.clean {
+                let session = writer
+                    .directory()
+                    .file_name()
+                    .and_then(|name| name.to_str());
+                incident["session"] = json!(session);
+                recording = status.ready.then(|| writer.directory().to_owned());
+            }
+        }
+        for directory in recording.into_iter().chain(self.root.clone()) {
             if std::fs::create_dir_all(&directory).is_ok()
                 && append(&directory, incident.clone()).is_ok()
             {
@@ -601,9 +622,39 @@ fn watch(inner: Arc<Inner>) {
     }
 }
 
+thread_local! {
+    static WRITING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Marks this thread as writing an incident until dropped. Holds whether the
+/// thread was already writing.
+struct Writing(bool);
+
+impl Writing {
+    fn enter() -> Self {
+        Self(
+            WRITING
+                .try_with(|writing| writing.replace(true))
+                .unwrap_or(true),
+        )
+    }
+}
+
+impl Drop for Writing {
+    fn drop(&mut self) {
+        if !self.0 {
+            let _ = WRITING.try_with(|writing| writing.set(false));
+        }
+    }
+}
+
 /// Never block indefinitely: a panic can arrive while its own thread holds the lock.
 fn lock_briefly<T>(mutex: &Mutex<T>) -> Option<MutexGuard<'_, T>> {
-    let deadline = Instant::now() + Duration::from_millis(500);
+    lock_briefly_for(mutex, Duration::from_millis(500))
+}
+
+fn lock_briefly_for<T>(mutex: &Mutex<T>, wait: Duration) -> Option<MutexGuard<'_, T>> {
+    let deadline = Instant::now() + wait;
     loop {
         match mutex.try_lock() {
             Ok(guard) => return Some(guard),
@@ -736,6 +787,22 @@ impl Monitor {
             self.inner.frame(context);
         }
     }
+
+    /// Send incidents to a recording the main thread just started, before the
+    /// next frame samples it.
+    pub fn attach(&self, recording: &Arc<RecoveryWriter>) {
+        if self.inner.on_main()
+            && let Ok(mut target) = self.inner.target.lock()
+        {
+            *target = Some(recording.clone());
+        }
+    }
+
+    /// Record a native minimize or restore as it happens; a minimized window
+    /// may not run another frame.
+    pub fn minimized(&self, minimized: bool) {
+        self.inner.minimized.store(minimized, Ordering::Relaxed);
+    }
 }
 
 impl Drop for Monitor {
@@ -767,6 +834,20 @@ pub fn seat(seat: u8, tick: u64) -> Option<SeatGuard<'static>> {
 pub fn frame(context: FrameContext<'_>) {
     if let Some(monitor) = PROCESS.get() {
         monitor.frame(context);
+    }
+}
+
+/// Point the installed monitor at a recording the main thread just started.
+pub fn attach(recording: &Arc<RecoveryWriter>) {
+    if let Some(monitor) = PROCESS.get() {
+        monitor.attach(recording);
+    }
+}
+
+/// Report a native minimize or restore to the installed monitor.
+pub fn minimized(minimized: bool) {
+    if let Some(monitor) = PROCESS.get() {
+        monitor.minimized(minimized);
     }
 }
 

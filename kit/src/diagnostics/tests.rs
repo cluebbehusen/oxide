@@ -115,6 +115,74 @@ fn a_main_thread_stall_and_its_resumption_land_in_the_open_recording() {
 }
 
 #[test]
+fn an_incident_before_a_recording_is_ready_still_sets_its_ending() {
+    let root = temp();
+    std::fs::create_dir_all(&root).unwrap();
+    // Admission waits on the budget lock, so the recording cannot become ready.
+    let budget = std::fs::File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(root.join("budget.lock"))
+        .unwrap();
+    budget.lock().unwrap();
+    let writer = Arc::new(
+        RecoveryWriter::start(
+            root.clone(),
+            GameReplay::new(SIM_VERSION, Scenario::skirmish()),
+            0,
+            build(),
+        )
+        .unwrap(),
+    );
+    let monitor =
+        Monitor::start_with(Some(root.clone()), build(), Duration::from_secs(60)).unwrap();
+    monitor.frame(context(0, None));
+    monitor.attach(&writer);
+    monitor
+        .inner
+        .record_panic("first tick", None, "backtrace".into());
+    let directory = writer.directory().to_owned();
+    let session = directory.file_name().unwrap().to_str().unwrap();
+    assert_eq!(incidents(&root)[0]["session"], session);
+    assert!(!directory.join(INCIDENTS).exists());
+
+    budget.unlock().unwrap();
+    until(|| writer.status().ready);
+    monitor.frame(context(1, None));
+    drop(writer);
+    until(|| recovery::inactive(&directory).is_some());
+    let record = recovery::inspect(&directory).unwrap();
+    assert_eq!(recovery::ending(&directory, &record), Ending::Panic);
+    drop(monitor);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_panic_while_writing_an_incident_does_not_wait_on_its_own_lock() {
+    let root = temp();
+    let monitor =
+        Monitor::start_with(Some(root.clone()), build(), Duration::from_secs(60)).unwrap();
+    let held = monitor.inner.writing.lock().unwrap();
+    let outer = Writing::enter();
+    let started = Instant::now();
+    monitor
+        .inner
+        .record_panic("inside a write", None, "backtrace".into());
+    assert!(started.elapsed() < WRITE_WAIT / 2);
+    assert_eq!(incidents(&root)[0]["panic"]["message"], "inside a write");
+    drop(outer);
+    assert!(
+        !Writing::enter().0,
+        "leaving the outer write clears the mark"
+    );
+    drop(held);
+    drop(monitor);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn a_busy_bot_seat_reports_its_stall_from_any_thread() {
     let root = temp();
     let monitor =
@@ -144,15 +212,13 @@ fn a_busy_bot_seat_reports_its_stall_from_any_thread() {
 }
 
 #[test]
-fn a_minimized_window_waiting_for_frames_is_not_a_stall() {
+fn a_window_minimized_after_its_last_frame_is_not_a_stall() {
     let root = temp();
     let monitor =
         Monitor::start_with(Some(root.clone()), build(), Duration::from_millis(50)).unwrap();
-    monitor.frame(FrameContext {
-        minimized: Some(true),
-        ..context(0, None)
-    });
+    monitor.frame(context(0, None));
     let present = monitor.stage(Stage::Present, 0).unwrap();
+    monitor.minimized(true);
     std::thread::sleep(Duration::from_millis(300));
     assert!(incidents(&root).is_empty());
     drop(present);
@@ -324,7 +390,7 @@ fn endings_follow_the_last_unresolved_incident() {
         "a caught panic followed by recovery does not end the session"
     );
     let root = temp();
-    assert_eq!(ending(&root, true, false), Ending::Clean);
-    assert_eq!(ending(&root, false, true), Ending::InProgress);
-    assert_eq!(ending(&root, false, false), Ending::Abnormal);
+    assert_eq!(ending(&root, None, true, false), Ending::Clean);
+    assert_eq!(ending(&root, None, false, true), Ending::InProgress);
+    assert_eq!(ending(&root, None, false, false), Ending::Abnormal);
 }

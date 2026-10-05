@@ -518,7 +518,10 @@ in memory.
 
 Incidents go to `incidents.json` in the visible live match's open recording, and
 to the recovery root's log during playback, menus and LAN matches or once the
-recording closes. Each log keeps its newest 16 incidents and counts what it
+recording closes. An incident before a new recording's directory is ready goes
+to the root log tagged with that recording, which its ending still counts. A
+minimize reaches the watchdog when it happens, since a minimized window may run
+no further frame. Each log keeps its newest 16 incidents and counts what it
 dropped. Diagnostics are observational and never become replay input. Simulation
 and bot failures reproduce from the recorded replay, not from timing.
 

@@ -408,7 +408,11 @@ impl Game {
                 }
             })();
             match start {
-                Ok(writer) => self.recovery = Some(std::sync::Arc::new(writer)),
+                Ok(writer) => {
+                    let writer = std::sync::Arc::new(writer);
+                    oxide_kit::diagnostics::attach(&writer);
+                    self.recovery = Some(writer);
+                }
                 Err(error) => {
                     self.recovery_warned = true;
                     self.presentation

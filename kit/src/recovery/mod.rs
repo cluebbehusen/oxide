@@ -528,9 +528,18 @@ pub fn ending(directory: &Path, record: &Inspection) -> Ending {
     }
     crate::diagnostics::ending(
         directory,
+        recording_root(directory),
         record.clean,
         journal && read_lease(directory).is_none(),
     )
+}
+
+/// The recovery root holding a recording, which also keeps the log of
+/// incidents outside any open recording. Reports and relative paths have none.
+fn recording_root(directory: &Path) -> Option<&Path> {
+    directory
+        .parent()
+        .filter(|root| root.join("budget.lock").exists())
 }
 
 /// Export a consistent verified prefix and available diagnostics to a new report directory.
@@ -563,10 +572,7 @@ pub fn export(directory: &Path, destination: &Path, running_build: &BuildIdentit
             pretty_size(&manifest)? <= MAX_BYTES as usize,
             "report manifest too large"
         );
-        // Only a recording root holds the log of incidents outside any recording.
-        let unattached = directory
-            .parent()
-            .filter(|root| root.join("budget.lock").exists())
+        let unattached = recording_root(directory)
             .map(|root| (root.join(INCIDENTS), "unattached-incidents.json"));
         let sidecars = [
             INCIDENTS,
