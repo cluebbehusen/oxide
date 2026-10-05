@@ -1347,3 +1347,89 @@ fn every_gate_of_a_cut_draws_its_own_gun_and_charges() {
         );
     }
 }
+
+#[test]
+fn a_threat_on_the_home_side_of_a_cut_is_met_at_the_base() {
+    // A dead end off the west room, reaching further from home than the
+    // corridor's gate does.
+    let mut map: Vec<String> = crate::map::tests::CORRIDOR.map(str::to_owned).to_vec();
+    for row in [1, 2] {
+        let mut cells: Vec<char> = map[row].chars().collect();
+        for cell in &mut cells[15..=20] {
+            *cell = '.';
+        }
+        map[row] = cells.into_iter().collect();
+    }
+    let charge = |enemy: TilePos| {
+        let mut scenario = rooms(map.clone());
+        scenario.units.extend([
+            unit(0, UnitKind::Kestrel, 17, 2),
+            unit(1, UnitKind::Sentinel, enemy.x, enemy.y),
+        ]);
+        let state = scenario.build().unwrap();
+        let mut memory = Memory::default();
+        memory.observe(&ObservationData::fog_honest(&state, PlayerId(0)));
+        offer(
+            &wanted(&scenario, &state, &memory, 85),
+            BuildingKind::ScuttleCharge,
+        )
+        .map(|(anchor, _)| anchor)
+        .expect("a charge is wanted")
+    };
+    let model = map_model(&map);
+    let cut = model.cut(PlayerId(0), PlayerId(1), 0).unwrap();
+    let gated = |tile: TilePos| cut.gates.iter().any(|gate| gate.tiles.contains(&tile));
+    assert!(
+        gated(charge(TilePos::new(30, 7))),
+        "premise: a threat beyond is met at the gate"
+    );
+    let pocket = TilePos::new(20, 1);
+    assert!(
+        model.distance(PlayerId(0), pocket) > cut.distance + 20,
+        "premise: further from home than the cut, yet on its home side"
+    );
+    assert!(
+        !gated(charge(pocket)),
+        "a threat in the dead end is met at the base"
+    );
+}
+
+/// The map model of `rows` with [`corridor`]'s seats.
+fn map_model(rows: &[String]) -> std::sync::Arc<crate::map::MapModel> {
+    map(&rooms(rows.to_vec()))
+}
+
+#[test]
+fn charges_go_first_to_the_gate_the_guns_leave_open() {
+    let mut scenario = rooms(crate::map::tests::ways(&[1, 2, 12, 13]));
+    let model = map(&scenario);
+    let cut = model.cut(PlayerId(0), PlayerId(1), 0).unwrap();
+    let holds = |anchor: TilePos| {
+        (0..cut.gates.len()).min_by_key(|index| {
+            cut.gates[*index]
+                .tiles
+                .iter()
+                .map(|tile| tile.chebyshev(anchor))
+                .min()
+        })
+    };
+    let charge = |scenario: &Scenario| {
+        let state = scenario.build().unwrap();
+        offer(
+            &wanted(scenario, &state, &Memory::default(), 85),
+            BuildingKind::ScuttleCharge,
+        )
+        .map(|(anchor, _)| anchor)
+        .expect("a charge is wanted")
+    };
+    let first = holds(charge(&scenario)).unwrap();
+    // Turrets along the way through the gate the first charge went to.
+    let gate = &cut.gates[first];
+    let mouth = *gate.tiles.iter().min().unwrap();
+    for step in [-2, 4, 8] {
+        scenario
+            .buildings
+            .push(building(0, BuildingKind::Turret, mouth.x + step, mouth.y));
+    }
+    assert_eq!(holds(charge(&scenario)), Some(1 - first));
+}

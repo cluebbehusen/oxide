@@ -172,6 +172,8 @@ struct Approach {
     /// Points along the way in, beyond the edge or from each of the cut's
     /// gates, in doubled coordinates.
     samples: Vec<(i64, i64)>,
+    /// At a cut, the gate each sample leads from.
+    gate_of: Vec<usize>,
     /// For each sample, in thousandths, how far own weapons covering it fall
     /// short of holding off the threat along the way: two thousand where none
     /// covers it, none once they hold.
@@ -662,32 +664,52 @@ impl<'a> Guard<'a> {
                 continue;
             }
             let health = health(self.memory, observation.tick, approach.source, self.stakes);
-            // Only the share of the approach the guns leave open.
-            let open = approach.open.iter().sum::<u64>() / approach.open.len().max(1) as u64;
-            let need = (health * 1_000 / ATTACKER_MARGIN * open / 2_000)
-                .div_ceil(u64::from(CHARGE_DAMAGE));
+            // Charges deal the threat's health in the share of the way the
+            // guns covering it leave open, of the samples `counts`, one body
+            // to a blast.
+            let need = |counts: &dyn Fn(usize) -> bool, share: (u64, u64)| {
+                let open: Vec<u64> = approach
+                    .open
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| counts(*index))
+                    .map(|(_, open)| *open)
+                    .collect();
+                let open = open.iter().sum::<u64>() / open.len().max(1) as u64;
+                (health * 1_000 / ATTACKER_MARGIN * open / 2_000 * share.0 / share.1.max(1))
+                    .div_ceil(u64::from(CHARGE_DAMAGE))
+            };
             let worth = asset.value * 2 * self.weight(approach, BuildingKind::ScuttleCharge);
             if let Some(cut) = &approach.cut {
-                let laid = |gate: &Gate| {
-                    charges
-                        .iter()
-                        .filter(|charge| gate.tiles.contains(charge))
-                        .count() as u64
-                };
-                if cut.gates.iter().map(laid).sum::<u64>() >= need {
-                    continue;
-                }
-                // Gates fill in proportion to their width.
+                // Each gate holds its share of the threat by width, less what
+                // the guns covering its own way on hold.
+                let total = cut.gates.iter().map(|gate| gate.width() as u64).sum();
                 let rank =
                     |tile: &TilePos| (self.frame.rank(approach.source, doubled(*tile)), *tile);
-                let mut gates: Vec<&Gate> = cut.gates.iter().collect();
-                gates.sort_by_key(|gate| {
-                    (
-                        laid(gate) * 1_000 / gate.width() as u64,
-                        self.frame.rank(approach.source, gate.centre),
-                    )
-                });
-                let tile = gates.into_iter().find_map(|gate| {
+                let mut short: Vec<(Reverse<u64>, _, &Gate)> = cut
+                    .gates
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, gate)| {
+                        let laid = charges
+                            .iter()
+                            .filter(|charge| gate.tiles.contains(charge))
+                            .count() as u64;
+                        let need = need(
+                            &|sample| approach.gate_of.get(sample) == Some(&index),
+                            (gate.width() as u64, total),
+                        );
+                        (laid < need).then(|| {
+                            (
+                                Reverse(need - laid),
+                                self.frame.rank(approach.source, gate.centre),
+                                gate,
+                            )
+                        })
+                    })
+                    .collect();
+                short.sort_by_key(|(short, rank, _)| (*short, *rank));
+                let tile = short.into_iter().find_map(|(_, _, gate)| {
                     let mut tiles = gate.tiles.clone();
                     tiles.sort_by_key(rank);
                     tiles
@@ -708,7 +730,7 @@ impl<'a> Guard<'a> {
                 .iter()
                 .filter(|charge| field.holds(doubled(**charge)))
                 .count() as u64;
-            if laid >= need {
+            if laid >= need(&|_| true, (1, 1)) {
                 continue;
             }
             let Some((row, tile)) = field.first(
@@ -1688,23 +1710,25 @@ fn approach(known: &Known<'_>, asset: &Asset, domain: Domain) -> Option<Approach
         && map.start(observation.me) == Some(asset.anchor))
     .then(|| held(known, asset, source))
     .flatten();
-    let (edge, mut samples) = match &cut {
+    let (edge, mut samples, gate_of): (i64, Vec<(i64, i64)>, Vec<usize>) = match &cut {
         // Each gate, and the way on from it.
-        Some(cut) => (
-            0,
-            cut.gates
+        Some(cut) => {
+            let (samples, gate_of) = cut
+                .gates
                 .iter()
-                .flat_map(|gate| {
+                .enumerate()
+                .flat_map(|(index, gate)| {
                     let mut samples = vec![gate.centre];
                     samples.extend(along(gate.centre, source, 0, &APPROACH));
                     samples.truncate(APPROACH.len());
-                    samples
+                    samples.into_iter().map(move |sample| (sample, index))
                 })
-                .collect(),
-        ),
+                .unzip();
+            (0, samples, gate_of)
+        }
         None => {
             let edge = edge(asset, source);
-            (edge, along(centre, source, edge, &APPROACH))
+            (edge, along(centre, source, edge, &APPROACH), Vec::new())
         }
     };
     if samples.is_empty() {
@@ -1714,6 +1738,7 @@ fn approach(known: &Known<'_>, asset: &Asset, domain: Domain) -> Option<Approach
         edge,
         cut,
         samples,
+        gate_of,
         open: Vec::new(),
         spotted: Vec::new(),
         far: Vec::new(),
@@ -1726,7 +1751,8 @@ fn approach(known: &Known<'_>, asset: &Asset, domain: Domain) -> Option<Approach
 
 /// The cut the start's base holds on its way in from `source`: the narrowest
 /// beyond the reach of its buildings across the way to the hostile start
-/// nearest `source`, unless the threat already stands inside it.
+/// nearest `source`, while the threat stands beyond it, so that its way in
+/// crosses it.
 fn held(known: &Known<'_>, asset: &Asset, source: (i64, i64)) -> Option<Held> {
     let (map, me) = (known.map, known.observation.me);
     let reach = asset
@@ -1755,7 +1781,7 @@ fn held(known: &Known<'_>, asset: &Asset, source: (i64, i64)) -> Option<Held> {
         i32::try_from(source.0.div_euclid(2)).ok()?,
         i32::try_from(source.1.div_euclid(2)).ok()?,
     );
-    (map.distance(me, at) > cut.distance.saturating_add(20)).then(|| Held {
+    (!cut.holds(at)).then(|| Held {
         gates: cut.gates.clone(),
         distance: cut.distance,
     })

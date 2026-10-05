@@ -120,32 +120,33 @@ in front of the base's edge, the building furthest toward it: enemies in sight,
 else enemies it remembers, else known enemy buildings or the nearest hostile
 start. Where every ground way in from a hostile start runs through a cut, at
 most three gates a few units abreast each, together narrower than their distance
-from the start, beyond the base's buildings and short of the threat, the guns
-stand on the home side of each gate instead, holding the narrowest such cut; no
-building stands in a gate. Ground threats count only where ground connects them
-to the building, except that a seat under the stance's minimum army also puts up
-a Turret against enemy buildings and starts across a chasm, whose units could
-land. Flak Turrets answer seen or remembered enemy aircraft or a known enemy
-Airworks. A gun holds off the army scrap of Sentinels that would match its
-damage and health in a fight, at its current tier, a splash shell counting
-several hits when the armed enemies behind that approach gather in clumps, and
-none of the share of the threat that can hit it from beyond its reach or from
-inside its minimum range. Guns hold a threat once together they hold off its
-value divided by the margin an attack is assumed to bring over a defense, the
-same at every difficulty; the threat is the armed enemies known behind the
-approach, on ground connected to the building unless they could only land, and
-at least an army at the stance's minimum. Each site is an investment worth the
-shortfall it closes at the points of the approach it covers, from the edge or
-each gate outward, at most what the gun holds off at each, per scrap of its
-price, by the building's value, by how sure the seat is of the threat, and by
-personality: fortification for Turrets and Bastions, fortification and support
-for Flak Turrets. A seat under the stance's minimum army with no Turret puts one
-up before any tech, whatever its fortification: one gun holds an early rush that
-a tech building still going up would not. A Bastion counts only ground the
-seat's or an ally's buildings see. When the threat is only a guess from public
-facts, equal sites go to the one nearest the building; otherwise to the one
-nearest the threat. Sites go only on ground where one of the seat's Harvesters
-stands to build them, and a site the simulation refused is skipped for a while.
+from the start and clear of Extractor frames and expansion sites, beyond the
+base's buildings and with the threat beyond it, the guns stand on the home side
+of each gate instead, holding the narrowest such cut; no building stands in a
+gate. Ground threats count only where ground connects them to the building,
+except that a seat under the stance's minimum army also puts up a Turret against
+enemy buildings and starts across a chasm, whose units could land. Flak Turrets
+answer seen or remembered enemy aircraft or a known enemy Airworks. A gun holds
+off the army scrap of Sentinels that would match its damage and health in a
+fight, at its current tier, a splash shell counting several hits when the armed
+enemies behind that approach gather in clumps, and none of the share of the
+threat that can hit it from beyond its reach or from inside its minimum range.
+Guns hold a threat once together they hold off its value divided by the margin
+an attack is assumed to bring over a defense, the same at every difficulty; the
+threat is the armed enemies known behind the approach, on ground connected to
+the building unless they could only land, and at least an army at the stance's
+minimum. Each site is an investment worth the shortfall it closes at the points
+of the approach it covers, from the edge or each gate outward, at most what the
+gun holds off at each, per scrap of its price, by the building's value, by how
+sure the seat is of the threat, and by personality: fortification for Turrets
+and Bastions, fortification and support for Flak Turrets. A seat under the
+stance's minimum army with no Turret puts one up before any tech, whatever its
+fortification: one gun holds an early rush that a tech building still going up
+would not. A Bastion counts only ground the seat's or an ally's buildings see.
+When the threat is only a guess from public facts, equal sites go to the one
+nearest the building; otherwise to the one nearest the threat. Sites go only on
+ground where one of the seat's Harvesters stands to build them, and a site the
+simulation refused is skipped for a while.
 
 Once the opening economy is up, a seat whose army is still under the stance's
 minimum weighs a hostile start nearly like seen enemies, so most seats put up an
@@ -165,14 +166,14 @@ ground. Guns, Arrays, Barricades and Repair Bays stand off the lanes of the
 base's layout. Once a Fabricator stands, Scuttle Charges mine the straight way
 in to each base and Extractor on its own: the lanes within a band about a blast
 wide, filled from a few tiles beyond the edge toward the threat, or across the
-gates of the cut it holds, each in proportion to its width. On ground no Foundry
-lays out they may go anywhere. A buried charge blocks nothing and a blast never
-sets off the seat's own charges, so they stand side by side. A field holds
-enough charges to deal the health of the threat along the way divided by that
-margin, in the share of the approach the guns leave open, one body to a blast,
-the threat counting at least an army of Sentinels at the stance's minimum.
-Fortification weighs Barricades; fortification and guile weigh Arrays and
-charges.
+gates of the cut it holds, each by its width and the share of its way on the
+guns leave open. On ground no Foundry lays out they may go anywhere. A buried
+charge blocks nothing and a blast never sets off the seat's own charges, so they
+stand side by side. A field holds enough charges to deal the health of the
+threat along the way divided by that margin, in the share of the approach the
+guns leave open, one body to a blast, the threat counting at least an army of
+Sentinels at the stance's minimum. Fortification weighs Barricades;
+fortification and guile weigh Arrays and charges.
 
 A Repair Bay goes up beside a guarded base's building where its aura reaches the
 most missing value among the seat's wounded ground units and damaged buildings
