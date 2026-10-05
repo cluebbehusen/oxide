@@ -246,6 +246,14 @@ impl Vision {
         self.visible.get(pos).copied().unwrap_or(false)
     }
 
+    /// Drops one tile from current sight until the next vision refresh.
+    #[cfg(test)]
+    pub(crate) fn conceal(&mut self, pos: TilePos) {
+        if let Some(visible) = self.visible.get_mut(pos) {
+            *visible = false;
+        }
+    }
+
     /// Whether the player has ever seen `pos`.
     pub fn explored(&self, pos: TilePos) -> bool {
         self.explored.get(pos).copied().unwrap_or(false)

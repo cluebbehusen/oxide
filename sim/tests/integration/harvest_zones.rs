@@ -660,6 +660,99 @@ fn a_hidden_artillery_hit_diverts_autonomous_work_without_revealing_the_gun() {
 }
 
 #[test]
+fn a_seen_raider_leaves_no_caution_behind_once_it_is_gone() {
+    let node = TilePos::new(9, 2);
+    let mut state = state_with_salvage(
+        24,
+        &[(node, 100)],
+        &[],
+        vec![
+            unit(0, UnitKind::Harvester, 5, 2),
+            unit(1, UnitKind::Sentinel, 7, 2),
+            unit(0, UnitKind::Sentinel, 14, 8),
+        ],
+        vec![],
+    );
+    let (worker, raider, defender) = (
+        state.units()[0].id,
+        state.units()[1].id,
+        state.units()[2].id,
+    );
+    assert!(
+        state.can_see(PlayerId(0), state.unit(raider).unwrap().tile()),
+        "the victim's team watches the raider"
+    );
+    let max_hp = UnitKind::Harvester.stats().max_hp;
+    state.tick(&[cmd(
+        1,
+        Command::Attack {
+            units: vec![raider],
+            target: Target::Unit(worker).into(),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 100, |state, _| {
+        state.unit(worker).unwrap().hp < max_hp
+    });
+    let mut doc = serde_json::to_value(&state).unwrap();
+    assert!(
+        doc["vision"][0].get("salvage_incidents").is_none(),
+        "a hit from a visible shooter is live danger, not remembered danger"
+    );
+
+    let raider_slot = state
+        .units()
+        .iter()
+        .position(|unit| unit.id == raider)
+        .expect("raider exists");
+    doc["units"][raider_slot]["hp"] = json!(1);
+    state = serde_json::from_value(doc).unwrap();
+    state.tick(&[cmd(
+        0,
+        Command::Attack {
+            units: vec![defender],
+            target: Target::Unit(raider).into(),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 200, |state, _| state.unit(raider).is_none());
+    state = set_cargo(
+        state,
+        worker,
+        UnitKind::Harvester.stats().harvest.unwrap().capacity,
+    );
+    state.tick(&[cmd(
+        0,
+        Command::Harvest {
+            units: vec![worker],
+            node,
+            queue: false,
+        },
+    )]);
+    let events = run_until(&mut state, 60, |_, events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                Event::ScrapDeposited {
+                    player: PlayerId(0),
+                    ..
+                }
+            )
+        })
+    });
+    assert!(
+        !events.iter().any(|event| matches!(
+            event,
+            Event::OrderStalled {
+                reason: oxide_sim::StallReason::DangerHold,
+                ..
+            }
+        )),
+        "nothing remembered the gone raider's hits near the Foundry"
+    );
+}
+
+#[test]
 fn an_own_loss_retires_a_worker_home_before_it_surfaces_idle() {
     let anchor = TilePos::new(13, 5);
     let exposed = TilePos::new(15, 5);

@@ -24,6 +24,9 @@ struct PendingHit {
     /// Incoming direction for resolving a tied warning tile on an even-sized
     /// footprint. A same-center unit attack falls back to chassis facing.
     approach: chassis::fx::Vec2Fx,
+    /// Where the shot was fired from: the shooter's position, or a shell's
+    /// launch point.
+    origin: chassis::fx::Vec2Fx,
 }
 
 impl PendingHit {
@@ -48,6 +51,7 @@ impl PendingHit {
             damage,
             impact,
             approach,
+            origin: from,
         }
     }
 }
@@ -325,7 +329,7 @@ fn resolve_hits(
                     let relevant_loss =
                         hit.damage >= v.hp && v.domain() == crate::stats::Domain::Ground;
                     if v.hp > 0 && hit.damage > 0 && (relevant_hit || relevant_loss) {
-                        incidents.push((v.player, v.tile()));
+                        incidents.push((v.player, v.tile(), hit.origin));
                     }
                     super::damage::unit(v, hit.damage, events);
                 }
@@ -352,15 +356,20 @@ fn resolve_hits(
                         && (relevant_hit || relevant_loss)
                         && let Some(tile) = incident_tile
                     {
-                        incidents.push((b.player, tile));
+                        incidents.push((b.player, tile, hit.origin));
                     }
                     super::damage::building(b, hit.damage, events);
                 }
             }
         }
     }
-    for (victim, tile) in incidents {
-        state.record_salvage_incident(victim, tile);
+    for (victim, tile, origin) in incidents {
+        // A shooter the victim's team can see is already live danger, which
+        // ends when it dies or leaves sight. Incident memory stands in only
+        // for fire from out of sight.
+        if !state.can_see(victim, chassis::grid::TilePos::containing(origin)) {
+            state.record_salvage_incident(victim, tile);
+        }
     }
     let starts: Vec<_> = builds
         .iter()

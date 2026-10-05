@@ -724,10 +724,12 @@ reported movement. Unmatched tracks end immediately, and ids are never reused.
 
 Salvage-relevant hostile incidents, such as a Harvester hit or an allied loss,
 remember only the victim's tile for a bounded caution period, never the
-attacker's identity or location. A worker already inside a remembered static
-firing envelope may retreat laterally or outward, without approaching any
-overlapping gun. This escape rule never makes the source eligible for work and
-does not permit crossing mobile or radar pressure.
+attacker's identity or location. Only fire from an attacker the victim's team
+cannot see leaves an incident; a visible attacker is live danger that ends when
+it dies or leaves sight. A worker already inside a remembered static firing
+envelope may retreat laterally or outward, without approaching any overlapping
+gun. This escape rule never makes the source eligible for work and does not
+permit crossing mobile or radar pressure.
 
 All allegiance checks route through normalized team ids. Teammates share vision,
 cannot target one another, and win or lose as a team. Resignation makes a seat

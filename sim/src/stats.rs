@@ -2259,10 +2259,13 @@ pub const UNLOAD_TICKS: u8 = 10;
 /// blip must not retire an otherwise healthy work zone.
 pub const HARVEST_RADAR_DANGER_RADIUS: i32 = 4;
 
-/// How long an observed hit on an allied asset keeps its location unsafe
-/// for autonomous salvage work. The memory contains only the ally's impact
-/// tile, never the hidden attacker's identity or position.
-pub const HARVEST_INCIDENT_MEMORY_TICKS: crate::Tick = 15 * crate::TICKS_PER_SECOND as crate::Tick;
+/// How long a hit from an unseen attacker keeps the allied victim's tile
+/// unsafe for autonomous salvage work. The memory contains only that impact
+/// tile, never the hidden attacker's identity or position. It outlasts the
+/// slowest artillery cooldown (Avalanche, 6 s), so sustained fire from out of
+/// sight keeps the memory alive while a stopped barrage releases workers soon
+/// after.
+pub const HARVEST_INCIDENT_MEMORY_TICKS: crate::Tick = 8 * crate::TICKS_PER_SECOND as crate::Tick;
 
 /// Radius around a recent allied impact or loss that autonomous Harvest
 /// treats as unsafe while the incident memory is live.
