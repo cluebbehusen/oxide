@@ -6,7 +6,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc,
 };
-use std::time::Instant;
 
 use crate::controller::SeatController;
 use oxide_sim::{PlayerCommand, State};
@@ -36,19 +35,10 @@ pub fn serially<T>(work: impl FnOnce() -> T) -> T {
 /// Single-seat ticks, unavailable workers, and concurrent matches use the serial
 /// path. Worker availability never changes command ordering or bot inputs.
 pub fn commands(state: &State, bots: &mut [SeatController]) -> Vec<PlayerCommand> {
-    commands_observed(state, bots, None)
-}
-
-/// Preserve ordinary scheduling while optionally observing each seat on its worker.
-pub fn commands_observed(
-    state: &State,
-    bots: &mut [SeatController],
-    observer: Option<&crate::diagnostics::Recorder>,
-) -> Vec<PlayerCommand> {
     if !parallel_due(state, bots) {
-        return serial_commands(state, bots, observer);
+        return serial_commands(state, bots);
     }
-    executor().commands_observed(state, bots, observer)
+    executor().commands(state, bots)
 }
 
 fn executor() -> &'static BotExecutor {
@@ -62,13 +52,9 @@ fn executor() -> &'static BotExecutor {
 /// serial batch policy or tick with no due seat leaves the caller unchanged.
 /// Dropping the handle discards the result; the bounded worker keeps its permit
 /// until it finishes, so abandoned sessions cannot accumulate queued jobs.
-pub fn prepare(
-    state: &Arc<State>,
-    bots: &[SeatController],
-    observer: Option<Arc<crate::diagnostics::Recorder>>,
-) -> Option<PendingDecision> {
+pub fn prepare(state: &Arc<State>, bots: &[SeatController]) -> Option<PendingDecision> {
     if may_prepare(state, bots) {
-        executor().prepare(state, bots, observer)
+        executor().prepare(state, bots)
     } else {
         None
     }
@@ -77,7 +63,6 @@ pub fn prepare(
 struct Decision {
     bots: Vec<SeatController>,
     commands: Vec<PlayerCommand>,
-    completed: Instant,
 }
 
 /// One session's speculative batch. Its world identity and tick are checked
@@ -91,21 +76,13 @@ pub struct PendingDecision {
 impl PendingDecision {
     /// Join once, install complete controllers, then return their ordered commands.
     /// Worker failure propagates without installing partially advanced controllers.
-    pub fn finish(
-        self,
-        state: &Arc<State>,
-        bots: &mut Vec<SeatController>,
-        observer: Option<&crate::diagnostics::Recorder>,
-    ) -> Vec<PlayerCommand> {
+    pub fn finish(self, state: &Arc<State>, bots: &mut Vec<SeatController>) -> Vec<PlayerCommand> {
         assert!(
             self.world.ptr_eq(&Arc::downgrade(state)),
             "bot batch belongs to another world"
         );
         assert_eq!(self.tick, state.current_tick(), "bot batch tick changed");
-        let joined = Instant::now();
-        let scope = observer.and_then(|o| o.span(crate::diagnostics::Phase::BotJoin, self.tick));
         let result = self.result.recv().expect("bot worker disconnected");
-        drop(scope);
         let decision = result.unwrap_or_else(|failure| std::panic::resume_unwind(failure));
         assert!(
             bots.iter()
@@ -113,12 +90,6 @@ impl PendingDecision {
                 .eq(decision.bots.iter().map(SeatController::player)),
             "bot batch roster changed"
         );
-        if let Some(observer) = observer {
-            observer.bot_lead(
-                self.tick,
-                joined.saturating_duration_since(decision.completed),
-            );
-        }
         *bots = decision.bots;
         decision.commands
     }
@@ -138,26 +109,13 @@ fn parallel_due(state: &State, bots: &[SeatController]) -> bool {
             == 2
 }
 
-fn serial_commands(
-    state: &State,
-    bots: &mut [SeatController],
-    observer: Option<&crate::diagnostics::Recorder>,
-) -> Vec<PlayerCommand> {
-    bots.iter_mut()
-        .flat_map(|bot| act(state, bot, observer))
-        .collect()
+fn serial_commands(state: &State, bots: &mut [SeatController]) -> Vec<PlayerCommand> {
+    bots.iter_mut().flat_map(|bot| act(state, bot)).collect()
 }
 
-fn act(
-    state: &State,
-    bot: &mut SeatController,
-    observer: Option<&crate::diagnostics::Recorder>,
-) -> Vec<PlayerCommand> {
-    if let Some(observer) = observer {
-        observer.bot_commands(state, bot)
-    } else {
-        bot.act(state)
-    }
+fn act(state: &State, bot: &mut SeatController) -> Vec<PlayerCommand> {
+    let _seat = crate::diagnostics::seat(bot.player().0, state.current_tick());
+    bot.act(state)
 }
 
 #[derive(Default)]
@@ -189,20 +147,12 @@ impl BotExecutor {
             .map(|_| Permit(self.busy.clone()))
     }
 
-    fn prepare(
-        &self,
-        state: &Arc<State>,
-        bots: &[SeatController],
-        observer: Option<Arc<crate::diagnostics::Recorder>>,
-    ) -> Option<PendingDecision> {
+    fn prepare(&self, state: &Arc<State>, bots: &[SeatController]) -> Option<PendingDecision> {
         if !may_prepare(state, bots) {
             return None;
         }
         let pool = self.pool.as_ref()?;
         let permit = self.acquire()?;
-        let _scope = observer
-            .as_ref()
-            .and_then(|o| o.span(crate::diagnostics::Phase::BotDispatch, state.current_tick()));
         let pending_world = Arc::downgrade(state);
         let tick = state.current_tick();
         let state = state.clone();
@@ -210,17 +160,10 @@ impl BotExecutor {
         let (send, result) = mpsc::channel();
         pool.spawn(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let batches: Vec<_> = bots
-                    .par_iter_mut()
-                    .map(|bot| act(&state, bot, observer.as_deref()))
-                    .collect();
+                let batches: Vec<_> = bots.par_iter_mut().map(|bot| act(&state, bot)).collect();
                 let commands = batches.into_iter().flatten().collect();
                 drop(state);
-                Decision {
-                    bots,
-                    commands,
-                    completed: Instant::now(),
-                }
+                Decision { bots, commands }
             }));
             drop(permit);
             let _ = send.send(result);
@@ -232,31 +175,18 @@ impl BotExecutor {
         })
     }
 
-    #[cfg(test)]
     fn commands(&self, state: &State, bots: &mut [SeatController]) -> Vec<PlayerCommand> {
-        self.commands_observed(state, bots, None)
-    }
-
-    fn commands_observed(
-        &self,
-        state: &State,
-        bots: &mut [SeatController],
-        observer: Option<&crate::diagnostics::Recorder>,
-    ) -> Vec<PlayerCommand> {
         if parallel_due(state, bots)
             && let Some(pool) = &self.pool
             // Batch runners already parallelize matches. A busy pool must not
             // serialize those matches behind another match's planning work.
             && let Some(_permit) = self.acquire()
         {
-            let batches: Vec<Vec<PlayerCommand>> = pool.install(|| {
-                bots.par_iter_mut()
-                    .map(|bot| act(state, bot, observer))
-                    .collect()
-            });
+            let batches: Vec<Vec<PlayerCommand>> =
+                pool.install(|| bots.par_iter_mut().map(|bot| act(state, bot)).collect());
             batches.into_iter().flatten().collect()
         } else {
-            serial_commands(state, bots, observer)
+            serial_commands(state, bots)
         }
     }
 }
@@ -369,7 +299,7 @@ mod tests {
             } else {
                 executor.commands(&state, &mut bots)
             };
-            assert_eq!(commands, serial_commands(&state, &mut expected_bots, None));
+            assert_eq!(commands, serial_commands(&state, &mut expected_bots));
             state.tick(&commands);
         }
     }

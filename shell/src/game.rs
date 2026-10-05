@@ -5,6 +5,7 @@ use anyhow::Result;
 use chassis::replay::Replay;
 use macroquad::prelude::{Vec2, vec2};
 use oxide_kit::controller::{SeatController, seat_controllers};
+use oxide_kit::diagnostics::{Stage, StageGuard};
 use oxide_protocol::hash_hex;
 use oxide_sim::{
     Building, BuildingId, Command, Event, PlayerCommand, PlayerId, SIM_VERSION, Scenario, State,
@@ -121,9 +122,7 @@ pub struct Game {
     pub(crate) recovery_root: Option<std::path::PathBuf>,
     pub(crate) recovery: Option<std::sync::Arc<oxide_kit::recovery::RecoveryWriter>>,
     recovery_warned: bool,
-    diagnostics_warned: bool,
     pub(crate) recovery_source: Option<std::path::PathBuf>,
-    pub(crate) diagnostics: Option<Arc<oxide_kit::diagnostics::Recorder>>,
     /// Commands staged for the next tick (human + debug socket).
     pub(crate) pending: PendingCommands,
     /// Whether the current session content is already autosaved; a new
@@ -167,7 +166,6 @@ impl Game {
             recorder,
             live_stats,
             recovery,
-            diagnostics,
             presentation,
             ..
         } = self;
@@ -176,15 +174,7 @@ impl Game {
             if let Some(writer) = &recovery {
                 finish_recording(writer, state.current_tick());
             }
-            drop((
-                state,
-                bots,
-                bot_decision,
-                recorder,
-                live_stats,
-                recovery,
-                diagnostics,
-            ));
+            drop((state, bots, bot_decision, recorder, live_stats, recovery));
         }
     }
 
@@ -269,9 +259,7 @@ impl Game {
             recovery_root: None,
             recovery: None,
             recovery_warned: false,
-            diagnostics_warned: false,
             recovery_source: None,
-            diagnostics: None,
             end_stats: None,
             live_stats,
             concede_stats: None,
@@ -288,15 +276,7 @@ impl Game {
     /// onto the same log. In a deterministic sim a replay *is* a save file
     /// — this is "load game".
     pub fn from_replay(replay: GameReplay) -> Result<Self> {
-        Self::from_replay_observed(replay, None)
-    }
-
-    pub(crate) fn from_replay_observed(
-        replay: GameReplay,
-        diagnostics: Option<&oxide_kit::diagnostics::Recorder>,
-    ) -> Result<Self> {
-        let _load = diagnostics
-            .and_then(|recorder| recorder.span(oxide_kit::diagnostics::Phase::ReplayLoad, 0));
+        let _load = oxide_kit::diagnostics::stage(Stage::ReplayLoad, 0);
         // Untrusted file: enforce the invariants recording guarantees, and
         // refuse cross-version saves outright — resuming one would keep
         // recording onto a log that can no longer reproduce.
@@ -334,10 +314,8 @@ impl Game {
         let mut game = Self::new(scenario)?;
         let mut boundary_fog = game.presentation.boundary_fog.clone();
         for _ in 0..total {
-            if let Some(recorder) = diagnostics {
-                recorder.replay_progress(state.current_tick());
-            }
-            let _ = oxide_kit::bot_execution::commands_observed(&state, &mut bots, diagnostics);
+            oxide_kit::diagnostics::progress(state.current_tick());
+            let _ = oxide_kit::bot_execution::commands(&state, &mut bots);
             let commands: Vec<PlayerCommand> = cursor
                 .take_tick(state.current_tick())
                 .iter()
@@ -375,37 +353,9 @@ impl Game {
         Ok(game)
     }
 
-    pub(crate) fn configure_diagnostics(&mut self, enabled: bool) {
-        if !enabled {
-            self.diagnostics_warned = false;
-        }
-        if enabled && self.diagnostics.is_none() && !self.diagnostics_warned {
-            self.start_recovery();
-            if let Some(recording) = &self.recovery {
-                match oxide_kit::diagnostics::Recorder::start(recording.clone()) {
-                    Ok(recorder) => {
-                        recorder.install_panic_hook();
-                        self.diagnostics = Some(Arc::new(recorder));
-                    }
-                    Err(error) => {
-                        self.diagnostics_warned = true;
-                        self.presentation
-                            .toast(format!("Diagnostics unavailable: {error}"));
-                    }
-                }
-            }
-        }
-        if let Some(recorder) = &self.diagnostics {
-            recorder.set_enabled(enabled);
-        }
-    }
-    pub(crate) fn diagnostic_span(
-        &self,
-        phase: oxide_kit::diagnostics::Phase,
-    ) -> Option<oxide_kit::diagnostics::Span> {
-        self.diagnostics
-            .as_ref()
-            .and_then(|recorder| recorder.span(phase, self.state.current_tick()))
+    /// Enter a main-thread diagnostic stage at this session's tick.
+    pub(crate) fn diagnostic_stage(&self, stage: Stage) -> Option<StageGuard<'static>> {
+        oxide_kit::diagnostics::stage(stage, self.state.current_tick())
     }
 
     /// Starts the crash-recovery journal when a root is configured. A
@@ -458,7 +408,11 @@ impl Game {
                 }
             })();
             match start {
-                Ok(writer) => self.recovery = Some(std::sync::Arc::new(writer)),
+                Ok(writer) => {
+                    let writer = std::sync::Arc::new(writer);
+                    oxide_kit::diagnostics::attach(&writer);
+                    self.recovery = Some(writer);
+                }
                 Err(error) => {
                     self.recovery_warned = true;
                     self.presentation
@@ -497,15 +451,11 @@ impl Game {
 
     /// This tick's bot commands, joining any background decision.
     fn bot_commands(&mut self) -> Vec<PlayerCommand> {
-        let _bot_scope = self.diagnostic_span(oxide_kit::diagnostics::Phase::Bots);
-        let observer = self
-            .diagnostics
-            .as_deref()
-            .filter(|recorder| recorder.enabled());
+        let _bot_stage = self.diagnostic_stage(Stage::Bots);
         if let Some(decision) = self.bot_decision.take() {
-            decision.finish(&self.state.0, &mut self.bots, observer)
+            decision.finish(&self.state.0, &mut self.bots)
         } else {
-            oxide_kit::bot_execution::commands_observed(&self.state, &mut self.bots, observer)
+            oxide_kit::bot_execution::commands(&self.state, &mut self.bots)
         }
     }
 
@@ -527,16 +477,16 @@ impl Game {
         if let Some(recovery) = &self.recovery {
             recovery.prepared(self.state.current_tick(), commands);
         }
-        let sim_scope = self.diagnostic_span(oxide_kit::diagnostics::Phase::Simulation);
+        let sim_stage = self.diagnostic_stage(Stage::Simulation);
         let report = Arc::get_mut(&mut self.state.0)
             .expect("bot decision retained the world after collection")
             .tick(commands);
-        drop(sim_scope);
+        drop(sim_stage);
         oxide_kit::controller::record_events(&mut self.bots, &report);
         if let Some(recovery) = &self.recovery {
             recovery.completed(self.state.current_tick());
         }
-        let _presentation_scope = self.diagnostic_span(oxide_kit::diagnostics::Phase::Presentation);
+        let _presentation_stage = self.diagnostic_stage(Stage::Presentation);
         self.presentation
             .boundary_fog
             .observe(&self.state, self.presentation.human);
@@ -691,11 +641,7 @@ impl Game {
 
     fn prepare_bot_decision(&mut self) {
         if self.bot_decision.is_none() {
-            self.bot_decision = oxide_kit::bot_execution::prepare(
-                &self.state.0,
-                &self.bots,
-                self.diagnostics.clone(),
-            );
+            self.bot_decision = oxide_kit::bot_execution::prepare(&self.state.0, &self.bots);
         }
     }
 
@@ -844,7 +790,6 @@ mod tests {
             std::env::temp_dir().join(format!("oxide-shell-recovery-{}", std::process::id()));
         let mut original = Game::new(Scenario::skirmish()).unwrap();
         original.recovery_root = Some(root.clone());
-        original.configure_diagnostics(true);
         original.advance_ticks(180);
         let writer = original.recovery.as_ref().unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -855,8 +800,7 @@ mod tests {
         let replay = oxide_kit::recovery::inspect(writer.directory())
             .unwrap()
             .replay;
-        let mut resumed =
-            Game::from_replay_observed(replay, original.diagnostics.as_deref()).unwrap();
+        let mut resumed = Game::from_replay(replay).unwrap();
         assert_eq!(original.hash_hex(), resumed.hash_hex());
         original.advance_ticks(120);
         resumed.advance_ticks(120);

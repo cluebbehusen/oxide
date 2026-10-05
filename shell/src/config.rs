@@ -195,9 +195,6 @@ impl MarkerPrefs {
 /// The whole persisted surface.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
-    /// Optional local detailed diagnostics; recovery recording is independent.
-    #[serde(default)]
-    pub diagnostics: bool,
     #[serde(default)]
     pub markers: MarkerPrefs,
     /// Optional performance HUD; older configs leave it disabled.
@@ -250,7 +247,6 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            diagnostics: false,
             markers: MarkerPrefs::default(),
             performance_display: PerformanceDisplay::Off,
             version: CONFIG_VERSION,

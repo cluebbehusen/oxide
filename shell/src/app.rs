@@ -37,6 +37,7 @@ use anyhow::{Context, Result};
 use chassis::rng::Pcg32;
 use macroquad::audio::{PlaySoundParams, Sound, play_sound};
 use macroquad::prelude::*;
+use oxide_kit::diagnostics::{Stage, StageGuard};
 use oxide_protocol::{
     CameraView, Key, MouseButton, OverlayView, RawEvent, Reply, Request, ResponseEnvelope,
     SavedView, ScreenshotView, UiView,
@@ -615,6 +616,13 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         }
     };
     mark("run enter (first frame)");
+    match oxide_kit::diagnostics::Monitor::start(
+        crate::paths::recovery_dir(),
+        crate::build_identity(),
+    ) {
+        Ok(monitor) => drop(monitor.install()),
+        Err(error) => eprintln!("Diagnostics unavailable: {error}"),
+    }
     // Subscribe to hardware input before the prologue: the whole load
     // below runs inside frame 1, and events dispatched before the
     // subscriber exists are discarded, not queued. Automation shells
@@ -644,43 +652,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
     let mut game = if let Some(path) = &args.replay {
         let replay =
             oxide_kit::load_replay(path).with_context(|| format!("loading replay {path}"))?;
-        let recording = if args.diagnostics || config.diagnostics {
-            crate::paths::recovery_dir().and_then(|root| {
-                let ticks = replay.meta.ticks.unwrap_or_else(|| {
-                    replay
-                        .commands
-                        .last()
-                        .map_or(0, |command| command.tick.saturating_add(1))
-                });
-                oxide_kit::recovery::RecoveryWriter::start(
-                    root,
-                    replay.clone(),
-                    ticks,
-                    crate::build_identity(),
-                )
-                .map(std::sync::Arc::new)
-                .map_err(|error| eprintln!("Recovery unavailable: {error}"))
-                .ok()
-            })
-        } else {
-            None
-        };
-        let diagnostics = recording.as_ref().and_then(|recording| {
-            oxide_kit::diagnostics::Recorder::start(recording.clone())
-                .map_err(|error| eprintln!("Diagnostics unavailable: {error}"))
-                .ok()
-        });
-        if let Some(recorder) = &diagnostics {
-            recorder.install_panic_hook();
-        }
-        let mut game = if diagnostics.is_some() {
-            Game::from_replay_observed(replay, diagnostics.as_ref())?
-        } else {
-            Game::from_replay(replay)?
-        };
-        game.recovery = recording;
-        game.diagnostics = diagnostics.map(std::sync::Arc::new);
-        game
+        Game::from_replay(replay)?
     } else {
         let scenario = match &args.scenario {
             Some(path) => Scenario::load(path).with_context(|| format!("loading {path}"))?,
@@ -813,40 +785,29 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                 app.menu_notice = Some((text, get_time() + 8.0));
             }
         }
-        let enabled = app.args.diagnostics || app.config.diagnostics;
-        if let Screen::Playback(playback) = &mut screen {
-            app.game.configure_diagnostics(false);
-            playback.configure_diagnostics(enabled, app.game.recovery_root.as_deref());
-            app.report_job
-                .remember_playback(playback.recording.as_ref());
-        } else {
-            app.game.configure_diagnostics(enabled);
-            if matches!(screen, Screen::Playing) {
-                app.report_job.remember_playback(None);
-            }
-        }
-        if let Some(recorder) = visible_diagnostics(&screen, &app) {
-            let (diagnostic_tick, diagnostic_units, diagnostic_buildings) =
-                visible_profile_state(&screen, &app);
-            recorder.frame(oxide_kit::diagnostics::FrameContext {
-                mode: visible_profile_mode(&screen),
-                tick: diagnostic_tick,
-                units: diagnostic_units,
-                buildings: diagnostic_buildings,
-                speed: visible_speed(&screen, &app.game),
-                width: screen_width() as u32,
-                height: screen_height() as u32,
-                dpi: macroquad::miniquad::window::dpi_scale() as f64,
-                paused: match &screen {
-                    Screen::Playback(playback) => playback.paused,
-                    Screen::Pause(_) => true,
-                    _ => app.game.presentation.paused,
-                },
-                minimized: input::reported_minimized(),
-            });
-        }
-        let input_diagnostic_scope =
-            visible_diagnostic_span(&screen, &app, oxide_kit::diagnostics::Phase::Input);
+        let (diagnostic_tick, diagnostic_units, diagnostic_buildings) =
+            visible_profile_state(&screen, &app);
+        oxide_kit::diagnostics::frame(oxide_kit::diagnostics::FrameContext {
+            screen: visible_profile_mode(&screen),
+            tick: diagnostic_tick,
+            units: diagnostic_units,
+            buildings: diagnostic_buildings,
+            speed: visible_speed(&screen, &app.game),
+            width: screen_width() as u32,
+            height: screen_height() as u32,
+            dpi: macroquad::miniquad::window::dpi_scale() as f64,
+            paused: match &screen {
+                Screen::Playback(playback) => playback.paused,
+                Screen::Pause(_) => true,
+                _ => app.game.presentation.paused,
+            },
+            minimized: input::reported_minimized(),
+            recording: match &screen {
+                Screen::Playback(_) => None,
+                _ => app.game.recovery.as_ref(),
+            },
+        });
+        let input_diagnostic_scope = visible_stage(&screen, &app, Stage::Input);
         app.game.poll_recovery();
         let time = FrameTime::measure(get_frame_time());
         if !rerun_pass {
@@ -868,10 +829,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         }
 
         drop(input_diagnostic_scope);
-        let frame_diagnostic_scope =
-            visible_diagnostic_span(&screen, &app, oxide_kit::diagnostics::Phase::Frame);
-        let screen_diagnostic_scope =
-            visible_diagnostic_span(&screen, &app, oxide_kit::diagnostics::Phase::Screen);
+        let screen_diagnostic_scope = visible_stage(&screen, &app, Stage::Draw);
         // Debug requests are control-plane work between presented frames, not
         // native frame work. Start timing after draining them so Resume and
         // status polling cannot become an artificial slow frame.
@@ -897,8 +855,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         render::set_viewport(screen_width(), screen_height());
         app.game.presentation.camera.update(time.presentation);
 
-        let input_diagnostic_scope =
-            visible_diagnostic_span(&screen, &app, oxide_kit::diagnostics::Phase::Input);
+        let input_diagnostic_scope = visible_stage(&screen, &app, Stage::Input);
         let mut events = if app.args.automation {
             Vec::new()
         } else {
@@ -1160,14 +1117,12 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         );
 
         drop(screen_diagnostic_scope);
-        drop(frame_diagnostic_scope);
         app.live_streak = next_live_streak(
             app.live_streak,
             began_playing,
             matches!(screen, Screen::Playing),
         );
-        let wait_diagnostic_scope =
-            visible_diagnostic_span(&screen, &app, oxide_kit::diagnostics::Phase::FrameWait);
+        let wait_diagnostic_scope = visible_stage(&screen, &app, Stage::Present);
         next_frame().await;
         drop(wait_diagnostic_scope);
     }
@@ -1205,23 +1160,8 @@ fn pause_menu(game: &Game) -> PauseScreen {
     }
 }
 
-fn visible_diagnostics<'a>(
-    screen: &'a Screen,
-    app: &'a App,
-) -> Option<&'a oxide_kit::diagnostics::Recorder> {
-    match screen {
-        Screen::Playback(playback) => playback.diagnostics.as_ref(),
-        _ => app.game.diagnostics.as_deref(),
-    }
-}
-
-fn visible_diagnostic_span(
-    screen: &Screen,
-    app: &App,
-    phase: oxide_kit::diagnostics::Phase,
-) -> Option<oxide_kit::diagnostics::Span> {
-    visible_diagnostics(screen, app)
-        .and_then(|recorder| recorder.span(phase, visible_tick(screen, app)))
+fn visible_stage(screen: &Screen, app: &App, stage: Stage) -> Option<StageGuard<'static>> {
+    oxide_kit::diagnostics::stage(stage, visible_tick(screen, app))
 }
 
 fn visible_tick(screen: &Screen, app: &App) -> u64 {
@@ -1853,8 +1793,7 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
             Request::LoadReplay { path } => oxide_kit::load_replay(&path)
                 .map_err(|err| format!("loading replay {path}: {err}"))
                 .and_then(|replay| {
-                    Game::from_replay_observed(replay, game.diagnostics.as_deref())
-                        .map_err(|err| format!("resuming replay: {err:#}"))
+                    Game::from_replay(replay).map_err(|err| format!("resuming replay: {err:#}"))
                 })
                 .map(|fresh| {
                     app.tutorial = None;
@@ -1928,7 +1867,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnostics_follow_playback_speed_instead_of_the_hidden_live_clock() {
+    fn frame_context_follows_playback_speed_instead_of_the_hidden_live_clock() {
         use oxide_protocol::DebugSession;
 
         let mut live = Game::new(Scenario::skirmish()).unwrap();

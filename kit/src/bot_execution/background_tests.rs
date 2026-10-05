@@ -64,18 +64,18 @@ fn snapshots_save_and_recover_while_running_and_ready() {
     let idle = capture(&bots);
     let before = checkpoint(&bots);
     let release = block(&executor);
-    let mut job = executor.prepare(&state, &bots, None).unwrap();
+    let mut job = executor.prepare(&state, &bots).unwrap();
     let running = capture(&bots);
     assert_eq!(checkpoint(&bots), before);
     assert!(matches!(
         job.result.try_recv(),
         Err(mpsc::TryRecvError::Empty)
     ));
-    assert!(executor.prepare(&state, &bots, None).is_none());
+    assert!(executor.prepare(&state, &bots).is_none());
     let mut concurrent = bots.clone();
     assert_eq!(
         executor.commands(&state, &mut concurrent),
-        serial_commands(&state, &mut bots.clone(), None)
+        serial_commands(&state, &mut bots.clone())
     );
     release.wait();
     let ready = job.result.recv().unwrap();
@@ -87,7 +87,7 @@ fn snapshots_save_and_recover_while_running_and_ready() {
     assert_eq!(checkpoint(&bots), before);
     let mut replay = prepared.recording().unwrap();
     let mut commands = human.clone();
-    commands.extend(job.finish(&state, &mut bots, None));
+    commands.extend(job.finish(&state, &mut bots));
     for command in &commands {
         replay.record(state.current_tick(), command.clone());
     }
@@ -142,17 +142,17 @@ fn mixed_controllers_background_and_serial_continue_identically() {
     let mut expected = bots.clone();
     let mut empty_decisions = 0;
     for _ in 0..180 {
-        let job = executor.prepare(&state, &bots, None);
+        let job = executor.prepare(&state, &bots);
         let due = job.is_some();
         let mut commands = if let Some(job) = job {
-            job.finish(&state, &mut bots, None)
+            job.finish(&state, &mut bots)
         } else {
             executor.commands(&state, &mut bots)
         };
         if due && commands.is_empty() {
             empty_decisions += 1;
         }
-        assert_eq!(commands, serial_commands(&state, &mut expected, None));
+        assert_eq!(commands, serial_commands(&state, &mut expected));
         assert_eq!(checkpoint(&bots), checkpoint(&expected));
         if state.current_tick() % 30 == 7 {
             commands.extend([stop(0), stop(1)]);
@@ -171,7 +171,7 @@ fn own_events_are_consumed_only_when_a_decision_is_installed() {
     let mut state = Arc::new(scenario.build().unwrap());
     let mut bots = seat_controllers(&scenario).unwrap();
     while state.current_tick() < 12 {
-        let mut commands = serial_commands(&state, &mut bots, None);
+        let mut commands = serial_commands(&state, &mut bots);
         if state.current_tick() == 11 {
             commands.push(stop(0));
         }
@@ -186,7 +186,7 @@ fn own_events_are_consumed_only_when_a_decision_is_installed() {
     let before = checkpoint(&bots);
     assert_eq!(events(&bots), rejected);
 
-    drop(executor.prepare(&state, &bots, None).unwrap());
+    drop(executor.prepare(&state, &bots).unwrap());
     while executor.busy.load(Ordering::Acquire) {
         std::thread::yield_now();
     }
@@ -198,10 +198,10 @@ fn own_events_are_consumed_only_when_a_decision_is_installed() {
     };
     assert_eq!(serde_json::to_value(trace.events).unwrap(), rejected);
     let mut serial = bots.clone();
-    let commands = serial_commands(&state, &mut serial, None);
-    let job = executor.prepare(&state, &bots, None).unwrap();
+    let commands = serial_commands(&state, &mut serial);
+    let job = executor.prepare(&state, &bots).unwrap();
     assert_eq!(checkpoint(&bots), before);
-    assert_eq!(job.finish(&state, &mut bots, None), commands);
+    assert_eq!(job.finish(&state, &mut bots), commands);
     assert_eq!(checkpoint(&bots), checkpoint(&serial));
     assert_eq!(events(&bots), serde_json::json!([]));
 }
@@ -213,18 +213,18 @@ fn discarded_work_holds_admission_until_finished() {
     let state = Arc::new(scenario.build().unwrap());
     let bots = seat_controllers(&scenario).unwrap();
     let release = block(&executor);
-    drop(executor.prepare(&state, &bots, None).unwrap());
-    assert!(executor.prepare(&state, &bots, None).is_none());
+    drop(executor.prepare(&state, &bots).unwrap());
+    assert!(executor.prepare(&state, &bots).is_none());
     release.wait();
     while executor.busy.load(Ordering::Acquire) {
         std::thread::yield_now();
     }
     assert_eq!(Arc::strong_count(&state), 1);
     let replacement = Arc::new(scenario.build().unwrap());
-    let job = executor.prepare(&replacement, &bots, None).unwrap();
+    let job = executor.prepare(&replacement, &bots).unwrap();
     assert_eq!(
-        job.finish(&replacement, &mut bots.clone(), None),
-        serial_commands(&state, &mut bots.clone(), None)
+        job.finish(&replacement, &mut bots.clone()),
+        serial_commands(&state, &mut bots.clone())
     );
 }
 
@@ -233,14 +233,10 @@ fn unavailable_serial_and_empty_sessions_do_not_dispatch() {
     let scenario = Scenario::skirmish();
     let state = Arc::new(scenario.build().unwrap());
     let bots = seat_controllers(&scenario).unwrap();
-    assert!(
-        BotExecutor::default()
-            .prepare(&state, &bots, None)
-            .is_none()
-    );
+    assert!(BotExecutor::default().prepare(&state, &bots).is_none());
     let executor = BotExecutor::new(2);
-    assert!(executor.prepare(&state, &[], None).is_none());
-    serially(|| assert!(executor.prepare(&state, &bots, None).is_none()));
+    assert!(executor.prepare(&state, &[]).is_none());
+    serially(|| assert!(executor.prepare(&state, &bots).is_none()));
 }
 
 #[test]
@@ -263,17 +259,12 @@ fn wrong_world_tick_roster_and_worker_failure_reject_without_installing() {
             Ok(Decision {
                 bots: if kind == 2 { vec![] } else { bots.clone() },
                 commands: vec![],
-                completed: Instant::now(),
             })
         };
         assert!(send.send(value).is_ok());
         let replacement = Arc::new(scenario.build().unwrap());
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            job.finish(
-                if kind == 0 { &replacement } else { &state },
-                &mut live,
-                None,
-            )
+            job.finish(if kind == 0 { &replacement } else { &state }, &mut live)
         }));
         assert!(result.is_err());
         assert_eq!(checkpoint(&live), before);
@@ -298,12 +289,12 @@ fn seven_seats_keep_input_order_and_controller_continuation() {
     let mut state = Arc::new(scenario.build().unwrap());
     let executor = BotExecutor::new(4);
     for _ in 0..60 {
-        let commands = if let Some(job) = executor.prepare(&state, &bots, None) {
-            job.finish(&state, &mut bots, None)
+        let commands = if let Some(job) = executor.prepare(&state, &bots) {
+            job.finish(&state, &mut bots)
         } else {
             executor.commands(&state, &mut bots)
         };
-        assert_eq!(commands, serial_commands(&state, &mut expected, None));
+        assert_eq!(commands, serial_commands(&state, &mut expected));
         assert_eq!(checkpoint(&bots), checkpoint(&expected));
         Arc::get_mut(&mut state).unwrap().tick(&commands);
     }

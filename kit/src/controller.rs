@@ -5,7 +5,6 @@
 //! its own trace type.
 
 use oxide_bot::checkpoint::BotCheckpoint;
-use oxide_bot::observer::PhaseObserver;
 use oxide_bot::{DecisionTrace, PublicMapBriefing, SeatBot, TracedBotAct};
 use oxide_opponent::{MapModel, Opponent, OwnEvents};
 use oxide_sim::scenario::{BotConfig, BotController, ScenarioError};
@@ -155,19 +154,6 @@ impl SeatController {
     pub fn act(&mut self, state: &State) -> Vec<PlayerCommand> {
         match self {
             Self::Scripted(bot) => bot.act(state),
-            Self::Opponent { controller, events } => controller.act(state, events),
-        }
-    }
-
-    /// Commands with optional phase callbacks. `oxide-opponent` reports no
-    /// phases; the caller's seat-total span still covers it.
-    pub fn act_observed(
-        &mut self,
-        state: &State,
-        observer: &dyn PhaseObserver,
-    ) -> Vec<PlayerCommand> {
-        match self {
-            Self::Scripted(bot) => bot.act_observed(state, observer),
             Self::Opponent { controller, events } => controller.act(state, events),
         }
     }
@@ -477,31 +463,5 @@ mod tests {
             saved(&seats)[0]["opponent"]["events"],
             serde_json::json!([])
         );
-    }
-
-    #[test]
-    fn an_opponent_seat_reports_only_its_total_to_an_observer() {
-        struct Counting(std::cell::Cell<usize>);
-        impl PhaseObserver for Counting {
-            fn enter(&self, _: oxide_bot::observer::BotPhase) {
-                self.0.set(self.0.get() + 1);
-            }
-            fn exit(&self, _: oxide_bot::observer::BotPhase) {}
-        }
-        let scenario = mixed_skirmish();
-        let state = scenario.build().unwrap();
-        let mut seats = seat_controllers(&scenario).unwrap();
-        let mut plain = seats.clone();
-        let observer = Counting(std::cell::Cell::new(0));
-        assert_eq!(
-            seats[0].act_observed(&state, &observer),
-            plain[0].act(&state)
-        );
-        assert_eq!(observer.0.get(), 0);
-        assert_eq!(
-            seats[1].act_observed(&state, &observer),
-            plain[1].act(&state)
-        );
-        assert!(observer.0.get() > 0);
     }
 }

@@ -269,7 +269,7 @@ fn home_frame(app: &mut App, mut home: HomeScreen, events: &[RawEvent], dt: f32)
     }
     let input_scope = app
         .game
-        .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
+        .diagnostic_stage(oxide_kit::diagnostics::Stage::Input);
     let out = home.update(
         events,
         &mut app.input.mouse,
@@ -363,7 +363,7 @@ fn settings_frame(
     }
     let input_scope = app
         .game
-        .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
+        .diagnostic_stage(oxide_kit::diagnostics::Stage::Input);
     let up = sc.update(
         events,
         &mut app.input.mouse,
@@ -424,7 +424,7 @@ fn codex_frame(
 ) -> Screen {
     let input_scope = app
         .game
-        .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
+        .diagnostic_stage(oxide_kit::diagnostics::Stage::Input);
     let out = codex.update(
         events,
         &mut app.input.mouse,
@@ -452,7 +452,7 @@ fn wizard_frame(app: &mut App, mut w: Wizard, events: &[RawEvent], rerun: &mut b
     // process abort: report and stay on the menu.
     let input_scope = app
         .game
-        .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
+        .diagnostic_stage(oxide_kit::diagnostics::Stage::Input);
     let out = match w.update(
         events,
         &mut app.input.mouse,
@@ -574,7 +574,7 @@ fn playing_frame(
 ) -> Screen {
     let input_scope = app
         .game
-        .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
+        .diagnostic_stage(oxide_kit::diagnostics::Stage::Input);
     if let Some(t) = &app.tutorial {
         let filtered = filter_tutorial_pointer(
             events,
@@ -695,9 +695,8 @@ fn playback_frame(
     rerun: &mut bool,
 ) -> Screen {
     pb.bindings.clone_from(&app.input.bindings);
-    let input_scope = pb.diagnostics.as_ref().and_then(|recorder| {
-        recorder.span(oxide_kit::diagnostics::Phase::Input, pb.engine.position())
-    });
+    let input_scope =
+        oxide_kit::diagnostics::stage(oxide_kit::diagnostics::Stage::Input, pb.engine.position());
     let leave = pb.apply_input(
         events,
         time.presentation,
@@ -708,7 +707,6 @@ fn playback_frame(
     );
     drop(input_scope);
     if leave {
-        pb.finish_diagnostics();
         *rerun = true;
         match pb.return_to {
             PlaybackReturn::Pause => Screen::Pause(pause_menu(&app.game)),
@@ -742,7 +740,7 @@ fn final_map_frame(
     final_map.bindings.clone_from(&app.input.bindings);
     let input_scope = app
         .game
-        .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
+        .diagnostic_stage(oxide_kit::diagnostics::Stage::Input);
     let leave = final_map.update(
         events,
         dt,
@@ -776,7 +774,7 @@ fn results_frame(
 ) -> Result<Screen> {
     let input_scope = app
         .game
-        .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
+        .diagnostic_stage(oxide_kit::diagnostics::Stage::Input);
     let out = results.update(
         events,
         &mut app.input.mouse,
@@ -832,7 +830,7 @@ fn replays_frame(app: &mut App, mut shelf: Shelf, events: &[RawEvent], rerun: &m
     let mut leave: Option<Screen> = None;
     let input_scope = app
         .game
-        .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
+        .diagnostic_stage(oxide_kit::diagnostics::Stage::Input);
     let out = shelf.update(
         events,
         &mut app.input.mouse,
@@ -886,7 +884,7 @@ fn replays_frame(app: &mut App, mut shelf: Shelf, events: &[RawEvent], rerun: &m
 fn pause_frame(app: &mut App, mut ps: PauseScreen, events: &[RawEvent]) -> Result<Screen> {
     let input_scope = app
         .game
-        .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
+        .diagnostic_stage(oxide_kit::diagnostics::Stage::Input);
     let out = ps.update(
         events,
         &mut app.input.mouse,

@@ -50,7 +50,7 @@ pub fn autosave_dir() -> Option<PathBuf> {
     data_dir().map(|d| d.join("autosaves"))
 }
 
-/// Incremental recoveries and optional local diagnostic sidecars.
+/// Incremental recoveries and crash and freeze incident logs.
 pub fn recovery_dir() -> Option<PathBuf> {
     data_dir().map(|directory| directory.join("recovery"))
 }

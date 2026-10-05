@@ -827,9 +827,11 @@ pub(crate) fn reported_minimized() -> Option<bool> {
 impl macroquad::miniquad::EventHandler for PointerStream {
     fn window_minimized_event(&mut self) {
         WINDOW_ACTIVITY.store(2, std::sync::atomic::Ordering::Relaxed);
+        oxide_kit::diagnostics::minimized(true);
     }
     fn window_restored_event(&mut self) {
         WINDOW_ACTIVITY.store(1, std::sync::atomic::Ordering::Relaxed);
+        oxide_kit::diagnostics::minimized(false);
     }
     // The collector never runs a frame; it only replays input.
     fn update(&mut self) {}

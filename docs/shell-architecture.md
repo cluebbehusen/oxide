@@ -80,7 +80,6 @@ when the job has finished. Restored sessions recompute that decision once;
 prepared work is not persisted and saving does not join it. Pause retains the
 job; replacing the session or world discards it. Discarding its result does not
 cancel the worker, which retains executor admission until computation finishes.
-Outstanding work shares diagnostic recorder ownership with the live session.
 
 The shell may use floats, frame time, and interpolation to interpret interaction
 and present a match. Only the resulting tick-stamped `PlayerCommand` crosses the
@@ -378,7 +377,7 @@ loading does not verify the entire history against the snapshot. The shell
 adapter instead captures the core without a recorder. It additionally retains
 tutorial progress, concession statistics, and decorative boundary exploration.
 Camera, selection, effects, and interpolation rebuild, the wall clock starts
-paused, and recovery/diagnostic workers are not serialized.
+paused, and the recovery worker is not serialized.
 
 Player saves use `.oxsave`: eight-byte `OXIDESAV` magic, a little-endian 32-bit
 header length, a JSON metadata header, and one checksummed Zstandard frame
@@ -484,10 +483,11 @@ requests target the engine; camera and overlay requests target presentation. UI,
 profiling, and diagnostic context describe the visible session. Authoritative
 session mutations are refused.
 
-Playback diagnostics retain the complete watched replay in a separate recording.
-Its kind identifies viewer evidence, so it can be exported after a force quit
-without appearing as a resumable live match. The hidden live game's recovery
-history remains separate.
+Playback writes no recording, since a watched replay is already a file on disk.
+Incidents while viewing go to the recovery root's log. Playback recordings left
+by earlier builds still inspect, export and retire, but never appear as
+resumable live matches. The hidden live game's recovery history remains
+separate.
 
 The ordinary shelf resumes unfinished records, preventing fog-free viewing from
 scouting a live match. Completed records can be watched. Developer `--watch` may
@@ -496,33 +496,45 @@ live state.
 
 ## Performance and diagnostics
 
-The player-facing Performance display is independent of diagnostic recording and
+The player-facing Performance display is independent of crash diagnostics and
 debug profiling. It observes completed frame measurements without changing fog,
 pausing a match, or arming capture. Off adds no timing samples. FPS measures
 frame-start intervals, including presentation waits; Detailed also measures CPU
 work after debug handling and before `next_frame().await`. These are not GPU
 timestamps. Screen/session changes reset the display's bounded history.
 
-Detailed diagnostics are opt-in through Settings or `--diagnostics`. They use
-`kit::diagnostics` to observe nested shell phases and per-seat bot work on the
-normal executor. Input spans cover polling and event handling, ending before
-clock advancement and drawing. Simulation callbacks are clock-free and
-observational; diagnostic output never becomes replay input.
+Crash and freeze diagnostics are always on and write nothing while play is
+healthy. At launch the shell installs one `kit::diagnostics::Monitor` for the
+process. The main thread publishes its stage (input, bots, simulation,
+presentation, draw, present wait or replay load) and tick through atomics, and
+each bot seat marks its running decision. A watchdog records a stall when the
+main thread or a seat makes no progress for five seconds, then records its
+resumption. A minimized window waiting for frames is not a stall, and a stall in
+the present wait can be OS or driver delay rather than a deadlock. The panic
+hook records the message, location, thread and a backtrace synchronously, then
+defers to the previous hook. Each incident carries every thread's stage, display
+context and the last 30 seconds of per-stage frame timing, which otherwise stays
+in memory.
 
-A worker retains bounded recent timings and slow operations, with dropped detail
-and eviction reported explicitly. An independent watchdog reads atomic progress
-for the main thread and bot workers, recording changes in the stalled worker set
-and subsequent resumption. A presentation wait can include OS sleep or driver
-delay; a suspected stall is not proof of deadlock. Panic metadata is queued
-without waiting, and its persistence before process termination is best effort.
+Incidents go to `incidents.json` in the visible live match's open recording, and
+to the recovery root's log during playback, menus and LAN matches or once the
+recording closes. An incident before a new recording's directory is ready goes
+to the root log tagged with that recording, which its ending still counts. A
+minimize reaches the watchdog when it happens, since a minimized window may run
+no further frame. Each log keeps its newest 16 incidents and counts what it
+dropped. Diagnostics are observational and never become replay input. Simulation
+and bot failures reproduce from the recorded replay, not from timing.
 
 Report export runs off the frame thread. Reports contain a standard recovered
-replay, unfinished-tick evidence, available diagnostics, and build provenance.
-The completion manifest is published last and binds the replay digest; the
-inspector rejects incomplete exports. Diagnostic files are independent
-observations and may have different timestamps. Build differences remain visible
-even when simulation versions permit playback. Reports stay local, and capture
-does not automatically take screenshots or enable the debug server.
+replay, unfinished-tick evidence, the recording's incidents and the root log,
+build provenance, and how the session ended: clean, still in progress, a panic,
+a stall that never resumed, a main thread left waiting for its next frame (OS
+suspension, a hidden window or a presentation hang), or an abnormal exit (a
+native crash, kill or power loss) with none of those recorded. The completion
+manifest is published last and binds the replay digest; the inspector rejects
+incomplete exports. Build differences remain visible even when simulation
+versions permit playback. Reports stay local, and diagnostics never take
+screenshots or enable the debug server.
 
 ## Debug protocol
 

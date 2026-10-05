@@ -28,9 +28,6 @@ pub enum ReturnTo {
 /// Replay engine, presentation, and viewer transport controls.
 pub struct PlaybackSession {
     pub engine: oxide_kit::playback::Playback,
-    pub diagnostics: Option<oxide_kit::diagnostics::Recorder>,
-    pub recording: Option<std::sync::Arc<oxide_kit::recovery::RecoveryWriter>>,
-    diagnostics_warned: bool,
     pub presentation: Presentation,
     pub speed: f32,
     pub paused: bool,
@@ -76,60 +73,6 @@ impl PlaybackSession {
         )
     }
 
-    pub(crate) fn configure_diagnostics(&mut self, enabled: bool, root: Option<&std::path::Path>) {
-        if !enabled {
-            self.diagnostics_warned = false;
-        }
-        if enabled && self.diagnostics.is_none() && !self.diagnostics_warned {
-            let result = (|| -> Result<oxide_kit::diagnostics::Recorder> {
-                if self.recording.is_none() {
-                    let root = root.context("diagnostics folder unavailable")?;
-                    self.recording = Some(std::sync::Arc::new(
-                        oxide_kit::recovery::RecoveryWriter::start_playback(
-                            root.to_owned(),
-                            self.replay.clone(),
-                            self.engine.total(),
-                            crate::build_identity(),
-                        )?,
-                    ));
-                }
-                Ok(oxide_kit::diagnostics::Recorder::start(
-                    self.recording.as_ref().unwrap().clone(),
-                )?)
-            })();
-            match result {
-                Ok(recorder) => {
-                    recorder.install_panic_hook();
-                    self.diagnostics = Some(recorder);
-                }
-                Err(error) => {
-                    self.diagnostics_warned = true;
-                    self.presentation
-                        .toast(format!("Playback diagnostics unavailable: {error}"));
-                }
-            }
-        }
-        if let Some(recorder) = &self.diagnostics {
-            recorder.set_enabled(enabled);
-        }
-        if !self.diagnostics_warned
-            && let Some(error) = self
-                .recording
-                .as_ref()
-                .and_then(|writer| writer.status().error)
-        {
-            self.diagnostics_warned = true;
-            self.presentation
-                .toast(format!("Playback diagnostics stopped: {error}"));
-        }
-    }
-
-    pub(crate) fn finish_diagnostics(&self) {
-        if let Some(writer) = &self.recording {
-            crate::game::finish_recording(writer, self.engine.total());
-        }
-    }
-
     pub fn open(path: &str) -> Result<Self> {
         let replay =
             oxide_kit::load_replay(path).with_context(|| format!("loading replay {path}"))?;
@@ -157,9 +100,6 @@ impl PlaybackSession {
         presentation.spectate = true;
         Ok(Self {
             engine,
-            diagnostics: None,
-            recording: None,
-            diagnostics_warned: false,
             presentation,
             speed: 1.0,
             paused: false,

@@ -168,7 +168,7 @@ fn read_payload(path: &Path) -> Result<(Header, Vec<u8>)> {
 }
 
 #[cfg(test)]
-pub fn load(path: &Path, _diagnostics: Option<&oxide_kit::diagnostics::Recorder>) -> Result<Game> {
+pub fn load(path: &Path) -> Result<Game> {
     prepare_load(path).map(RestoredGame::install)
 }
 
@@ -293,7 +293,7 @@ mod tests {
         assert!(std::fs::read(&path.0).unwrap().starts_with(MAGIC));
         // Missing historical commands cannot affect the saved continuation.
         original.recorder.commands.clear();
-        let mut restored = load(&path.0, None).unwrap();
+        let mut restored = load(&path.0).unwrap();
         assert!(restored.presentation.paused);
         assert_eq!(restored.state.hash(), original.state.hash());
         assert_eq!(restored.recorder.start_tick(), start);
@@ -344,7 +344,7 @@ mod tests {
         assert_eq!(playback.state.hash(), restored.state.hash());
         // A second save needs neither the first save nor the suffix archive.
         write(&restored, meta(&restored), &path.0).unwrap();
-        let again = load(&path.0, None).unwrap();
+        let again = load(&path.0).unwrap();
         assert_eq!(again.state.hash(), restored.state.hash());
         assert_eq!(again.recorder.start_tick(), restored.state.current_tick());
         assert!(again.recorder.commands.is_empty());

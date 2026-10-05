@@ -123,8 +123,9 @@ impl RecoveryWriter {
         )
     }
 
-    /// Retain a watched replay for diagnostics without offering it as a resumable match.
-    pub fn start_playback(
+    /// A playback recording as earlier builds wrote them.
+    #[cfg(test)]
+    pub(crate) fn start_playback(
         root: PathBuf,
         base: GameReplay,
         ticks: u64,
@@ -445,12 +446,7 @@ fn run(
         chassis::fsx::write_atomic(directory.join("previous-manifest.json"), |writer| {
             writer.write_all(&bytes)
         })?;
-        for name in [
-            "timings.json",
-            "watchdog.json",
-            "context.json",
-            "status.json",
-        ] {
+        for name in [crate::diagnostics::INCIDENTS, "status.json"] {
             let file = source.join(name);
             if let Ok(metadata) = std::fs::symlink_metadata(&file) {
                 ensure!(

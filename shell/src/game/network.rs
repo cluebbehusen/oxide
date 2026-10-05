@@ -313,9 +313,7 @@ mod tests {
         let mut host = Game::networked(duel(), PlayerId(0), NetRole::Host, viewport()).unwrap();
         host.recovery_root = Some(std::env::temp_dir().join("oxide-lan-never-journals"));
         host.start_recovery();
-        host.configure_diagnostics(true);
         assert!(host.recovery.is_none());
-        assert!(host.diagnostics.is_none());
     }
 
     #[test]

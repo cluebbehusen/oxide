@@ -605,7 +605,7 @@ fn recovered_sources_retire_only_after_an_exact_replacement_is_durable() {
     wait(&writer, |status| status.durable_tick == 1);
     let source = writer.directory().to_owned();
     drop_and_wait(writer);
-    std::fs::write(source.join("watchdog.json"), b"[\"original stall\"]").unwrap();
+    std::fs::write(source.join("incidents.json"), b"[\"original stall\"]").unwrap();
     let recovered = inspect(&source).unwrap().replay;
     let replacement = RecoveryWriter::start_recovered(
         root.clone(),
@@ -625,7 +625,7 @@ fn recovered_sources_retire_only_after_an_exact_replacement_is_durable() {
         "source is retired and replacement is active"
     );
     assert_eq!(
-        std::fs::read(replacement.directory().join("previous-watchdog.json")).unwrap(),
+        std::fs::read(replacement.directory().join("previous-incidents.json")).unwrap(),
         b"[\"original stall\"]"
     );
     let report = root.join("export-with-history");
@@ -637,12 +637,50 @@ fn recovered_sources_retire_only_after_an_exact_replacement_is_durable() {
     .unwrap();
     assert!(report.join("previous-manifest.json").exists());
     assert_eq!(
-        std::fs::read(report.join("previous-watchdog.json")).unwrap(),
+        std::fs::read(report.join("previous-incidents.json")).unwrap(),
         b"[\"original stall\"]"
     );
     let next = replacement.directory().to_owned();
     drop_and_wait(replacement);
     assert_eq!(latest_interrupted(&root).unwrap().directory, next);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exports_name_how_the_session_ended_and_carry_unattached_incidents() {
+    let root = temp();
+    let writer = start(root.clone()).unwrap();
+    writer.prepared(0, &[]);
+    writer.completed(1);
+    wait(&writer, |status| status.durable_tick == 1);
+    let source = writer.directory().to_owned();
+    let record = inspect(&source).unwrap();
+    assert_eq!(ending(&source, &record), Ending::InProgress);
+    drop_and_wait(writer);
+    assert_eq!(ending(&source, &record), Ending::Abnormal);
+    let log = serde_json::json!({
+        "format": 1,
+        "incidents": [{ "kind": "panic", "thread": "main" }],
+        "dropped": 0,
+    });
+    std::fs::write(source.join(INCIDENTS), log.to_string()).unwrap();
+    std::fs::write(root.join(INCIDENTS), b"{\"lan\":true}").unwrap();
+    assert_eq!(ending(&source, &record), Ending::Panic);
+    let report = root.join("report");
+    export(&source, &report, &crate::recovery::BuildIdentity::default()).unwrap();
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(report.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["ending"], "panic");
+    assert_eq!(
+        ending(&report, &inspect(&report).unwrap()),
+        Ending::Panic,
+        "a report keeps its exported ending"
+    );
+    assert!(report.join(INCIDENTS).exists());
+    assert_eq!(
+        std::fs::read(report.join("unattached-incidents.json")).unwrap(),
+        b"{\"lan\":true}"
+    );
     std::fs::remove_dir_all(root).unwrap();
 }
 

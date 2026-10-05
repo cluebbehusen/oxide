@@ -388,7 +388,7 @@ mod tests {
         let Ok(SaveOutcome::Wrote(path)) = write_record(&mut game, &dir) else {
             panic!("pending input must not be discarded")
         };
-        let mut restored = crate::saved_game::load(&path, None).unwrap();
+        let mut restored = crate::saved_game::load(&path).unwrap();
         assert_eq!(*restored.pending, *game.pending);
         assert_eq!(restored.state.current_tick(), 0);
         assert_eq!(restored.do_tick().events, game.do_tick().events);
@@ -467,7 +467,7 @@ mod tests {
             budget.lock().unwrap();
             let mut game = Game::new(oxide_sim::Scenario::skirmish()).unwrap();
             game.recovery_root = Some(root.clone());
-            game.configure_diagnostics(true);
+            game.start_recovery();
             let directory = game.recovery.as_ref().unwrap().directory().to_owned();
             let outcome = if public_path {
                 SaveJob::capture(&game, None).run()
