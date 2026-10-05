@@ -14,6 +14,7 @@ mod catalog;
 mod composition;
 mod defenses;
 mod expansion;
+mod layout;
 mod lift;
 mod missions;
 mod placement;

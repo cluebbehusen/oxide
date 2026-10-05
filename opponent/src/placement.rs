@@ -3,10 +3,14 @@
 //! can never change its verdict; the simulation re-checks on arrival and a
 //! refused order is re-planned.
 
+use crate::map::MapModel;
+use crate::memory::Memory;
+use chassis::fx::{Fx, Vec2Fx};
 use chassis::grid::TilePos;
+use chassis::path::line_blocked;
 use oxide_sim::BuildingKind;
 use oxide_sim::observation::{BuildingObs, ObservationData};
-use oxide_sim::stats::Domain;
+use oxide_sim::stats::{Domain, HARVEST_INCIDENT_DANGER_RADIUS};
 
 /// Why the seat's knowledge rules a footprint out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +36,17 @@ pub(crate) enum Refusal {
     NoEgress,
 }
 
+/// How near the seat's own buildings a footprint may stand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Layout {
+    /// A tile clear of every own building, as a Foundry needs for the
+    /// workers and new units around it, and a defense on its own.
+    Apart,
+    /// Packed into a block of the base's layout, whose lanes keep the way
+    /// open: clear only of own Foundries and their rings.
+    Packed,
+}
+
 /// A footprint the seat may claim, and whether it must be claimed as a
 /// provisional scaffold because part of it is out of sight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,12 +55,14 @@ pub(crate) struct Allowed {
 }
 
 /// Checks `kind` at `anchor` against the seat's knowledge and the footprints
-/// this decision already planned.
+/// this decision already planned, standing as `layout` allows. A buried own
+/// Scuttle Charge blocks nothing, so it keeps no other building away.
 pub(crate) fn check(
     observation: &ObservationData,
     kind: BuildingKind,
     anchor: TilePos,
     planned: &[(BuildingKind, TilePos)],
+    layout: Layout,
 ) -> Result<Allowed, Refusal> {
     let requires = kind
         .base_stats()
@@ -99,10 +116,25 @@ pub(crate) fn check(
     } else {
         footprint.grown()
     };
+    // Whether an own building or claim keeps this footprint away. A buried
+    // charge stands anywhere a building could not.
+    let charge = kind == BuildingKind::ScuttleCharge;
+    let keeps = |other_kind: BuildingKind, other_anchor: TilePos| {
+        let other = Footprint::of(other_kind, other_anchor);
+        match layout {
+            _ if charge => false,
+            Layout::Apart => clearance.overlaps(other),
+            Layout::Packed if other_kind == BuildingKind::Foundry => {
+                footprint.overlaps(other.grown())
+            }
+            Layout::Packed => footprint.overlaps(other),
+        }
+    };
     if observation
         .my_buildings
         .iter()
-        .any(|building| clearance.overlaps(building_footprint(building)))
+        .filter(|building| building.kind != BuildingKind::ScuttleCharge)
+        .any(|building| keeps(building.kind, building.anchor))
     {
         return Err(Refusal::Crowded);
     }
@@ -119,8 +151,7 @@ pub(crate) fn check(
         .filter_map(|unit| unit.founding)
         .chain(planned.iter().copied());
     for (claimed, at) in founding {
-        let claim = Footprint::of(claimed, at);
-        if clearance.overlaps(claim) {
+        if keeps(claimed, at) {
             return Err(Refusal::Claimed);
         }
     }
@@ -190,5 +221,121 @@ impl Footprint {
     fn tiles(self) -> impl Iterator<Item = TilePos> + Clone {
         (0..self.height)
             .flat_map(move |dy| (0..self.width).map(move |dx| self.anchor.offset(dx, dy)))
+    }
+}
+
+/// What the seat knows can hit a building it would raise: known enemy guns,
+/// remembered armed enemy units, and where it lately took losses. Built once
+/// a decision, from the seat's own knowledge only.
+pub(crate) struct Danger<'a> {
+    map: &'a MapModel,
+    /// Each known enemy gun's weapons that fire at ground.
+    guns: Vec<Gun>,
+    /// Each remembered armed enemy unit's tile centre and longest reach at
+    /// buildings, doubled.
+    units: Vec<((i64, i64), i64)>,
+    /// Tiles where the seat lately took damage or losses.
+    incidents: Vec<TilePos>,
+}
+
+/// A known enemy gun's weapon, by its centre and its reach either side,
+/// doubled, and whether rock in the way stops its fire, as it does a direct
+/// shot at a building.
+struct Gun {
+    centre: (i64, i64),
+    minimum: i64,
+    range: i64,
+    direct: bool,
+}
+
+impl<'a> Danger<'a> {
+    pub(crate) fn of(observation: &ObservationData, map: &'a MapModel, memory: &Memory) -> Self {
+        let doubled = |range: Fx| (range + range).to_num::<i64>();
+        let guns = observation
+            .enemy_buildings
+            .iter()
+            // A site seen still going up fires at nothing yet.
+            .filter(|building| building.built || !building.seen)
+            .flat_map(|building| {
+                let stats = building.kind.tier_stats(building.tier);
+                let (width, height) = stats.size;
+                let centre = (
+                    i64::from(2 * building.anchor.x + width),
+                    i64::from(2 * building.anchor.y + height),
+                );
+                stats
+                    .weapons
+                    .iter()
+                    .filter(|weapon| weapon.targets.ground)
+                    .map(move |weapon| Gun {
+                        centre,
+                        minimum: doubled(weapon.minimum_range),
+                        range: doubled(weapon.range),
+                        direct: !weapon.indirect,
+                    })
+            })
+            .collect();
+        let units = memory
+            .units()
+            .iter()
+            .map(|unit| {
+                (
+                    (
+                        i64::from(2 * unit.tile.x + 1),
+                        i64::from(2 * unit.tile.y + 1),
+                    ),
+                    doubled(crate::defenses::reach(unit.kind)),
+                )
+            })
+            .filter(|(_, reach)| *reach > 0)
+            .collect();
+        Danger {
+            map,
+            guns,
+            units,
+            incidents: observation.salvage_incidents.clone(),
+        }
+    }
+
+    /// Whether something the seat knows of could hit a `kind` at `anchor`,
+    /// or it lately took losses beside it.
+    pub(crate) fn hits(&self, kind: BuildingKind, anchor: TilePos) -> bool {
+        let footprint = Footprint::of(kind, anchor);
+        let (low, high) = (
+            (i64::from(2 * anchor.x), i64::from(2 * anchor.y)),
+            (
+                i64::from(2 * (anchor.x + footprint.width)),
+                i64::from(2 * (anchor.y + footprint.height)),
+            ),
+        );
+        // The footprint's point nearest `point`, which a gun aims at and
+        // measures its range to, and its squared doubled distance.
+        let nearest =
+            |point: (i64, i64)| (point.0.clamp(low.0, high.0), point.1.clamp(low.1, high.1));
+        let near = |point: (i64, i64)| {
+            let (x, y) = nearest(point);
+            (point.0 - x).pow(2) + (point.1 - y).pow(2)
+        };
+        let world = |(x, y): (i64, i64)| Vec2Fx::new(Fx::from_num(x) / 2, Fx::from_num(y) / 2);
+        let gun = self.guns.iter().any(|gun| {
+            let distance = near(gun.centre);
+            distance <= gun.range * gun.range
+                && distance >= gun.minimum * gun.minimum
+                && !line_blocked(world(gun.centre), world(nearest(gun.centre)), |tile| {
+                    self.map.shot_crosses(tile, gun.direct)
+                })
+        });
+        let unit = self
+            .units
+            .iter()
+            .any(|(at, reach)| near(*at) <= reach * reach);
+        let incident = self.incidents.iter().any(|tile| {
+            let gap_x = (footprint.anchor.x - tile.x)
+                .max(tile.x - (footprint.anchor.x + footprint.width - 1));
+            let gap_y = (footprint.anchor.y - tile.y)
+                .max(tile.y - (footprint.anchor.y + footprint.height - 1));
+            gap_x.max(gap_y) <= HARVEST_INCIDENT_DANGER_RADIUS
+        });
+        gun || unit || incident
     }
 }

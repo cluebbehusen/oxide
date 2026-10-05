@@ -763,7 +763,7 @@ fn a_barricade_fronts_a_turret_toward_the_enemy() {
 }
 
 #[test]
-fn scuttle_charges_mine_the_way_in_apart_from_each_other() {
+fn scuttle_charges_mine_the_lanes_of_the_way_in() {
     let charge = |scenario: &Scenario| {
         let state = scenario.build().unwrap();
         offer(
@@ -778,10 +778,12 @@ fn scuttle_charges_mine_the_way_in_apart_from_each_other() {
     scenario
         .buildings
         .push(building(0, BuildingKind::Fabricator, 3, 1));
+    let lanes = map(&scenario);
+    let laned = |tile: TilePos| lanes.lane_of(&[FOUNDRY], tile);
     let first = charge(&scenario).expect("a charge is wanted");
     let gap = crate::frame::gap(FOUNDRY, (2, 2), first, (1, 1));
     assert!(
-        first.x > FOUNDRY.x + 1 && (2..=5).contains(&gap),
+        first.x > FOUNDRY.x + 1 && (1..=5).contains(&gap) && laned(first),
         "{first:?}"
     );
 
@@ -789,7 +791,10 @@ fn scuttle_charges_mine_the_way_in_apart_from_each_other() {
         .buildings
         .push(building(0, BuildingKind::ScuttleCharge, first.x, first.y));
     let second = charge(&scenario).expect("a second charge is wanted");
-    assert!(second.chebyshev(first) >= 3, "{first:?} {second:?}");
+    assert!(
+        second != first && second.x > FOUNDRY.x + 1 && laned(second),
+        "{first:?} {second:?}"
+    );
 }
 
 /// The Scuttle Charges West lays where offered, one at a time, until none
@@ -921,12 +926,14 @@ fn every_charge_a_field_still_needs_is_worth_saving_for() {
 fn a_minefield_fills_from_the_foundry_out_toward_the_threat() {
     let laid = minefield(defenses::Stakes::default(), &Memory::default());
     assert!(laid.len() > 2, "premise: more than the old ring: {laid:?}");
+    let lanes = map(&settled(0));
     for (index, charge) in laid.iter().enumerate() {
         assert!(charge.x > FOUNDRY.x + 1, "{laid:?}");
+        assert!(lanes.lane_of(&[FOUNDRY], *charge), "{laid:?}");
         assert!(
             laid[..index]
                 .iter()
-                .all(|earlier| earlier.chebyshev(*charge) >= 3 && earlier.x <= charge.x + 1),
+                .all(|earlier| earlier.x <= charge.x + 1),
             "{laid:?}"
         );
     }
@@ -1039,7 +1046,13 @@ fn a_seat_does_not_wall_itself_in() {
     let state = scrapped.build().unwrap();
     let observation = ObservationData::fog_honest(&state, PlayerId(0));
     assert!(
-        !defenses::keeps_paths(&observation, &map(&scrapped), exit),
+        !defenses::keeps_paths(
+            &observation,
+            &map(&scrapped),
+            BuildingKind::Barricade,
+            exit,
+            &[]
+        ),
         "live scrap closes the second way out until it is mined"
     );
 }

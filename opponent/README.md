@@ -155,12 +155,14 @@ there that nothing the seat owns sees yet, and its radar lets Bastions fire that
 far. A Barricade goes a tile in front of a Turret or Bastion that has none, on
 the side of the threat; it is refused at purchase when it would cut the start
 off from a producer's exit, a worked scrap node or a hostile start on home
-ground. Once a Fabricator stands, Scuttle Charges mine the straight way in to a
-Foundry: a band about a blast wide, filled from a few tiles out toward the
-threat and spread so one blast does not set off the next. A field holds enough
-charges to deal the health of the threat along the way divided by that margin,
-in the share of the approach the guns leave open, one body to a blast, the
-threat counting at least an army of Sentinels at the stance's minimum.
+ground. Guns, Arrays, Barricades and Repair Bays stand off the lanes of the
+base's layout. Once a Fabricator stands, Scuttle Charges mine the straight way
+in to a Foundry: the lanes within a band about a blast wide, filled from a few
+tiles out toward the threat. A buried charge blocks nothing and a blast never
+sets off the seat's own charges, so they stand side by side. A field holds
+enough charges to deal the health of the threat along the way divided by that
+margin, in the share of the approach the guns leave open, one body to a blast,
+the threat counting at least an army of Sentinels at the stance's minimum.
 Fortification weighs Barricades; fortification and guile weigh Arrays and
 charges.
 
@@ -396,24 +398,36 @@ plus the seat's own spending. Once the whole uncommitted bank covers the next
 purchase, the seat places it with the nearest free worker on the first spot its
 knowledge allows (an expansion site's anchors, a frame, or otherwise a spot
 beside one of its Foundries), upgrades the building, or trains the unit at the
-nearest ready producer. Spots beside Foundries are two-by-two footprints of open
+nearest ready producer. Every Foundry lays out the ground around it in blocks
+four tiles a side with a lane one tile wide between them; its own block is the
+Foundry and the ring around it. Another Foundry takes the centre of an empty
+block, a two-by-two building a corner of a block, touching two lanes, and a
+smaller one a corner's tiles beside a lane, so buildings pack side by side and
+every one has a lane beside it. Once those run out on a ground, any place off
+the lanes follows, so cramped ground still takes whatever fits. Spots are open
 ground clear of frames and starting scrap, taken nearest first: every Foundry's
 spots at one gap, the start's first, before any at the next, out to the edge of
-its ground, and while any Foundry stands on ground one of the seat's workers
-stands on, only beside those. If the first spot it could use is unexplored, the
-worker walks toward it instead; with no spot left to place or explore, nothing
-is protected, so a target that cannot stand anywhere never starves production. A
-purchase missing from the world at the next decision was rejected, cancelled or
-refunded: the seat keeps the target, protects its full price again, and skips
-that spot for a while.
+its ground, each in the layout of the Foundry nearest it, and while any Foundry
+stands on ground one of the seat's workers stands on, only beside those. A spot
+that would leave the building, a site still going up or a producer without a way
+out, or cut the seat off from a worked scrap node or a hostile start, is skipped
+for a while. So is a spot for anything but a defense where a gun the seat knows
+of or an armed enemy it remembers could hit it, or where it lately took damage.
+If the first spot it could use is unexplored, the worker walks toward it
+instead; with no spot left to place or explore, nothing is protected, so a
+target that cannot stand anywhere never starves production. A purchase missing
+from the world at the next decision was rejected, cancelled or refunded: the
+seat keeps the target, protects its full price again, and skips that spot for a
+while.
 
 Placement is checked against the fog-honest observation only: completed
 prerequisites, explored ground, frames, known rock and scrap, known buildings, a
-one-tile gap to the seat's own buildings (except for Extractors, which sit where
-the map put their frames), visible hostile ground units, its own claims, and an
-open tile beside the footprint. Ground explored but out of sight is claimed as a
-provisional scaffold. Hidden units and unseen buildings never change the
-verdict; the simulation re-checks on arrival.
+one-tile gap to the seat's own buildings, or for a building packed into a block
+only to its Foundries' rings (Extractors sit where the map put their frames, and
+the seat's own buried charges keep nothing away), visible hostile ground units,
+its own claims, and an open tile beside the footprint. Ground explored but out
+of sight is claimed as a provisional scaffold. Hidden units and unseen buildings
+never change the verdict; the simulation re-checks on arrival.
 
 ## Boundary
 

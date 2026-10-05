@@ -7,6 +7,7 @@ use crate::expansion;
 use crate::frame::{HomeFrame, footprint_centre};
 use crate::map::MapModel;
 use crate::memory::Memory;
+use crate::placement::Layout;
 use crate::profile::PersonalityTraits;
 use crate::workers;
 use chassis::grid::TilePos;
@@ -316,7 +317,8 @@ pub(crate) fn completes(investment: Investment, step: Step) -> bool {
 /// Where a building step toward `investment` may go, best first: the
 /// expansion site's anchors on the seat's home ground for its Foundry, the
 /// frame for an Extractor, the chosen spot for a defense, and otherwise the
-/// spots beside the seat's Foundries, its start's first at each gap.
+/// spots in the blocks beside the seat's Foundries, its start's first at
+/// each distance.
 pub(crate) fn anchors<'a>(
     map: &'a MapModel,
     observation: &ObservationData,
@@ -340,7 +342,20 @@ pub(crate) fn anchors<'a>(
             },
             kind,
         ) if defense == kind => Box::new(std::iter::once(anchor)),
-        _ => Box::new(map.spots(observation.me, foundries(map, observation))),
+        _ => Box::new(map.spots(observation.me, foundries(map, observation), kind)),
+    }
+}
+
+/// How a building step toward `investment` stands among the seat's own
+/// buildings: packed into a block when it goes on a spot, apart for a
+/// Foundry, a frame or a defense's own site.
+pub(crate) fn layout(investment: Investment, kind: BuildingKind) -> Layout {
+    match (investment, kind) {
+        (Investment::Defense { kind: defense, .. }, kind) if defense == kind => Layout::Apart,
+        (Investment::Extractor(_), BuildingKind::Extractor) | (_, BuildingKind::Foundry) => {
+            Layout::Apart
+        }
+        _ => Layout::Packed,
     }
 }
 
