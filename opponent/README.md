@@ -399,12 +399,13 @@ beside one of its Foundries), upgrades the building, or trains the unit at the
 nearest ready producer. Spots beside Foundries are two-by-two footprints of open
 ground clear of frames and starting scrap, taken nearest first: every Foundry's
 spots at one gap, the start's first, before any at the next, out to the edge of
-its ground. If the first spot it could use is unexplored, the worker walks
-toward it instead; with no spot left to place or explore, nothing is protected,
-so a target that cannot stand anywhere never starves production. A purchase
-missing from the world at the next decision was rejected, cancelled or refunded:
-the seat keeps the target, protects its full price again, and skips that spot
-for a while.
+its ground, and while any Foundry stands on ground one of the seat's workers
+stands on, only beside those. If the first spot it could use is unexplored, the
+worker walks toward it instead; with no spot left to place or explore, nothing
+is protected, so a target that cannot stand anywhere never starves production. A
+purchase missing from the world at the next decision was rejected, cancelled or
+refunded: the seat keeps the target, protects its full price again, and skips
+that spot for a while.
 
 Placement is checked against the fog-honest observation only: completed
 prerequisites, explored ground, frames, known rock and scrap, known buildings, a

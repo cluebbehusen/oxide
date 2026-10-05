@@ -497,6 +497,62 @@ fn a_seat_saves_for_the_dear_unit_its_line_prefers_and_trains_it() {
 }
 
 #[test]
+fn a_producer_saved_for_queues_nothing_else_first() {
+    // Line wanted against East's army out of reach of West's buildings, the
+    // Fabricator's Warden its dear unit, and a wounded West army that would
+    // otherwise call for a Tender there.
+    let mut scenario = saturated(200);
+    scenario
+        .units
+        .retain(|unit| unit.kind != UnitKind::Sentinel || (unit.player == 0 && unit.x < 8));
+    scenario.units.push(unit(0, UnitKind::Kestrel, 15, 4));
+    scenario
+        .units
+        .extend((9..=13).map(|x| unit(0, UnitKind::Sentinel, x, 9)));
+    for x in 17..=21 {
+        for y in 1..=4 {
+            scenario.units.push(unit(1, UnitKind::Sentinel, x, y));
+        }
+    }
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Fabricator,
+        x: 5,
+        y: 7,
+    });
+    let mut state = scenario.build().unwrap();
+    let hurt: Vec<UnitId> = state
+        .units()
+        .iter()
+        .filter(|unit| unit.player == PlayerId(0) && unit.kind == UnitKind::Sentinel)
+        .map(|unit| unit.id)
+        .collect();
+    for unit in hurt {
+        state = wounded(&state, unit, 1);
+    }
+    let fabricator = state
+        .buildings()
+        .iter()
+        .find(|building| building.kind == BuildingKind::Fabricator)
+        .unwrap()
+        .id;
+    let (commands, trace) =
+        seat_with(&scenario, 0, thrifty()).act_traced(&state, &mut OwnEvents::default());
+    let trace = trace.unwrap();
+    assert_eq!(
+        trace.target.map(|target| target.investment),
+        Some(Investment::Unit(UnitKind::Warden)),
+        "premise: {trace:?}"
+    );
+    assert!(
+        !trains(&commands)
+            .iter()
+            .any(|(building, _)| *building == fabricator),
+        "{commands:?}"
+    );
+}
+
+#[test]
 fn a_unit_saved_for_that_waits_on_busy_producers_wants_another() {
     let scenario = outlined(1_400);
     let mut state = scenario.build().unwrap();
@@ -865,6 +921,57 @@ fn a_seat_whose_home_is_full_builds_beside_its_other_foundry() {
         );
         assert!(distance(anchor, start) > beside, "{kind:?} at {anchor:?}");
     }
+}
+
+#[test]
+fn no_building_goes_beside_a_foundry_no_worker_can_reach() {
+    // Rock splits the field; West owns a Foundry across it, where only
+    // East's workers stand.
+    let mut scenario = arena(400);
+    scenario.map = [
+        "########################################",
+        "#..................##..................#",
+        "#..................##..................#",
+        "#..................##..................#",
+        "#..................##..................#",
+        "#..1...............##...............2..#",
+        "#..................##..................#",
+        "#..................##..................#",
+        "#..................##..................#",
+        "#..................##..................#",
+        "#..................##..................#",
+        "########################################",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    scenario.units.clear();
+    scenario.units.extend((1..=10).map(|y| harvester(0, 1, y)));
+    scenario.units.extend((1..=10).map(|y| harvester(1, 38, y)));
+    let across = TilePos::new(26, 5);
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Foundry,
+        x: across.x,
+        y: across.y,
+    });
+    let state = scenario.build().unwrap();
+    let model = map(&scenario);
+    let observation = ObservationData::fog_honest(&state, PlayerId(0));
+    let home = model.component(model.start(PlayerId(0)).unwrap());
+    assert_ne!(model.component(across), home, "premise: across the rock");
+    let spots: Vec<TilePos> = investments::anchors(
+        &model,
+        &observation,
+        Investment::Tech(BuildingKind::Fabricator),
+        BuildingKind::Fabricator,
+    )
+    .collect();
+    assert!(!spots.is_empty());
+    assert!(
+        spots.iter().all(|spot| model.component(*spot) == home),
+        "{:?}",
+        spots.iter().find(|spot| model.component(**spot) != home)
+    );
 }
 
 #[test]

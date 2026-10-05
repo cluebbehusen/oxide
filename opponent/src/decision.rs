@@ -508,6 +508,17 @@ pub(crate) fn decide(
         &scratch,
         &mut ledger,
     );
+    let saving = match persistent.saving.investment() {
+        Some(Investment::Unit(kind)) => Some(kind),
+        _ => None,
+    };
+    // Producers that train the unit the seat saves for wait for it, so
+    // nothing else queues there first.
+    let free: Vec<Producer<'_>> = producers
+        .iter()
+        .copied()
+        .filter(|producer| !saved_for(observation, producer, saving))
+        .collect();
     let carrying = lift
         && !short
         && train_carriers(
@@ -516,15 +527,15 @@ pub(crate) fn decide(
             profile,
             persistent,
             &scratch,
-            &producers,
+            &free,
             &mut ledger,
         );
     if !carrying {
         if lacking > 0 {
-            train_scout(observation, &producers, lacking, &mut ledger);
+            train_scout(observation, &free, lacking, &mut ledger);
         }
         if !short {
-            train_tenders(observation, profile, &producers, &mut ledger);
+            train_tenders(observation, profile, &free, &mut ledger);
             // Raiding waits for an economy that can spare it: a personality
             // lever, sooner the more guile.
             let raiding = income.saturating_add(4 * u32::from(profile.traits.guile)) >= RAID_INCOME;
@@ -551,14 +562,10 @@ pub(crate) fn decide(
                 profile,
                 (scuttlers, sappers),
                 &persistent.missions.held_outside_raids(),
-                &producers,
+                &free,
                 &mut ledger,
             );
         }
-        let saving = match persistent.saving.investment() {
-            Some(Investment::Unit(kind)) => Some(kind),
-            _ => None,
-        };
         produce(observation, &producers, &mut needs, &mut ledger, saving);
         if short {
             arm(observation, map, &producers, shortfalls, &mut ledger);
@@ -988,11 +995,6 @@ fn produce(
     ledger: &mut Ledger,
     saving: Option<UnitKind>,
 ) {
-    let saved_for = |producer: &Producer<'_>| {
-        saving.is_some_and(|unit| {
-            composition::producible(observation, producer.building.kind).any(|kind| kind == unit)
-        })
-    };
     let instead = |kind: UnitKind| {
         saving.is_some_and(|unit| {
             kind != unit
@@ -1003,7 +1005,7 @@ fn produce(
     let mut idle: Vec<&Producer<'_>> = producers
         .iter()
         .filter(|producer| producer.ready && !ledger.queued_at(producer.building.id))
-        .filter(|producer| !saved_for(producer))
+        .filter(|producer| !saved_for(observation, producer, saving))
         .collect();
     while let Some((index, kind)) = needs.wanted().into_iter().find_map(|role| {
         idle.iter().enumerate().find_map(|(index, producer)| {
@@ -1044,6 +1046,17 @@ fn produce(
             needs.queued(unit);
         }
     }
+}
+
+/// Whether `producer` trains `saving`, the unit the seat saves for.
+fn saved_for(
+    observation: &ObservationData,
+    producer: &Producer<'_>,
+    saving: Option<UnitKind>,
+) -> bool {
+    saving.is_some_and(|unit| {
+        composition::producible(observation, producer.building.kind).any(|kind| kind == unit)
+    })
 }
 
 /// While a defense is short, ready producers the wanted roles left idle each

@@ -186,7 +186,8 @@ impl MapModel {
     /// Anchors for the seat's buildings beside `foundries`, nearest first:
     /// every spot at one gap from each Foundry in turn before any at the
     /// next, out to the edge of that Foundry's ground, each listed once at
-    /// its nearest Foundry and none nearer any than the first gap. A spot is a two-by-two
+    /// its nearest Foundry on its ground and none nearer one than the first
+    /// gap. A spot is a two-by-two
     /// footprint of open ground on its Foundry's ground, off every frame and
     /// a tile clear of starting scrap; smaller buildings use its top-left
     /// corner. Within a gap, spots go in the seat's frame, so mirrored seats
@@ -226,9 +227,11 @@ impl MapModel {
                 if distance > *reach {
                     continue;
                 }
+                // Only a Foundry on the same ground claims a spot.
                 let nearest = |anchor: TilePos| {
                     foundries
                         .iter()
+                        .filter(|(_, other, _)| other == ground)
                         .map(|(other, _, _)| chebyshev(anchor, *other))
                         .min()
                         .unwrap_or(distance)
@@ -669,6 +672,38 @@ mod tests {
             model.spots(PlayerId(2), vec![TilePos::new(9, 7)]).count(),
             0,
             "a seat without a start lists none"
+        );
+    }
+
+    #[test]
+    fn a_spot_belongs_to_the_nearest_foundry_on_its_own_ground() {
+        // Rock splits the field: the west Foundry's spots run up to the
+        // wall, nearer the east Foundry across it than the west one.
+        const SPLIT: [&str; 10] = [
+            "##############################",
+            "#.............##.............#",
+            "#.............##.............#",
+            "#.............##.............#",
+            "#..1..........##.............#",
+            "#.............##.............#",
+            "#.............##.............#",
+            "#.............##.............#",
+            "#.............##.............#",
+            "##############################",
+        ];
+        let model = model(&SPLIT);
+        let west = TilePos::new(5, 4);
+        let east = TilePos::new(16, 4);
+        assert_ne!(model.component(west), model.component(east));
+        let beside_wall = TilePos::new(12, 4);
+        assert!(
+            chebyshev(beside_wall, east) < chebyshev(beside_wall, west),
+            "premise: nearer the east Foundry"
+        );
+        assert!(
+            model
+                .spots(PlayerId(0), vec![west, east])
+                .any(|spot| spot == beside_wall)
         );
     }
 

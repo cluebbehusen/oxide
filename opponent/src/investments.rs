@@ -8,6 +8,7 @@ use crate::frame::{HomeFrame, footprint_centre};
 use crate::map::MapModel;
 use crate::memory::Memory;
 use crate::profile::PersonalityTraits;
+use crate::workers;
 use chassis::grid::TilePos;
 use oxide_sim::observation::{BuildingObs, ObservationData};
 use oxide_sim::{BuildingId, BuildingKind, PlayerId, TICKS_PER_SECOND, UnitKind};
@@ -344,15 +345,28 @@ pub(crate) fn anchors<'a>(
 }
 
 /// The seat's built Foundries, its start's first, then by ground distance
-/// from it and in the seat's frame.
+/// from it and in the seat's frame. While any stands on ground one of the
+/// seat's workers stands on, only those: only a worker there could build
+/// beside them. A seat with no worker anywhere trains one first.
 fn foundries(map: &MapModel, observation: &ObservationData) -> Vec<TilePos> {
     let frame = HomeFrame::of(observation, map);
+    let crewed = |anchor: TilePos| {
+        let ground = map.component(anchor);
+        ground.is_some()
+            && observation
+                .my_units
+                .iter()
+                .any(|unit| workers::worker(unit.kind) && map.component(unit.tile) == ground)
+    };
     let mut foundries: Vec<TilePos> = observation
         .my_buildings
         .iter()
         .filter(|building| building.kind == BuildingKind::Foundry && building.built)
         .map(|building| building.anchor)
         .collect();
+    if foundries.iter().any(|anchor| crewed(*anchor)) {
+        foundries.retain(|anchor| crewed(*anchor));
+    }
     foundries.sort_by_key(|anchor| {
         (
             map.distance(observation.me, *anchor),
