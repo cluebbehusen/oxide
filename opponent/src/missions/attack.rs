@@ -49,6 +49,10 @@ const MARGIN_FLOOR: u64 = 1_000;
 const WOUNDED: u32 = 350;
 pub(super) const FIT: u32 = 500;
 
+/// Per mille of an attack's strength the enemies around it must reach before
+/// it withdraws: a fight is given up once clearly lost, not at even odds.
+const OUTWEIGHED: u64 = 1_250;
+
 const GATHER_TICKS: u64 = 1_200;
 const TRAVEL_TICKS: u64 = 3_600;
 const ENGAGE_TICKS: u64 = 3_600;
@@ -431,6 +435,23 @@ impl Missions {
             .sum();
         let age = now - mission.since;
 
+        // Units freed since the attack left join it where it is rather than
+        // waiting at home for it to regroup.
+        if matches!(phase, AttackPhase::Travel | AttackPhase::Engage { .. }) {
+            let fit: Vec<&UnitObs> = fit
+                .iter()
+                .copied()
+                .filter(|unit| reaches(plan.map, unit, component))
+                .collect();
+            let room = UNIT_CAP - mission.units.len();
+            let recruits = recruit(plan.frame, &fit, target.approach, u64::MAX, room);
+            if !recruits.is_empty() && ledger.order(hunt(recruits.clone(), target.approach)) {
+                for id in recruits {
+                    insert(&mut mission.units, id);
+                }
+            }
+        }
+
         match phase {
             AttackPhase::Gather | AttackPhase::Recover => {
                 let room = UNIT_CAP - mission.units.len();
@@ -545,7 +566,8 @@ impl Missions {
                     .copied()
                     .filter(|id| !blasting.contains(id))
                     .collect();
-                if strength < plan.opposition(&members) {
+                let opposition = plan.opposition(&members);
+                if opposition * 1_000 > strength * OUTWEIGHED {
                     if ledger.order(run(army.clone(), rally)) {
                         mission.attack_phase(target, AttackPhase::Withdraw, now, Some(rally));
                         return Some(target.objective());
@@ -553,6 +575,11 @@ impl Missions {
                     return None;
                 }
                 if !all_idle && age < ENGAGE_TICKS {
+                    return None;
+                }
+                // A fight still being won goes on past its time.
+                if !all_idle && strength >= opposition {
+                    mission.since = now;
                     return None;
                 }
                 let standing = standing(observation, target.objective());
