@@ -369,7 +369,7 @@ pub(crate) fn decide(
         waiting,
     };
     let mut candidates = investments::candidates(&situation);
-    let danger = placement::Danger::of(observation, &persistent.memory);
+    let danger = placement::Danger::of(observation, map, &persistent.memory);
     sited(
         observation,
         map,
@@ -656,7 +656,8 @@ fn buy(
         }
         Step::Build(kind) => {
             let packed = investments::layout(investment, kind) == placement::Layout::Packed;
-            let danger = placement::Danger::of(observation, &persistent.memory);
+            let danger = placement::Danger::of(observation, map, &persistent.memory);
+            let mut tried = 0;
             let (anchor, allowed) = loop {
                 let (anchor, allowed) = match site(
                     observation,
@@ -685,21 +686,25 @@ fn buy(
                         return;
                     }
                 };
-                if !affordable {
-                    return;
-                }
                 // A footprint that would close a way out is refused for a
-                // while: a packed building tries the next spot, and a
-                // Barricade, whose spot is its own, gives the scrap back.
+                // while, before scrap is held for it: a packed building tries
+                // the next spot, a few a decision, and a Barricade, whose
+                // spot is its own, gives the scrap back.
                 if (packed || kind == BuildingKind::Barricade)
                     && !defenses::keeps_paths(observation, map, kind, anchor, &ledger.planned)
                 {
                     persistent.memory.fail(kind, anchor, tick);
-                    if packed {
+                    tried += 1;
+                    if packed && tried < PATH_TRIES {
                         continue;
                     }
-                    ledger.protected = 0;
-                    persistent.saving.keep_at_most(0);
+                    if !packed {
+                        ledger.protected = 0;
+                        persistent.saving.keep_at_most(0);
+                    }
+                    return;
+                }
+                if !affordable {
                     return;
                 }
                 break (anchor, allowed);
@@ -715,6 +720,11 @@ fn buy(
         }
     }
 }
+
+/// Spots one decision tries for a packed building that would close a way
+/// out before leaving the rest to the next decision, which skips the refused
+/// ones. A computation bound: few spots close a way out.
+const PATH_TRIES: u32 = 4;
 
 /// Where a building of `kind` toward `investment` would stand, as far as the
 /// seat knows.

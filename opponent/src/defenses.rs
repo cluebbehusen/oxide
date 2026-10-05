@@ -1931,6 +1931,7 @@ pub(crate) fn keeps_paths(
         .iter()
         .filter_map(|unit| unit.founding)
         .chain(planned.iter().copied())
+        .filter(|(kind, _)| *kind != BuildingKind::ScuttleCharge)
         .collect();
     let mut blocked = vec![false; (width * height) as usize];
     let solid = observation
@@ -1961,15 +1962,28 @@ pub(crate) fn keeps_paths(
     };
     let foundry = BuildingKind::Foundry.base_stats().size;
     let mut reached = vec![false; (width * height) as usize];
-    let mut frontier: Vec<TilePos> = observation
+    let foundries: Vec<TilePos> = observation
         .my_buildings
         .iter()
-        .filter(|building| building.kind == BuildingKind::Foundry && building.built)
-        .flat_map(|building| ring(building.anchor, foundry))
+        .filter(|building| {
+            building.kind == BuildingKind::Foundry
+                && building.built
+                && map.component(building.anchor) == Some(ground)
+        })
+        .map(|building| building.anchor)
+        .collect();
+    // Ground no Foundry stands on has no exits to keep; a Foundry ringed
+    // shut has none left.
+    if foundries.is_empty() {
+        return true;
+    }
+    let mut frontier: Vec<TilePos> = foundries
+        .iter()
+        .flat_map(|anchor| ring(*anchor, foundry))
         .filter(|tile| open(*tile))
         .collect();
     if frontier.is_empty() {
-        return true;
+        return false;
     }
     for tile in &frontier {
         if let Some(at) = index(*tile) {
