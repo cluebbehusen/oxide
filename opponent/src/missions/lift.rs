@@ -6,7 +6,7 @@
 
 use super::Scratch;
 use super::air::{self, Hazard};
-use super::attack::{FIT, defense, healthy, margin, minimum, striking};
+use super::attack::{FIT, healthy, margin, minimum, opposed, striking};
 use super::{
     LiftPhase, MISSION_CAP, Mission, Missions, Objective, Task, UNIT_CAP, approach, hunt, mine,
     run, standing,
@@ -164,13 +164,18 @@ impl Missions {
         }
     }
 
-    /// Forms a lift when the free carriers and riders at home together can
-    /// meet the need of the best landing no lift holds, sending as many loads
-    /// as this decision's orders allow; the rest board on later decisions.
-    /// Returns whether one formed.
+    /// Forms a lift when none is under way and the free carriers and riders
+    /// at home together can meet the need of the best landing, sending every
+    /// load this decision's orders allow; the rest board on later decisions.
+    /// One landing of everything beats several that each meet the island's
+    /// defenders alone. Returns whether one formed.
     fn form(&mut self, lifting: &Lifting<'_>, ledger: &mut Ledger) -> bool {
         let observation = lifting.observation;
-        if self.list.len() >= MISSION_CAP || !lifting.severed {
+        let lifting_now = self
+            .list
+            .iter()
+            .any(|mission| matches!(mission.task, Task::Lift { .. }));
+        if lifting_now || self.list.len() >= MISSION_CAP || !lifting.severed {
             return false;
         }
         let loads = self.loads(lifting, ledger);
@@ -185,7 +190,7 @@ impl Missions {
         if value < need {
             return false;
         }
-        let (mut units, _) = send(loads, need, UNIT_CAP, ledger);
+        let (mut units, _) = send(loads, u64::MAX, UNIT_CAP, ledger);
         if units.is_empty() {
             return false;
         }
@@ -355,8 +360,8 @@ impl Missions {
         }
     }
 
-    /// Sends more free carriers and riders while those aboard or walking fall
-    /// short of the need, and waits while riders walk to their carriers. Once
+    /// Sends every free carrier and rider while boarding lasts, and waits
+    /// while riders walk to their carriers. Once
     /// none is walking and none was sent, or time runs out, flies with
     /// everyone aboard or at least half the need, and otherwise sets everyone
     /// down and lets them go. A rider that stopped short of its carrier could
@@ -364,16 +369,10 @@ impl Missions {
     fn board(&mut self, flight: &Flight<'_>, lifting: &Lifting<'_>, ledger: &mut Ledger) {
         let waiting = &flight.grounded;
         let need = lifting.need(flight.landing);
-        let walking: u64 = waiting
-            .iter()
-            .filter(|unit| !unit.idle)
-            .map(|unit| striking(unit))
-            .sum();
-        let committed = flight.loaded + walking;
-        if committed < need && flight.age < LOAD_TICKS {
+        if flight.age < LOAD_TICKS {
             let loads = self.loads(lifting, ledger);
             let room = UNIT_CAP.saturating_sub(self.list[flight.index].units.len());
-            let (sent, _) = send(loads, need - committed, room, ledger);
+            let (sent, _) = send(loads, u64::MAX, room, ledger);
             if !sent.is_empty() {
                 let units = &mut self.list[flight.index].units;
                 units.extend(sent);
@@ -658,16 +657,19 @@ impl<'a> Lifting<'a> {
         .filter(|target| !self.held.contains(target))
         .find(|target| self.landings(*target).next().is_some())
         .map_or(0, |target| {
-            defense(self.observation, self.memory, target.anchor) * margin(self.profile.difficulty)
+            opposed(self.observation, self.map, self.memory, target.anchor)
+                * margin(self.profile.difficulty)
                 / 1_000
         })
         .max(minimum(self.profile.stance))
     }
 
-    /// Army value a lift to `landing` needs: its known ground defense times
-    /// the margin, and never under the stance minimum.
+    /// Army value a lift to `landing` needs: the known army it would meet
+    /// there times the margin, and never under the stance minimum.
     fn need(&self, landing: TilePos) -> u64 {
-        (defense(self.observation, self.memory, landing) * margin(self.profile.difficulty) / 1_000)
+        (opposed(self.observation, self.map, self.memory, landing)
+            * margin(self.profile.difficulty)
+            / 1_000)
             .max(minimum(self.profile.stance))
     }
 
