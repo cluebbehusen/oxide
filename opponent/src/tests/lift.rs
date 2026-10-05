@@ -982,7 +982,7 @@ fn checkpoints_reject_impossible_lifts() {
 }
 
 #[test]
-fn riders_left_standing_fly_with_half_the_need_aboard_or_disband() {
+fn riders_left_standing_fly_only_with_the_need_aboard_or_disband() {
     let scenario = strait();
     let state = scenario.build().unwrap();
     let mut opponent = seat(&scenario, 0);
@@ -1025,16 +1025,18 @@ fn riders_left_standing_fly_with_half_the_need_aboard_or_disband() {
 
     let half: Vec<PlayerCommand> = commands_for(&boarding[..1]);
     let (commands, mission) = settled(&half);
-    let mission = mission.unwrap();
-    assert_eq!((mission.id, mission.phase), (formed.id, Phase::Fly));
-    let flying: Vec<Vec<UnitId>> = runs(&commands)
-        .into_iter()
-        .map(|(units, _)| units)
-        .collect();
+    assert!(
+        mission.is_none_or(|mission| mission.id != formed.id),
+        "half the payload does not fly"
+    );
+    assert!(runs(&commands).is_empty());
     assert_eq!(
-        flying,
-        [vec![boarding[0].0]],
-        "only the loaded carrier flies"
+        unloads(&commands)
+            .into_iter()
+            .map(|(carrier, _, _)| carrier)
+            .collect::<Vec<_>>(),
+        [boarding[0].0],
+        "the loaded carrier sets its riders down"
     );
     assert_eq!(stopped(&commands), boarding[1].1);
 }

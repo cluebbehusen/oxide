@@ -163,6 +163,14 @@ impl Memory {
         &mut self.scouted
     }
 
+    /// Whether scouting point `point` was in sight recently enough that the
+    /// enemy units seen around it are still remembered.
+    pub(crate) fn looked(&self, point: usize, now: u64) -> bool {
+        self.scouted
+            .get(point)
+            .is_some_and(|seen| now < seen + UNIT_TICKS)
+    }
+
     /// Counts scouting point `point` as seen at `now`.
     pub(crate) fn saw(&mut self, point: usize, now: u64) {
         if let Some(seen) = self.scouted.get_mut(point) {

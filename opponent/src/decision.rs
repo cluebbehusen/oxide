@@ -279,6 +279,7 @@ pub(crate) fn decide(
     let earned = persistent.income.observe(tick, observation.scrap, rejected);
     persistent.memory.forget(tick);
     persistent.memory.observe(observation);
+    crate::missions::look(observation, map, &mut persistent.memory);
     let mut scratch = Scratch::new(
         observation,
         map,
@@ -827,9 +828,8 @@ fn explore(
     }
 }
 
-/// Keeps enough carriers, alive and queued, to lift what the best landing
-/// needs with the free units at home, training one at a ready Airworks when
-/// short. It is a stock, like the Harvesters: no mission is promised the
+/// Keeps enough carriers, alive and queued, to lift every free rider at home
+/// at once, training one at a ready Airworks when short. It is a stock, like the Harvesters: no mission is promised the
 /// carriers it buys. Returns whether a ready Airworks waits for the scrap to
 /// train one while riders at home already fill every carrier, so that
 /// cheaper units do not spend it first.

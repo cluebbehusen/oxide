@@ -33,7 +33,7 @@ pub(crate) use air::{Hazard, hazards};
 pub(crate) use attack::{building_value, minimum};
 pub(crate) use defense::Shortfall;
 pub(crate) use lift::{carrier, payload};
-pub(crate) use scouting::points;
+pub(crate) use scouting::{look, points};
 pub(crate) use strike::strike_need;
 pub(crate) use support::{per_tender, wounds};
 
