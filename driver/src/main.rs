@@ -367,9 +367,23 @@ enum Cmd {
         /// Override the tick count from the replay metadata.
         #[arg(long)]
         ticks: Option<u64>,
+        /// Stop at this tick, a prefix of the recording: later commands stay
+        /// unplayed and the run still succeeds. `--ticks` instead sets the
+        /// full length and fails if commands remain after it.
+        #[arg(long)]
+        until: Option<u64>,
         /// Fail unless the final hash equals this (0x-prefixed hex).
         #[arg(long)]
         expect_hash: Option<String>,
+        /// Every N ticks, also print one JSON line with the state hash and a
+        /// running digest of every tick report so far (events and motion,
+        /// which the state hash never sees), so two builds can be compared
+        /// before the end. States are sampled only every N ticks while
+        /// reports accumulate every tick, so N above 1 can miss a state
+        /// difference that comes and goes between samples; use 1 to prove
+        /// two builds identical.
+        #[arg(long)]
+        hash_every: Option<std::num::NonZeroU64>,
         /// Play a replay recorded on a different sim version anyway
         /// (reproduction not guaranteed — archaeology only).
         #[arg(long)]
@@ -1183,23 +1197,48 @@ fn main() -> Result<()> {
         Cmd::Replay {
             path,
             ticks,
+            until,
             expect_hash,
+            hash_every,
             allow_version_mismatch,
             allow_long,
         } => {
             let replay = oxide_kit::load_replay(&path)?;
-            let state =
-                runner::run_replay_bounded(&replay, ticks, allow_version_mismatch, allow_long)?;
+            let mut events = 0u64;
+            let state = runner::run_replay_observed(
+                &replay,
+                ticks,
+                until,
+                allow_version_mismatch,
+                allow_long,
+                |state, report| {
+                    let Some(every) = hash_every else {
+                        return;
+                    };
+                    events = chassis::hash::state_hash(&(events, report));
+                    if state.current_tick().is_multiple_of(every.get()) {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "tick": state.current_tick(),
+                                "hash": hash_hex(state.hash()),
+                                "events": hash_hex(events),
+                            })
+                        );
+                    }
+                },
+            )?;
             let hash = hash_hex(state.hash());
-            println!(
-                "{}",
-                serde_json::json!({
-                    "tick": state.current_tick(),
-                    "hash": hash,
-                    "result": state.result(),
-                    "commands": replay.commands.len(),
-                })
-            );
+            let mut summary = serde_json::json!({
+                "tick": state.current_tick(),
+                "hash": hash,
+                "result": state.result(),
+                "commands": replay.commands.len(),
+            });
+            if hash_every.is_some() {
+                summary["events"] = hash_hex(events).into();
+            }
+            println!("{summary}");
             if let Some(expected) = expect_hash
                 && expected != hash
             {

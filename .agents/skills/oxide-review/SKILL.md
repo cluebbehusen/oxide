@@ -62,8 +62,10 @@ Use the owning domain skill for focused tests and `oxide-live-qa` for native
 presentation or timing claims. Its
 [performance procedure](../oxide-live-qa/references/performance.md) provides
 scoped workloads; compare fixed inputs on the same machine and report absolute
-cost, variance and limits. A replay reproduces recorded commands; it does not by
-itself evaluate changed bot decisions.
+cost, variance and limits. For simulation cost per tick, the
+[simulation-performance skill](../simulation-performance/SKILL.md) covers
+measurement and exactness proof. A replay reproduces recorded commands; it does
+not by itself evaluate changed bot decisions.
 
 ## Report what the evidence supports
 
