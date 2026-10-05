@@ -8,6 +8,7 @@ use crate::frame::{HomeFrame, footprint_centre};
 use crate::map::MapModel;
 use crate::memory::Memory;
 use crate::profile::PersonalityTraits;
+use crate::workers;
 use chassis::grid::TilePos;
 use oxide_sim::observation::{BuildingObs, ObservationData};
 use oxide_sim::{BuildingId, BuildingKind, PlayerId, TICKS_PER_SECOND, UnitKind};
@@ -312,33 +313,69 @@ pub(crate) fn completes(investment: Investment, step: Step) -> bool {
     }
 }
 
-/// Where a building step toward `investment` may go: the expansion site's
-/// anchors on the seat's home ground for its Foundry, the frame for an
-/// Extractor, the chosen spot for a defense, and otherwise the seat's home
-/// spots.
-pub(crate) fn anchors(
-    map: &MapModel,
+/// Where a building step toward `investment` may go, best first: the
+/// expansion site's anchors on the seat's home ground for its Foundry, the
+/// frame for an Extractor, the chosen spot for a defense, and otherwise the
+/// spots beside the seat's Foundries, its start's first at each gap.
+pub(crate) fn anchors<'a>(
+    map: &'a MapModel,
     observation: &ObservationData,
     investment: Investment,
     kind: BuildingKind,
-) -> Vec<TilePos> {
+) -> Box<dyn Iterator<Item = TilePos> + 'a> {
     match (investment, kind) {
-        (Investment::Expansion(site), BuildingKind::Foundry) => map
-            .sites()
-            .get(usize::from(site))
-            .map_or_else(Vec::new, |site| {
-                expansion::anchors(map, observation.me, site)
-            }),
-        (Investment::Extractor(frame), BuildingKind::Extractor) => vec![frame],
+        (Investment::Expansion(site), BuildingKind::Foundry) => Box::new(
+            map.sites()
+                .get(usize::from(site))
+                .map_or_else(Vec::new, |site| {
+                    expansion::anchors(map, observation.me, site)
+                })
+                .into_iter(),
+        ),
+        (Investment::Extractor(frame), BuildingKind::Extractor) => Box::new(std::iter::once(frame)),
         (
             Investment::Defense {
                 kind: defense,
                 anchor,
             },
             kind,
-        ) if defense == kind => vec![anchor],
-        _ => map.spots(observation.me).to_vec(),
+        ) if defense == kind => Box::new(std::iter::once(anchor)),
+        _ => Box::new(map.spots(observation.me, foundries(map, observation))),
     }
+}
+
+/// The seat's built Foundries, its start's first, then by ground distance
+/// from it and in the seat's frame. While any stands on ground one of the
+/// seat's workers stands on, only those: only a worker there could build
+/// beside them. A seat with no worker anywhere trains one first.
+fn foundries(map: &MapModel, observation: &ObservationData) -> Vec<TilePos> {
+    let frame = HomeFrame::of(observation, map);
+    let crewed = |anchor: TilePos| {
+        let ground = map.component(anchor);
+        ground.is_some()
+            && observation
+                .my_units
+                .iter()
+                .any(|unit| workers::worker(unit.kind) && map.component(unit.tile) == ground)
+    };
+    let mut foundries: Vec<TilePos> = observation
+        .my_buildings
+        .iter()
+        .filter(|building| building.kind == BuildingKind::Foundry && building.built)
+        .map(|building| building.anchor)
+        .collect();
+    if foundries.iter().any(|anchor| crewed(*anchor)) {
+        foundries.retain(|anchor| crewed(*anchor));
+    }
+    foundries.sort_by_key(|anchor| {
+        (
+            map.distance(observation.me, *anchor),
+            frame.map(|frame| {
+                frame.rank(frame.home, footprint_centre(BuildingKind::Foundry, *anchor))
+            }),
+        )
+    });
+    foundries
 }
 
 fn build_step(observation: &ObservationData, kind: BuildingKind, depth: u8) -> Option<(Step, u32)> {

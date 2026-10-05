@@ -259,12 +259,13 @@ fn a_site_is_valued_and_built_from_anchors_on_home_ground() {
                 .all(|anchor| model.component(*anchor) == home)
         );
         assert!(expansion::value(&observation, &model, &Memory::default(), site, 50).is_some());
-        let placed = crate::investments::anchors(
+        let placed: Vec<TilePos> = crate::investments::anchors(
             &model,
             &observation,
             Investment::Expansion(index as u16),
             BuildingKind::Foundry,
-        );
+        )
+        .collect();
         assert_eq!(placed, reachable);
     }
 }

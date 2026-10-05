@@ -344,17 +344,20 @@ easiest known target the seat has not given up on. The most wanted role goes
 first to the nearest ready producer that can afford a unit for it, then the
 next; ready producers left with nothing wanted train, while ground units can
 reach an enemy, for whichever of line and siege they serve is furthest below its
-share, line alone when the army goes only by lift. Each chooses the unit it can
-afford now by coarse suitability: reach against the enemy's usual reach, what
-its role is for at the price (firepower for siege, durability for the rest),
-covering both enemy domains, splash against clustered enemies, affordability at
-the seat's income, variety (a kind that already makes up most of its role counts
-for less, so every kind of a role gets its turn), and personality. Scouts,
-carriers, Tenders, Scuttlers and Sappers are bought only for scouting, lift,
-support and raids. A role it needs but cannot train at all adds to the
-investment score of the cheapest building that would let it, and a role it can
-train adds to a producer it lacks whose unit would suit it better, as much as
-saving for that unit is worth.
+share, line alone when the army goes only by lift, unless another producer
+serves a wanted role: the scrap then waits for that producer. While the seat
+saves for a unit, the producers that train it wait for it and no other producer
+trains a cheaper unit of its role. Each chooses the unit it can afford now by
+coarse suitability: reach against the enemy's usual reach, what its role is for
+at the price (firepower for siege, durability for the rest), covering both enemy
+domains, splash against clustered enemies, affordability at the seat's income,
+variety (a kind that already makes up most of its role counts for less, so every
+kind of a role gets its turn), and personality. Scouts, carriers, Tenders,
+Scuttlers and Sappers are bought only for scouting, lift, support and raids. A
+role it needs but cannot train at all adds to the investment score of the
+cheapest building that would let it, and a role it can train adds to a producer
+it lacks whose unit would suit it better, as much as saving for that unit is
+worth.
 
 ## Investments and saving
 
@@ -380,9 +383,10 @@ seat's building or its own Foundry, or failed at every anchor are skipped. An
 Extractor is worth more beside one of the seat's Foundries and less where it has
 seen danger, and waits while an armed enemy in sight stands near its frame, as
 one lost there does until the enemy leaves. The seat saves for one target at a
-time. It starts saving only for an investment that scores well, keeps it while
-it still scores, and switches only for one that scores clearly higher.
-Prerequisites come first: saving for Airworks buys a Fabricator.
+time. It starts saving only for an investment that scores well and could stand
+somewhere it knows of or could look, keeps it while it still scores, and
+switches only for one that scores clearly higher. Prerequisites come first:
+saving for Airworks buys a Fabricator.
 
 When it adopts a target a share of its bank is protected from ordinary spending,
 and while it saves a share of its estimated income is added, up to the next
@@ -390,13 +394,18 @@ purchase's price. Stance and greed set the share, and visible hostile units near
 the base lower it. Income is estimated from the bank's change between decisions
 plus the seat's own spending. Once the whole uncommitted bank covers the next
 purchase, the seat places it with the nearest free worker on the first spot its
-knowledge allows (an expansion site's anchors, a frame, or otherwise a home
-spot), upgrades the building, or trains the unit at the nearest ready producer.
-If every spot is unexplored, the worker walks toward one instead; with no spot
-left to place or explore, nothing is protected, so a target that cannot stand
-anywhere never starves production. A purchase missing from the world at the next
-decision was rejected, cancelled or refunded: the seat keeps the target,
-protects its full price again, and skips that spot for a while.
+knowledge allows (an expansion site's anchors, a frame, or otherwise a spot
+beside one of its Foundries), upgrades the building, or trains the unit at the
+nearest ready producer. Spots beside Foundries are two-by-two footprints of open
+ground clear of frames and starting scrap, taken nearest first: every Foundry's
+spots at one gap, the start's first, before any at the next, out to the edge of
+its ground, and while any Foundry stands on ground one of the seat's workers
+stands on, only beside those. If the first spot it could use is unexplored, the
+worker walks toward it instead; with no spot left to place or explore, nothing
+is protected, so a target that cannot stand anywhere never starves production. A
+purchase missing from the world at the next decision was rejected, cancelled or
+refunded: the seat keeps the target, protects its full price again, and skips
+that spot for a while.
 
 Placement is checked against the fog-honest observation only: completed
 prerequisites, explored ground, frames, known rock and scrap, known buildings, a
@@ -412,13 +421,13 @@ The crate depends on `oxide-sim` and `chassis`, never on `oxide-bot`. It reads
 only its seat's fog-honest `ObservationData` and its own order events, and emits
 ordinary `PlayerCommand`s. Its seats also share one immutable `MapModel`, built
 once per match from the scenario's public map: ground components, the authored
-starts and teams, ground distance from every start, home building spots and
-scrap, and expansion sites. Distances between buildings and units are measured
-between whole footprints, so they stay equal for mirrored seats. It decides on
-its difficulty's interval and stays silent once the match is decided, after its
-seat surrenders, or while it has no built Foundry. Equal-distance choices are
-broken in a frame anchored on the seat's authored start, so mirrored seats make
-mirrored choices.
+starts and teams, ground distance from every start, where building spots may go,
+home scrap, and expansion sites. Distances between buildings and units are
+measured between whole footprints, so they stay equal for mirrored seats. It
+decides on its difficulty's interval and stays silent once the match is decided,
+after its seat surrenders, or while it has no built Foundry. Equal-distance
+choices are broken in a frame anchored on the seat's authored start, so mirrored
+seats make mirrored choices.
 
 ## Own events
 
