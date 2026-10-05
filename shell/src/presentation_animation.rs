@@ -131,6 +131,33 @@ pub(crate) enum UnitWorkState {
     Unloading { target: Vec2Fx, progress: f32 },
 }
 
+/// The Excavator mechanism that performs a unit's current work.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum ExcavatorTool {
+    /// Both mechanisms rest against the chassis.
+    Stowed,
+    /// The front milling drum grinds scrap, a wreck, or a structure being
+    /// salvaged.
+    Drum { cycle: f32 },
+    /// The side welding arm raises a site or repairs a patient.
+    WeldingArm { cycle: f32 },
+}
+
+impl UnitWorkState {
+    /// The Excavator mechanism that performs this work.
+    pub(crate) fn excavator_tool(self) -> ExcavatorTool {
+        match self {
+            Self::Harvesting { cycle, .. } | Self::Salvaging { cycle, .. } => {
+                ExcavatorTool::Drum { cycle }
+            }
+            Self::Constructing { cycle, .. } | Self::Repairing { cycle, .. } => {
+                ExcavatorTool::WeldingArm { cycle }
+            }
+            Self::Idle | Self::Unloading { .. } => ExcavatorTool::Stowed,
+        }
+    }
+}
+
 /// The visible fill of a scrap worker's internal cargo bay.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct CargoState {
@@ -290,6 +317,46 @@ impl UnitAnimationFacts {
             carrying: unit.carrying,
             demolition_contact: sapper_at_contact(state, unit),
             cooldowns: unit.cooldowns,
+        }
+    }
+
+    /// Resolves the visible work at a render instant.
+    fn work_state(self, clock: AnimationClock, options: AnimationOptions) -> UnitWorkState {
+        match self.work {
+            UnitWorkFact::Idle => UnitWorkState::Idle,
+            UnitWorkFact::Unloading(target, elapsed) => UnitWorkState::Unloading {
+                target,
+                progress: if options.reduced_motion {
+                    0.5
+                } else {
+                    (f32::from(elapsed) + clock.tick_fraction)
+                        / f32::from(oxide_sim::stats::UNLOAD_TICKS)
+                },
+            },
+            UnitWorkFact::Harvesting(target, progress) => UnitWorkState::Harvesting {
+                target,
+                cycle: if self.kind == UnitKind::Excavator {
+                    clock.cycle(self.id.0, EXCAVATOR_ROLLER_PERIOD, options.reduced_motion)
+                } else if options.reduced_motion {
+                    0.5
+                } else {
+                    (progress as f32 + clock.tick_fraction)
+                        / self.kind.stats().harvest.map_or(1, |h| h.ticks_per_scrap) as f32
+                },
+            },
+            UnitWorkFact::Constructing(site, target) => UnitWorkState::Constructing {
+                site,
+                target,
+                cycle: clock.cycle(self.id.0, CONSTRUCTION_PERIOD, options.reduced_motion),
+            },
+            UnitWorkFact::Repairing(target) => UnitWorkState::Repairing {
+                target,
+                cycle: clock.cycle(self.id.0, CONSTRUCTION_PERIOD, options.reduced_motion),
+            },
+            UnitWorkFact::Salvaging(target) => UnitWorkState::Salvaging {
+                target,
+                cycle: clock.cycle(self.id.0, HARVEST_PERIOD, options.reduced_motion),
+            },
         }
     }
 }
@@ -547,11 +614,14 @@ impl AnimationController {
     }
 
     fn observe_worker(&mut self, facts: UnitAnimationFacts, tick: u64) {
-        let active = matches!(facts.work, UnitWorkFact::Repairing(_))
-            .then_some(facts.work_target)
-            .flatten();
         let clock = AnimationClock::new(tick, 0.);
-        if let Some(target) = active {
+        let welding = matches!(
+            facts
+                .work_state(clock, AnimationOptions::default())
+                .excavator_tool(),
+            ExcavatorTool::WeldingArm { .. }
+        );
+        if let Some(target) = welding.then_some(facts.work_target).flatten() {
             let arm = self
                 .welding_arms
                 .entry(facts.id)
@@ -579,13 +649,14 @@ impl AnimationController {
     fn welding_arm(
         &self,
         facts: UnitAnimationFacts,
+        work: UnitWorkState,
         clock: AnimationClock,
         options: AnimationOptions,
     ) -> Option<WeldingArmState> {
         if facts.kind != UnitKind::Excavator {
             return None;
         }
-        let active = matches!(facts.work, UnitWorkFact::Repairing(_));
+        let active = matches!(work.excavator_tool(), ExcavatorTool::WeldingArm { .. });
         if let Some(arm) = self.welding_arms.get(&facts.id) {
             let deployment = if options.reduced_motion {
                 f32::from(active)
@@ -627,42 +698,7 @@ impl AnimationController {
         } else {
             LocomotionState::Rest
         };
-        let work = match facts.work {
-            UnitWorkFact::Idle => UnitWorkState::Idle,
-            UnitWorkFact::Unloading(target, elapsed) => UnitWorkState::Unloading {
-                target,
-                progress: if options.reduced_motion {
-                    0.5
-                } else {
-                    (f32::from(elapsed) + clock.tick_fraction)
-                        / f32::from(oxide_sim::stats::UNLOAD_TICKS)
-                },
-            },
-            UnitWorkFact::Harvesting(target, progress) => UnitWorkState::Harvesting {
-                target,
-                cycle: if facts.kind == UnitKind::Excavator {
-                    clock.cycle(facts.id.0, EXCAVATOR_ROLLER_PERIOD, options.reduced_motion)
-                } else if options.reduced_motion {
-                    0.5
-                } else {
-                    (progress as f32 + clock.tick_fraction)
-                        / facts.kind.stats().harvest.map_or(1, |h| h.ticks_per_scrap) as f32
-                },
-            },
-            UnitWorkFact::Constructing(site, target) => UnitWorkState::Constructing {
-                site,
-                target,
-                cycle: clock.cycle(facts.id.0, CONSTRUCTION_PERIOD, options.reduced_motion),
-            },
-            UnitWorkFact::Repairing(target) => UnitWorkState::Repairing {
-                target,
-                cycle: clock.cycle(facts.id.0, CONSTRUCTION_PERIOD, options.reduced_motion),
-            },
-            UnitWorkFact::Salvaging(target) => UnitWorkState::Salvaging {
-                target,
-                cycle: clock.cycle(facts.id.0, HARVEST_PERIOD, options.reduced_motion),
-            },
-        };
+        let work = facts.work_state(clock, options);
         let cargo = facts.kind.stats().harvest.map(|harvest| CargoState {
             amount: facts.carrying,
             capacity: harvest.capacity,
@@ -696,7 +732,7 @@ impl AnimationController {
         };
         UnitAnimationState {
             work_target: facts.work_target,
-            welding_arm: self.welding_arm(facts, clock, options),
+            welding_arm: self.welding_arm(facts, work, clock, options),
             locomotion,
             work,
             cargo,
@@ -1727,16 +1763,64 @@ mod tests {
         assert!(!site.built);
         assert!(site.progress > 0);
         let unit = state.unit(excavator).expect("Excavator survives");
-        let animation = AnimationController::default().unit_state(
+        let mut controller = AnimationController::default();
+        controller.observe_workers(&state);
+        let animation = controller.unit_state(
             UnitAnimationFacts::capture(&state, unit, false),
-            AnimationClock::new(state.current_tick(), 0.0),
+            AnimationClock::new(state.current_tick() + WELD_ARM_FOLD_TICKS as u64, 0.0),
             AnimationOptions::default(),
         );
         assert!(matches!(
             animation.work,
             UnitWorkState::Constructing { site: active, .. } if active == site.id
         ));
+        assert_eq!(
+            animation.welding_arm,
+            Some(WeldingArmState {
+                target: WorkTarget::Building(site.id),
+                deployment: 1.,
+                active: true,
+            }),
+            "the Excavator welds a site with its arm"
+        );
         assert!(BuildingAnimationFacts::capture(&state, site).construction_active);
+    }
+
+    #[test]
+    fn excavator_mills_with_the_drum_and_welds_with_the_arm() {
+        let target = point();
+        for (work, tool) in [
+            (UnitWorkState::Idle, ExcavatorTool::Stowed),
+            (
+                UnitWorkState::Unloading {
+                    target,
+                    progress: 0.5,
+                },
+                ExcavatorTool::Stowed,
+            ),
+            (
+                UnitWorkState::Harvesting { target, cycle: 0.5 },
+                ExcavatorTool::Drum { cycle: 0.5 },
+            ),
+            (
+                UnitWorkState::Salvaging { target, cycle: 0.5 },
+                ExcavatorTool::Drum { cycle: 0.5 },
+            ),
+            (
+                UnitWorkState::Constructing {
+                    site: BuildingId(4),
+                    target,
+                    cycle: 0.5,
+                },
+                ExcavatorTool::WeldingArm { cycle: 0.5 },
+            ),
+            (
+                UnitWorkState::Repairing { target, cycle: 0.5 },
+                ExcavatorTool::WeldingArm { cycle: 0.5 },
+            ),
+        ] {
+            assert_eq!(work.excavator_tool(), tool, "{work:?}");
+        }
     }
 
     #[test]

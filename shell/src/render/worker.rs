@@ -1,6 +1,6 @@
 //! Worker mechanisms, attached to the chassis and the visible work surface.
 use super::*;
-use crate::presentation_animation::{UnitAnimationState, UnitWorkState, WorkTarget};
+use crate::presentation_animation::{ExcavatorTool, UnitAnimationState, UnitWorkState, WorkTarget};
 
 fn world(pos: chassis::fx::Vec2Fx) -> Vec2 {
     vec2(pos.x.to_num(), pos.y.to_num())
@@ -123,29 +123,6 @@ fn forward_work_point(point: Vec2, root: Vec2, forward: Vec2, scale: f32) -> Vec
     root + forward * ahead + lateral * sideways
 }
 
-fn roller_tip(
-    root: Vec2,
-    rest: Vec2,
-    forward: Vec2,
-    scale: f32,
-    target: Option<Vec2>,
-    work: UnitWorkState,
-    reach: f32,
-) -> Vec2 {
-    if matches!(
-        work,
-        UnitWorkState::Idle | UnitWorkState::Repairing { .. } | UnitWorkState::Unloading { .. }
-    ) {
-        return rest;
-    }
-    target.map_or(rest, |point| {
-        rest.lerp(
-            forward_work_point(point, root, forward, scale),
-            reach.clamp(0., 1.),
-        )
-    })
-}
-
 fn smooth_step(value: f32) -> f32 {
     let t = value.clamp(0., 1.);
     t * t * (3. - 2. * t)
@@ -254,9 +231,9 @@ pub(super) fn draw_welder(
         && deployment >= 0.98
         && target.is_some_and(|point| point.distance(tip) < 3. * width)
     {
-        let cycle = match animation.work {
-            UnitWorkState::Repairing { cycle, .. } => cycle,
-            _ => 0.,
+        let cycle = match animation.work.excavator_tool() {
+            ExcavatorTool::WeldingArm { cycle } => cycle,
+            ExcavatorTool::Drum { .. } | ExcavatorTool::Stowed => 0.,
         };
         let pulse = if reduced_motion() {
             0.5
@@ -317,10 +294,6 @@ pub(super) fn draw(
         UnitWorkState::Unloading { progress, .. } => (progress, false, true),
         UnitWorkState::Idle => (0., false, false),
     };
-    let grinding = matches!(
-        animation.work,
-        UnitWorkState::Harvesting { .. } | UnitWorkState::Salvaging { .. }
-    );
     let reach = if holding {
         1.0
     } else if unloading {
@@ -434,11 +407,11 @@ pub(super) fn draw(
             local(64., 28.)
         };
         let limit = if tender { 44. } else { 34. } * width;
-        let roller_parked = !tender
-            && matches!(
-                animation.work,
-                UnitWorkState::Repairing { .. } | UnitWorkState::Unloading { .. }
-            );
+        let drum = match animation.work.excavator_tool() {
+            ExcavatorTool::Drum { cycle } => Some(cycle),
+            ExcavatorTool::WeldingArm { .. } | ExcavatorTool::Stowed => None,
+        };
+        let roller_parked = !tender && drum.is_none();
         let tool_target = if roller_parked { None } else { target };
         let tip = if tender {
             tool_target.map_or(rest, |p| {
@@ -446,15 +419,7 @@ pub(super) fn draw(
                 rest.lerp(surface, if holding { 1. } else { reach })
             })
         } else {
-            roller_tip(
-                root,
-                rest,
-                forward,
-                width,
-                target,
-                animation.work,
-                if holding || grinding { 1. } else { reach },
-            )
+            tool_target.map_or(rest, |p| forward_work_point(p, root, forward, width))
         };
         if tender {
             let elbow = root.lerp(tip, 0.55) + lateral * 7. * width;
@@ -495,11 +460,7 @@ pub(super) fn draw(
                 draw_line(a.x, a.y, b.x, b.y, 5. * width, outline);
                 draw_line(a.x, a.y, b.x, b.y, 2. * width, steel);
             }
-            let phase = if grinding && !reduced_motion() {
-                cycle
-            } else {
-                0.
-            };
+            let phase = drum.filter(|_| !reduced_motion()).unwrap_or(0.);
             for column in 0..6 {
                 for row in 0..3 {
                     let angle = (phase + row as f32 / 3. + (column % 2) as f32 / 6.)
@@ -664,54 +625,6 @@ mod tests {
                 let tip = forward_work_point(root + offset, root, forward, 1.);
                 assert!((tip - root).dot(forward) >= 19.99);
                 assert!(tip.distance(root) < 34.);
-            }
-        }
-    }
-
-    #[test]
-    fn roller_stays_in_front_for_every_work_pose_and_parks_during_unloading() {
-        for bearing in [0., 0.7, 1.5, 3., 4.5] {
-            let forward = Vec2::from_angle(bearing);
-            let root = vec2(120., 80.);
-            let rest = root + forward * 25.;
-            for offset in [-forward * 80., forward * 80., vec2(100., -100.)] {
-                for step in 0..=10 {
-                    let progress = step as f32 / 10.;
-                    for work in [
-                        UnitWorkState::Harvesting {
-                            cycle: progress,
-                            target: chassis::fx::Vec2Fx::ZERO,
-                        },
-                        UnitWorkState::Constructing {
-                            site: oxide_sim::BuildingId(0),
-                            cycle: progress,
-                            target: chassis::fx::Vec2Fx::ZERO,
-                        },
-                        UnitWorkState::Salvaging {
-                            cycle: progress,
-                            target: chassis::fx::Vec2Fx::ZERO,
-                        },
-                    ] {
-                        let tip = roller_tip(
-                            root,
-                            rest,
-                            forward,
-                            1.,
-                            Some(root + offset),
-                            work,
-                            progress,
-                        );
-                        assert!((tip - root).dot(forward) >= 19.99);
-                    }
-                    let work = UnitWorkState::Unloading {
-                        progress,
-                        target: chassis::fx::Vec2Fx::ZERO,
-                    };
-                    assert_eq!(
-                        roller_tip(root, rest, forward, 1., Some(root + offset), work, 1.),
-                        rest
-                    );
-                }
             }
         }
     }

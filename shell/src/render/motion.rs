@@ -7,8 +7,9 @@
 use oxide_sim::{BuildingKind, UnitKind};
 
 use crate::presentation_animation::{
-    AttackPhase, BuildingActivity, BuildingAnimationState, CargoState, LocomotionState,
-    PropulsionState, TransportActionState, UnitAnimationState, UnitWorkState, WeaponCycle,
+    AttackPhase, BuildingActivity, BuildingAnimationState, CargoState, ExcavatorTool,
+    LocomotionState, PropulsionState, TransportActionState, UnitAnimationState, UnitWorkState,
+    WeaponCycle,
 };
 
 const BUZZARD_CHARGE_THRESHOLD: f32 = 0.94;
@@ -127,13 +128,9 @@ pub(crate) fn unit_frame(kind: UnitKind, state: UnitAnimationState) -> UnitFrame
 
     if kind == UnitKind::Excavator {
         let cargo = state.cargo.map_or(0, cargo_bucket);
-        let pose = match state.work {
-            UnitWorkState::Harvesting { cycle, .. }
-            | UnitWorkState::Constructing { cycle, .. }
-            | UnitWorkState::Repairing { cycle, .. }
-            | UnitWorkState::Salvaging { cycle, .. } => excavator_work_frame(cycle),
-            UnitWorkState::Unloading { .. } => ExcavatorPose::Idle,
-            UnitWorkState::Idle => match state.locomotion {
+        let pose = match state.work.excavator_tool() {
+            ExcavatorTool::Drum { cycle } => excavator_work_frame(cycle),
+            ExcavatorTool::WeldingArm { .. } | ExcavatorTool::Stowed => match state.locomotion {
                 LocomotionState::Moving { cycle } => match tread_phase(cycle) {
                     0 => ExcavatorPose::Idle,
                     phase => ExcavatorPose::Moving(phase - 1),
@@ -799,17 +796,31 @@ mod tests {
             }
         );
 
-        state.work = UnitWorkState::Unloading {
-            target: chassis::fx::Vec2Fx::ZERO,
-            progress: 0.5,
-        };
-        assert_eq!(
-            unit_frame(UnitKind::Excavator, state),
-            UnitFrame::Excavator {
-                cargo: 2,
-                pose: ExcavatorPose::Idle
-            }
-        );
+        for work in [
+            UnitWorkState::Unloading {
+                target: chassis::fx::Vec2Fx::ZERO,
+                progress: 0.5,
+            },
+            UnitWorkState::Constructing {
+                site: oxide_sim::BuildingId(7),
+                target: chassis::fx::Vec2Fx::ZERO,
+                cycle: 0.7,
+            },
+            UnitWorkState::Repairing {
+                target: chassis::fx::Vec2Fx::ZERO,
+                cycle: 0.7,
+            },
+        ] {
+            state.work = work;
+            assert_eq!(
+                unit_frame(UnitKind::Excavator, state),
+                UnitFrame::Excavator {
+                    cargo: 2,
+                    pose: ExcavatorPose::Idle
+                },
+                "the drum rests while {work:?}"
+            );
+        }
 
         state.work = UnitWorkState::Idle;
         state.locomotion = LocomotionState::Moving { cycle: 0.75 };
