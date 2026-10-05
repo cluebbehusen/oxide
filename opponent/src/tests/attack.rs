@@ -65,7 +65,11 @@ fn an_opportunity_above_the_stance_minimum_launches() {
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].1, mission.goal, "the army gathers at its rally");
     assert_eq!(sent[0].0.len(), mission.units as usize);
-    assert!(sent[0].0.len() < WEST.len(), "only the force it needs");
+    assert_eq!(
+        sent[0].0.len(),
+        WEST.len(),
+        "the whole free army beyond the garrison goes"
+    );
 }
 
 #[test]
@@ -684,7 +688,7 @@ fn doubled() -> Scenario {
 }
 
 #[test]
-fn an_army_worth_two_attacks_launches_both_on_distinct_targets() {
+fn an_army_worth_two_attacks_launches_one_with_everything() {
     let scenario = doubled();
     let state = scenario.build().unwrap();
     let (commands, trace) = seat(&scenario, 0).act_traced(&state, &mut OwnEvents::default());
@@ -694,18 +698,17 @@ fn an_army_worth_two_attacks_launches_both_on_distinct_targets() {
         .into_iter()
         .filter(|mission| matches!(mission.kind, MissionKind::Attack { .. }))
         .collect();
-    let [first, second] = attacks[..] else {
+    let [attack] = attacks[..] else {
         panic!("{attacks:?}");
     };
-    assert_ne!(first.kind, second.kind, "each goes after its own target");
-    let sent = hunts(&commands);
-    let [(a, _), (b, _)] = &sent[..] else {
-        panic!("{sent:?}");
+    let [(sent, _)] = &hunts(&commands)[..] else {
+        panic!("{commands:?}");
     };
-    assert!(a.iter().all(|id| !b.contains(id)), "no unit in both");
-    assert!(
-        a.len() + b.len() < seat_units(&state, PlayerId(0)).len(),
-        "each takes only the force its target needs"
+    assert_eq!(sent.len(), attack.units as usize);
+    assert_eq!(
+        sent.len(),
+        WEST.len() + REAR.len(),
+        "the whole free army beyond the garrison goes together"
     );
 }
 
@@ -751,12 +754,12 @@ fn mirrored_seats_launch_mirrored_attacks() {
         .iter()
         .filter(|mission| matches!(mission.kind, MissionKind::Attack { .. }))
         .count();
-    assert_eq!(attacks, 2, "premise: {west:?}");
+    assert_eq!(attacks, 1, "premise: {west:?}");
     assert_eq!(mirror(&state, west), east);
 }
 
 #[test]
-fn a_checkpoint_with_two_attacks_under_way_resumes_identically() {
+fn a_checkpoint_with_an_attack_under_way_resumes_identically() {
     let scenario = doubled();
     let mut state = scenario.build().unwrap();
     let mut opponent = seat(&scenario, 0);
@@ -770,8 +773,8 @@ fn a_checkpoint_with_two_attacks_under_way_resumes_identically() {
     };
     assert_eq!(
         traces.last().map(attacks),
-        Some(2),
-        "premise: both under way"
+        Some(1),
+        "premise: one under way"
     );
     let json = serde_json::to_string(&opponent.checkpoint()).unwrap();
     let checkpoint: Checkpoint = serde_json::from_str(&json).unwrap();
@@ -850,7 +853,10 @@ fn anti_air_near_the_rally_escorts_an_attack() {
         sent.contains(&flakhound)
     };
     assert!(escorted((10, 11)), "beside the rally");
-    assert!(!escorted((1, 22)), "far behind home");
+    assert!(
+        escorted((1, 22)),
+        "free anti-air goes along wherever it waits"
+    );
 }
 
 #[test]

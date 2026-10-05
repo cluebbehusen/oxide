@@ -1277,7 +1277,7 @@ fn a_severed_seat_with_an_airworks_trains_air_strikes_before_it_has_an_army() {
 }
 
 #[test]
-fn a_payload_worth_two_lifts_flies_both_to_distinct_targets() {
+fn a_payload_worth_two_lifts_flies_together_in_one() {
     let mut scenario = crowded(&MORE_SKYHOOKS);
     // A Kestrel over the strait shows an East outpost on the far shore.
     scenario.units.push(unit(0, UnitKind::Kestrel, 20, 5));
@@ -1297,10 +1297,18 @@ fn a_payload_worth_two_lifts_flies_both_to_distinct_targets() {
         .into_iter()
         .filter(|mission| matches!(mission.kind, MissionKind::Lift { .. }))
         .collect();
-    let [first, second] = lifts[..] else {
+    let [lift] = lifts[..] else {
         panic!("{lifts:?}");
     };
-    assert_ne!(first.kind, second.kind, "each goes after its own target");
+    let free_carriers = state
+        .units()
+        .iter()
+        .filter(|unit| unit.player == PlayerId(0) && unit.kind == UnitKind::Skyhook)
+        .count();
+    assert!(
+        lift.units as usize >= 2 * free_carriers,
+        "every carrier boards riders in the one lift: {lift:?}"
+    );
 }
 
 /// West's ground cut off from East's start by a wall, East's start in a

@@ -128,9 +128,9 @@ impl Mission {
 }
 
 impl Missions {
-    /// Advances every attack under way, then launches another while the free
-    /// army beyond the home reserve can beat the known defense of a target no
-    /// attack holds. Returns the targets given up on.
+    /// Advances the attack under way, or launches one when the free army
+    /// beyond the home reserve can beat the known defense of a target.
+    /// Returns the targets given up on.
     pub(crate) fn attack(
         &mut self,
         observation: &ObservationData,
@@ -275,10 +275,17 @@ impl Missions {
             .outermost(map, scratch.frame, fit)
     }
 
-    /// Launches an attack on the best target no other attack holds when the
-    /// free army can beat its known defense. Returns whether one launched.
+    /// Launches an attack with the whole free army on the best target when it
+    /// can beat the target's known defense and no attack is under way: one
+    /// army hits together rather than several that each meet the enemy alone.
+    /// Units freed later join it when it regroups. Returns whether one
+    /// launched.
     fn launch(&mut self, plan: &Plan<'_>, fit: &[&UnitObs], ledger: &mut Ledger) -> bool {
-        if self.list.len() >= MISSION_CAP {
+        let attacking = self
+            .list
+            .iter()
+            .any(|mission| matches!(mission.task, Task::Attack { .. }));
+        if attacking || self.list.len() >= MISSION_CAP {
             return false;
         }
         let Some(target) = plan.best(None) else {
@@ -297,7 +304,7 @@ impl Missions {
         if fit.iter().map(|unit| striking(unit)).sum::<u64>() < need {
             return false;
         }
-        let recruits = recruit(plan.frame, &fit, rally, need, UNIT_CAP);
+        let recruits = recruit(plan.frame, &fit, rally, u64::MAX, UNIT_CAP);
         if recruits.is_empty() || !ledger.order(hunt(recruits.clone(), rally)) {
             return false;
         }
@@ -433,13 +440,8 @@ impl Missions {
                     .filter(|unit| reaches(plan.map, unit, component))
                     .collect();
                 let striking_strength: u64 = members.iter().map(|unit| striking(unit)).sum();
-                let recruits = recruit(
-                    plan.frame,
-                    &fit,
-                    rally,
-                    need.saturating_sub(striking_strength),
-                    room,
-                );
+                // The whole free army joins while it regroups.
+                let recruits = recruit(plan.frame, &fit, rally, u64::MAX, room);
                 let recruited = !recruits.is_empty() && ledger.order(hunt(recruits.clone(), rally));
                 if recruited {
                     for id in &recruits {
@@ -477,8 +479,11 @@ impl Missions {
                         insert(&mut mission.units, sapper);
                     }
                 }
+                // Recruits still on their way go along once the time to
+                // regroup is up, or a steady stream of new units would hold
+                // the army at home.
                 let ready = striking_strength >= need;
-                if !recruited && (all_idle || age >= timeout(phase)) && ready {
+                if ready && (age >= timeout(phase) || (all_idle && !recruited)) {
                     if ledger.order(hunt(mission.units.clone(), target.approach)) {
                         mission.attack_phase(
                             target,
@@ -739,10 +744,10 @@ impl<'a> Plan<'a> {
         })
     }
 
-    /// Army value the attack on `target` needs: its known local defense
-    /// times the margin, and never under the stance minimum.
+    /// Army value the attack on `target` needs: the known army it would
+    /// meet times the margin, and never under the stance minimum.
     fn need(&self, target: Target) -> u64 {
-        (defense(self.observation, self.memory, target.approach) * self.margin / 1_000)
+        (opposed(self.observation, self.map, self.memory, target.approach) * self.margin / 1_000)
             .max(self.minimum)
     }
 
@@ -815,6 +820,38 @@ impl<'a> Plan<'a> {
 /// confidence, and known enemy buildings that fire on ground by health.
 pub(super) fn defense(observation: &ObservationData, memory: &Memory, tile: TilePos) -> u64 {
     defense_around(observation, memory, &[tile])
+}
+
+/// The known army an attack on `tile` would meet: every armed enemy the seat
+/// remembers that hits ground, on `tile`'s ground or in the air, by
+/// confidence, with the known enemy buildings guarding `tile`. An army that
+/// beats only a target's own guard meets the rest on its way in or at the
+/// target, and turns back.
+pub(super) fn opposed(
+    observation: &ObservationData,
+    map: &MapModel,
+    memory: &Memory,
+    tile: TilePos,
+) -> u64 {
+    let now = observation.tick;
+    let ground = map.component(tile);
+    let units: u64 = memory
+        .units()
+        .iter()
+        .filter(|unit| {
+            let stats = unit.kind.stats();
+            stats.weapons.iter().any(|weapon| weapon.targets.ground)
+                && (stats.domain == Domain::Air || map.component(unit.tile) == ground)
+        })
+        .map(|unit| unit.value(now))
+        .sum();
+    let buildings: u64 = observation
+        .enemy_buildings
+        .iter()
+        .filter(|building| guards(building, tile))
+        .map(building_value)
+        .sum();
+    units + buildings
 }
 
 /// The known ground defense around any of `tiles`, each defender counted
