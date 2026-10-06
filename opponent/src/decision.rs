@@ -590,7 +590,14 @@ pub(crate) fn decide(
                 &mut ledger,
             );
         }
-        produce(observation, &producers, &mut needs, &mut ledger, saving);
+        produce(
+            observation,
+            &producers,
+            &mut needs,
+            &mut ledger,
+            saving,
+            commits(profile.difficulty, observation.tick),
+        );
         if short {
             arm(observation, map, &producers, shortfalls, &mut ledger);
         }
@@ -1054,14 +1061,16 @@ fn producers(observation: &ObservationData, frame: HomeFrame, interval: u64) -> 
 /// gives way to the next. While the seat saves for `saving`, a unit, the
 /// producers that train it wait for it and no other producer trains a
 /// cheaper unit of its role. Ready producers left with no wanted role train
-/// ground units while ground units can reach an enemy, unless another
-/// producer serves a wanted role: the scrap waits for it.
+/// ground units while ground units can reach an enemy and the seat is
+/// `committed` to an army, unless another producer serves a wanted role: the
+/// scrap waits for it.
 fn produce(
     observation: &ObservationData,
     producers: &[Producer<'_>],
     needs: &mut Needs,
     ledger: &mut Ledger,
     saving: Option<UnitKind>,
+    committed: bool,
 ) {
     let instead = |kind: UnitKind| {
         saving.is_some_and(|unit| {
@@ -1093,7 +1102,7 @@ fn produce(
             needs.queued(kind);
         }
     }
-    if !needs.fallback() {
+    if !needs.fallback() || !committed {
         return;
     }
     for producer in idle {
@@ -1296,6 +1305,16 @@ const RAID_INCOME: u32 = 900;
 
 /// What a needed lift adds to the Airworks' investment score.
 const LIFT_PULL: u32 = 600;
+
+/// Ticks into a match before Scrapheap trains an army with nothing in sight
+/// that calls for one: a difficulty limit on opening army commitment.
+const SCRAPHEAP_OPENING: u64 = 4_800;
+
+/// Whether idle producers train ground units with no role wanting them at
+/// `tick`: the lowest rung holds off through its opening.
+fn commits(difficulty: BotDifficulty, tick: u64) -> bool {
+    difficulty != BotDifficulty::Scrapheap || tick >= SCRAPHEAP_OPENING
+}
 
 /// Unit orders one decision may issue: a difficulty limit on attention.
 fn allowance(difficulty: BotDifficulty) -> u32 {
