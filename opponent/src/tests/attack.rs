@@ -1049,8 +1049,8 @@ fn the_upper_rungs_send_new_units_after_an_attack_under_way() {
     ] {
         let scenario = advanced(difficulty, &[]);
         let mut state = scenario.build().unwrap();
-        advance_to(&mut state, 12, &[]);
         let (members, missions) = under_way(&state, "travel".into(), 0);
+        advance_to(&mut state, 12, &[run(0, members.clone(), 30, 11)]);
         let mut opponent = restaged(&scenario, &state, missions);
         let (commands, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
         let home: Vec<UnitId> = WEST.iter().map(|(x, y)| at(&state, *x, *y)).collect();
@@ -1164,4 +1164,37 @@ fn the_lowest_rung_attacks_piecemeal() {
         (first.units + second.units) as usize <= WEST.len() + REAR.len(),
         "each takes only what its target needs"
     );
+}
+
+#[test]
+fn an_attack_pulling_back_sends_no_reinforcements_after_it() {
+    // Twelve East Sentinels in contact with seven attackers, short of their
+    // aggro: clearly outweighed at any rung.
+    let east: Vec<(UnitKind, i32, i32)> = (28..30)
+        .flat_map(|x| (7..13).map(move |y| (UnitKind::Sentinel, x + i32::from(y % 2 == 0), y)))
+        .collect();
+    let mut scenario = advanced(BotDifficulty::Prime, &east);
+    // Aggressive keeps only half the threat home, so some of West's army
+    // is free to join.
+    scenario.players[0].bot_config = Some(BotConfig::opponent(
+        BotDifficulty::Prime,
+        BotStance::Aggressive,
+        11,
+    ));
+    let mut state = scenario.build().unwrap();
+    let (members, missions) = under_way(&state, serde_json::json!({"engage": {"focus": null}}), 0);
+    advance_to(&mut state, 12, &[]);
+    let mut opponent = restaged(&scenario, &state, missions);
+    let (commands, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
+    let mission = attack(&trace.unwrap().missions).unwrap();
+    assert_eq!(mission.phase, Phase::Withdraw, "premise: outweighed");
+    let home: Vec<UnitId> = WEST.iter().map(|(x, y)| at(&state, *x, *y)).collect();
+    assert!(
+        hunts(&commands)
+            .into_iter()
+            .chain(runs(&commands))
+            .all(|(units, _)| units.iter().all(|id| !home.contains(id))),
+        "{commands:?}"
+    );
+    assert_eq!(mission.units as usize, members.len());
 }

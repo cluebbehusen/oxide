@@ -447,10 +447,193 @@ impl Missions {
             .sum();
         let age = now - mission.since;
 
+        let given_up = 'phase: {
+            match phase {
+                AttackPhase::Gather | AttackPhase::Recover => {
+                    let room = UNIT_CAP - mission.units.len();
+                    let fit: Vec<&UnitObs> = fit
+                        .iter()
+                        .copied()
+                        .filter(|unit| reaches(plan.map, unit, component))
+                        .collect();
+                    let striking_strength: u64 = members.iter().map(|unit| striking(unit)).sum();
+                    // The whole free army joins while it regroups, or only what
+                    // the attack still lacks at a seat that attacks piecemeal.
+                    let taken = if concentrates(plan.difficulty) {
+                        u64::MAX
+                    } else {
+                        need.saturating_sub(striking_strength)
+                    };
+                    let recruits = recruit(plan.frame, &fit, rally, taken, room);
+                    let recruited =
+                        !recruits.is_empty() && ledger.order(hunt(recruits.clone(), rally));
+                    if recruited {
+                        for id in &recruits {
+                            insert(&mut mission.units, *id);
+                        }
+                    }
+                    let tending = members
+                        .iter()
+                        .filter(|unit| unit.kind == UnitKind::Tender)
+                        .count();
+                    let wanted =
+                        (super::support::wounds(members.iter().copied()) / plan.per_tender).max(1);
+                    let room = (wanted as usize)
+                        .saturating_sub(tending)
+                        .min(UNIT_CAP.saturating_sub(mission.units.len()));
+                    let tenders = plan.nearest_tenders(rally, component, room);
+                    if !tenders.is_empty() && ledger.order(run(tenders.clone(), rally)) {
+                        for tender in tenders {
+                            insert(&mut mission.units, tender);
+                        }
+                    }
+                    let sapping = members
+                        .iter()
+                        .filter(|unit| unit.kind == UnitKind::Sapper)
+                        .count();
+                    // A Sapper for each known defense around the target.
+                    let room = plan
+                        .defenses(target)
+                        .count()
+                        .saturating_sub(sapping)
+                        .min(UNIT_CAP.saturating_sub(mission.units.len()));
+                    let sappers = plan.sappers(target, rally, component, room);
+                    if !sappers.is_empty() && ledger.order(run(sappers.clone(), rally)) {
+                        for sapper in sappers {
+                            insert(&mut mission.units, sapper);
+                        }
+                    }
+                    // Recruits still on their way go along once the time to
+                    // regroup is up, or a steady stream of new units would hold
+                    // the army at home.
+                    let ready = striking_strength >= need;
+                    if ready && (age >= timeout(phase) || (all_idle && !recruited)) {
+                        if ledger.order(hunt(mission.units.clone(), target.approach)) {
+                            mission.attack_phase(
+                                target,
+                                AttackPhase::Travel,
+                                now,
+                                Some(target.approach),
+                            );
+                        }
+                    } else if age >= timeout(phase) {
+                        self.list.remove(index);
+                    } else {
+                        for tender in members
+                            .iter()
+                            .filter(|unit| unit.kind == UnitKind::Tender && unit.idle)
+                        {
+                            if ledger.spendable() < crate::workers::WELD_FLOOR {
+                                break;
+                            }
+                            if let Some(patient) = patient(plan.map, plan.frame, tender, &members) {
+                                ledger.order(weld(tender.id, patient));
+                            }
+                        }
+                    }
+                    None
+                }
+                AttackPhase::Travel => {
+                    let arrived = members
+                        .iter()
+                        .any(|unit| unit.tile.chebyshev(target.approach) <= CONTACT_TILES);
+                    if arrived || contact(observation, &members) {
+                        mission.attack_phase(
+                            target,
+                            AttackPhase::Engage { focus: None },
+                            now,
+                            None,
+                        );
+                        break 'phase None;
+                    }
+                    if (all_idle || age >= TRAVEL_TICKS)
+                        && ledger.order(run(mission.units.clone(), rally))
+                    {
+                        mission.attack_phase(target, AttackPhase::Recover, now, Some(rally));
+                        break 'phase Some(target.objective());
+                    }
+                    None
+                }
+                AttackPhase::Engage { .. } => {
+                    // Sappers sent at a defense keep that order whatever the rest
+                    // of the army is told next.
+                    let mut blasting = Vec::new();
+                    for sapper in members
+                        .iter()
+                        .filter(|unit| unit.kind == UnitKind::Sapper && unit.idle)
+                    {
+                        if let Some(defense) = plan.nearest_defense(target, sapper)
+                            && ledger.order(blast(vec![sapper.id], aim(defense)))
+                        {
+                            blasting.push(sapper.id);
+                        }
+                    }
+                    let army: Vec<UnitId> = mission
+                        .units
+                        .iter()
+                        .copied()
+                        .filter(|id| !blasting.contains(id))
+                        .collect();
+                    let opposition = plan.opposition(&members);
+                    if opposition * 1_000 > strength * outweighed(plan.difficulty) {
+                        if ledger.order(run(army.clone(), rally)) {
+                            mission.attack_phase(target, AttackPhase::Withdraw, now, Some(rally));
+                            break 'phase Some(target.objective());
+                        }
+                        break 'phase None;
+                    }
+                    if !all_idle && age < ENGAGE_TICKS {
+                        break 'phase None;
+                    }
+                    // A fight still being won goes on past its time.
+                    if presses(plan.difficulty) && !all_idle && strength >= opposition {
+                        mission.since = now;
+                        break 'phase None;
+                    }
+                    let standing = standing(observation, target.objective());
+                    let next = plan.best(Some(target)).filter(|next| {
+                        !standing
+                            && members.iter().map(|unit| striking(unit)).sum::<u64>()
+                                >= plan.need(*next)
+                    });
+                    if let Some(next) = next {
+                        if ledger.order(hunt(army, next.approach)) {
+                            mission.attack_phase(
+                                next,
+                                AttackPhase::Travel,
+                                now,
+                                Some(next.approach),
+                            );
+                        }
+                        break 'phase None;
+                    }
+                    if ledger.order(run(army, rally)) {
+                        mission.attack_phase(target, AttackPhase::Recover, now, Some(rally));
+                        if standing {
+                            break 'phase Some(target.objective());
+                        }
+                    }
+                    None
+                }
+                AttackPhase::Withdraw => {
+                    if all_idle || age >= WITHDRAW_TICKS {
+                        mission.attack_phase(target, AttackPhase::Recover, now, None);
+                    }
+                    None
+                }
+            }
+        };
         // Units freed since the attack left join it where it is rather than
-        // waiting at home for it to regroup.
+        // waiting at home for it to regroup, unless this decision pulled it
+        // back or sent it on: they would only be turned around.
         if reinforces(plan.difficulty)
             && matches!(phase, AttackPhase::Travel | AttackPhase::Engage { .. })
+            && let Some(mission) = self.list.get_mut(index).filter(|mission| mission.id == id)
+            && let Task::Attack {
+                target: held,
+                phase: AttackPhase::Travel | AttackPhase::Engage { .. },
+            } = mission.task
+            && held == target.objective()
         {
             let fit: Vec<&UnitObs> = fit
                 .iter()
@@ -465,170 +648,7 @@ impl Missions {
                 }
             }
         }
-
-        match phase {
-            AttackPhase::Gather | AttackPhase::Recover => {
-                let room = UNIT_CAP - mission.units.len();
-                let fit: Vec<&UnitObs> = fit
-                    .iter()
-                    .copied()
-                    .filter(|unit| reaches(plan.map, unit, component))
-                    .collect();
-                let striking_strength: u64 = members.iter().map(|unit| striking(unit)).sum();
-                // The whole free army joins while it regroups, or only what
-                // the attack still lacks at a seat that attacks piecemeal.
-                let taken = if concentrates(plan.difficulty) {
-                    u64::MAX
-                } else {
-                    need.saturating_sub(striking_strength)
-                };
-                let recruits = recruit(plan.frame, &fit, rally, taken, room);
-                let recruited = !recruits.is_empty() && ledger.order(hunt(recruits.clone(), rally));
-                if recruited {
-                    for id in &recruits {
-                        insert(&mut mission.units, *id);
-                    }
-                }
-                let tending = members
-                    .iter()
-                    .filter(|unit| unit.kind == UnitKind::Tender)
-                    .count();
-                let wanted =
-                    (super::support::wounds(members.iter().copied()) / plan.per_tender).max(1);
-                let room = (wanted as usize)
-                    .saturating_sub(tending)
-                    .min(UNIT_CAP.saturating_sub(mission.units.len()));
-                let tenders = plan.nearest_tenders(rally, component, room);
-                if !tenders.is_empty() && ledger.order(run(tenders.clone(), rally)) {
-                    for tender in tenders {
-                        insert(&mut mission.units, tender);
-                    }
-                }
-                let sapping = members
-                    .iter()
-                    .filter(|unit| unit.kind == UnitKind::Sapper)
-                    .count();
-                // A Sapper for each known defense around the target.
-                let room = plan
-                    .defenses(target)
-                    .count()
-                    .saturating_sub(sapping)
-                    .min(UNIT_CAP.saturating_sub(mission.units.len()));
-                let sappers = plan.sappers(target, rally, component, room);
-                if !sappers.is_empty() && ledger.order(run(sappers.clone(), rally)) {
-                    for sapper in sappers {
-                        insert(&mut mission.units, sapper);
-                    }
-                }
-                // Recruits still on their way go along once the time to
-                // regroup is up, or a steady stream of new units would hold
-                // the army at home.
-                let ready = striking_strength >= need;
-                if ready && (age >= timeout(phase) || (all_idle && !recruited)) {
-                    if ledger.order(hunt(mission.units.clone(), target.approach)) {
-                        mission.attack_phase(
-                            target,
-                            AttackPhase::Travel,
-                            now,
-                            Some(target.approach),
-                        );
-                    }
-                } else if age >= timeout(phase) {
-                    self.list.remove(index);
-                } else {
-                    for tender in members
-                        .iter()
-                        .filter(|unit| unit.kind == UnitKind::Tender && unit.idle)
-                    {
-                        if ledger.spendable() < crate::workers::WELD_FLOOR {
-                            break;
-                        }
-                        if let Some(patient) = patient(plan.map, plan.frame, tender, &members) {
-                            ledger.order(weld(tender.id, patient));
-                        }
-                    }
-                }
-                None
-            }
-            AttackPhase::Travel => {
-                let arrived = members
-                    .iter()
-                    .any(|unit| unit.tile.chebyshev(target.approach) <= CONTACT_TILES);
-                if arrived || contact(observation, &members) {
-                    mission.attack_phase(target, AttackPhase::Engage { focus: None }, now, None);
-                    return None;
-                }
-                if (all_idle || age >= TRAVEL_TICKS)
-                    && ledger.order(run(mission.units.clone(), rally))
-                {
-                    mission.attack_phase(target, AttackPhase::Recover, now, Some(rally));
-                    return Some(target.objective());
-                }
-                None
-            }
-            AttackPhase::Engage { .. } => {
-                // Sappers sent at a defense keep that order whatever the rest
-                // of the army is told next.
-                let mut blasting = Vec::new();
-                for sapper in members
-                    .iter()
-                    .filter(|unit| unit.kind == UnitKind::Sapper && unit.idle)
-                {
-                    if let Some(defense) = plan.nearest_defense(target, sapper)
-                        && ledger.order(blast(vec![sapper.id], aim(defense)))
-                    {
-                        blasting.push(sapper.id);
-                    }
-                }
-                let army: Vec<UnitId> = mission
-                    .units
-                    .iter()
-                    .copied()
-                    .filter(|id| !blasting.contains(id))
-                    .collect();
-                let opposition = plan.opposition(&members);
-                if opposition * 1_000 > strength * outweighed(plan.difficulty) {
-                    if ledger.order(run(army.clone(), rally)) {
-                        mission.attack_phase(target, AttackPhase::Withdraw, now, Some(rally));
-                        return Some(target.objective());
-                    }
-                    return None;
-                }
-                if !all_idle && age < ENGAGE_TICKS {
-                    return None;
-                }
-                // A fight still being won goes on past its time.
-                if presses(plan.difficulty) && !all_idle && strength >= opposition {
-                    mission.since = now;
-                    return None;
-                }
-                let standing = standing(observation, target.objective());
-                let next = plan.best(Some(target)).filter(|next| {
-                    !standing
-                        && members.iter().map(|unit| striking(unit)).sum::<u64>()
-                            >= plan.need(*next)
-                });
-                if let Some(next) = next {
-                    if ledger.order(hunt(army, next.approach)) {
-                        mission.attack_phase(next, AttackPhase::Travel, now, Some(next.approach));
-                    }
-                    return None;
-                }
-                if ledger.order(run(army, rally)) {
-                    mission.attack_phase(target, AttackPhase::Recover, now, Some(rally));
-                    if standing {
-                        return Some(target.objective());
-                    }
-                }
-                None
-            }
-            AttackPhase::Withdraw => {
-                if all_idle || age >= WITHDRAW_TICKS {
-                    mission.attack_phase(target, AttackPhase::Recover, now, None);
-                }
-                None
-            }
-        }
+        given_up
     }
 }
 
