@@ -1328,7 +1328,11 @@ fn known_rect_route(
     )
     .into_iter()
     .filter_map(|entry| {
-        let goal = TilePos::containing(entry);
+        let goal = crate::geometry::work_tile(
+            entry,
+            unit.pos,
+            crate::geometry::footprint_center(anchor, size),
+        );
         let point = building.and_then(|b| contact::endpoint(state, id, b.id, entry))?;
         Some(crowding::Position { goal, point })
     })

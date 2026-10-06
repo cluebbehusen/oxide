@@ -1,6 +1,7 @@
 //! Explicit deliveries replace work and finish at the chosen Foundry.
 use crate::common;
 
+use chassis::fx::{Fx, Vec2Fx};
 use chassis::grid::TilePos;
 use common::{cmd, open_arena, open_arena_with, run_until, unit};
 use oxide_sim::{
@@ -416,5 +417,53 @@ fn return_cargo_refuses_empty_workers_and_unfinished_foundries_without_changing_
         );
         control.tick(&[]);
         assert_eq!(state.hash(), control.hash());
+    }
+}
+
+#[test]
+fn mirrored_workers_return_to_mirrored_doorsteps() {
+    // Each worker stands level with its Foundry's centre line, where the work
+    // position between the Foundry's two columns lies on a tile edge: just
+    // off the line, and exactly on it.
+    let (width, height) = (24, 16);
+    for off in [Fx::lit("0.09"), Fx::ZERO] {
+        let mut state = open_arena(
+            width,
+            height,
+            vec![
+                unit(0, UnitKind::Harvester, 2, 8),
+                unit(1, UnitKind::Harvester, width as i32 - 3, height as i32 - 9),
+            ],
+        )
+        .build()
+        .unwrap();
+        let west = Vec2Fx::new(Fx::from_num(2) + off, Fx::lit("8.02"));
+        let east = Vec2Fx::new(Fx::from_num(width), Fx::from_num(height)) - west;
+        let mut data = serde_json::to_value(&state).unwrap();
+        for (index, pos) in [west, east].into_iter().enumerate() {
+            data["units"][index]["pos"] = serde_json::to_value(pos).unwrap();
+            data["units"][index]["carrying"] = json!(7);
+        }
+        state = serde_json::from_value(data).unwrap();
+        let workers: Vec<UnitId> = state.units().iter().map(|unit| unit.id).collect();
+        state.tick(&[
+            cmd(0, delivery(workers[0], None, false)),
+            cmd(1, delivery(workers[1], None, false)),
+        ]);
+        let goal = |worker: UnitId| {
+            state
+                .unit(worker)
+                .unwrap()
+                .path
+                .as_ref()
+                .expect("the worker set off")
+                .goal
+        };
+        let (west, east) = (goal(workers[0]), goal(workers[1]));
+        assert_eq!(
+            TilePos::new(width as i32 - 1 - west.x, height as i32 - 1 - west.y),
+            east,
+            "mirrored workers {off:?} off the line chose unmirrored doorsteps"
+        );
     }
 }

@@ -191,6 +191,33 @@ pub fn work_approach_point(
     contact + outward * (work_approach_distance(radius) / outward.length())
 }
 
+/// The tile a work position belongs to, seen from a worker at `from` beside
+/// a footprint centred on `centre`. A position exactly on the edge between
+/// two tiles belongs to the one on the worker's side, and for a worker on
+/// that edge itself, to the one a clockwise turn about the centre leads to:
+/// flooring alone always takes the tile on the positive side, so mirrored
+/// workers would choose unmirrored tiles.
+pub fn work_tile(
+    entry: chassis::fx::Vec2Fx,
+    from: chassis::fx::Vec2Fx,
+    centre: chassis::fx::Vec2Fx,
+) -> TilePos {
+    use chassis::fx::Fx;
+    let tile = TilePos::containing(entry);
+    let offset = entry - centre;
+    // `lead` is the turn's component along the axis and `across` the offset
+    // along it, which settles a position level with the centre. Both flip
+    // under a half turn, as the tiles either side of the edge swap.
+    let back = |at: Fx, from: Fx, lead: Fx, across: Fx| {
+        let turned = lead < Fx::ZERO || (lead == Fx::ZERO && across > Fx::ZERO);
+        i32::from(at.frac() == Fx::ZERO && (from < at || (from == at && turned)))
+    };
+    tile.offset(
+        -back(entry.x, from.x, -offset.y, offset.x),
+        -back(entry.y, from.y, offset.x, offset.y),
+    )
+}
+
 /// Whether a chassis circle fits the adjacent passable tiles.
 pub fn circle_clear(
     point: chassis::fx::Vec2Fx,
@@ -242,4 +269,36 @@ pub fn work_positions(
         }
     }
     points
+}
+
+#[cfg(test)]
+mod tests {
+    use super::work_tile;
+    use chassis::fx::{Fx, Vec2Fx};
+    use chassis::grid::TilePos;
+
+    #[test]
+    fn a_worker_on_a_work_position_s_edge_takes_a_mirrored_tile() {
+        let (width, height) = (24, 16);
+        let turn = |point: Vec2Fx| Vec2Fx::new(Fx::from_num(width), Fx::from_num(height)) - point;
+        let at = |x: &str, y: &str| Vec2Fx::new(Fx::lit(x), Fx::lit(y));
+        // A four-by-four footprint whose centre sits on tile seams, with each
+        // worker standing on the edge its work position lies on.
+        let centre = at("8", "6");
+        for (entry, from) in [
+            (at("8", "3.6"), at("8", "1")),
+            (at("8", "8.4"), at("8", "11")),
+            (at("5.6", "6"), at("3", "6")),
+            (at("10.4", "6"), at("13", "6")),
+            (at("10.4", "4"), at("10.4", "2")),
+            (at("10", "6"), at("10", "2")),
+        ] {
+            let tile = work_tile(entry, from, centre);
+            assert_eq!(
+                work_tile(turn(entry), turn(from), turn(centre)),
+                TilePos::new(width - 1 - tile.x, height - 1 - tile.y),
+                "{entry:?} from {from:?}"
+            );
+        }
+    }
 }
