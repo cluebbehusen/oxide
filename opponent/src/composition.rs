@@ -942,6 +942,94 @@ mod tests {
         assert_eq!(crucible(&needs.pull(&observation)), None, "not wanted");
     }
 
+    /// Six Stingers packed on two rows, at full health.
+    fn clump() -> Vec<(TilePos, u32)> {
+        (0..6)
+            .map(|index| {
+                (
+                    TilePos::new(20 + index % 3, 20 + index / 3),
+                    UnitKind::Stinger.stats().max_hp,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_seat_that_can_only_lift_scores_bombers_by_the_clump_one_blast_takes() {
+        let condor = |lifted, targets: Vec<(TilePos, u32)>| {
+            let mut needs = needs(None, false);
+            needs.lifted = lifted;
+            needs.enemy.targets = targets;
+            needs.suitability(UnitKind::Condor, Role::AirStrike)
+        };
+        let clumped = condor(true, clump());
+        let spread = clump()
+            .into_iter()
+            .map(|(tile, hp)| (TilePos::new(tile.x * 8, tile.y), hp))
+            .collect();
+        assert!(condor(true, spread) < clumped, "one blast, one Stinger");
+        assert!(
+            condor(false, clump()) < clumped,
+            "a seat whose ground reaches the enemy weighs splash as before"
+        );
+    }
+
+    /// Skirmish's west seat as Ferrous with its Foundry and `producers`.
+    fn producing(producers: &[BuildingKind]) -> ObservationData {
+        use oxide_sim::observation::BuildingObs;
+        use oxide_sim::{BuildingId, Faction, PlayerId, Scenario};
+        let state = Scenario::skirmish().build().unwrap();
+        let mut observation = ObservationData::fog_honest(&state, PlayerId(0));
+        observation.faction = Faction::Ferrous;
+        let template = observation.my_buildings[0].clone();
+        for (id, kind) in (900..).zip(producers) {
+            observation.my_buildings.push(BuildingObs {
+                id: BuildingId(id),
+                kind: *kind,
+                built: true,
+                ..template.clone()
+            });
+        }
+        observation
+    }
+
+    /// Needs short of strike aircraft against `clump`.
+    fn striking(lifted: bool) -> Needs {
+        let mut needs = needs(None, false);
+        needs.lifted = lifted;
+        needs.enemy.targets = clump();
+        needs.income = 3_000;
+        needs.need[Role::AirStrike as usize] = 2_000;
+        needs
+    }
+
+    #[test]
+    fn a_seat_that_can_only_lift_saves_the_more_for_a_bomber_the_more_its_blast_takes() {
+        let observation = producing(&[BuildingKind::Airworks, BuildingKind::Crucible]);
+        let (_, saved) = striking(true)
+            .premium(&observation, UnitKind::Buzzard.stats().cost)
+            .into_iter()
+            .find(|(kind, _)| *kind == UnitKind::Condor)
+            .expect("worth saving for");
+        assert!(
+            saved > striking(true).worth(Role::AirStrike, UnitKind::Condor),
+            "more than the role's weight alone"
+        );
+    }
+
+    #[test]
+    fn a_seat_that_can_only_lift_pulls_toward_the_tech_its_bombers_need() {
+        let observation = producing(&[BuildingKind::Airworks]);
+        let crucible = |lifted| {
+            striking(lifted)
+                .pull(&observation)
+                .into_iter()
+                .any(|(building, _)| building == BuildingKind::Crucible)
+        };
+        assert!(crucible(true));
+        assert!(!crucible(false));
+    }
+
     #[test]
     fn every_army_unit_gets_its_turn() {
         use oxide_sim::observation::BuildingObs;

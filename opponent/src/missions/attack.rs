@@ -1126,7 +1126,7 @@ fn outweighed(difficulty: BotDifficulty) -> u64 {
 const MISJUDGE_STREAM: u64 = 0x0B07_1630;
 
 /// Per mille by which the lowest rung's sense of the enemy's strength strays
-/// each decision, either way: a difficulty limit on estimate accuracy.
+/// at most, either way: a difficulty limit on estimate accuracy.
 const MISJUDGE: u32 = 400;
 
 /// Ticks one misjudgment of enemy strength lasts: a difficulty limit on

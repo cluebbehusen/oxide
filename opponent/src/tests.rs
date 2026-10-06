@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 mod attack;
 mod catalog;
+mod clear;
 mod composition;
 mod defenses;
 mod expansion;
@@ -659,7 +660,15 @@ fn decisions_follow_the_difficulty_interval_and_stop_after_the_result() {
         0,
         BotConfig::opponent(BotDifficulty::Scrapheap, BotStance::Balanced, 11),
     );
+    let prime = seat_with(
+        &scenario,
+        0,
+        BotConfig::opponent(BotDifficulty::Prime, BotStance::Balanced, 11),
+    );
     assert!(standard.decision_due(&state) && scrapheap.decision_due(&state));
+    advance_to(&mut state, 6, &[]);
+    assert!(prime.decision_due(&state));
+    assert!(!standard.decision_due(&state));
     advance_to(&mut state, 12, &[]);
     assert!(standard.decision_due(&state));
     assert!(!scrapheap.decision_due(&state));

@@ -412,11 +412,17 @@ fn checkpoints_reject_impossible_attacks() {
 fn staged(scenario: &Scenario, missions: serde_json::Value) -> (State, Opponent) {
     let mut state = scenario.build().unwrap();
     advance_to(&mut state, 12, &[]);
+    let opponent = restaged(scenario, &state, missions);
+    (state, opponent)
+}
+
+/// West on `scenario` restored at `state` under the scenario's config, with
+/// `missions` staged.
+fn restaged(scenario: &Scenario, state: &State, missions: serde_json::Value) -> Opponent {
     let mut json = serde_json::to_value(seat(scenario, 0).checkpoint()).unwrap();
     json["missions"] = missions;
     let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
-    let opponent = Opponent::restore(&checkpoint, scenario, &state, map(scenario)).unwrap();
-    (state, opponent)
+    Opponent::restore(&checkpoint, scenario, state, map(scenario)).unwrap()
 }
 
 #[test]
@@ -979,5 +985,183 @@ fn the_lowest_rung_sometimes_attacks_into_an_army_it_cannot_beat() {
     assert!(
         !seeds.clone().all(|seed| launches(scrapheap(seed))),
         "not every Scrapheap does"
+    );
+}
+
+fn rung(difficulty: BotDifficulty) -> BotConfig {
+    BotConfig::opponent(difficulty, BotStance::Balanced, 11)
+}
+
+/// Where the travelling attack's army stands, mid-field.
+const ADVANCED: [(i32, i32); 7] = [
+    (20, 11),
+    (21, 11),
+    (20, 12),
+    (21, 12),
+    (22, 11),
+    (22, 12),
+    (23, 11),
+];
+
+/// The field with West's garrison and army at home, and an attack of seven
+/// Sentinels mid-field, `difficulty` deciding.
+fn advanced(difficulty: BotDifficulty, east: &[(UnitKind, i32, i32)]) -> Scenario {
+    let mut scenario = armed(8, east);
+    for (x, y) in ADVANCED {
+        scenario.units.push(unit(0, UnitKind::Sentinel, x, y));
+    }
+    scenario.players[0].bot_config = Some(rung(difficulty));
+    scenario
+}
+
+/// An attack on East's Foundry in `phase` since `since`, of the Sentinels at
+/// `ADVANCED`.
+fn under_way(
+    state: &State,
+    phase: serde_json::Value,
+    since: u64,
+) -> (Vec<UnitId>, serde_json::Value) {
+    let mut members: Vec<UnitId> = ADVANCED.iter().map(|(x, y)| at(state, *x, *y)).collect();
+    members.sort_unstable();
+    let missions = serde_json::json!({
+        "next": 1,
+        "list": [{
+            "id": 0,
+            "task": {
+                "task": "attack",
+                "target": {"owner": 1, "building": "foundry", "anchor": {"x": 43, "y": 11}},
+                "phase": phase,
+            },
+            "since": since,
+            "units": members,
+            "goal": {"x": 42, "y": 11},
+        }],
+    });
+    (members, missions)
+}
+
+#[test]
+fn the_upper_rungs_send_new_units_after_an_attack_under_way() {
+    for (difficulty, joins) in [
+        (BotDifficulty::Prime, true),
+        (BotDifficulty::Veteran, true),
+        (BotDifficulty::Standard, false),
+    ] {
+        let scenario = advanced(difficulty, &[]);
+        let mut state = scenario.build().unwrap();
+        advance_to(&mut state, 12, &[]);
+        let (members, missions) = under_way(&state, "travel".into(), 0);
+        let mut opponent = restaged(&scenario, &state, missions);
+        let (commands, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
+        let home: Vec<UnitId> = WEST.iter().map(|(x, y)| at(&state, *x, *y)).collect();
+        let sent: Vec<(Vec<UnitId>, TilePos)> = hunts(&commands)
+            .into_iter()
+            .filter(|(units, _)| units.iter().any(|id| home.contains(id)))
+            .collect();
+        let mission = attack(&trace.unwrap().missions).unwrap();
+        if joins {
+            let [(units, goal)] = &sent[..] else {
+                panic!("{difficulty:?}: {commands:?}");
+            };
+            assert!(
+                goal.chebyshev(TilePos::new(43, 11)) <= 2,
+                "{difficulty:?} sends them to the target: {goal:?}"
+            );
+            assert_eq!(mission.units as usize, members.len() + units.len());
+        } else {
+            assert!(sent.is_empty(), "{difficulty:?} leaves them home: {sent:?}");
+            assert_eq!(mission.units as usize, members.len());
+        }
+    }
+}
+
+#[test]
+fn the_upper_rungs_press_a_fight_past_its_time() {
+    for (difficulty, presses) in [
+        (BotDifficulty::Prime, true),
+        (BotDifficulty::Standard, false),
+    ] {
+        let scenario = advanced(difficulty, &[]);
+        let mut state = scenario.build().unwrap();
+        advance_to(&mut state, 3_588, &[]);
+        let (members, missions) =
+            under_way(&state, serde_json::json!({"engage": {"focus": null}}), 0);
+        advance_to(&mut state, 3_600, &[run(0, members.clone(), 30, 11)]);
+        let mut opponent = restaged(&scenario, &state, missions);
+        let (commands, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
+        let mission = attack(&trace.unwrap().missions).unwrap();
+        let ordered = runs(&commands)
+            .into_iter()
+            .chain(hunts(&commands))
+            .any(|(units, _)| units.iter().any(|id| members.contains(id)));
+        if presses {
+            assert_eq!(mission.phase, Phase::Engage, "{difficulty:?}");
+            assert!(
+                !ordered,
+                "{difficulty:?} leaves a fight under way be: {commands:?}"
+            );
+        } else {
+            assert_eq!(
+                mission.phase,
+                Phase::Recover,
+                "{difficulty:?} ends it on time"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_upper_rungs_hold_a_fight_they_are_only_slightly_outweighed_in() {
+    // Eight East Sentinels in contact with seven attackers, short of their
+    // aggro.
+    let east: Vec<(UnitKind, i32, i32)> = [(28, 8), (28, 15)]
+        .into_iter()
+        .chain((9..15).map(|y| (29, y)))
+        .map(|(x, y)| (UnitKind::Sentinel, x, y))
+        .collect();
+    for (difficulty, withdraws) in [
+        (BotDifficulty::Prime, false),
+        (BotDifficulty::Standard, true),
+    ] {
+        let scenario = advanced(difficulty, &east);
+        let mut state = scenario.build().unwrap();
+        let (_, missions) = under_way(&state, serde_json::json!({"engage": {"focus": null}}), 0);
+        advance_to(&mut state, 12, &[]);
+        let mut opponent = restaged(&scenario, &state, missions);
+        let (_, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
+        let phase = attack(&trace.unwrap().missions).unwrap().phase;
+        assert_eq!(
+            phase == Phase::Withdraw,
+            withdraws,
+            "{difficulty:?}: {phase:?}"
+        );
+    }
+}
+
+#[test]
+fn the_lowest_rung_attacks_piecemeal() {
+    let mut scenario = doubled();
+    scenario.players[0].bot_config = Some(rung(BotDifficulty::Scrapheap));
+    let mut state = scenario.build().unwrap();
+    let mut opponent = seat_with(&scenario, 0, rung(BotDifficulty::Scrapheap));
+    let traces = play(&mut opponent, &mut state, 240, &[]);
+    let attacks: Vec<MissionStatus> = traces
+        .into_iter()
+        .map(|trace| {
+            trace
+                .missions
+                .into_iter()
+                .filter(|mission| matches!(mission.kind, MissionKind::Attack { .. }))
+                .collect::<Vec<_>>()
+        })
+        .max_by_key(Vec::len)
+        .unwrap();
+    let [first, second] = attacks[..] else {
+        panic!("{attacks:?}");
+    };
+    assert_ne!(first.kind, second.kind, "each on its own target");
+    assert!(
+        (first.units + second.units) as usize <= WEST.len() + REAR.len(),
+        "each takes only what its target needs"
     );
 }

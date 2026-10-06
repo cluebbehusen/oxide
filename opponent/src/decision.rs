@@ -850,10 +850,11 @@ fn explore(
 }
 
 /// Keeps enough carriers, alive and queued, to lift every free rider at home
-/// at once, training one at a ready Airworks when short. It is a stock, like the Harvesters: no mission is promised the
-/// carriers it buys. Returns whether a ready Airworks waits for the scrap to
-/// train one while riders at home already fill every carrier, so that
-/// cheaper units do not spend it first.
+/// at once, training one at a ready Airworks when short. It is a stock, like
+/// the Harvesters: no mission is promised the carriers it buys. Returns
+/// whether a ready Airworks waits for the scrap to train one while riders at
+/// home already fill every carrier, so that cheaper units do not spend it
+/// first.
 fn train_carriers(
     observation: &ObservationData,
     map: &MapModel,
