@@ -265,19 +265,20 @@ One lift runs at a time. It forms only from carriers and passengers that exist:
 free carriers that are idle, empty and over open home ground, and free line and
 siege units at half health or better on home ground beyond the home reserve,
 packed into them most value per transport slot first. It needs those that can
-hit ground to be worth the stance's minimum and to outweigh the known army its
-landing would meet, counted as for an attack, by the attack margin. At Veteran
-and Prime, the bombers out clearing the anti-air within twelve tiles of its
-target count toward that need. Except at Scrapheap, a lift also waits for a
-recent look at its target: the scouting point nearest the target on its island
-must have been in sight within the last 600 ticks. Every free carrier and rider
-is loaded as the decision's orders allow, and more board on later decisions
-while boarding lasts. The target is the most valuable known enemy building, or
-hostile start not seen cleared, for its distance that no ground route reaches
-and that has a landing: explored open ground on the target's island within
-sixteen tiles of it, out of reach of known fire where any is, and then about
-four tiles from it, so riders set down out of range walk in, where every tile
-unloading could set a rider on belongs to that island.
+hit ground to be worth the stance's minimum and to outweigh by the attack margin
+the known army it would meet, counted as for an attack with the guns guarding
+both its landing and its target, since riders set down out of range still walk
+into the target's. At Veteran and Prime, the bombers out clearing the anti-air
+within twelve tiles of its target count toward that need. Except at Scrapheap, a
+lift also waits for a recent look at its target: the scouting point nearest the
+target on its island must have been in sight within the last 600 ticks. Every
+free carrier and rider is loaded as the decision's orders allow, and more board
+on later decisions while boarding lasts. The target is the most valuable known
+enemy building, or hostile start not seen cleared, for its distance that no
+ground route reaches and that has a landing: explored open ground on the
+target's island within sixteen tiles of it, out of reach of known fire where any
+is, and then about four tiles from it, so riders set down out of range walk in,
+where every tile unloading could set a rider on belongs to that island.
 
 A free carrier hovering where no rider could reach it, such as over the Airworks
 that trained it, first moves to open ground. Riders walk to their carriers and

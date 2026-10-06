@@ -190,7 +190,7 @@ impl Missions {
         let Some(drop) = lifting.best_drop() else {
             return false;
         };
-        let need = lifting.need(drop.landing);
+        let need = lifting.need(drop.target, drop.landing);
         let cover = lifting.cover(self.cover(observation, drop.target.anchor));
         if value + cover < need || !lifting.looked(drop.target) {
             return false;
@@ -366,7 +366,7 @@ impl Missions {
     /// not sent again.
     fn board(&mut self, flight: &Flight<'_>, lifting: &Lifting<'_>, ledger: &mut Ledger) {
         let waiting = &flight.grounded;
-        let need = lifting.need(flight.landing);
+        let need = lifting.need(flight.target, flight.landing);
         if flight.age < LOAD_TICKS {
             let loads = self.loads(lifting, ledger);
             let room = UNIT_CAP.saturating_sub(self.list[flight.index].units.len());
@@ -695,11 +695,17 @@ impl<'a> Lifting<'a> {
             .is_none_or(|(index, _)| self.memory.looked(index, self.observation.tick))
     }
 
-    /// Army value a lift to `landing` needs: the known army it would meet
-    /// there times the margin, and never under the stance minimum.
-    fn need(&self, landing: TilePos) -> u64 {
-        (opposed(self.observation, self.map, self.memory, landing)
-            * margin(self.profile.difficulty)
+    /// Army value a lift to `target` set down at `landing` needs: the known
+    /// army it would meet, with the guns at the target the riders walk into
+    /// as well as those at the landing, times the margin, and never under the
+    /// stance minimum.
+    fn need(&self, target: Objective, landing: TilePos) -> u64 {
+        (opposed(
+            self.observation,
+            self.map,
+            self.memory,
+            &[landing, target.anchor],
+        ) * margin(self.profile.difficulty)
             / 1_000)
             .max(minimum(self.profile.stance))
     }

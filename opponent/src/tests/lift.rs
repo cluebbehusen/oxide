@@ -1540,3 +1540,32 @@ fn the_upper_rungs_time_a_lift_to_bombers_clearing_its_target() {
         );
     }
 }
+
+#[test]
+fn a_lift_counts_the_guns_at_its_target_however_far_off_it_lands() {
+    let lifts_past = |bastions: &[(i32, i32)]| {
+        let mut scenario = strait();
+        for (x, y) in bastions {
+            scenario.buildings.push(BuildingSpec {
+                player: 1,
+                kind: BuildingKind::Bastion,
+                x: *x,
+                y: *y,
+            });
+        }
+        scenario.units.push(unit(0, UnitKind::Kestrel, 35, 7));
+        let state = scenario.build().unwrap();
+        let observation = ObservationData::fog_honest(&state, PlayerId(0));
+        assert_eq!(
+            observation.enemy_buildings.len(),
+            bastions.len() + 1,
+            "premise: West sees the start and its guns"
+        );
+        lifts(seat(&scenario, 0), &state)
+    };
+    assert!(lifts_past(&[]), "premise: the start alone is beatable");
+    assert!(
+        !lifts_past(&[(33, 4), (36, 4)]),
+        "two Bastions guarding the start outweigh the lift, though it would land beyond their reach"
+    );
+}

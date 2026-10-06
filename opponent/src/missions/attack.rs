@@ -834,7 +834,8 @@ impl<'a> Plan<'a> {
     /// Army value the attack on `target` needs: the known army it would
     /// meet times the margin, and never under the stance minimum.
     fn need(&self, target: Target) -> u64 {
-        (opposed(self.observation, self.map, self.memory, target.approach) * self.misjudge / 1_000
+        (opposed(self.observation, self.map, self.memory, &[target.approach]) * self.misjudge
+            / 1_000
             * self.margin
             / 1_000)
             .max(self.minimum)
@@ -911,19 +912,19 @@ pub(super) fn defense(observation: &ObservationData, memory: &Memory, tile: Tile
     defense_around(observation, memory, &[tile])
 }
 
-/// The known army an attack on `tile` would meet: every armed enemy the seat
-/// remembers that hits ground, on `tile`'s ground or in the air, by
-/// confidence, with the known enemy buildings guarding `tile`. An army that
-/// beats only a target's own guard meets the rest on its way in or at the
-/// target, and turns back.
+/// The known army an attack on `tiles` would meet: every armed enemy the seat
+/// remembers that hits ground, on the first tile's ground or in the air, by
+/// confidence, with the known enemy buildings guarding any of `tiles`, each
+/// counted once. An army that beats only a target's own guard meets the rest
+/// on its way in or at the target, and turns back.
 pub(super) fn opposed(
     observation: &ObservationData,
     map: &MapModel,
     memory: &Memory,
-    tile: TilePos,
+    tiles: &[TilePos],
 ) -> u64 {
     let now = observation.tick;
-    let ground = map.component(tile);
+    let ground = tiles.first().and_then(|tile| map.component(*tile));
     let home = map
         .start(observation.me)
         .and_then(|start| map.component(start));
@@ -940,7 +941,7 @@ pub(super) fn opposed(
     let buildings: u64 = observation
         .enemy_buildings
         .iter()
-        .filter(|building| guards(building, tile))
+        .filter(|building| tiles.iter().any(|tile| guards(building, *tile)))
         .map(building_value)
         .sum();
     units + buildings
