@@ -244,3 +244,32 @@ fn mirrored_seats_clear_alike() {
         state.tick(&commands);
     }
 }
+
+#[test]
+fn a_clearance_goes_at_a_known_flak_turret_around_the_target() {
+    let mut scenario = with_bombers(strait());
+    scenario.buildings.push(BuildingSpec {
+        player: 1,
+        kind: BuildingKind::FlakTurret,
+        x: 30,
+        y: 4,
+    });
+    scenario.units.push(unit(0, UnitKind::Kestrel, 31, 6));
+    let (state, mut opponent) = bombing(&scenario, &[]);
+    let observation = ObservationData::fog_honest(&state, PlayerId(0));
+    assert!(
+        observation
+            .enemy_buildings
+            .iter()
+            .any(|building| building.kind == BuildingKind::FlakTurret),
+        "premise: West has seen it"
+    );
+    let (_, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
+    let mission = clear(&trace.unwrap().missions).expect("a clearance forms");
+    assert_eq!(
+        mission.kind,
+        MissionKind::Clear {
+            aim: TilePos::new(30, 4)
+        }
+    );
+}

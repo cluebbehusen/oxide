@@ -301,18 +301,19 @@ and a defense may take its units only while they board.
 
 While ground reaches no enemy, the seat's free splash bombers, Condors and
 Moths, at half health or better beyond the home reserve go ahead of its lifts,
-at the remembered enemy ground anti-air on ground the seat cannot walk to within
-twelve tiles of the building a lift goes after, or the one the next lift would.
-A clearance forms when those bombers are worth the stance's minimum and together
-outweigh, by the attack margin, all the known anti-air reaching over that
-building or that anti-air, so they go in together rather than one at a time; it
-takes every one of them. They gather beside home on the side facing their aim,
-go first at the anti-air whose known cover they outweigh most easily, sweep it
-and move on to the next, and once none is left sweep the building's
-surroundings, holding the defenders' attention while the carriers land. They fly
-around known anti-air when the straight line crosses it, and withdraw once the
-known anti-air reaching them outweighs them. Ordinary strikes leave splash
-bombers to clearances while ground reaches no enemy.
+at the remembered enemy anti-air units and known built anti-air buildings, such
+as Flak Turrets, on ground the seat cannot walk to within twelve tiles of the
+building a lift goes after, or the one the next lift would. A clearance forms
+when those bombers are worth the stance's minimum and together outweigh, by the
+attack margin, all the known anti-air reaching over that building or any of that
+anti-air, so they go in together rather than one at a time; it takes every one
+of them. They gather beside home on the side facing their aim, go first at the
+anti-air whose known cover they outweigh most easily, sweep it and move on to
+the next, and once none is left sweep the building's surroundings, holding the
+defenders' attention while the carriers land. They fly around known anti-air
+when the straight line crosses it, and withdraw once the known anti-air reaching
+them outweighs them. Ordinary strikes leave splash bombers to clearances while
+ground reaches no enemy.
 
 ## Strikes
 

@@ -1,10 +1,10 @@
 //! The clear mission: a seat whose ground reaches no enemy sends its free
 //! splash bombers together ahead of its lifts, at the enemy anti-air around
 //! the building a lift goes after, or the next lift would. It goes at the
-//! remembered anti-air there whose known cover it outweighs most easily,
-//! sweeps it and moves on to the next, then sweeps the building's
-//! surroundings, holding the defenders' attention while the carriers land,
-//! and withdraws when the anti-air around it outweighs it.
+//! known anti-air there, units or buildings, whose known cover it outweighs
+//! most easily, sweeps it and moves on to the next, then sweeps the
+//! building's surroundings, holding the defenders' attention while the
+//! carriers land, and withdraws when the anti-air around it outweighs it.
 
 use super::Scratch;
 use super::air::{self, Hazard};
@@ -341,10 +341,30 @@ impl Mission {
 }
 
 impl Sweep<'_> {
+    /// Where the known enemy anti-air buildings within reach of `focus`
+    /// stand: built ones that fire on aircraft.
+    fn flak(&self, focus: TilePos) -> impl Iterator<Item = TilePos> {
+        self.observation
+            .enemy_buildings
+            .iter()
+            .filter(|building| {
+                building.built
+                    && building
+                        .kind
+                        .tier_stats(building.tier)
+                        .weapons
+                        .iter()
+                        .any(|weapon| weapon.targets.air)
+            })
+            .map(|building| building.anchor)
+            .filter(move |anchor| anchor.chebyshev(focus) <= FOCUS_TILES)
+    }
+
     /// Where `strength` goes next around the lift's target: the remembered
-    /// enemy anti-air there on ground the seat cannot walk to that it
-    /// outweighs most easily, and once none is left, the target itself.
-    /// Never near `skip` or an aim another clearance holds.
+    /// enemy anti-air units or known anti-air buildings there on ground the
+    /// seat cannot walk to that it outweighs most easily, and once none is
+    /// left, the target itself. Never near `skip` or an aim another
+    /// clearance holds.
     fn best(&self, strength: u64, skip: Option<TilePos>) -> Option<TilePos> {
         let focus = self.focus?;
         let near = |a: TilePos, b: TilePos| a.chebyshev(b) <= HELD_TILES;
@@ -358,6 +378,7 @@ impl Sweep<'_> {
             })
             .map(|unit| unit.tile)
             .filter(|tile| tile.chebyshev(focus) <= FOCUS_TILES)
+            .chain(self.flak(focus))
             .filter(|tile| {
                 let ground = self.map.component(*tile);
                 ground.is_some() && ground != self.home
@@ -378,9 +399,9 @@ impl Sweep<'_> {
     }
 
     /// Strength a clearance needs to go at all: the known anti-air reaching
-    /// over the lift's target or any anti-air around it, each counted once,
-    /// times the margin, so the bombers go in together rather than one at a
-    /// time.
+    /// over the lift's target or any anti-air unit or building around it,
+    /// each counted once, times the margin, so the bombers go in together
+    /// rather than one at a time.
     fn guard(&self) -> u64 {
         let Some(focus) = self.focus else {
             return u64::MAX;
@@ -394,8 +415,10 @@ impl Sweep<'_> {
                     && composition::role(unit.kind) == Some(Role::AntiAir)
                     && unit.tile.chebyshev(focus) <= FOCUS_TILES
             })
-            .map(|unit| doubled(unit.tile))
-            .chain(std::iter::once(doubled(focus)))
+            .map(|unit| unit.tile)
+            .chain(self.flak(focus))
+            .chain(std::iter::once(focus))
+            .map(doubled)
             .collect();
         let cover: u64 = self
             .air
