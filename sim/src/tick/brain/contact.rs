@@ -41,10 +41,10 @@ fn approach_building(state: &mut State, id: UnitId, building: BuildingId) -> boo
         unit.kind.stats().radius * crowding::compression(),
     )
     .into_iter()
-    .filter(|entry| state.passable(crate::geometry::work_tile(*entry, pos)))
+    .filter(|entry| state.passable(crate::geometry::work_tile(*entry, pos, b.center())))
     .filter_map(|entry| {
         endpoint(state, id, building, entry).map(|point| crowding::Position {
-            goal: crate::geometry::work_tile(entry, pos),
+            goal: crate::geometry::work_tile(entry, pos, b.center()),
             point,
         })
     })
@@ -91,7 +91,7 @@ pub(in crate::tick) fn endpoint(
         state,
         unit,
         b,
-        crate::geometry::work_tile(entry, unit.pos),
+        crate::geometry::work_tile(entry, unit.pos, b.center()),
         point,
     )
     .then_some(point)

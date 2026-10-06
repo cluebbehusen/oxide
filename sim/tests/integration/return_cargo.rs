@@ -422,10 +422,11 @@ fn return_cargo_refuses_empty_workers_and_unfinished_foundries_without_changing_
 
 #[test]
 fn mirrored_workers_return_to_mirrored_doorsteps() {
-    // Each worker stands just off its Foundry's centre line, where the work
-    // position between the Foundry's two columns lies on a tile edge.
+    // Each worker stands level with its Foundry's centre line, where the work
+    // position between the Foundry's two columns lies on a tile edge: just
+    // off the line, and exactly on it.
     let (width, height) = (24, 16);
-    for off in [Fx::lit("0.09")] {
+    for off in [Fx::lit("0.09"), Fx::ZERO] {
         let mut state = open_arena(
             width,
             height,

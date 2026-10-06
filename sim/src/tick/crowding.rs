@@ -147,7 +147,7 @@ pub(crate) fn choose(
             let outward = candidate.point - center;
             if outward != Vec2Fx::ZERO {
                 candidate.point += outward * (push / outward.length());
-                candidate.goal = crate::geometry::work_tile(candidate.point, unit.pos);
+                candidate.goal = crate::geometry::work_tile(candidate.point, unit.pos, center);
             }
         }
         waiting.retain(|candidate| {
