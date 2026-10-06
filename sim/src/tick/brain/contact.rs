@@ -41,10 +41,10 @@ fn approach_building(state: &mut State, id: UnitId, building: BuildingId) -> boo
         unit.kind.stats().radius * crowding::compression(),
     )
     .into_iter()
-    .filter(|entry| state.passable(TilePos::containing(*entry)))
+    .filter(|entry| state.passable(crate::geometry::work_tile(*entry, pos)))
     .filter_map(|entry| {
         endpoint(state, id, building, entry).map(|point| crowding::Position {
-            goal: TilePos::containing(entry),
+            goal: crate::geometry::work_tile(entry, pos),
             point,
         })
     })
@@ -87,7 +87,14 @@ pub(in crate::tick) fn endpoint(
     let unit = state.unit(id)?;
     let b = state.building(building)?;
     let point = state.contact_surface(b).stance(entry, clearance(unit));
-    admissible(state, unit, b, TilePos::containing(entry), point).then_some(point)
+    admissible(
+        state,
+        unit,
+        b,
+        crate::geometry::work_tile(entry, unit.pos),
+        point,
+    )
+    .then_some(point)
 }
 
 /// Whether a contact position can be driven to straight from its goal

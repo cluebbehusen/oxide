@@ -191,6 +191,18 @@ pub fn work_approach_point(
     contact + outward * (work_approach_distance(radius) / outward.length())
 }
 
+/// The tile a work position belongs to, seen from a worker at `from`. A
+/// position exactly on the edge between two tiles belongs to the one on the
+/// worker's side: flooring alone always takes the tile on the positive side,
+/// so mirrored workers would choose unmirrored tiles.
+pub fn work_tile(entry: chassis::fx::Vec2Fx, from: chassis::fx::Vec2Fx) -> TilePos {
+    let tile = TilePos::containing(entry);
+    let back = |at: chassis::fx::Fx, from: chassis::fx::Fx| {
+        i32::from(at.frac() == chassis::fx::Fx::ZERO && from < at)
+    };
+    tile.offset(-back(entry.x, from.x), -back(entry.y, from.y))
+}
+
 /// Whether a chassis circle fits the adjacent passable tiles.
 pub fn circle_clear(
     point: chassis::fx::Vec2Fx,

@@ -418,3 +418,50 @@ fn return_cargo_refuses_empty_workers_and_unfinished_foundries_without_changing_
         assert_eq!(state.hash(), control.hash());
     }
 }
+
+#[test]
+fn mirrored_workers_return_to_mirrored_doorsteps() {
+    // Each worker stands just off its Foundry's centre line, where the work
+    // position between the Foundry's two columns lies on a tile edge.
+    let (width, height) = (24, 16);
+    let mut state = open_arena(
+        width,
+        height,
+        vec![
+            unit(0, UnitKind::Harvester, 2, 8),
+            unit(1, UnitKind::Harvester, width as i32 - 3, height as i32 - 9),
+        ],
+    )
+    .build()
+    .unwrap();
+    let fx = |value: f64| json!({ "bits": (value * 4_294_967_296.0).round() as i64 });
+    let mut data = serde_json::to_value(&state).unwrap();
+    for (index, (x, y)) in [(2.09, 8.02), (width as f64 - 2.09, height as f64 - 8.02)]
+        .into_iter()
+        .enumerate()
+    {
+        data["units"][index]["pos"] = json!({ "x": fx(x), "y": fx(y) });
+        data["units"][index]["carrying"] = json!(7);
+    }
+    state = serde_json::from_value(data).unwrap();
+    let workers: Vec<UnitId> = state.units().iter().map(|unit| unit.id).collect();
+    state.tick(&[
+        cmd(0, delivery(workers[0], None, false)),
+        cmd(1, delivery(workers[1], None, false)),
+    ]);
+    let goal = |worker: UnitId| {
+        state
+            .unit(worker)
+            .unwrap()
+            .path
+            .as_ref()
+            .expect("the worker set off")
+            .goal
+    };
+    let (west, east) = (goal(workers[0]), goal(workers[1]));
+    assert_eq!(
+        TilePos::new(width as i32 - 1 - west.x, height as i32 - 1 - west.y),
+        east,
+        "mirrored workers chose unmirrored doorsteps"
+    );
+}
