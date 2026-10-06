@@ -24,6 +24,11 @@ const FAILURE_CAP: usize = 256;
 /// Ticks an enemy unit is remembered after it was last seen.
 const UNIT_TICKS: u64 = 600;
 
+/// Ticks an enemy ground unit seen on ground the seat's own does not reach is
+/// remembered: it cannot leave there without carriers, so it is likely still
+/// there long after a mobile unit would have moved on.
+const STRANDED_TICKS: u64 = 3_600;
+
 /// Enemy units remembered at once, the stalest forgotten first: a computation
 /// bound that normal play stays under, since units seen more than
 /// `UNIT_TICKS` ago are forgotten anyway.
@@ -88,7 +93,18 @@ struct Failure {
 impl Memory {
     /// Refreshes every enemy unit in sight, and forgets those gone stale or
     /// missing from where they were last seen.
+    #[cfg(test)]
     pub(crate) fn observe(&mut self, observation: &ObservationData) {
+        self.observe_stranded(observation, |_| false);
+    }
+
+    /// [`observe`](Self::observe), remembering for longer the ground units
+    /// `stranded` says stand on ground the seat's own does not reach.
+    pub(crate) fn observe_stranded(
+        &mut self,
+        observation: &ObservationData,
+        stranded: impl Fn(&SeenUnit) -> bool,
+    ) {
         let now = observation.tick;
         for unit in &observation.enemy_units {
             let seen = SeenUnit {
@@ -103,7 +119,12 @@ impl Memory {
             }
         }
         self.units.retain(|unit| {
-            now < unit.seen + UNIT_TICKS && (unit.seen == now || !observation.visible(unit.tile))
+            let ticks = if stranded(unit) {
+                STRANDED_TICKS
+            } else {
+                UNIT_TICKS
+            };
+            now < unit.seen + ticks && (unit.seen == now || !observation.visible(unit.tile))
         });
         while self.units.len() > UNIT_CAP {
             let stalest = self

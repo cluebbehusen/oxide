@@ -865,28 +865,15 @@ pub(super) fn opposed(
     let home = map
         .start(observation.me)
         .and_then(|start| map.component(start));
-    // Ground units on another island cannot leave it without carriers, so
-    // those still remembered count in full.
-    let stranded = ground.is_some() && ground != home;
     let units: u64 = memory
         .units()
         .iter()
-        .filter_map(|unit| {
+        .filter(|unit| {
             let stats = unit.kind.stats();
-            if !stats.weapons.iter().any(|weapon| weapon.targets.ground) {
-                return None;
-            }
-            if stats.domain == Domain::Air {
-                return Some(unit.value(now));
-            }
-            (map.component(unit.tile) == ground).then(|| {
-                if stranded {
-                    u64::from(stats.cost)
-                } else {
-                    unit.value(now)
-                }
-            })
+            stats.weapons.iter().any(|weapon| weapon.targets.ground)
+                && (stats.domain == Domain::Air || map.component(unit.tile) == ground)
         })
+        .map(|unit| super::remembered(unit, map, home, now))
         .sum();
     let buildings: u64 = observation
         .enemy_buildings
