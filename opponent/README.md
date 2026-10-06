@@ -205,18 +205,20 @@ reach as far as its current tier's do. The target is the most valuable known
 enemy building for its distance by ground, or a hostile start when none is
 known. Veteran and Prime count the known defense around a target like more
 distance, so they go after the weakest valuable target; Scrapheap goes for a
-Foundry whenever it knows one, however well guarded; a better one replaces it
-only while the army gathers or recovers, and only when clearly better. The army
-gathers at a rally near home toward the target's owner, travels, and fights. It
-withdraws to the rally when the enemies it knows of around it, remembered or
-seen, outweigh what it has left, and recovers there to go again or disband.
-Having taken its target it pushes on to the next only while strong enough for
-it. A target it withdrew from, could not reach, lost its army to, or stood idle
-beside is skipped for a while. With several enemies, attacks and strikes go
-after one rival's buildings first: the enemy pressing the seat hardest, then the
-nearest, less the army it shows, with guile favoring a small economy and a bonus
-for the owner of the oldest attack or strike's target so the seat does not flip
-between enemies. The rival is chosen once per decision, after defense.
+Foundry whenever it knows one, however well guarded, and misjudges the enemy's
+strength by up to two fifths either way for half a minute at a time, both when
+setting out and when deciding to pull back; a better one replaces it only while
+the army gathers or recovers, and only when clearly better. The army gathers at
+a rally near home toward the target's owner, travels, and fights. It withdraws
+to the rally when the enemies it knows of around it, remembered or seen,
+outweigh what it has left, and recovers there to go again or disband. Having
+taken its target it pushes on to the next only while strong enough for it. A
+target it withdrew from, could not reach, lost its army to, or stood idle beside
+is skipped for a while. With several enemies, attacks and strikes go after one
+rival's buildings first: the enemy pressing the seat hardest, then the nearest,
+less the army it shows, with guile favoring a small economy and a bonus for the
+owner of the oldest attack or strike's target so the seat does not flip between
+enemies. The rival is chosen once per decision, after defense.
 
 Members under 35 percent health leave between fights and run to the rally, and a
 defense may take the attack's units in any phase but a fight. While a free army

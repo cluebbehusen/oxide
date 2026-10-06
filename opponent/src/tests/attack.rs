@@ -953,3 +953,31 @@ fn the_lowest_rung_marches_on_a_foundry() {
         "Standard takes the richer, nearer Crucible"
     );
 }
+
+#[test]
+fn the_lowest_rung_sometimes_attacks_into_an_army_it_cannot_beat() {
+    // Four East Sentinels in West's sight, out of reach, outweigh West's
+    // seven by Standard's margin.
+    let east: Vec<(UnitKind, i32, i32)> = (8..12).map(|y| (UnitKind::Sentinel, 15, y)).collect();
+    let scenario = armed(7, &east);
+    let state = scenario.build().unwrap();
+    let launches = |config: BotConfig| {
+        let (_, trace) =
+            seat_with(&scenario, 0, config).act_traced(&state, &mut OwnEvents::default());
+        attack(&trace.unwrap().missions).is_some()
+    };
+    let seeds = 0..20;
+    for seed in seeds.clone() {
+        let standard = BotConfig::opponent(BotDifficulty::Standard, BotStance::Balanced, seed);
+        assert!(!launches(standard), "Standard judges the army right");
+    }
+    let scrapheap = |seed| BotConfig::opponent(BotDifficulty::Scrapheap, BotStance::Balanced, seed);
+    assert!(
+        seeds.clone().any(|seed| launches(scrapheap(seed))),
+        "some Scrapheap underrates it"
+    );
+    assert!(
+        !seeds.clone().all(|seed| launches(scrapheap(seed))),
+        "not every Scrapheap does"
+    );
+}
