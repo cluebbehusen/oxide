@@ -55,6 +55,11 @@ const ENGAGE_TICKS: u64 = 3_600;
 const WITHDRAW_TICKS: u64 = 1_200;
 const RECOVER_TICKS: u64 = 1_200;
 
+/// Scrap of known defense around a target that Veteran and Prime weigh like
+/// one tile of distance when choosing what to attack: a difficulty limit on
+/// how well a seat finds the soft target.
+const GUARD_PER_TILE: u64 = 10;
+
 /// Ticks an attack's `phase` should end within.
 pub(super) fn timeout(phase: AttackPhase) -> u64 {
     match phase {
@@ -721,11 +726,20 @@ impl<'a> Plan<'a> {
             })
         };
         let pick = |targets: Vec<Target>| {
-            targets
+            let open: Vec<Target> = targets
                 .into_iter()
                 .filter(differs)
                 .filter(|target| !self.held.contains(&target.objective()))
                 .filter(|target| !self.memory.abandoned(target.building, target.anchor, now))
+                .collect();
+            // The lowest rung goes for the head: a Foundry whenever it knows
+            // one, whatever guards it.
+            let head = self.difficulty == BotDifficulty::Scrapheap
+                && open
+                    .iter()
+                    .any(|target| target.building == BuildingKind::Foundry);
+            open.into_iter()
+                .filter(|target| !head || target.building == BuildingKind::Foundry)
                 .max_by_key(|target| {
                     (
                         target.score,
@@ -765,18 +779,29 @@ impl<'a> Plan<'a> {
     /// `building` at `anchor` as a target, if the army can reach it.
     fn target(&self, owner: PlayerId, building: BuildingKind, anchor: TilePos) -> Option<Target> {
         let approach = approach(self.map, self.observation.me, self.frame, building, anchor)?;
-        let distance = u64::from(self.map.distance(self.observation.me, approach));
-        let cost = building
-            .base_stats()
-            .construction
-            .as_ref()
-            .map_or(0, |construction| construction.cost);
+        let tiles = u64::from(self.map.distance(self.observation.me, approach)) / 10;
+        let cost = u64::from(
+            building
+                .base_stats()
+                .construction
+                .as_ref()
+                .map_or(0, |construction| construction.cost),
+        );
+        let score = match self.difficulty {
+            // The upper rungs go after the weakest valuable target: known
+            // defense around it counts like distance to cover.
+            BotDifficulty::Veteran | BotDifficulty::Prime => {
+                let guard = defense(self.observation, self.memory, approach);
+                cost * 1_000 / (100 + tiles + guard / GUARD_PER_TILE)
+            }
+            BotDifficulty::Scrapheap | BotDifficulty::Standard => cost * 1_000 / (100 + tiles),
+        };
         Some(Target {
             owner,
             building,
             anchor,
             approach,
-            score: u64::from(cost) * 1_000 / (100 + distance / 10),
+            score,
         })
     }
 

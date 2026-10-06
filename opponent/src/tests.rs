@@ -640,7 +640,10 @@ fn the_allowance_caps_unit_orders_but_not_purchases() {
     let (commands, trace) =
         seat_with(&scenario, 0, scrapheap).act_traced(&state, &mut OwnEvents::default());
     let trace = trace.unwrap();
-    assert!(trace.allowance < 4, "premise: fewer orders than idle workers");
+    assert!(
+        trace.allowance < 4,
+        "premise: fewer orders than idle workers"
+    );
     assert_eq!(harvests(&commands).len() as u32, trace.allowance);
     assert_eq!(trains(&commands).len(), 1, "a purchase still happens");
     assert_eq!(trace.unit_orders, trace.allowance);
