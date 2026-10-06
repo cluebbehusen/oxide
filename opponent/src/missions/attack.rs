@@ -19,6 +19,7 @@ use crate::map::MapModel;
 use crate::memory::Memory;
 use crate::profile::ResolvedProfile;
 use chassis::grid::TilePos;
+use chassis::rng::Pcg32;
 use oxide_sim::observation::{BuildingObs, ObservationData, UnitObs};
 use oxide_sim::scenario::{BotDifficulty, BotStance};
 use oxide_sim::stats::Domain;
@@ -100,6 +101,9 @@ struct Plan<'a> {
     minimum: u64,
     margin: u64,
     difficulty: BotDifficulty,
+    /// Per mille of the enemy's known strength the seat believes it faces
+    /// this decision.
+    misjudge: u64,
     /// Idle free Tenders.
     tenders: Vec<&'a UnitObs>,
     /// Idle free Sappers.
@@ -156,6 +160,7 @@ impl Missions {
             minimum: minimum(profile.stance),
             margin: margin(profile.difficulty),
             difficulty: profile.difficulty,
+            misjudge: misjudge(profile, observation.tick),
             tenders: Vec::new(),
             sappers: Vec::new(),
             rival: scratch.rival,
@@ -229,6 +234,7 @@ impl Missions {
             minimum: minimum(profile.stance),
             margin: margin(profile.difficulty),
             difficulty: profile.difficulty,
+            misjudge: misjudge(profile, observation.tick),
             tenders: Vec::new(),
             sappers: Vec::new(),
             rival: scratch.rival,
@@ -808,7 +814,9 @@ impl<'a> Plan<'a> {
     /// Army value the attack on `target` needs: the known army it would
     /// meet times the margin, and never under the stance minimum.
     fn need(&self, target: Target) -> u64 {
-        (opposed(self.observation, self.map, self.memory, target.approach) * self.margin / 1_000)
+        (opposed(self.observation, self.map, self.memory, target.approach) * self.misjudge / 1_000
+            * self.margin
+            / 1_000)
             .max(self.minimum)
     }
 
@@ -846,7 +854,7 @@ impl<'a> Plan<'a> {
             })
             .map(building_value)
             .sum();
-        units + buildings
+        (units + buildings) * self.misjudge / 1_000
     }
 
     /// Where the army gathers against `owner`: the open tile within reach of
@@ -1112,6 +1120,36 @@ fn outweighed(difficulty: BotDifficulty) -> u64 {
         BotDifficulty::Scrapheap | BotDifficulty::Standard => 1_000,
         BotDifficulty::Veteran | BotDifficulty::Prime => 1_250,
     }
+}
+
+/// Stream of the lowest rung's misjudgments of enemy strength.
+const MISJUDGE_STREAM: u64 = 0x0B07_1630;
+
+/// Per mille by which the lowest rung's sense of the enemy's strength strays
+/// each decision, either way: a difficulty limit on estimate accuracy.
+const MISJUDGE: u32 = 400;
+
+/// Ticks one misjudgment of enemy strength lasts: a difficulty limit on
+/// estimate accuracy. A fresh misjudgment every decision would average out
+/// into a bias: the seat would set out on its luckiest draw and pull back on
+/// its unluckiest.
+const MISJUDGE_TICKS: u64 = 600;
+
+/// Per mille of the enemy's known strength a seat believes it faces at
+/// `tick`: exact above the lowest rung; for Scrapheap, a deterministic draw
+/// from its personality seed for each stretch of `MISJUDGE_TICKS`, so it
+/// sometimes attacks into a stronger army and sometimes pulls back from a
+/// weaker one.
+fn misjudge(profile: &ResolvedProfile, tick: u64) -> u64 {
+    if profile.difficulty != BotDifficulty::Scrapheap {
+        return 1_000;
+    }
+    let stretch = tick / MISJUDGE_TICKS;
+    let mut rng = Pcg32::new(
+        profile.personality_seed.wrapping_add(stretch),
+        MISJUDGE_STREAM,
+    );
+    u64::from(1_000 - MISJUDGE + rng.next_below(2 * MISJUDGE + 1))
 }
 
 /// Per mille of a target's known defense the army must bring.
