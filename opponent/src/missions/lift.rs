@@ -167,10 +167,11 @@ impl Missions {
     }
 
     /// Forms a lift when none is under way and the free carriers and riders
-    /// at home together can meet the need of the best landing, sending every
-    /// load this decision's orders allow; the rest board on later decisions.
-    /// One landing of everything beats several that each meet the island's
-    /// defenders alone. Returns whether one formed.
+    /// at home, with any bombers out clearing the way, can meet the need of
+    /// the best landing, sending every load this decision's orders allow; the
+    /// rest board on later decisions. One landing of everything beats several
+    /// that each meet the island's defenders alone. Returns whether one
+    /// formed.
     fn form(&mut self, lifting: &Lifting<'_>, ledger: &mut Ledger) -> bool {
         let observation = lifting.observation;
         let lifting_now = self
@@ -189,7 +190,8 @@ impl Missions {
             return false;
         };
         let need = lifting.need(drop.landing);
-        if value < need || !lifting.looked(drop.target) {
+        let cover = self.cover(observation, drop.target.anchor);
+        if value + cover < need || !lifting.looked(drop.target) {
             return false;
         }
         let (mut units, _) = send(loads, u64::MAX, UNIT_CAP, ledger);
@@ -356,8 +358,9 @@ impl Missions {
 
     /// Sends every free carrier and rider while boarding lasts, and waits
     /// while riders walk to their carriers. Once none is walking and none was
-    /// sent, or time runs out, flies when what is aboard meets the landing's
-    /// need as now known, and otherwise sets everyone down and lets them go.
+    /// sent, or time runs out, flies when what is aboard, with any bombers
+    /// out clearing the way, meets the landing's need as now known, and
+    /// otherwise sets everyone down and lets them go.
     /// A rider that stopped short of its carrier could not board it and is
     /// not sent again.
     fn board(&mut self, flight: &Flight<'_>, lifting: &Lifting<'_>, ledger: &mut Ledger) {
@@ -377,7 +380,8 @@ impl Missions {
         if waiting.iter().any(|unit| !unit.idle) && flight.age < LOAD_TICKS {
             return;
         }
-        if flight.aboard > 0 && flight.loaded >= need {
+        let cover = self.cover(lifting.observation, flight.target.anchor);
+        if flight.aboard > 0 && flight.loaded + cover >= need {
             self.take_off(flight, lifting, ledger);
             return;
         }

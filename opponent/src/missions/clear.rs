@@ -147,6 +147,23 @@ impl Missions {
         sweep.guard()
     }
 
+    /// Strength of the bombers out clearing the anti-air around `target`:
+    /// cover a lift there can count on while they hold the defenders'
+    /// attention.
+    pub(super) fn cover(&self, observation: &ObservationData, target: TilePos) -> u64 {
+        self.list
+            .iter()
+            .filter(|mission| match mission.task {
+                Task::Clear { aim, .. } => aim.chebyshev(target) <= FOCUS_TILES,
+                _ => false,
+            })
+            .filter(|mission| mission.holds(observation))
+            .flat_map(|mission| mission.units.iter())
+            .filter_map(|id| mine(observation, *id))
+            .map(|unit| striking(unit))
+            .sum()
+    }
+
     /// Where every clearance but `except` is aimed.
     fn aims(&self, except: Option<u64>) -> Vec<TilePos> {
         self.list
