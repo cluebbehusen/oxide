@@ -5,6 +5,7 @@
 use crate::memory::{Memory, SeenUnit};
 use crate::profile::PersonalityTraits;
 use chassis::fx::Fx;
+use chassis::grid::TilePos;
 use oxide_sim::observation::ObservationData;
 use oxide_sim::scenario::BotStance;
 use oxide_sim::stats::{Domain, Role as Kind};
@@ -28,6 +29,11 @@ const ROLES: [Role; 4] = [Role::Line, Role::Siege, Role::AntiAir, Role::AirStrik
 
 /// What a needed but untrainable role adds to its cheapest building's score.
 const PULL: u32 = 600;
+
+/// Per mille: the most a premium unit's suitability over the cheaper one
+/// multiplies saving for it, a computation bound on an otherwise unbounded
+/// ratio.
+const PREMIUM_CAP: u64 = 4_000;
 
 /// Enemy buildings that shoot back.
 const DEFENSES: [BuildingKind; 3] = [
@@ -80,7 +86,14 @@ struct Enemy {
     defenses: u64,
     reach: Option<Reach>,
     clustered: bool,
+    /// The most recently seen enemy ground units, by tile and full health.
+    targets: Vec<(TilePos, u32)>,
 }
+
+/// Remembered enemy ground units a blast is weighed against, the most
+/// recently seen first: a computation bound on a pairwise check, not a limit
+/// on what the seat knows.
+const BLAST_TARGETS: usize = 64;
 
 impl Enemy {
     fn of(observation: &ObservationData, memory: &Memory) -> Self {
@@ -91,6 +104,7 @@ impl Enemy {
             defenses: 0,
             reach: None,
             clustered: false,
+            targets: Vec::new(),
         };
         let mut reaches = [0_u64; 3];
         for unit in memory.units() {
@@ -117,7 +131,50 @@ impl Enemy {
             }
         }
         enemy.clustered = clustered(memory.units());
+        let mut ground: Vec<&SeenUnit> = memory
+            .units()
+            .iter()
+            .filter(|unit| unit.kind.stats().domain == Domain::Ground)
+            .collect();
+        ground.sort_by_key(|unit| (Reverse(unit.seen), unit.id));
+        ground.truncate(BLAST_TARGETS);
+        enemy.targets = ground
+            .iter()
+            .map(|unit| (unit.tile, unit.kind.stats().max_hp))
+            .collect();
         enemy
+    }
+
+    /// Per mille of one ground target's damage that a blast of `kind`
+    /// deals to the densest known clump of enemy ground units: how many
+    /// targets one shot is worth. A kind without ground splash, or with
+    /// nothing known to hit, scores one target.
+    fn blast(&self, kind: UnitKind) -> u64 {
+        let Some((damage, radius)) = kind
+            .stats()
+            .weapons
+            .iter()
+            .filter(|weapon| weapon.targets.ground)
+            .find_map(|weapon| Some((u64::from(weapon.damage.max(1)), weapon.splash?)))
+        else {
+            return 1_000;
+        };
+        let reach = radius * radius;
+        let dealt = |centre: TilePos| -> u64 {
+            self.targets
+                .iter()
+                .filter(|(tile, _)| {
+                    let (dx, dy) = (tile.x - centre.x, tile.y - centre.y);
+                    Fx::from_num(dx * dx + dy * dy) <= reach
+                })
+                .map(|(_, hp)| damage.min(u64::from(*hp)))
+                .sum()
+        };
+        self.targets
+            .iter()
+            .map(|(tile, _)| dealt(*tile))
+            .max()
+            .map_or(1_000, |most| (most * 1_000 / damage).max(1_000))
     }
 }
 
@@ -347,7 +404,9 @@ impl Needs {
     /// suits it best, when it costs more than `spendable` and the role has a
     /// cheaper unit production would buy instead, with how much the seat
     /// wants to save for it: its role's weight, scaled by how much of two of
-    /// it the role lacks.
+    /// it the role lacks and, for strike aircraft at a seat that can only
+    /// lift its army, by how much better it suits the role than the cheaper
+    /// unit.
     pub(crate) fn premium(
         &self,
         observation: &ObservationData,
@@ -377,17 +436,81 @@ impl Needs {
                 continue;
             };
             let cost = best.stats().cost;
-            let cheaper = in_role.iter().any(|kind| kind.stats().cost < cost);
-            if cost <= spendable || !cheaper {
+            let Some(instead) = in_role
+                .iter()
+                .filter(|kind| kind.stats().cost < cost)
+                .map(|kind| self.suitability(*kind, role))
+                .max()
+            else {
+                continue;
+            };
+            if cost <= spendable {
                 continue;
             }
-            let score = self.worth(role, best);
+            // A seat that can only lift its army saves for a bomber the more,
+            // the more targets its blast takes than the cheaper strike
+            // aircraft production would buy instead.
+            let better = if role == Role::AirStrike && self.lifted {
+                (self.suitability(best, role) * 1_000 / instead.max(1)).min(PREMIUM_CAP)
+            } else {
+                1_000
+            };
+            let score = (u64::from(self.worth(role, best)) * better / 1_000) as u32;
             match premium.iter_mut().find(|(kind, _)| *kind == best) {
                 Some((_, kept)) => *kept = (*kept).max(score),
                 None => premium.push((best, score)),
             }
         }
         premium
+    }
+
+    /// The building the seat lacks that the best unit its built producers
+    /// make for `role` requires, when that unit would suit the role better
+    /// than any it can train now, with what saving for that unit is worth.
+    /// Nothing while such a building is already going up.
+    fn better_tech(
+        &self,
+        observation: &ObservationData,
+        role: Role,
+    ) -> Option<(BuildingKind, u32)> {
+        let rank = |kind: UnitKind| (self.suitability(kind, role), Reverse(kind.stats().cost));
+        let built = |kind: BuildingKind| {
+            observation
+                .my_buildings
+                .iter()
+                .any(|own| own.kind == kind && own.built)
+        };
+        let owned =
+            |kind: BuildingKind| observation.my_buildings.iter().any(|own| own.kind == kind);
+        let producers: Vec<BuildingKind> = BuildingKind::ALL
+            .into_iter()
+            .filter(|kind| built(*kind))
+            .collect();
+        let now = producers
+            .iter()
+            .flat_map(|producer| producible(observation, *producer))
+            .filter(|kind| self::role(*kind) == Some(role))
+            .map(rank)
+            .max()?;
+        producers
+            .iter()
+            .flat_map(|producer| producer.base_stats().produces.iter().copied())
+            .filter(|kind| self::role(*kind) == Some(role) && legal(observation, *kind))
+            .filter_map(|kind| {
+                let missing: Vec<BuildingKind> = kind
+                    .stats()
+                    .requires
+                    .iter()
+                    .copied()
+                    .filter(|required| !built(*required))
+                    .collect();
+                let first = *missing.first()?;
+                (!missing.iter().any(|required| owned(*required)))
+                    .then(|| (rank(kind), first, kind))
+            })
+            .filter(|(ranked, _, _)| *ranked > now)
+            .max_by_key(|(ranked, _, _)| *ranked)
+            .map(|(_, building, kind)| (building, self.worth(role, kind)))
     }
 
     /// The producer the seat lacks whose best unit for `role` suits it better
@@ -487,7 +610,11 @@ impl Needs {
         let both = self.enemy.air > 0 && self.enemy.ground > 0 && hits(true) && hits(false);
         let coverage = if both { 1_250 } else { 1_000 };
         let splashes = stats.weapons.iter().any(|weapon| weapon.splash.is_some());
-        let splash = if splashes && self.enemy.clustered {
+        // A seat that can only lift its army leans on bombers, whose worth
+        // against clumped ground is the targets one blast takes.
+        let splash = if role == Role::AirStrike && self.lifted {
+            self.enemy.blast(kind)
+        } else if splashes && self.enemy.clustered {
             1_250
         } else {
             1_000
@@ -540,6 +667,9 @@ impl Needs {
             }
             if trainable(observation, role) {
                 pull.extend(self.better_producer(observation, role));
+                if role == Role::AirStrike && self.lifted {
+                    pull.extend(self.better_tech(observation, role));
+                }
                 continue;
             }
             let cheapest = BuildingKind::ALL
@@ -623,6 +753,7 @@ mod tests {
                 defenses: 0,
                 reach,
                 clustered,
+                targets: Vec::new(),
             },
             traits: PersonalityTraits {
                 air: 50,

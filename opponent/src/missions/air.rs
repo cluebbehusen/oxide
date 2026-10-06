@@ -17,6 +17,7 @@ const DETOUR: i32 = 8;
 const CLEARANCE: i32 = 2;
 
 /// Something that shoots at a domain, as a disc in doubled coordinates.
+#[derive(Clone, Copy)]
 pub(crate) struct Hazard {
     centre: (i64, i64),
     reach: i64,

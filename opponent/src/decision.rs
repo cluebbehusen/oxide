@@ -477,6 +477,14 @@ pub(crate) fn decide(
     ) {
         persistent.memory.abandon(kind, anchor, tick);
     }
+    persistent.missions.clear_anti_air(
+        observation,
+        map,
+        profile,
+        &persistent.memory,
+        &scratch,
+        &mut ledger,
+    );
     for (kind, anchor) in persistent.missions.strike(
         observation,
         map,
