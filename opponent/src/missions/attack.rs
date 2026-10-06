@@ -49,10 +49,6 @@ const MARGIN_FLOOR: u64 = 1_000;
 const WOUNDED: u32 = 350;
 pub(super) const FIT: u32 = 500;
 
-/// Per mille of an attack's strength the enemies around it must reach before
-/// it withdraws: a fight is given up once clearly lost, not at even odds.
-const OUTWEIGHED: u64 = 1_250;
-
 const GATHER_TICKS: u64 = 1_200;
 const TRAVEL_TICKS: u64 = 3_600;
 const ENGAGE_TICKS: u64 = 3_600;
@@ -98,6 +94,7 @@ struct Plan<'a> {
     memory: &'a Memory,
     minimum: u64,
     margin: u64,
+    difficulty: BotDifficulty,
     /// Idle free Tenders.
     tenders: Vec<&'a UnitObs>,
     /// Idle free Sappers.
@@ -153,6 +150,7 @@ impl Missions {
             memory,
             minimum: minimum(profile.stance),
             margin: margin(profile.difficulty),
+            difficulty: profile.difficulty,
             tenders: Vec::new(),
             sappers: Vec::new(),
             rival: scratch.rival,
@@ -225,6 +223,7 @@ impl Missions {
             memory,
             minimum: minimum(profile.stance),
             margin: margin(profile.difficulty),
+            difficulty: profile.difficulty,
             tenders: Vec::new(),
             sappers: Vec::new(),
             rival: scratch.rival,
@@ -289,7 +288,8 @@ impl Missions {
             .list
             .iter()
             .any(|mission| matches!(mission.task, Task::Attack { .. }));
-        if attacking || self.list.len() >= MISSION_CAP {
+        let concentrated = concentrates(plan.difficulty);
+        if (attacking && concentrated) || self.list.len() >= MISSION_CAP {
             return false;
         }
         let Some(target) = plan.best(None) else {
@@ -308,7 +308,8 @@ impl Missions {
         if fit.iter().map(|unit| striking(unit)).sum::<u64>() < need {
             return false;
         }
-        let recruits = recruit(plan.frame, &fit, rally, u64::MAX, UNIT_CAP);
+        let taken = if concentrated { u64::MAX } else { need };
+        let recruits = recruit(plan.frame, &fit, rally, taken, UNIT_CAP);
         if recruits.is_empty() || !ledger.order(hunt(recruits.clone(), rally)) {
             return false;
         }
@@ -437,7 +438,9 @@ impl Missions {
 
         // Units freed since the attack left join it where it is rather than
         // waiting at home for it to regroup.
-        if matches!(phase, AttackPhase::Travel | AttackPhase::Engage { .. }) {
+        if reinforces(plan.difficulty)
+            && matches!(phase, AttackPhase::Travel | AttackPhase::Engage { .. })
+        {
             let fit: Vec<&UnitObs> = fit
                 .iter()
                 .copied()
@@ -461,8 +464,14 @@ impl Missions {
                     .filter(|unit| reaches(plan.map, unit, component))
                     .collect();
                 let striking_strength: u64 = members.iter().map(|unit| striking(unit)).sum();
-                // The whole free army joins while it regroups.
-                let recruits = recruit(plan.frame, &fit, rally, u64::MAX, room);
+                // The whole free army joins while it regroups, or only what
+                // the attack still lacks at a seat that attacks piecemeal.
+                let taken = if concentrates(plan.difficulty) {
+                    u64::MAX
+                } else {
+                    need.saturating_sub(striking_strength)
+                };
+                let recruits = recruit(plan.frame, &fit, rally, taken, room);
                 let recruited = !recruits.is_empty() && ledger.order(hunt(recruits.clone(), rally));
                 if recruited {
                     for id in &recruits {
@@ -567,7 +576,7 @@ impl Missions {
                     .filter(|id| !blasting.contains(id))
                     .collect();
                 let opposition = plan.opposition(&members);
-                if opposition * 1_000 > strength * OUTWEIGHED {
+                if opposition * 1_000 > strength * outweighed(plan.difficulty) {
                     if ledger.order(run(army.clone(), rally)) {
                         mission.attack_phase(target, AttackPhase::Withdraw, now, Some(rally));
                         return Some(target.objective());
@@ -578,7 +587,7 @@ impl Missions {
                     return None;
                 }
                 // A fight still being won goes on past its time.
-                if !all_idle && strength >= opposition {
+                if presses(plan.difficulty) && !all_idle && strength >= opposition {
                     mission.since = now;
                     return None;
                 }
@@ -1047,6 +1056,36 @@ pub(crate) fn minimum(stance: BotStance) -> u64 {
         BotStance::Turtle => 800,
         BotStance::Balanced => 600,
         BotStance::Aggressive => 450,
+    }
+}
+
+/// Whether the seat attacks with one army of everything it can spare, rather
+/// than several attacks each sized to its own target that meet the enemy one
+/// at a time: a difficulty limit, the lowest rung's readable mistake.
+pub(crate) fn concentrates(difficulty: BotDifficulty) -> bool {
+    difficulty != BotDifficulty::Scrapheap
+}
+
+/// Whether units freed while an attack travels or fights join it where it
+/// is, rather than waiting at home until it comes back to regroup: a
+/// difficulty limit.
+fn reinforces(difficulty: BotDifficulty) -> bool {
+    matches!(difficulty, BotDifficulty::Veteran | BotDifficulty::Prime)
+}
+
+/// Whether a fight still being won goes on past its time: a difficulty
+/// limit.
+fn presses(difficulty: BotDifficulty) -> bool {
+    matches!(difficulty, BotDifficulty::Veteran | BotDifficulty::Prime)
+}
+
+/// Per mille of an attack's strength the enemies around it must reach before
+/// it withdraws: the upper rungs give a fight up once clearly lost, the
+/// lower ones at even odds. A difficulty limit.
+fn outweighed(difficulty: BotDifficulty) -> u64 {
+    match difficulty {
+        BotDifficulty::Scrapheap | BotDifficulty::Standard => 1_000,
+        BotDifficulty::Veteran | BotDifficulty::Prime => 1_250,
     }
 }
 
