@@ -8,39 +8,39 @@ working rules.
 
 Each decision spends through one running total in a fixed precedence: defense
 and other emergencies, then an affordable saving target, then workers, then
-lifts, attacks and strikes, focus fire and scouting, then production. Missions
-only give orders; what they need, such as a scout or carriers, production buys.
-A seat with no worker alive or queued queues a Harvester even behind other work,
-from protected scrap if it must. A live known scrap node's route is the shortest
-ground route from the seat's start, followed back until it comes home to one of
-the seat's Foundries; it is clear while it crosses neither the reach of known
-enemy weapons (a site in sight cannot fire yet) nor the surroundings of an enemy
-Foundry, known or presumed. Each node with a clear route belongs to the nearest
-built Foundry whose ground reaches it, and is worked when a Harvester hauling
-from there repays its price within a horizon: three minutes for Turtle, two for
-Balanced and one and a half for Aggressive, stretched by up to half again the
-greedier the seat is. A worked node wants as many Harvesters as free tiles
-beside it hold and its remaining scrap repays, all of them for Turtle and three
-quarters for Balanced and half for Aggressive, more the greedier the seat is,
-and ready Foundries train workers until every worked node has its crew. Until
-the army reaches the stance's minimum, workers that would cost more than the
-army wait for army production and take only the Foundries it leaves. A producer
-is ready when its queue would run out before the next decision, so it queues its
-next unit as the last one finishes rather than after it stands empty. Once a
-Fabricator stands, an Excavator, worth two Harvesters, fills two open places
-when the seat can pay for it with scrap to spare, less the greedier it is. A
-harvesting or idle worker away from home runs back beside the nearest Foundry
-once known enemy fire reaches it. Paid sites nobody is building get the nearest
-free worker. While no armed enemy in sight stands near it and the seat has scrap
-to pay, each damaged building nobody welds yet gets the nearest free worker,
-most missing value first. Idle workers go to the reachable worked node with the
-most places open, or with none worked to the nearest node with a clear route,
-never one inside the reach of known enemy weapons; with neither they wait at
-home. A worker harvesting a node whose route has turned dangerous is sent
-elsewhere the same way, or home. A worker left with nowhere to go first delivers
-any scrap it carries to a Foundry on its ground. Every ready producer then
-trains toward the army's needs. Difficulty caps the unit orders one decision
-issues; purchases do not count against that allowance.
+lifts, attacks, clearances and strikes, focus fire and scouting, then
+production. Missions only give orders; what they need, such as a scout or
+carriers, production buys. A seat with no worker alive or queued queues a
+Harvester even behind other work, from protected scrap if it must. A live known
+scrap node's route is the shortest ground route from the seat's start, followed
+back until it comes home to one of the seat's Foundries; it is clear while it
+crosses neither the reach of known enemy weapons (a site in sight cannot fire
+yet) nor the surroundings of an enemy Foundry, known or presumed. Each node with
+a clear route belongs to the nearest built Foundry whose ground reaches it, and
+is worked when a Harvester hauling from there repays its price within a horizon:
+three minutes for Turtle, two for Balanced and one and a half for Aggressive,
+stretched by up to half again the greedier the seat is. A worked node wants as
+many Harvesters as free tiles beside it hold and its remaining scrap repays, all
+of them for Turtle and three quarters for Balanced and half for Aggressive, more
+the greedier the seat is, and ready Foundries train workers until every worked
+node has its crew. Until the army reaches the stance's minimum, workers that
+would cost more than the army wait for army production and take only the
+Foundries it leaves. A producer is ready when its queue would run out before the
+next decision, so it queues its next unit as the last one finishes rather than
+after it stands empty. Once a Fabricator stands, an Excavator, worth two
+Harvesters, fills two open places when the seat can pay for it with scrap to
+spare, less the greedier it is. A harvesting or idle worker away from home runs
+back beside the nearest Foundry once known enemy fire reaches it. Paid sites
+nobody is building get the nearest free worker. While no armed enemy in sight
+stands near it and the seat has scrap to pay, each damaged building nobody welds
+yet gets the nearest free worker, most missing value first. Idle workers go to
+the reachable worked node with the most places open, or with none worked to the
+nearest node with a clear route, never one inside the reach of known enemy
+weapons; with neither they wait at home. A worker harvesting a node whose route
+has turned dangerous is sent elsewhere the same way, or home. A worker left with
+nowhere to go first delivers any scrap it carries to a Foundry on its ground.
+Every ready producer then trains toward the army's needs. Difficulty caps the
+unit orders one decision issues; purchases do not count against that allowance.
 
 ## Defense
 
@@ -96,14 +96,14 @@ Missions own only units that exist; production never works for a mission.
 
 ## Home reserve
 
-Attacks, strikes, raids and lifts leave a reserve at home: units there, meaning
-aircraft and units on the start's ground, worth enough against ground and
-against aircraft for what could come. Against each, the reserve is nothing while
-no enemy could reach home that way. Otherwise it is the stance's floor or its
-share of the known enemy army that could, whichever is more, less the built
-static defenses on the start's ground that cover it and the units already out
-defending. Turtle keeps at least its minimum army and half again the known
-threat, Balanced half its minimum and the threat, and Aggressive half the
+Attacks, lifts, clearances, strikes and raids leave a reserve at home: units
+there, meaning aircraft and units on the start's ground, worth enough against
+ground and against aircraft for what could come. Against each, the reserve is
+nothing while no enemy could reach home that way. Otherwise it is the stance's
+floor or its share of the known enemy army that could, whichever is more, less
+the built static defenses on the start's ground that cover it and the units
+already out defending. Turtle keeps at least its minimum army and half again the
+known threat, Balanced half its minimum and the threat, and Aggressive half the
 threat. Ground reaches home from a hostile start connected by ground, or once an
 enemy carrier or Airworks is seen; aircraft once enemy armed aircraft or an
 Airworks is seen. Offense takes only units beyond the reserve, leaving those
@@ -188,42 +188,57 @@ defense's, while it is down at a fifth of its health.
 
 ## Attack
 
-Attacks, lifts, strikes and raids each run side by side: each decision advances
-every mission of a kind, oldest first, then forms another while the free units
-beyond the home reserve meet the need of the best target no mission of that kind
-holds. Each takes only the force its own target needs, and missions of different
-kinds may still go after one target.
+Strikes and raids run side by side: each decision advances every mission of a
+kind, oldest first, then forms another while the free units beyond the home
+reserve meet the need of the best target no mission of that kind holds, each
+taking only the force its own target needs. An attack and a lift each run one at
+a time and take every free unit they can use: one army that wins what it meets
+beats several that each meet the enemy alone. Missions of different kinds may
+still go after one target.
 
-An attack forms from the free line, siege and anti-air units at half health or
-better beyond the home reserve when those that can hit ground are worth at least
-the stance's minimum army and outweigh a reachable target's known local defense
-by a margin set by difficulty; anti-air units recruited along the way escort the
-army but do not count toward that. Known defense counts remembered armed units
-by confidence and known enemy buildings that fire on ground at their price with
-every upgrade they reached, discounted by missing health; a building's weapons
-reach as far as its current tier's do. The target is the most valuable known
-enemy building for its distance by ground, or a hostile start when none is
-known. Veteran and Prime count the known defense around a target like more
-distance, so they go after the weakest valuable target; Scrapheap goes for a
-Foundry whenever it knows one, however well guarded, and misjudges the enemy's
-strength by up to two fifths either way for half a minute at a time, both when
-setting out and when deciding to pull back; a better one replaces it only while
-the army gathers or recovers, and only when clearly better. The army gathers at
-a rally near home toward the target's owner, travels, and fights. It withdraws
-to the rally when the enemies it knows of around it, remembered or seen,
-outweigh what it has left, and recovers there to go again or disband. Having
-taken its target it pushes on to the next only while strong enough for it. A
-target it withdrew from, could not reach, lost its army to, or stood idle beside
-is skipped for a while. With several enemies, attacks and strikes go after one
-rival's buildings first: the enemy pressing the seat hardest, then the nearest,
-less the army it shows, with guile favoring a small economy and a bonus for the
-owner of the oldest attack or strike's target so the seat does not flip between
-enemies. The rival is chosen once per decision, after defense.
+An attack forms, when none is under way, from the free line, siege and anti-air
+units at half health or better beyond the home reserve, and takes all of them,
+when those that can hit ground are worth at least the stance's minimum army and
+outweigh the known army it would meet by a margin set by difficulty; anti-air
+units recruited along the way escort the army but do not count toward that. The
+army it would meet is every armed enemy the seat remembers that hits ground, on
+the target's ground or in the air, and the known enemy buildings guarding the
+target. Remembered units count by confidence, except that a ground unit on
+ground the seat's own does not reach counts in full; buildings that fire on
+ground count at their price with every upgrade they reached, discounted by
+missing health, and a building's weapons reach as far as its current tier's do.
+The target is the most valuable known enemy building for its distance by ground,
+or a hostile start when none is known; a better one replaces it only while the
+army gathers or recovers, and only when clearly better. The army gathers at a
+rally near home toward the target's owner, where free units join it while it
+gathers or recovers, travels, and fights; recruits still on their way go along
+once the time to regroup is up. It withdraws to the rally when the enemies it
+knows of around it, remembered or seen, outweigh what it has left, and recovers
+there to go again or disband. Having taken its target it pushes on to the next
+only while strong enough for it. A target it withdrew from, could not reach,
+lost its army to, or stood idle beside is skipped for a while. With several
+enemies, attacks and strikes go after one rival's buildings first: the enemy
+pressing the seat hardest, then the nearest, less the army it shows, with guile
+favoring a small economy and a bonus for the owner of the oldest attack or
+strike's target so the seat does not flip between enemies. The rival is chosen
+once per decision, after defense.
 
 Members under 35 percent health leave between fights and run to the rally, and a
 defense may take the attack's units in any phase but a fight. While a free army
 that could attack does not, or every producer sits idle, the margin for the next
 attack falls step by step toward even.
+
+Difficulty changes how well a seat attacks, never what it may do. Veteran and
+Prime count the known defense around a target like more distance, so they go
+after the weakest valuable target; send units freed while an attack travels or
+fights straight to its target; keep a fight they are still winning going past
+its time; and withdraw only once outweighed by a quarter. Standard and Scrapheap
+leave those units at home until the attack regroups, end a fight on time and
+withdraw at even odds. Scrapheap also attacks piecemeal, several attacks side by
+side each taking only what its own target needs; goes for a Foundry whenever it
+knows one, however well guarded; and misjudges the enemy's strength by up to two
+fifths either way, a misjudgment drawn from its personality seed that holds for
+600 ticks, both when setting out and when deciding to pull back.
 
 Free Tenders join an attack while it gathers or recovers, one for so much
 missing health among its members and at least one, weld its wounded while the
@@ -241,53 +256,76 @@ out of reach leaves the mission's fire unfocused.
 When the seat knows of enemy buildings or hostile starts and ground reaches none
 of them, and the seat has at least the stance's minimum army to carry beyond the
 home reserve, it needs lift. The Airworks then scores higher while the seat has
-none, and production keeps enough Skyhooks, alive and queued, to carry what the
-best landing needs, or the stance's minimum while none is known, with the free
-riders at home packed as a lift would pack them, but no more than those riders
-fill. While a ready Airworks waits for the scrap to train one and some of those
-riders have no room, other production waits too, unless a defense is short.
+none, and production keeps enough Skyhooks, alive and queued, to carry every
+free rider at home at once, packed as a lift would pack them. While a ready
+Airworks waits for the scrap to train one and some of those riders have no room,
+other production waits too, unless a defense is short.
 
-A lift forms only from carriers and passengers that exist: free carriers that
-are idle, empty and over open home ground, and free line and siege units at half
-health or better on home ground beyond the home reserve, packed into them most
-value per transport slot first. It needs those that can hit ground to be worth
-the stance's minimum and to outweigh the target's known defense by the attack
-margin. Carriers are loaded as the decision's orders allow until the loads sent
-reach that need, and more are loaded on later decisions while those aboard or
-walking fall short. The target is the most valuable known enemy building, or
+One lift runs at a time. It forms only from carriers and passengers that exist:
+free carriers that are idle, empty and over open home ground, and free line and
+siege units at half health or better on home ground beyond the home reserve,
+packed into them most value per transport slot first. It needs those that can
+hit ground to be worth the stance's minimum and to outweigh the known army its
+landing would meet, counted as for an attack, by the attack margin. At Veteran
+and Prime, the bombers out clearing the anti-air within twelve tiles of its
+target count toward that need. Except at Scrapheap, a lift also waits for a
+recent look at its target: the scouting point nearest the target on its island
+must have been in sight within the last 600 ticks. Every free carrier and rider
+is loaded as the decision's orders allow, and more board on later decisions
+while boarding lasts. The target is the most valuable known enemy building, or
 hostile start not seen cleared, for its distance that no ground route reaches
-and that has a landing: explored open ground on the target's island, set back
-from it and clear of known fire, where every tile unloading could set a rider on
-belongs to that island.
+and that has a landing: explored open ground on the target's island within
+sixteen tiles of it, out of reach of known fire where any is, and then about
+four tiles from it, so riders set down out of range walk in, where every tile
+unloading could set a rider on belongs to that island.
 
 A free carrier hovering where no rider could reach it, such as over the Airworks
 that trained it, first moves to open ground. Riders walk to their carriers and
 board. Once none is still walking and no more were sent, or after a while, the
-loaded carriers leave together in one order if everyone boarded or at least half
-the need is aboard; a rider that stopped short is not sent again. Carriers fly
-straight to the landing, or around known anti-air through a via-point when the
-straight line crosses it. Each sets its riders down at the landing once there,
-as the decision's orders allow, and emptied carriers fly home together the same
-way. Riders still walking are stopped and let go; with less than half aboard the
-lift sets everyone down and disbands. Landed riders hunt the target and, once no
-one is aboard and every emptied carrier is on its way home, fight on to the next
-target on the same island. Nothing brings them home. A carrier that comes home
-still loaded sets its riders down and lets them go. A target the lift lost its
-units to, or stood idle beside, is skipped for a while. A lift never grows past
-the mission member cap, and a defense may take its units only while they board.
+loaded carriers leave together in one order if what is aboard, with any bomber
+cover the seat counts, meets the landing's need as now known; a rider that
+stopped short is not sent again. Otherwise the lift sets everyone down and
+disbands, and riders still walking are stopped and let go. Carriers fly straight
+to the landing, or around known anti-air through a via-point when the straight
+line crosses it. Each sets its riders down at the landing once there, as the
+decision's orders allow, and emptied carriers fly home together the same way.
+Landed riders hunt the target and, once no one is aboard and every emptied
+carrier is on its way home, fight on to the next target on the same island.
+Nothing brings them home. A carrier that comes home still loaded sets its riders
+down and lets them go. A target the lift lost its units to, or stood idle
+beside, is skipped for a while. A lift never grows past the mission member cap,
+and a defense may take its units only while they board.
+
+## Clearances
+
+While ground reaches no enemy, the seat's free splash bombers, Condors and
+Moths, at half health or better beyond the home reserve go ahead of its lifts,
+at the remembered enemy ground anti-air on ground the seat cannot walk to within
+twelve tiles of the building a lift goes after, or the one the next lift would.
+A clearance forms when those bombers are worth the stance's minimum and together
+outweigh, by the attack margin, all the known anti-air reaching over that
+building or that anti-air, so they go in together rather than one at a time; it
+takes every one of them. They gather beside home on the side facing their aim,
+go first at the anti-air whose known cover they outweigh most easily, sweep it
+and move on to the next, and once none is left sweep the building's
+surroundings, holding the defenders' attention while the carriers land. They fly
+around known anti-air when the straight line crosses it, and withdraw once the
+known anti-air reaching them outweighs them. Ordinary strikes leave splash
+bombers to clearances while ground reaches no enemy.
 
 ## Strikes
 
-Free Buzzards, Darters, Condors and Moths at half health or better, beyond the
-home reserve, strike the most valuable known enemy building or hostile start for
-its distance, whether or not ground reaches it, when those that can hit ground
-are worth the stance's minimum and outweigh the known anti-air reaching over the
-target by the attack margin. They gather beside home on the side facing the
-target, fly at it around known anti-air, and fight; having taken it they go on
-to the next target they can, and otherwise fly home. They withdraw once the
-known anti-air reaching them outweighs them. A target a strike withdrew from,
-lost its aircraft to, or stood idle beside is skipped for a while. A defense may
-take a strike's aircraft while they gather or withdraw.
+Free Buzzards and Darters, and Condors and Moths while ground reaches an enemy,
+at half health or better, beyond the home reserve, strike the most valuable
+known enemy building or hostile start for its distance, whether or not ground
+reaches it, when those that can hit ground are worth the stance's minimum and
+outweigh the known anti-air reaching over the target by the attack margin. They
+gather beside home on the side facing the target, fly at it around known
+anti-air, and fight; having taken it they go on to the next target they can, and
+otherwise fly home. They withdraw once the known anti-air reaching them
+outweighs them. A target a strike withdrew from, lost its aircraft to, or stood
+idle beside is skipped for a while. A defense may take a strike's aircraft while
+they gather or withdraw.
 
 ## Raids
 
@@ -340,8 +378,11 @@ patient.
 ## Army composition
 
 The seat remembers every enemy unit it has seen for 600 ticks, trusting them
-less as they age and forgetting one when its last spot is in sight and empty.
-Enemy buildings need no memory of its own: the observation keeps their ghosts.
+less as they age and forgetting one when its last spot is in sight and empty. An
+enemy ground unit seen on ground the seat's own does not reach is remembered for
+3,600 ticks instead, and counts in full for attacks, lifts and known fire until
+then, since it cannot leave there without carriers. Enemy buildings need no
+memory of its own: the observation keeps their ghosts.
 
 From that knowledge and its own army, alive and queued, it sets a deficit for
 each role: line fighters to match three quarters of the enemy's ground army or
@@ -355,24 +396,29 @@ they can reach an enemy, by ground or by lift once an Airworks stands; before
 then, known enemy ground units on the seat's own ground still call for line
 units worth three quarters of them. While ground reaches no enemy, air strikes
 are wanted with or without an Airworks, at least what a strike needs against the
-easiest known target the seat has not given up on. The most wanted role goes
-first to the nearest ready producer that can afford a unit for it, then the
-next; ready producers left with nothing wanted train, while ground units can
-reach an enemy, for whichever of line and siege they serve is furthest below its
-share, line alone when the army goes only by lift, unless another producer
-serves a wanted role: the scrap then waits for that producer. While the seat
-saves for a unit, the producers that train it wait for it and no other producer
-trains a cheaper unit of its role. Each chooses the unit it can afford now by
-coarse suitability: reach against the enemy's usual reach, what its role is for
-at the price (firepower for siege, durability for the rest), covering both enemy
-domains, splash against clustered enemies, affordability at the seat's income,
-variety (a kind that already makes up most of its role counts for less, so every
-kind of a role gets its turn), and personality. Scouts, carriers, Tenders,
-Scuttlers and Sappers are bought only for scouting, lift, support and raids. A
-role it needs but cannot train at all adds to the investment score of the
-cheapest building that would let it, and a role it can train adds to a producer
-it lacks whose unit would suit it better, as much as saving for that unit is
-worth.
+easiest known target the seat has not given up on, or what bombers need to clear
+the anti-air around the next lift's target, whichever is more. The most wanted
+role goes first to the nearest ready producer that can afford a unit for it,
+then the next; ready producers left with nothing wanted train, while ground
+units can reach an enemy, for whichever of line and siege they serve is furthest
+below its share, line alone when the army goes only by lift, unless another
+producer serves a wanted role: the scrap then waits for that producer. While the
+seat saves for a unit, the producers that train it wait for it and no other
+producer trains a cheaper unit of its role. Each chooses the unit it can afford
+now by coarse suitability: reach against the enemy's usual reach, what its role
+is for at the price (firepower for siege, durability for the rest), covering
+both enemy domains, splash against clustered enemies, affordability at the
+seat's income, variety (a kind that already makes up most of its role counts for
+less, so every kind of a role gets its turn), and personality. While ground
+reaches no enemy, a strike aircraft's splash is worth instead the targets one
+blast takes in the densest known clump of enemy ground units; the seat then
+saves for a splash bomber the more, up to four times as much, the more targets
+its blast takes than the cheaper strike aircraft, and pulls toward the Crucible
+such a bomber requires. Scouts, carriers, Tenders, Scuttlers and Sappers are
+bought only for scouting, lift, support and raids. A role it needs but cannot
+train at all adds to the investment score of the cheapest building that would
+let it, and a role it can train adds to a producer it lacks whose unit would
+suit it better, as much as saving for that unit is worth.
 
 ## Investments and saving
 
