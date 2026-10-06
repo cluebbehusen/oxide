@@ -20,6 +20,7 @@ use crate::memory::Memory;
 use crate::profile::ResolvedProfile;
 use chassis::grid::TilePos;
 use oxide_sim::observation::{ObservationData, UnitObs};
+use oxide_sim::scenario::BotDifficulty;
 use oxide_sim::stats::Domain;
 use oxide_sim::{BuildingKind, Command, UnitId, UnitKind};
 
@@ -190,7 +191,7 @@ impl Missions {
             return false;
         };
         let need = lifting.need(drop.landing);
-        let cover = self.cover(observation, drop.target.anchor);
+        let cover = lifting.cover(self.cover(observation, drop.target.anchor));
         if value + cover < need || !lifting.looked(drop.target) {
             return false;
         }
@@ -380,7 +381,7 @@ impl Missions {
         if waiting.iter().any(|unit| !unit.idle) && flight.age < LOAD_TICKS {
             return;
         }
-        let cover = self.cover(lifting.observation, flight.target.anchor);
+        let cover = lifting.cover(self.cover(lifting.observation, flight.target.anchor));
         if flight.aboard > 0 && flight.loaded + cover >= need {
             self.take_off(flight, lifting, ledger);
             return;
@@ -663,10 +664,23 @@ impl<'a> Lifting<'a> {
         })
     }
 
+    /// The bombers' `cover` a lift counts on: only the upper rungs time a
+    /// lift to them. A difficulty limit.
+    fn cover(&self, cover: u64) -> u64 {
+        match self.profile.difficulty {
+            BotDifficulty::Veteran | BotDifficulty::Prime => cover,
+            BotDifficulty::Scrapheap | BotDifficulty::Standard => 0,
+        }
+    }
+
     /// Whether the scouting point nearest `target` on its island was in
     /// sight recently enough to know the army a landing would meet. An
     /// island no point lies on cannot be looked at, so it counts as known.
     fn looked(&self, target: Objective) -> bool {
+        // The lowest rung lifts without looking first: a difficulty limit.
+        if self.profile.difficulty == BotDifficulty::Scrapheap {
+            return true;
+        }
         let island = self.map.component(target.anchor);
         super::points(self.map, self.observation.me)
             .iter()
