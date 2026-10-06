@@ -246,7 +246,9 @@ pub(crate) struct Outlet {
     /// Air strikes are wanted: an Airworks stands, or ground reaches no enemy.
     pub(crate) air_strikes: bool,
     /// Air strike value wanted at the least: while ground reaches no enemy,
-    /// what a strike needs against the easiest known target.
+    /// what a strike needs against the easiest known target, or bombers need
+    /// to clear the anti-air around the next lift's target, whichever is
+    /// more.
     pub(crate) strike: u64,
 }
 

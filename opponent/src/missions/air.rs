@@ -117,10 +117,14 @@ pub(super) fn route(
 /// since it was seen.
 pub(crate) fn hazards(
     observation: &ObservationData,
+    map: &MapModel,
     memory: &Memory,
     domain: Domain,
 ) -> Vec<Hazard> {
     let now = observation.tick;
+    let home = map
+        .start(observation.me)
+        .and_then(|start| map.component(start));
     let reach = |weapons: &[oxide_sim::stats::WeaponStats]| {
         weapons
             .iter()
@@ -133,7 +137,7 @@ pub(crate) fn hazards(
         Some(Hazard {
             centre: doubled(unit.tile),
             reach: i64::from(2 * (range + CLEARANCE)),
-            value: unit.value(now),
+            value: super::remembered(unit, map, home, now),
         })
     });
     let buildings = observation.enemy_buildings.iter().filter_map(|building| {

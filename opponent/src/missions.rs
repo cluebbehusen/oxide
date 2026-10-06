@@ -709,6 +709,23 @@ fn walking_gun(unit: &UnitObs) -> bool {
             .any(|weapon| weapon.indirect && weapon.targets.ground)
 }
 
+/// Whether `unit` is a ground unit on ground other than `home`, which it
+/// cannot leave without carriers.
+pub(crate) fn stranded(unit: &crate::memory::SeenUnit, map: &MapModel, home: Option<u32>) -> bool {
+    let ground = map.component(unit.tile);
+    unit.kind.stats().domain == Domain::Ground && ground.is_some() && ground != home
+}
+
+/// A remembered enemy unit's price, discounted by how sure the seat is it is
+/// still there, except that a stranded one counts in full until forgotten.
+fn remembered(unit: &crate::memory::SeenUnit, map: &MapModel, home: Option<u32>, now: u64) -> u64 {
+    if stranded(unit, map, home) {
+        u64::from(unit.kind.stats().cost)
+    } else {
+        unit.value(now)
+    }
+}
+
 /// A unit's price, discounted by its missing health.
 fn value(unit: &UnitObs) -> u64 {
     let stats = unit.kind.stats();
@@ -810,8 +827,8 @@ impl Scratch {
             });
         Self {
             frame,
-            air: hazards(observation, memory, Domain::Air),
-            ground: hazards(observation, memory, Domain::Ground),
+            air: hazards(observation, map, memory, Domain::Air),
+            ground: hazards(observation, map, memory, Domain::Ground),
             objectives,
             severed,
             rival: None,

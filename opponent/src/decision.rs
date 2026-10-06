@@ -278,7 +278,12 @@ pub(crate) fn decide(
         .collect();
     let earned = persistent.income.observe(tick, observation.scrap, rejected);
     persistent.memory.forget(tick);
-    persistent.memory.observe(observation);
+    let home = map
+        .start(observation.me)
+        .and_then(|start| map.component(start));
+    persistent.memory.observe_stranded(observation, |unit| {
+        crate::missions::stranded(unit, map, home)
+    });
     crate::missions::look(observation, map, &mut persistent.memory);
     let mut scratch = Scratch::new(
         observation,
@@ -303,7 +308,15 @@ pub(crate) fn decide(
         invaders: scratch.invaders,
         air_strikes: airworks || scratch.severed,
         strike: if scratch.severed {
-            crate::missions::strike_need(observation, &persistent.memory, profile, &scratch)
+            crate::missions::strike_need(observation, &persistent.memory, profile, &scratch).max(
+                persistent.missions.clear_need(
+                    observation,
+                    map,
+                    profile,
+                    &persistent.memory,
+                    &scratch,
+                ),
+            )
         } else {
             0
         },

@@ -27,8 +27,9 @@ const LOAD_TICKS: u64 = 1_200;
 const FLY_TICKS: u64 = 2_400;
 const FIGHT_TICKS: u64 = 3_600;
 
-/// Tiles around a target's footprint searched for a landing.
-const LANDING_REACH: i32 = 8;
+/// Tiles around a target's footprint searched for a landing: a computation
+/// bound wide enough to find ground out of a defended base's reach.
+const LANDING_REACH: i32 = 16;
 
 /// Empty tiles a landing would best leave between itself and the target.
 const LANDING_GAP: i32 = 4;
@@ -587,6 +588,30 @@ impl Missions {
     }
 }
 
+impl Missions {
+    /// The enemy building a lift goes after, or else the one the next lift
+    /// would: where bombers clear the way for the carriers.
+    pub(super) fn lift_focus(
+        &self,
+        observation: &ObservationData,
+        map: &MapModel,
+        memory: &Memory,
+        scratch: &Scratch,
+    ) -> Option<Objective> {
+        self.list
+            .iter()
+            .find_map(|mission| match mission.task {
+                Task::Lift { target, .. } => Some(target),
+                _ => None,
+            })
+            .or_else(|| {
+                targets(&scratch.objectives, observation, map, scratch.frame, memory)
+                    .into_iter()
+                    .next()
+            })
+    }
+}
+
 impl<'a> Lifting<'a> {
     fn new(
         observation: &'a ObservationData,
@@ -662,48 +687,56 @@ impl<'a> Lifting<'a> {
     }
 
     /// Where to set a payload down near `target`: known open ground on the
-    /// target's island, clear of known fire, about four tiles from it. The
-    /// one reachability check: every ground tile riders could be set down on
-    /// lies on the target's island, so none land across a chasm.
+    /// target's island, out of reach of known fire where any is, then as near
+    /// about four tiles from the target as it can be, so riders set down out
+    /// of range walk in. The one reachability check: every ground tile
+    /// riders could be set down on lies on the target's island, so none land
+    /// across a chasm.
     fn landing(&self, target: Objective) -> Option<TilePos> {
-        let size = target.building.base_stats().size;
-        self.landings(target).min_by_key(|tile| {
-            let point = doubled(*tile);
-            let exposure: u64 = self
-                .air
-                .iter()
-                .chain(self.ground)
-                .filter(|hazard| hazard.covers(point))
-                .map(|hazard| hazard.value)
-                .sum();
-            (
-                exposure,
-                (gap(target.anchor, size, *tile, (1, 1)) - LANDING_GAP).abs(),
-                self.frame.rank(self.frame.home, point),
-            )
-        })
-    }
-
-    /// Every tile a lift to `target` could land on.
-    fn landings(&self, target: Objective) -> impl Iterator<Item = TilePos> {
         let map = self.map;
         let size = target.building.base_stats().size;
-        let island = map.component(target.anchor);
-        let spread_ok = move |tile: TilePos| {
+        let island = map.component(target.anchor)?;
+        let spread_ok = |tile: TilePos| {
             (-SPREAD..=SPREAD).all(|dy| {
                 (-SPREAD..=SPREAD).all(|dx| {
-                    let near = tile.offset(dx, dy);
-                    map.component(near)
-                        .is_none_or(|component| Some(component) == island)
+                    map.component(tile.offset(dx, dy))
+                        .is_none_or(|component| component == island)
                 })
             })
         };
-        (-LANDING_REACH..size.1 + LANDING_REACH)
-            .flat_map(move |dy| {
+        // Ranking every tile in reach first leaves the costlier checks of
+        // open ground for the few tiles tried.
+        let mut ranked: Vec<_> = (-LANDING_REACH..size.1 + LANDING_REACH)
+            .flat_map(|dy| {
                 (-LANDING_REACH..size.0 + LANDING_REACH).map(move |dx| target.anchor.offset(dx, dy))
             })
-            .filter(move |tile| island.is_some_and(|island| self.open(*tile, island)))
-            .filter(move |tile| gap(target.anchor, size, *tile, (1, 1)) >= 1 && spread_ok(*tile))
+            .filter(|tile| map.component(*tile) == Some(island))
+            .filter_map(|tile| {
+                let gap = gap(target.anchor, size, tile, (1, 1));
+                if gap < 1 {
+                    return None;
+                }
+                let point = doubled(tile);
+                let exposure: u64 = self
+                    .air
+                    .iter()
+                    .chain(self.ground)
+                    .filter(|hazard| hazard.covers(point))
+                    .map(|hazard| hazard.value)
+                    .sum();
+                let key = (
+                    exposure,
+                    (gap - LANDING_GAP).abs(),
+                    self.frame.rank(self.frame.home, point),
+                );
+                Some((key, tile))
+            })
+            .collect();
+        ranked.sort_unstable_by_key(|(key, _)| *key);
+        ranked
+            .into_iter()
+            .map(|(_, tile)| tile)
+            .find(|tile| self.open(*tile, island) && spread_ok(*tile))
     }
 
     /// Whether a ground unit could stand on `tile` of `island` as far as the
