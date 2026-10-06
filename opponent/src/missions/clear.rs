@@ -160,7 +160,7 @@ impl Missions {
             .filter(|mission| mission.holds(observation))
             .flat_map(|mission| mission.units.iter())
             .filter_map(|id| mine(observation, *id))
-            .map(|unit| striking(unit))
+            .map(striking)
             .sum()
     }
 
