@@ -640,7 +640,10 @@ fn the_allowance_caps_unit_orders_but_not_purchases() {
     let (commands, trace) =
         seat_with(&scenario, 0, scrapheap).act_traced(&state, &mut OwnEvents::default());
     let trace = trace.unwrap();
-    assert!(trace.allowance < 4, "premise: fewer orders than idle workers");
+    assert!(
+        trace.allowance < 4,
+        "premise: fewer orders than idle workers"
+    );
     assert_eq!(harvests(&commands).len() as u32, trace.allowance);
     assert_eq!(trains(&commands).len(), 1, "a purchase still happens");
     assert_eq!(trace.unit_orders, trace.allowance);
@@ -1022,5 +1025,25 @@ fn a_seat_without_an_army_puts_up_a_turret_before_tech() {
         matches!(target(&armed), Some(Investment::Tech(_))),
         "an army to speak of saves for tech: {:?}",
         target(&armed)
+    );
+}
+
+#[test]
+fn scrapheap_holds_off_an_army_through_its_opening() {
+    let scenario = arena(1_000);
+    let state = scenario.build().unwrap();
+    let fighters = |config: BotConfig| {
+        let commands = seat_with(&scenario, 0, config).act(&state, &mut OwnEvents::default());
+        trains(&commands)
+            .into_iter()
+            .filter(|(_, kind)| *kind != UnitKind::Harvester)
+            .count()
+    };
+    assert!(fighters(config()) > 0, "premise: Standard arms at once");
+    let scrapheap = BotConfig::opponent(BotDifficulty::Scrapheap, BotStance::Balanced, 11);
+    assert_eq!(
+        fighters(scrapheap),
+        0,
+        "nothing in sight calls for an army yet"
     );
 }

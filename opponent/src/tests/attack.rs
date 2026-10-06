@@ -890,3 +890,66 @@ fn a_unit_sitting_out_a_stalled_route_joins_no_new_attack() {
         "members are the units sent"
     );
 }
+
+/// West's army with a Kestrel over the middle of the field, and East's
+/// `buildings` with `guards` beside them.
+fn targets(buildings: &[(BuildingKind, i32, i32)], guards: &[(i32, i32)]) -> Scenario {
+    let east: Vec<(UnitKind, i32, i32)> = guards
+        .iter()
+        .map(|(x, y)| (UnitKind::Sentinel, *x, *y))
+        .collect();
+    let mut scenario = armed(8, &east);
+    scenario.units.push(unit(0, UnitKind::Kestrel, 30, 10));
+    for (kind, x, y) in buildings {
+        scenario.buildings.push(BuildingSpec {
+            player: 1,
+            kind: *kind,
+            x: *x,
+            y: *y,
+        });
+    }
+    scenario
+}
+
+fn target_of(scenario: &Scenario, config: BotConfig) -> TilePos {
+    let state = scenario.build().unwrap();
+    let (commands, trace) =
+        seat_with(scenario, 0, config).act_traced(&state, &mut OwnEvents::default());
+    match attack(&trace.unwrap().missions).map(|mission| mission.kind) {
+        Some(MissionKind::Attack { anchor, .. }) => anchor,
+        other => panic!("premise: an attack forms: {other:?} {commands:?}"),
+    }
+}
+
+#[test]
+fn the_upper_rungs_go_after_the_unguarded_target() {
+    let (guarded, open) = (TilePos::new(24, 2), TilePos::new(26, 17));
+    let scenario = targets(
+        &[
+            (BuildingKind::Fabricator, guarded.x, guarded.y),
+            (BuildingKind::Fabricator, open.x, open.y),
+        ],
+        &[(24, 5), (25, 5), (26, 5), (27, 5)],
+    );
+    let prime = BotConfig::opponent(BotDifficulty::Prime, BotStance::Balanced, 11);
+    assert_eq!(target_of(&scenario, prime), open);
+    assert_eq!(
+        target_of(&scenario, config()),
+        guarded,
+        "Standard takes the nearer one, guards or not"
+    );
+}
+
+#[test]
+fn the_lowest_rung_marches_on_a_foundry() {
+    let scenario = targets(&[(BuildingKind::Crucible, 34, 10)], &[]);
+    let mut scenario = scenario;
+    scenario.units.push(unit(0, UnitKind::Kestrel, 40, 12));
+    let scrapheap = BotConfig::opponent(BotDifficulty::Scrapheap, BotStance::Balanced, 11);
+    assert_eq!(target_of(&scenario, scrapheap), TilePos::new(43, 11));
+    assert_eq!(
+        target_of(&scenario, config()),
+        TilePos::new(34, 10),
+        "Standard takes the richer, nearer Crucible"
+    );
+}
