@@ -153,11 +153,13 @@ impl Opponent {
     }
 }
 
-/// Ticks between decisions. Scrapheap decides half as often as the other rungs.
+/// Ticks between decisions: Scrapheap decides half as often as Standard and
+/// Veteran, Prime twice as often. A difficulty limit on reaction time.
 pub(crate) fn decision_interval(difficulty: BotDifficulty) -> u64 {
     match difficulty {
         BotDifficulty::Scrapheap => 24,
-        BotDifficulty::Standard | BotDifficulty::Veteran | BotDifficulty::Prime => 12,
+        BotDifficulty::Standard | BotDifficulty::Veteran => 12,
+        BotDifficulty::Prime => 6,
     }
 }
 
