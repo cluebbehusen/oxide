@@ -1297,10 +1297,10 @@ const RAID_INCOME: u32 = 900;
 /// What a needed lift adds to the Airworks' investment score.
 const LIFT_PULL: u32 = 600;
 
-/// Unit orders one decision may issue.
+/// Unit orders one decision may issue: a difficulty limit on attention.
 fn allowance(difficulty: BotDifficulty) -> u32 {
     match difficulty {
-        BotDifficulty::Scrapheap => 3,
+        BotDifficulty::Scrapheap => 2,
         BotDifficulty::Standard => 6,
         BotDifficulty::Veteran => 8,
         BotDifficulty::Prime => 10,
