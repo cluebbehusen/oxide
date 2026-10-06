@@ -278,7 +278,13 @@ pub(crate) fn decide(
         .collect();
     let earned = persistent.income.observe(tick, observation.scrap, rejected);
     persistent.memory.forget(tick);
-    persistent.memory.observe(observation);
+    let home = map
+        .start(observation.me)
+        .and_then(|start| map.component(start));
+    persistent.memory.observe_stranded(observation, |unit| {
+        crate::missions::stranded(unit, map, home)
+    });
+    crate::missions::look(observation, map, &mut persistent.memory);
     let mut scratch = Scratch::new(
         observation,
         map,
@@ -302,7 +308,15 @@ pub(crate) fn decide(
         invaders: scratch.invaders,
         air_strikes: airworks || scratch.severed,
         strike: if scratch.severed {
-            crate::missions::strike_need(observation, &persistent.memory, profile, &scratch)
+            crate::missions::strike_need(observation, &persistent.memory, profile, &scratch).max(
+                persistent.missions.clear_need(
+                    observation,
+                    map,
+                    profile,
+                    &persistent.memory,
+                    &scratch,
+                ),
+            )
         } else {
             0
         },
@@ -476,6 +490,14 @@ pub(crate) fn decide(
     ) {
         persistent.memory.abandon(kind, anchor, tick);
     }
+    persistent.missions.clear_anti_air(
+        observation,
+        map,
+        profile,
+        &persistent.memory,
+        &scratch,
+        &mut ledger,
+    );
     for (kind, anchor) in persistent.missions.strike(
         observation,
         map,
@@ -827,12 +849,12 @@ fn explore(
     }
 }
 
-/// Keeps enough carriers, alive and queued, to lift what the best landing
-/// needs with the free units at home, training one at a ready Airworks when
-/// short. It is a stock, like the Harvesters: no mission is promised the
-/// carriers it buys. Returns whether a ready Airworks waits for the scrap to
-/// train one while riders at home already fill every carrier, so that
-/// cheaper units do not spend it first.
+/// Keeps enough carriers, alive and queued, to lift every free rider at home
+/// at once, training one at a ready Airworks when short. It is a stock, like
+/// the Harvesters: no mission is promised the carriers it buys. Returns
+/// whether a ready Airworks waits for the scrap to train one while riders at
+/// home already fill every carrier, so that cheaper units do not spend it
+/// first.
 fn train_carriers(
     observation: &ObservationData,
     map: &MapModel,
@@ -1276,10 +1298,10 @@ const RAID_INCOME: u32 = 900;
 /// What a needed lift adds to the Airworks' investment score.
 const LIFT_PULL: u32 = 600;
 
-/// Unit orders one decision may issue.
+/// Unit orders one decision may issue: a difficulty limit on attention.
 fn allowance(difficulty: BotDifficulty) -> u32 {
     match difficulty {
-        BotDifficulty::Scrapheap => 3,
+        BotDifficulty::Scrapheap => 2,
         BotDifficulty::Standard => 6,
         BotDifficulty::Veteran => 8,
         BotDifficulty::Prime => 10,

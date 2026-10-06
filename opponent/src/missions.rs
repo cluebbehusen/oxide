@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 
 mod air;
 mod attack;
+mod clear;
 mod defense;
 mod focus;
 mod lift;
@@ -33,7 +34,7 @@ pub(crate) use air::{Hazard, hazards};
 pub(crate) use attack::{building_value, minimum};
 pub(crate) use defense::Shortfall;
 pub(crate) use lift::{carrier, payload};
-pub(crate) use scouting::points;
+pub(crate) use scouting::{look, points};
 pub(crate) use strike::strike_need;
 pub(crate) use support::{per_tender, wounds};
 
@@ -98,6 +99,10 @@ enum Task {
         target: Objective,
         phase: RaidPhase,
     },
+    Clear {
+        aim: TilePos,
+        phase: StrikePhase,
+    },
 }
 
 impl Task {
@@ -108,7 +113,7 @@ impl Task {
             | Task::Lift { target, .. }
             | Task::Strike { target, .. }
             | Task::Raid { target, .. } => Some(target),
-            Task::Defend { .. } | Task::Scout { .. } => None,
+            Task::Defend { .. } | Task::Scout { .. } | Task::Clear { .. } => None,
         }
     }
 }
@@ -215,6 +220,12 @@ pub enum MissionKind {
         /// Its footprint anchor.
         anchor: TilePos,
     },
+    /// Sends ground-attack aircraft at enemy anti-air on ground the seat
+    /// cannot walk to.
+    Clear {
+        /// Where the anti-air was last seen.
+        aim: TilePos,
+    },
 }
 
 /// Where a mission stands, as reports see it.
@@ -292,6 +303,7 @@ impl MissionKind {
             Self::Lift { .. } => "lift",
             Self::Strike { .. } => "strike",
             Self::Raid { .. } => "raid",
+            Self::Clear { .. } => "clear",
         }
     }
 }
@@ -337,6 +349,7 @@ impl Task {
                 building: target.building,
                 anchor: target.anchor,
             },
+            Self::Clear { aim, .. } => MissionKind::Clear { aim },
         }
     }
 
@@ -359,7 +372,7 @@ impl Task {
                 LiftPhase::Fly => Phase::Fly,
                 LiftPhase::Fight { .. } => Phase::Fight,
             },
-            Self::Strike { phase, .. } => match phase {
+            Self::Strike { phase, .. } | Self::Clear { phase, .. } => match phase {
                 StrikePhase::Gather => Phase::Gather,
                 StrikePhase::Travel => Phase::Travel,
                 StrikePhase::Engage { .. } => Phase::Engage,
@@ -382,6 +395,7 @@ impl Task {
             Self::Lift { phase, .. } => lift::timeout(phase),
             Self::Strike { phase, .. } => strike::timeout(phase),
             Self::Raid { phase, .. } => raid::timeout(phase),
+            Self::Clear { phase, .. } => clear::timeout(phase),
         }
     }
 
@@ -401,6 +415,10 @@ impl Task {
                 ..
             }
             | Self::Strike {
+                phase: StrikePhase::Engage { focus },
+                ..
+            }
+            | Self::Clear {
                 phase: StrikePhase::Engage { focus },
                 ..
             } => Some(focus),
@@ -441,7 +459,7 @@ impl Mission {
             },
             Task::Scout { .. } => true,
             Task::Lift { phase, .. } => phase != LiftPhase::Load,
-            Task::Strike { phase, .. } => {
+            Task::Strike { phase, .. } | Task::Clear { phase, .. } => {
                 matches!(phase, StrikePhase::Travel | StrikePhase::Engage { .. })
             }
             Task::Raid { phase, .. } => phase != RaidPhase::Withdraw,
@@ -528,7 +546,8 @@ impl Missions {
                     | Task::Scout { .. }
                     | Task::Lift { .. }
                     | Task::Strike { .. }
-                    | Task::Raid { .. } => true,
+                    | Task::Raid { .. }
+                    | Task::Clear { .. } => true,
                 }
         });
     }
@@ -650,6 +669,7 @@ impl Missions {
             }
             let target_on_map = match mission.task {
                 Task::Scout { point } => usize::from(point) < points,
+                Task::Clear { aim, .. } => on_map(aim),
                 ref task => task.target().is_none_or(|target| on_map(target.anchor)),
             };
             if mission.since > now || !on_map(mission.goal) || !target_on_map {
@@ -687,6 +707,23 @@ fn walking_gun(unit: &UnitObs) -> bool {
             .weapons
             .iter()
             .any(|weapon| weapon.indirect && weapon.targets.ground)
+}
+
+/// Whether `unit` is a ground unit on ground other than `home`, which it
+/// cannot leave without carriers.
+pub(crate) fn stranded(unit: &crate::memory::SeenUnit, map: &MapModel, home: Option<u32>) -> bool {
+    let ground = map.component(unit.tile);
+    unit.kind.stats().domain == Domain::Ground && ground.is_some() && ground != home
+}
+
+/// A remembered enemy unit's price, discounted by how sure the seat is it is
+/// still there, except that a stranded one counts in full until forgotten.
+fn remembered(unit: &crate::memory::SeenUnit, map: &MapModel, home: Option<u32>, now: u64) -> u64 {
+    if stranded(unit, map, home) {
+        u64::from(unit.kind.stats().cost)
+    } else {
+        unit.value(now)
+    }
 }
 
 /// A unit's price, discounted by its missing health.
@@ -790,8 +827,8 @@ impl Scratch {
             });
         Self {
             frame,
-            air: hazards(observation, memory, Domain::Air),
-            ground: hazards(observation, memory, Domain::Ground),
+            air: hazards(observation, map, memory, Domain::Air),
+            ground: hazards(observation, map, memory, Domain::Ground),
             objectives,
             severed,
             rival: None,

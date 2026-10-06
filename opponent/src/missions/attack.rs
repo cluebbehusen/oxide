@@ -19,6 +19,7 @@ use crate::map::MapModel;
 use crate::memory::Memory;
 use crate::profile::ResolvedProfile;
 use chassis::grid::TilePos;
+use chassis::rng::Pcg32;
 use oxide_sim::observation::{BuildingObs, ObservationData, UnitObs};
 use oxide_sim::scenario::{BotDifficulty, BotStance};
 use oxide_sim::stats::Domain;
@@ -54,6 +55,11 @@ const TRAVEL_TICKS: u64 = 3_600;
 const ENGAGE_TICKS: u64 = 3_600;
 const WITHDRAW_TICKS: u64 = 1_200;
 const RECOVER_TICKS: u64 = 1_200;
+
+/// Scrap of known defense around a target that Veteran and Prime weigh like
+/// one tile of distance when choosing what to attack: a difficulty limit on
+/// how well a seat finds the soft target.
+const GUARD_PER_TILE: u64 = 10;
 
 /// Ticks an attack's `phase` should end within.
 pub(super) fn timeout(phase: AttackPhase) -> u64 {
@@ -94,6 +100,10 @@ struct Plan<'a> {
     memory: &'a Memory,
     minimum: u64,
     margin: u64,
+    difficulty: BotDifficulty,
+    /// Per mille of the enemy's known strength the seat believes it faces
+    /// this decision.
+    misjudge: u64,
     /// Idle free Tenders.
     tenders: Vec<&'a UnitObs>,
     /// Idle free Sappers.
@@ -128,9 +138,9 @@ impl Mission {
 }
 
 impl Missions {
-    /// Advances every attack under way, then launches another while the free
-    /// army beyond the home reserve can beat the known defense of a target no
-    /// attack holds. Returns the targets given up on.
+    /// Advances the attack under way, or launches one when the free army
+    /// beyond the home reserve can beat the known defense of a target.
+    /// Returns the targets given up on.
     pub(crate) fn attack(
         &mut self,
         observation: &ObservationData,
@@ -149,6 +159,8 @@ impl Missions {
             memory,
             minimum: minimum(profile.stance),
             margin: margin(profile.difficulty),
+            difficulty: profile.difficulty,
+            misjudge: misjudge(profile, observation.tick),
             tenders: Vec::new(),
             sappers: Vec::new(),
             rival: scratch.rival,
@@ -221,6 +233,8 @@ impl Missions {
             memory,
             minimum: minimum(profile.stance),
             margin: margin(profile.difficulty),
+            difficulty: profile.difficulty,
+            misjudge: misjudge(profile, observation.tick),
             tenders: Vec::new(),
             sappers: Vec::new(),
             rival: scratch.rival,
@@ -275,10 +289,18 @@ impl Missions {
             .outermost(map, scratch.frame, fit)
     }
 
-    /// Launches an attack on the best target no other attack holds when the
-    /// free army can beat its known defense. Returns whether one launched.
+    /// Launches an attack with the whole free army on the best target when it
+    /// can beat the target's known defense and no attack is under way: one
+    /// army hits together rather than several that each meet the enemy alone.
+    /// Units freed later join it when it regroups. Returns whether one
+    /// launched.
     fn launch(&mut self, plan: &Plan<'_>, fit: &[&UnitObs], ledger: &mut Ledger) -> bool {
-        if self.list.len() >= MISSION_CAP {
+        let attacking = self
+            .list
+            .iter()
+            .any(|mission| matches!(mission.task, Task::Attack { .. }));
+        let concentrated = concentrates(plan.difficulty);
+        if (attacking && concentrated) || self.list.len() >= MISSION_CAP {
             return false;
         }
         let Some(target) = plan.best(None) else {
@@ -297,7 +319,8 @@ impl Missions {
         if fit.iter().map(|unit| striking(unit)).sum::<u64>() < need {
             return false;
         }
-        let recruits = recruit(plan.frame, &fit, rally, need, UNIT_CAP);
+        let taken = if concentrated { u64::MAX } else { need };
+        let recruits = recruit(plan.frame, &fit, rally, taken, UNIT_CAP);
         if recruits.is_empty() || !ledger.order(hunt(recruits.clone(), rally)) {
             return false;
         }
@@ -424,159 +447,208 @@ impl Missions {
             .sum();
         let age = now - mission.since;
 
-        match phase {
-            AttackPhase::Gather | AttackPhase::Recover => {
-                let room = UNIT_CAP - mission.units.len();
-                let fit: Vec<&UnitObs> = fit
-                    .iter()
-                    .copied()
-                    .filter(|unit| reaches(plan.map, unit, component))
-                    .collect();
-                let striking_strength: u64 = members.iter().map(|unit| striking(unit)).sum();
-                let recruits = recruit(
-                    plan.frame,
-                    &fit,
-                    rally,
-                    need.saturating_sub(striking_strength),
-                    room,
-                );
-                let recruited = !recruits.is_empty() && ledger.order(hunt(recruits.clone(), rally));
-                if recruited {
-                    for id in &recruits {
-                        insert(&mut mission.units, *id);
+        let given_up = 'phase: {
+            match phase {
+                AttackPhase::Gather | AttackPhase::Recover => {
+                    let room = UNIT_CAP - mission.units.len();
+                    let fit: Vec<&UnitObs> = fit
+                        .iter()
+                        .copied()
+                        .filter(|unit| reaches(plan.map, unit, component))
+                        .collect();
+                    let striking_strength: u64 = members.iter().map(|unit| striking(unit)).sum();
+                    // The whole free army joins while it regroups, or only what
+                    // the attack still lacks at a seat that attacks piecemeal.
+                    let taken = if concentrates(plan.difficulty) {
+                        u64::MAX
+                    } else {
+                        need.saturating_sub(striking_strength)
+                    };
+                    let recruits = recruit(plan.frame, &fit, rally, taken, room);
+                    let recruited =
+                        !recruits.is_empty() && ledger.order(hunt(recruits.clone(), rally));
+                    if recruited {
+                        for id in &recruits {
+                            insert(&mut mission.units, *id);
+                        }
                     }
-                }
-                let tending = members
-                    .iter()
-                    .filter(|unit| unit.kind == UnitKind::Tender)
-                    .count();
-                let wanted =
-                    (super::support::wounds(members.iter().copied()) / plan.per_tender).max(1);
-                let room = (wanted as usize)
-                    .saturating_sub(tending)
-                    .min(UNIT_CAP.saturating_sub(mission.units.len()));
-                let tenders = plan.nearest_tenders(rally, component, room);
-                if !tenders.is_empty() && ledger.order(run(tenders.clone(), rally)) {
-                    for tender in tenders {
-                        insert(&mut mission.units, tender);
+                    let tending = members
+                        .iter()
+                        .filter(|unit| unit.kind == UnitKind::Tender)
+                        .count();
+                    let wanted =
+                        (super::support::wounds(members.iter().copied()) / plan.per_tender).max(1);
+                    let room = (wanted as usize)
+                        .saturating_sub(tending)
+                        .min(UNIT_CAP.saturating_sub(mission.units.len()));
+                    let tenders = plan.nearest_tenders(rally, component, room);
+                    if !tenders.is_empty() && ledger.order(run(tenders.clone(), rally)) {
+                        for tender in tenders {
+                            insert(&mut mission.units, tender);
+                        }
                     }
-                }
-                let sapping = members
-                    .iter()
-                    .filter(|unit| unit.kind == UnitKind::Sapper)
-                    .count();
-                // A Sapper for each known defense around the target.
-                let room = plan
-                    .defenses(target)
-                    .count()
-                    .saturating_sub(sapping)
-                    .min(UNIT_CAP.saturating_sub(mission.units.len()));
-                let sappers = plan.sappers(target, rally, component, room);
-                if !sappers.is_empty() && ledger.order(run(sappers.clone(), rally)) {
-                    for sapper in sappers {
-                        insert(&mut mission.units, sapper);
+                    let sapping = members
+                        .iter()
+                        .filter(|unit| unit.kind == UnitKind::Sapper)
+                        .count();
+                    // A Sapper for each known defense around the target.
+                    let room = plan
+                        .defenses(target)
+                        .count()
+                        .saturating_sub(sapping)
+                        .min(UNIT_CAP.saturating_sub(mission.units.len()));
+                    let sappers = plan.sappers(target, rally, component, room);
+                    if !sappers.is_empty() && ledger.order(run(sappers.clone(), rally)) {
+                        for sapper in sappers {
+                            insert(&mut mission.units, sapper);
+                        }
                     }
+                    // Recruits still on their way go along once the time to
+                    // regroup is up, or a steady stream of new units would hold
+                    // the army at home.
+                    let ready = striking_strength >= need;
+                    if ready && (age >= timeout(phase) || (all_idle && !recruited)) {
+                        if ledger.order(hunt(mission.units.clone(), target.approach)) {
+                            mission.attack_phase(
+                                target,
+                                AttackPhase::Travel,
+                                now,
+                                Some(target.approach),
+                            );
+                        }
+                    } else if age >= timeout(phase) {
+                        self.list.remove(index);
+                    } else {
+                        for tender in members
+                            .iter()
+                            .filter(|unit| unit.kind == UnitKind::Tender && unit.idle)
+                        {
+                            if ledger.spendable() < crate::workers::WELD_FLOOR {
+                                break;
+                            }
+                            if let Some(patient) = patient(plan.map, plan.frame, tender, &members) {
+                                ledger.order(weld(tender.id, patient));
+                            }
+                        }
+                    }
+                    None
                 }
-                let ready = striking_strength >= need;
-                if !recruited && (all_idle || age >= timeout(phase)) && ready {
-                    if ledger.order(hunt(mission.units.clone(), target.approach)) {
+                AttackPhase::Travel => {
+                    let arrived = members
+                        .iter()
+                        .any(|unit| unit.tile.chebyshev(target.approach) <= CONTACT_TILES);
+                    if arrived || contact(observation, &members) {
                         mission.attack_phase(
                             target,
-                            AttackPhase::Travel,
+                            AttackPhase::Engage { focus: None },
                             now,
-                            Some(target.approach),
+                            None,
                         );
+                        break 'phase None;
                     }
-                } else if age >= timeout(phase) {
-                    self.list.remove(index);
-                } else {
-                    for tender in members
+                    if (all_idle || age >= TRAVEL_TICKS)
+                        && ledger.order(run(mission.units.clone(), rally))
+                    {
+                        mission.attack_phase(target, AttackPhase::Recover, now, Some(rally));
+                        break 'phase Some(target.objective());
+                    }
+                    None
+                }
+                AttackPhase::Engage { .. } => {
+                    // Sappers sent at a defense keep that order whatever the rest
+                    // of the army is told next.
+                    let mut blasting = Vec::new();
+                    for sapper in members
                         .iter()
-                        .filter(|unit| unit.kind == UnitKind::Tender && unit.idle)
+                        .filter(|unit| unit.kind == UnitKind::Sapper && unit.idle)
                     {
-                        if ledger.spendable() < crate::workers::WELD_FLOOR {
-                            break;
+                        if let Some(defense) = plan.nearest_defense(target, sapper)
+                            && ledger.order(blast(vec![sapper.id], aim(defense)))
+                        {
+                            blasting.push(sapper.id);
                         }
-                        if let Some(patient) = patient(plan.map, plan.frame, tender, &members) {
-                            ledger.order(weld(tender.id, patient));
+                    }
+                    let army: Vec<UnitId> = mission
+                        .units
+                        .iter()
+                        .copied()
+                        .filter(|id| !blasting.contains(id))
+                        .collect();
+                    let opposition = plan.opposition(&members);
+                    if opposition * 1_000 > strength * outweighed(plan.difficulty) {
+                        if ledger.order(run(army.clone(), rally)) {
+                            mission.attack_phase(target, AttackPhase::Withdraw, now, Some(rally));
+                            break 'phase Some(target.objective());
+                        }
+                        break 'phase None;
+                    }
+                    if !all_idle && age < ENGAGE_TICKS {
+                        break 'phase None;
+                    }
+                    // A fight still being won goes on past its time.
+                    if presses(plan.difficulty) && !all_idle && strength >= opposition {
+                        mission.since = now;
+                        break 'phase None;
+                    }
+                    let standing = standing(observation, target.objective());
+                    let next = plan.best(Some(target)).filter(|next| {
+                        !standing
+                            && members.iter().map(|unit| striking(unit)).sum::<u64>()
+                                >= plan.need(*next)
+                    });
+                    if let Some(next) = next {
+                        if ledger.order(hunt(army, next.approach)) {
+                            mission.attack_phase(
+                                next,
+                                AttackPhase::Travel,
+                                now,
+                                Some(next.approach),
+                            );
+                        }
+                        break 'phase None;
+                    }
+                    if ledger.order(run(army, rally)) {
+                        mission.attack_phase(target, AttackPhase::Recover, now, Some(rally));
+                        if standing {
+                            break 'phase Some(target.objective());
                         }
                     }
+                    None
                 }
-                None
+                AttackPhase::Withdraw => {
+                    if all_idle || age >= WITHDRAW_TICKS {
+                        mission.attack_phase(target, AttackPhase::Recover, now, None);
+                    }
+                    None
+                }
             }
-            AttackPhase::Travel => {
-                let arrived = members
-                    .iter()
-                    .any(|unit| unit.tile.chebyshev(target.approach) <= CONTACT_TILES);
-                if arrived || contact(observation, &members) {
-                    mission.attack_phase(target, AttackPhase::Engage { focus: None }, now, None);
-                    return None;
+        };
+        // Units freed since the attack left join it where it is rather than
+        // waiting at home for it to regroup, unless this decision pulled it
+        // back or sent it on: they would only be turned around.
+        if reinforces(plan.difficulty)
+            && matches!(phase, AttackPhase::Travel | AttackPhase::Engage { .. })
+            && let Some(mission) = self.list.get_mut(index).filter(|mission| mission.id == id)
+            && let Task::Attack {
+                target: held,
+                phase: AttackPhase::Travel | AttackPhase::Engage { .. },
+            } = mission.task
+            && held == target.objective()
+        {
+            let fit: Vec<&UnitObs> = fit
+                .iter()
+                .copied()
+                .filter(|unit| reaches(plan.map, unit, component))
+                .collect();
+            let room = UNIT_CAP - mission.units.len();
+            let recruits = recruit(plan.frame, &fit, target.approach, u64::MAX, room);
+            if !recruits.is_empty() && ledger.order(hunt(recruits.clone(), target.approach)) {
+                for id in recruits {
+                    insert(&mut mission.units, id);
                 }
-                if (all_idle || age >= TRAVEL_TICKS)
-                    && ledger.order(run(mission.units.clone(), rally))
-                {
-                    mission.attack_phase(target, AttackPhase::Recover, now, Some(rally));
-                    return Some(target.objective());
-                }
-                None
-            }
-            AttackPhase::Engage { .. } => {
-                // Sappers sent at a defense keep that order whatever the rest
-                // of the army is told next.
-                let mut blasting = Vec::new();
-                for sapper in members
-                    .iter()
-                    .filter(|unit| unit.kind == UnitKind::Sapper && unit.idle)
-                {
-                    if let Some(defense) = plan.nearest_defense(target, sapper)
-                        && ledger.order(blast(vec![sapper.id], aim(defense)))
-                    {
-                        blasting.push(sapper.id);
-                    }
-                }
-                let army: Vec<UnitId> = mission
-                    .units
-                    .iter()
-                    .copied()
-                    .filter(|id| !blasting.contains(id))
-                    .collect();
-                if strength < plan.opposition(&members) {
-                    if ledger.order(run(army.clone(), rally)) {
-                        mission.attack_phase(target, AttackPhase::Withdraw, now, Some(rally));
-                        return Some(target.objective());
-                    }
-                    return None;
-                }
-                if !all_idle && age < ENGAGE_TICKS {
-                    return None;
-                }
-                let standing = standing(observation, target.objective());
-                let next = plan.best(Some(target)).filter(|next| {
-                    !standing
-                        && members.iter().map(|unit| striking(unit)).sum::<u64>()
-                            >= plan.need(*next)
-                });
-                if let Some(next) = next {
-                    if ledger.order(hunt(army, next.approach)) {
-                        mission.attack_phase(next, AttackPhase::Travel, now, Some(next.approach));
-                    }
-                    return None;
-                }
-                if ledger.order(run(army, rally)) {
-                    mission.attack_phase(target, AttackPhase::Recover, now, Some(rally));
-                    if standing {
-                        return Some(target.objective());
-                    }
-                }
-                None
-            }
-            AttackPhase::Withdraw => {
-                if all_idle || age >= WITHDRAW_TICKS {
-                    mission.attack_phase(target, AttackPhase::Recover, now, None);
-                }
-                None
             }
         }
+        given_up
     }
 }
 
@@ -680,11 +752,20 @@ impl<'a> Plan<'a> {
             })
         };
         let pick = |targets: Vec<Target>| {
-            targets
+            let open: Vec<Target> = targets
                 .into_iter()
                 .filter(differs)
                 .filter(|target| !self.held.contains(&target.objective()))
                 .filter(|target| !self.memory.abandoned(target.building, target.anchor, now))
+                .collect();
+            // The lowest rung goes for the head: a Foundry whenever it knows
+            // one, whatever guards it.
+            let head = self.difficulty == BotDifficulty::Scrapheap
+                && open
+                    .iter()
+                    .any(|target| target.building == BuildingKind::Foundry);
+            open.into_iter()
+                .filter(|target| !head || target.building == BuildingKind::Foundry)
                 .max_by_key(|target| {
                     (
                         target.score,
@@ -724,25 +805,39 @@ impl<'a> Plan<'a> {
     /// `building` at `anchor` as a target, if the army can reach it.
     fn target(&self, owner: PlayerId, building: BuildingKind, anchor: TilePos) -> Option<Target> {
         let approach = approach(self.map, self.observation.me, self.frame, building, anchor)?;
-        let distance = u64::from(self.map.distance(self.observation.me, approach));
-        let cost = building
-            .base_stats()
-            .construction
-            .as_ref()
-            .map_or(0, |construction| construction.cost);
+        let tiles = u64::from(self.map.distance(self.observation.me, approach)) / 10;
+        let cost = u64::from(
+            building
+                .base_stats()
+                .construction
+                .as_ref()
+                .map_or(0, |construction| construction.cost),
+        );
+        let score = match self.difficulty {
+            // The upper rungs go after the weakest valuable target: known
+            // defense around it counts like distance to cover.
+            BotDifficulty::Veteran | BotDifficulty::Prime => {
+                let guard = defense(self.observation, self.memory, approach);
+                cost * 1_000 / (100 + tiles + guard / GUARD_PER_TILE)
+            }
+            BotDifficulty::Scrapheap | BotDifficulty::Standard => cost * 1_000 / (100 + tiles),
+        };
         Some(Target {
             owner,
             building,
             anchor,
             approach,
-            score: u64::from(cost) * 1_000 / (100 + distance / 10),
+            score,
         })
     }
 
-    /// Army value the attack on `target` needs: its known local defense
-    /// times the margin, and never under the stance minimum.
+    /// Army value the attack on `target` needs: the known army it would
+    /// meet times the margin, and never under the stance minimum.
     fn need(&self, target: Target) -> u64 {
-        (defense(self.observation, self.memory, target.approach) * self.margin / 1_000)
+        (opposed(self.observation, self.map, self.memory, &[target.approach]) * self.misjudge
+            / 1_000
+            * self.margin
+            / 1_000)
             .max(self.minimum)
     }
 
@@ -780,7 +875,7 @@ impl<'a> Plan<'a> {
             })
             .map(building_value)
             .sum();
-        units + buildings
+        (units + buildings) * self.misjudge / 1_000
     }
 
     /// Where the army gathers against `owner`: the open tile within reach of
@@ -815,6 +910,41 @@ impl<'a> Plan<'a> {
 /// confidence, and known enemy buildings that fire on ground by health.
 pub(super) fn defense(observation: &ObservationData, memory: &Memory, tile: TilePos) -> u64 {
     defense_around(observation, memory, &[tile])
+}
+
+/// The known army an attack on `tiles` would meet: every armed enemy the seat
+/// remembers that hits ground, on the first tile's ground or in the air, by
+/// confidence, with the known enemy buildings guarding any of `tiles`, each
+/// counted once. An army that beats only a target's own guard meets the rest
+/// on its way in or at the target, and turns back.
+pub(super) fn opposed(
+    observation: &ObservationData,
+    map: &MapModel,
+    memory: &Memory,
+    tiles: &[TilePos],
+) -> u64 {
+    let now = observation.tick;
+    let ground = tiles.first().and_then(|tile| map.component(*tile));
+    let home = map
+        .start(observation.me)
+        .and_then(|start| map.component(start));
+    let units: u64 = memory
+        .units()
+        .iter()
+        .filter(|unit| {
+            let stats = unit.kind.stats();
+            stats.weapons.iter().any(|weapon| weapon.targets.ground)
+                && (stats.domain == Domain::Air || map.component(unit.tile) == ground)
+        })
+        .map(|unit| super::remembered(unit, map, home, now))
+        .sum();
+    let buildings: u64 = observation
+        .enemy_buildings
+        .iter()
+        .filter(|building| tiles.iter().any(|tile| guards(building, *tile)))
+        .map(building_value)
+        .sum();
+    units + buildings
 }
 
 /// The known ground defense around any of `tiles`, each defender counted
@@ -981,6 +1111,66 @@ pub(crate) fn minimum(stance: BotStance) -> u64 {
         BotStance::Balanced => 600,
         BotStance::Aggressive => 450,
     }
+}
+
+/// Whether the seat attacks with one army of everything it can spare, rather
+/// than several attacks each sized to its own target that meet the enemy one
+/// at a time: a difficulty limit, the lowest rung's readable mistake.
+pub(crate) fn concentrates(difficulty: BotDifficulty) -> bool {
+    difficulty != BotDifficulty::Scrapheap
+}
+
+/// Whether units freed while an attack travels or fights join it where it
+/// is, rather than waiting at home until it comes back to regroup: a
+/// difficulty limit.
+fn reinforces(difficulty: BotDifficulty) -> bool {
+    matches!(difficulty, BotDifficulty::Veteran | BotDifficulty::Prime)
+}
+
+/// Whether a fight still being won goes on past its time: a difficulty
+/// limit.
+fn presses(difficulty: BotDifficulty) -> bool {
+    matches!(difficulty, BotDifficulty::Veteran | BotDifficulty::Prime)
+}
+
+/// Per mille of an attack's strength the enemies around it must reach before
+/// it withdraws: the upper rungs give a fight up once clearly lost, the
+/// lower ones at even odds. A difficulty limit.
+fn outweighed(difficulty: BotDifficulty) -> u64 {
+    match difficulty {
+        BotDifficulty::Scrapheap | BotDifficulty::Standard => 1_000,
+        BotDifficulty::Veteran | BotDifficulty::Prime => 1_250,
+    }
+}
+
+/// Stream of the lowest rung's misjudgments of enemy strength.
+const MISJUDGE_STREAM: u64 = 0x0B07_1630;
+
+/// Per mille by which the lowest rung's sense of the enemy's strength strays
+/// at most, either way: a difficulty limit on estimate accuracy.
+const MISJUDGE: u32 = 400;
+
+/// Ticks one misjudgment of enemy strength lasts: a difficulty limit on
+/// estimate accuracy. A fresh misjudgment every decision would average out
+/// into a bias: the seat would set out on its luckiest draw and pull back on
+/// its unluckiest.
+const MISJUDGE_TICKS: u64 = 600;
+
+/// Per mille of the enemy's known strength a seat believes it faces at
+/// `tick`: exact above the lowest rung; for Scrapheap, a deterministic draw
+/// from its personality seed for each stretch of `MISJUDGE_TICKS`, so it
+/// sometimes attacks into a stronger army and sometimes pulls back from a
+/// weaker one.
+fn misjudge(profile: &ResolvedProfile, tick: u64) -> u64 {
+    if profile.difficulty != BotDifficulty::Scrapheap {
+        return 1_000;
+    }
+    let stretch = tick / MISJUDGE_TICKS;
+    let mut rng = Pcg32::new(
+        profile.personality_seed.wrapping_add(stretch),
+        MISJUDGE_STREAM,
+    );
+    u64::from(1_000 - MISJUDGE + rng.next_below(2 * MISJUDGE + 1))
 }
 
 /// Per mille of a target's known defense the army must bring.

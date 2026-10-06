@@ -266,9 +266,14 @@ fn defense_outranks_workers_under_a_small_allowance() {
     let scrapheap = BotConfig::opponent(BotDifficulty::Scrapheap, BotStance::Balanced, 11);
     let (commands, trace) =
         seat_with(&scenario, 0, scrapheap).act_traced(&state, &mut OwnEvents::default());
+    let trace = trace.unwrap();
     assert_eq!(hunts(&commands).len(), 1);
-    assert_eq!(harvests(&commands).len(), 2, "workers take what is left");
-    assert_eq!(trace.unwrap().unit_orders, 3);
+    assert_eq!(
+        harvests(&commands).len() as u32,
+        trace.allowance - 1,
+        "workers take what is left"
+    );
+    assert_eq!(trace.unit_orders, trace.allowance);
 }
 
 #[test]
@@ -789,11 +794,17 @@ fn a_site_in_sight_is_no_danger_but_a_remembered_one_may_be() {
     let state = scenario.build().unwrap();
     let mut observation = ObservationData::fog_honest(&state, PlayerId(0));
     let memory = crate::memory::Memory::default();
+    let model = map(&scenario);
     let near = TilePos::new(22, 13);
     let covered = |observation: &ObservationData| {
-        crate::missions::hazards(observation, &memory, oxide_sim::stats::Domain::Ground)
-            .iter()
-            .any(|hazard| hazard.covers(crate::frame::doubled(near)))
+        crate::missions::hazards(
+            observation,
+            &model,
+            &memory,
+            oxide_sim::stats::Domain::Ground,
+        )
+        .iter()
+        .any(|hazard| hazard.covers(crate::frame::doubled(near)))
     };
     assert!(covered(&observation), "premise: a built Turret covers it");
     observation.enemy_buildings[0].built = false;

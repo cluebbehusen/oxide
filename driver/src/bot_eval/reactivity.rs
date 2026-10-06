@@ -469,7 +469,9 @@ impl ReactivityDetectors {
                 | MissionKind::Strike { owner, .. }
                 | MissionKind::Raid { owner, .. }
                 | MissionKind::Lift { owner, .. } => Some(owner),
-                MissionKind::Defend { .. } | MissionKind::Scout { .. } => None,
+                MissionKind::Defend { .. }
+                | MissionKind::Scout { .. }
+                | MissionKind::Clear { .. } => None,
             };
             let Some(target) = target else {
                 continue;
@@ -763,6 +765,7 @@ fn kind_name(kind: MissionKind) -> &'static str {
         MissionKind::Lift { .. } => "lift",
         MissionKind::Defend { .. } => "defend",
         MissionKind::Scout { .. } => "scout",
+        MissionKind::Clear { .. } => "clear",
     }
 }
 

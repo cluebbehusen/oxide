@@ -6,7 +6,8 @@
 
 use super::Scratch;
 use super::air::{self, Hazard};
-use super::attack::{FIT, defense, healthy, margin, minimum, striking};
+
+use super::attack::{FIT, healthy, margin, minimum, opposed, striking};
 use super::{
     LiftPhase, MISSION_CAP, Mission, Missions, Objective, Task, UNIT_CAP, approach, hunt, mine,
     run, standing,
@@ -19,6 +20,7 @@ use crate::memory::Memory;
 use crate::profile::ResolvedProfile;
 use chassis::grid::TilePos;
 use oxide_sim::observation::{ObservationData, UnitObs};
+use oxide_sim::scenario::BotDifficulty;
 use oxide_sim::stats::Domain;
 use oxide_sim::{BuildingKind, Command, UnitId, UnitKind};
 
@@ -26,8 +28,9 @@ const LOAD_TICKS: u64 = 1_200;
 const FLY_TICKS: u64 = 2_400;
 const FIGHT_TICKS: u64 = 3_600;
 
-/// Tiles around a target's footprint searched for a landing.
-const LANDING_REACH: i32 = 8;
+/// Tiles around a target's footprint searched for a landing: a computation
+/// bound wide enough to find ground out of a defended base's reach.
+const LANDING_REACH: i32 = 16;
 
 /// Empty tiles a landing would best leave between itself and the target.
 const LANDING_GAP: i32 = 4;
@@ -164,13 +167,19 @@ impl Missions {
         }
     }
 
-    /// Forms a lift when the free carriers and riders at home together can
-    /// meet the need of the best landing no lift holds, sending as many loads
-    /// as this decision's orders allow; the rest board on later decisions.
-    /// Returns whether one formed.
+    /// Forms a lift when none is under way and the free carriers and riders
+    /// at home, with any bombers out clearing the way, can meet the need of
+    /// the best landing, sending every load this decision's orders allow; the
+    /// rest board on later decisions. One landing of everything beats several
+    /// that each meet the island's defenders alone. Returns whether one
+    /// formed.
     fn form(&mut self, lifting: &Lifting<'_>, ledger: &mut Ledger) -> bool {
         let observation = lifting.observation;
-        if self.list.len() >= MISSION_CAP || !lifting.severed {
+        let lifting_now = self
+            .list
+            .iter()
+            .any(|mission| matches!(mission.task, Task::Lift { .. }));
+        if lifting_now || self.list.len() >= MISSION_CAP || !lifting.severed {
             return false;
         }
         let loads = self.loads(lifting, ledger);
@@ -181,11 +190,12 @@ impl Missions {
         let Some(drop) = lifting.best_drop() else {
             return false;
         };
-        let need = lifting.need(drop.landing);
-        if value < need {
+        let need = lifting.need(drop.target, drop.landing);
+        let cover = lifting.cover(self.cover(observation, drop.target.anchor));
+        if value + cover < need || !lifting.looked(drop.target) {
             return false;
         }
-        let (mut units, _) = send(loads, need, UNIT_CAP, ledger);
+        let (mut units, _) = send(loads, u64::MAX, UNIT_CAP, ledger);
         if units.is_empty() {
             return false;
         }
@@ -257,10 +267,9 @@ impl Missions {
     }
 
     /// Whether the seat's `have` carriers, alive and queued, fall short of
-    /// lifting what the best landing no lift holds needs, or the stance
-    /// minimum while none is known, with the free riders at home packed as a
-    /// lift packs them: `None` when they do not, and otherwise whether some of
-    /// those riders already have no room. A seat wants at least one carrier.
+    /// lifting every free rider at home at once, packed as a lift packs
+    /// them: `None` when they do not, and otherwise whether some of those
+    /// riders already have no room. A seat wants at least one carrier.
     pub(crate) fn carriers_short(
         &self,
         observation: &ObservationData,
@@ -290,14 +299,7 @@ impl Missions {
             reached.map_or(rooms.len(), |index| index + 1).max(1) as u64
         };
         let full = have >= rooms.len() as u64;
-        if have >= carry(u64::MAX) {
-            return None;
-        }
-        let minimum = minimum(profile.stance);
-        if have < carry(minimum) {
-            return Some(!full);
-        }
-        (have < carry(lifting.rough_need())).then_some(!full)
+        (have < carry(u64::MAX)).then_some(!full)
     }
 
     fn advance_lift(
@@ -355,25 +357,20 @@ impl Missions {
         }
     }
 
-    /// Sends more free carriers and riders while those aboard or walking fall
-    /// short of the need, and waits while riders walk to their carriers. Once
-    /// none is walking and none was sent, or time runs out, flies with
-    /// everyone aboard or at least half the need, and otherwise sets everyone
-    /// down and lets them go. A rider that stopped short of its carrier could
-    /// not board it and is not sent again.
+    /// Sends every free carrier and rider while boarding lasts, and waits
+    /// while riders walk to their carriers. Once none is walking and none was
+    /// sent, or time runs out, flies when what is aboard, with any bombers
+    /// out clearing the way, meets the landing's need as now known, and
+    /// otherwise sets everyone down and lets them go.
+    /// A rider that stopped short of its carrier could not board it and is
+    /// not sent again.
     fn board(&mut self, flight: &Flight<'_>, lifting: &Lifting<'_>, ledger: &mut Ledger) {
         let waiting = &flight.grounded;
-        let need = lifting.need(flight.landing);
-        let walking: u64 = waiting
-            .iter()
-            .filter(|unit| !unit.idle)
-            .map(|unit| striking(unit))
-            .sum();
-        let committed = flight.loaded + walking;
-        if committed < need && flight.age < LOAD_TICKS {
+        let need = lifting.need(flight.target, flight.landing);
+        if flight.age < LOAD_TICKS {
             let loads = self.loads(lifting, ledger);
             let room = UNIT_CAP.saturating_sub(self.list[flight.index].units.len());
-            let (sent, _) = send(loads, need - committed, room, ledger);
+            let (sent, _) = send(loads, u64::MAX, room, ledger);
             if !sent.is_empty() {
                 let units = &mut self.list[flight.index].units;
                 units.extend(sent);
@@ -384,8 +381,8 @@ impl Missions {
         if waiting.iter().any(|unit| !unit.idle) && flight.age < LOAD_TICKS {
             return;
         }
-        let enough = waiting.is_empty() || flight.loaded * 2 >= need;
-        if flight.aboard > 0 && enough {
+        let cover = lifting.cover(self.cover(lifting.observation, flight.target.anchor));
+        if flight.aboard > 0 && flight.loaded + cover >= need {
             self.take_off(flight, lifting, ledger);
             return;
         }
@@ -596,6 +593,30 @@ impl Missions {
     }
 }
 
+impl Missions {
+    /// The enemy building a lift goes after, or else the one the next lift
+    /// would: where bombers clear the way for the carriers.
+    pub(super) fn lift_focus(
+        &self,
+        observation: &ObservationData,
+        map: &MapModel,
+        memory: &Memory,
+        scratch: &Scratch,
+    ) -> Option<Objective> {
+        self.list
+            .iter()
+            .find_map(|mission| match mission.task {
+                Task::Lift { target, .. } => Some(target),
+                _ => None,
+            })
+            .or_else(|| {
+                targets(&scratch.objectives, observation, map, scratch.frame, memory)
+                    .into_iter()
+                    .next()
+            })
+    }
+}
+
 impl<'a> Lifting<'a> {
     fn new(
         observation: &'a ObservationData,
@@ -643,77 +664,103 @@ impl<'a> Lifting<'a> {
         })
     }
 
-    /// Army value the lift [`best_drop`](Self::best_drop) would choose needs,
-    /// with the defense around its target standing in for its landing's so no
-    /// landing is ranked.
-    fn rough_need(&self) -> u64 {
-        targets(
-            self.objectives,
-            self.observation,
-            self.map,
-            self.frame,
-            self.memory,
-        )
-        .into_iter()
-        .filter(|target| !self.held.contains(target))
-        .find(|target| self.landings(*target).next().is_some())
-        .map_or(0, |target| {
-            defense(self.observation, self.memory, target.anchor) * margin(self.profile.difficulty)
-                / 1_000
-        })
-        .max(minimum(self.profile.stance))
+    /// The bombers' `cover` a lift counts on: only the upper rungs time a
+    /// lift to them. A difficulty limit.
+    fn cover(&self, cover: u64) -> u64 {
+        match self.profile.difficulty {
+            BotDifficulty::Veteran | BotDifficulty::Prime => cover,
+            BotDifficulty::Scrapheap | BotDifficulty::Standard => 0,
+        }
     }
 
-    /// Army value a lift to `landing` needs: its known ground defense times
-    /// the margin, and never under the stance minimum.
-    fn need(&self, landing: TilePos) -> u64 {
-        (defense(self.observation, self.memory, landing) * margin(self.profile.difficulty) / 1_000)
+    /// Whether the scouting point nearest `target` on its island was in
+    /// sight recently enough to know the army a landing would meet. An
+    /// island no point lies on cannot be looked at, so it counts as known.
+    fn looked(&self, target: Objective) -> bool {
+        // The lowest rung lifts without looking first: a difficulty limit.
+        if self.profile.difficulty == BotDifficulty::Scrapheap {
+            return true;
+        }
+        let island = self.map.component(target.anchor);
+        super::points(self.map, self.observation.me)
+            .iter()
+            .enumerate()
+            .filter(|(_, point)| self.map.component(point.anchor) == island)
+            .min_by_key(|(_, point)| {
+                (
+                    point.anchor.chebyshev(target.anchor),
+                    self.frame.rank(self.frame.home, doubled(point.anchor)),
+                )
+            })
+            .is_none_or(|(index, _)| self.memory.looked(index, self.observation.tick))
+    }
+
+    /// Army value a lift to `target` set down at `landing` needs: the known
+    /// army it would meet, with the guns at the target the riders walk into
+    /// as well as those at the landing, times the margin, and never under the
+    /// stance minimum.
+    fn need(&self, target: Objective, landing: TilePos) -> u64 {
+        (opposed(
+            self.observation,
+            self.map,
+            self.memory,
+            &[landing, target.anchor],
+        ) * margin(self.profile.difficulty)
+            / 1_000)
             .max(minimum(self.profile.stance))
     }
 
     /// Where to set a payload down near `target`: known open ground on the
-    /// target's island, clear of known fire, about four tiles from it. The
-    /// one reachability check: every ground tile riders could be set down on
-    /// lies on the target's island, so none land across a chasm.
+    /// target's island, out of reach of known fire where any is, then as near
+    /// about four tiles from the target as it can be, so riders set down out
+    /// of range walk in. The one reachability check: every ground tile
+    /// riders could be set down on lies on the target's island, so none land
+    /// across a chasm.
     fn landing(&self, target: Objective) -> Option<TilePos> {
-        let size = target.building.base_stats().size;
-        self.landings(target).min_by_key(|tile| {
-            let point = doubled(*tile);
-            let exposure: u64 = self
-                .air
-                .iter()
-                .chain(self.ground)
-                .filter(|hazard| hazard.covers(point))
-                .map(|hazard| hazard.value)
-                .sum();
-            (
-                exposure,
-                (gap(target.anchor, size, *tile, (1, 1)) - LANDING_GAP).abs(),
-                self.frame.rank(self.frame.home, point),
-            )
-        })
-    }
-
-    /// Every tile a lift to `target` could land on.
-    fn landings(&self, target: Objective) -> impl Iterator<Item = TilePos> {
         let map = self.map;
         let size = target.building.base_stats().size;
-        let island = map.component(target.anchor);
-        let spread_ok = move |tile: TilePos| {
+        let island = map.component(target.anchor)?;
+        let spread_ok = |tile: TilePos| {
             (-SPREAD..=SPREAD).all(|dy| {
                 (-SPREAD..=SPREAD).all(|dx| {
-                    let near = tile.offset(dx, dy);
-                    map.component(near)
-                        .is_none_or(|component| Some(component) == island)
+                    map.component(tile.offset(dx, dy))
+                        .is_none_or(|component| component == island)
                 })
             })
         };
-        (-LANDING_REACH..size.1 + LANDING_REACH)
-            .flat_map(move |dy| {
+        // Ranking every tile in reach first leaves the costlier checks of
+        // open ground for the few tiles tried.
+        let mut ranked: Vec<_> = (-LANDING_REACH..size.1 + LANDING_REACH)
+            .flat_map(|dy| {
                 (-LANDING_REACH..size.0 + LANDING_REACH).map(move |dx| target.anchor.offset(dx, dy))
             })
-            .filter(move |tile| island.is_some_and(|island| self.open(*tile, island)))
-            .filter(move |tile| gap(target.anchor, size, *tile, (1, 1)) >= 1 && spread_ok(*tile))
+            .filter(|tile| map.component(*tile) == Some(island))
+            .filter_map(|tile| {
+                let gap = gap(target.anchor, size, tile, (1, 1));
+                if gap < 1 {
+                    return None;
+                }
+                let point = doubled(tile);
+                let exposure: u64 = self
+                    .air
+                    .iter()
+                    .chain(self.ground)
+                    .filter(|hazard| hazard.covers(point))
+                    .map(|hazard| hazard.value)
+                    .sum();
+                let key = (
+                    exposure,
+                    (gap - LANDING_GAP).abs(),
+                    self.frame.rank(self.frame.home, point),
+                );
+                Some((key, tile))
+            })
+            .collect();
+        ranked.sort_unstable_by_key(|(key, _)| *key);
+        ranked
+            .into_iter()
+            .map(|(_, tile)| tile)
+            .find(|tile| self.open(*tile, island) && spread_ok(*tile))
     }
 
     /// Whether a ground unit could stand on `tile` of `island` as far as the

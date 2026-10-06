@@ -30,13 +30,13 @@ const STRAIT: [&str; 24] = [
 ];
 
 /// West's Fabricator and Airworks.
-const TECH: [(BuildingKind, i32, i32); 2] = [
+pub(super) const TECH: [(BuildingKind, i32, i32); 2] = [
     (BuildingKind::Fabricator, 7, 4),
     (BuildingKind::Airworks, 7, 17),
 ];
 
 /// West's two Skyhooks and eight Sentinels.
-const LIFT: [(UnitKind, i32, i32); 10] = [
+pub(super) const LIFT: [(UnitKind, i32, i32); 10] = [
     (UnitKind::Skyhook, 10, 8),
     (UnitKind::Skyhook, 10, 15),
     (UnitKind::Sentinel, 6, 10),
@@ -982,7 +982,7 @@ fn checkpoints_reject_impossible_lifts() {
 }
 
 #[test]
-fn riders_left_standing_fly_with_half_the_need_aboard_or_disband() {
+fn riders_left_standing_fly_only_with_the_need_aboard_or_disband() {
     let scenario = strait();
     let state = scenario.build().unwrap();
     let mut opponent = seat(&scenario, 0);
@@ -1025,16 +1025,18 @@ fn riders_left_standing_fly_with_half_the_need_aboard_or_disband() {
 
     let half: Vec<PlayerCommand> = commands_for(&boarding[..1]);
     let (commands, mission) = settled(&half);
-    let mission = mission.unwrap();
-    assert_eq!((mission.id, mission.phase), (formed.id, Phase::Fly));
-    let flying: Vec<Vec<UnitId>> = runs(&commands)
-        .into_iter()
-        .map(|(units, _)| units)
-        .collect();
+    assert!(
+        mission.is_none_or(|mission| mission.id != formed.id),
+        "half the payload does not fly"
+    );
+    assert!(runs(&commands).is_empty());
     assert_eq!(
-        flying,
-        [vec![boarding[0].0]],
-        "only the loaded carrier flies"
+        unloads(&commands)
+            .into_iter()
+            .map(|(carrier, _, _)| carrier)
+            .collect::<Vec<_>>(),
+        [boarding[0].0],
+        "the loaded carrier sets its riders down"
     );
     assert_eq!(stopped(&commands), boarding[1].1);
 }
@@ -1277,7 +1279,7 @@ fn a_severed_seat_with_an_airworks_trains_air_strikes_before_it_has_an_army() {
 }
 
 #[test]
-fn a_payload_worth_two_lifts_flies_both_to_distinct_targets() {
+fn a_payload_worth_two_lifts_flies_together_in_one() {
     let mut scenario = crowded(&MORE_SKYHOOKS);
     // A Kestrel over the strait shows an East outpost on the far shore.
     scenario.units.push(unit(0, UnitKind::Kestrel, 20, 5));
@@ -1297,10 +1299,18 @@ fn a_payload_worth_two_lifts_flies_both_to_distinct_targets() {
         .into_iter()
         .filter(|mission| matches!(mission.kind, MissionKind::Lift { .. }))
         .collect();
-    let [first, second] = lifts[..] else {
+    let [lift] = lifts[..] else {
         panic!("{lifts:?}");
     };
-    assert_ne!(first.kind, second.kind, "each goes after its own target");
+    let free_carriers = state
+        .units()
+        .iter()
+        .filter(|unit| unit.player == PlayerId(0) && unit.kind == UnitKind::Skyhook)
+        .count();
+    assert!(
+        lift.units as usize >= 2 * free_carriers,
+        "every carrier boards riders in the one lift: {lift:?}"
+    );
 }
 
 /// West's ground cut off from East's start by a wall, East's start in a
@@ -1349,5 +1359,213 @@ fn a_severed_seat_short_of_an_army_does_not_hold_its_tech_for_a_turret() {
         trace.unwrap().target.map(|target| target.investment),
         Some(Investment::Tech(BuildingKind::Airworks)),
         "its army reaches the enemy only once an Airworks stands"
+    );
+}
+
+/// West on the strait restored at `state` under `config`, having last seen
+/// East's start at `looked` and remembering `units`.
+fn recalled(
+    config: BotConfig,
+    state: &State,
+    looked: u64,
+    units: serde_json::Value,
+) -> (Scenario, Opponent) {
+    let mut scenario = strait();
+    scenario.players[0].bot_config = Some(config);
+    let mut json = serde_json::to_value(seat(&scenario, 0).checkpoint()).unwrap();
+    json["memory"]["scouted"] = serde_json::json!([looked]);
+    json["memory"]["units"] = units;
+    let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
+    let opponent = Opponent::restore(&checkpoint, &scenario, state, map(&scenario)).unwrap();
+    (scenario, opponent)
+}
+
+fn lifts(mut opponent: Opponent, state: &State) -> bool {
+    let (_, trace) = opponent.act_traced(state, &mut OwnEvents::default());
+    lift(&trace.unwrap().missions).is_some()
+}
+
+fn rung(difficulty: BotDifficulty) -> BotConfig {
+    BotConfig::opponent(difficulty, BotStance::Balanced, 11)
+}
+
+#[test]
+fn a_lift_waits_for_a_recent_look_at_its_target_except_at_the_lowest_rung() {
+    let mut state = strait().build().unwrap();
+    advance_to(&mut state, 1_200, &[]);
+    let after = |difficulty, looked| {
+        let (_, opponent) = recalled(rung(difficulty), &state, looked, serde_json::json!([]));
+        lifts(opponent, &state)
+    };
+    assert!(after(BotDifficulty::Standard, 1_200), "a fresh look");
+    assert!(
+        !after(BotDifficulty::Standard, 0),
+        "the look has gone stale"
+    );
+    assert!(!after(BotDifficulty::Prime, 0));
+    assert!(
+        after(BotDifficulty::Scrapheap, 0),
+        "the lowest rung lifts blind"
+    );
+}
+
+#[test]
+fn an_island_army_seen_long_ago_still_holds_a_lift_back() {
+    let mut state = strait().build().unwrap();
+    advance_to(&mut state, 1_200, &[]);
+    let after = |units| {
+        let (_, opponent) = recalled(config(), &state, 1_200, units);
+        lifts(opponent, &state)
+    };
+    assert!(after(serde_json::json!([])), "premise: the lift could go");
+    let island: Vec<serde_json::Value> = (0..12)
+        .map(|index| {
+            serde_json::json!({
+                "id": 1_000 + index,
+                "kind": "sentinel",
+                "tile": {"x": 30 + index % 4, "y": 9 + index / 4},
+                "seen": 200,
+            })
+        })
+        .collect();
+    assert!(
+        !after(island.into()),
+        "twelve Sentinels seen a thousand ticks ago cannot have left their island"
+    );
+}
+
+#[test]
+fn a_lift_lands_out_of_reach_of_the_guns_it_knows() {
+    let mut scenario = strait();
+    for (x, y) in [(31, 9), (31, 13)] {
+        scenario.buildings.push(BuildingSpec {
+            player: 1,
+            kind: BuildingKind::Turret,
+            x,
+            y,
+        });
+    }
+    scenario.units.push(unit(0, UnitKind::Kestrel, 34, 6));
+    let mut state = scenario.build().unwrap();
+    let observation = ObservationData::fog_honest(&state, PlayerId(0));
+    assert_eq!(
+        observation
+            .enemy_buildings
+            .iter()
+            .filter(|building| building.kind == BuildingKind::Turret)
+            .count(),
+        2,
+        "premise: West has seen both guns"
+    );
+    let guns = crate::missions::hazards(
+        &observation,
+        &map(&scenario),
+        &crate::memory::Memory::default(),
+        oxide_sim::stats::Domain::Ground,
+    );
+    let mut opponent = seat(&scenario, 0);
+    let mut drops = Vec::new();
+    while drops.is_empty() {
+        assert!(state.current_tick() < 3_000, "no lift landed");
+        let commands = opponent.act(&state, &mut OwnEvents::default());
+        drops.extend(unloads(&commands));
+        state.tick(&commands);
+    }
+    for (_, landing, _) in drops {
+        assert!(
+            !guns
+                .iter()
+                .any(|gun| gun.covers(crate::frame::doubled(landing))),
+            "{landing:?} is under a known gun"
+        );
+    }
+}
+
+#[test]
+fn the_upper_rungs_time_a_lift_to_bombers_clearing_its_target() {
+    let plain = strait();
+    let mut bombed = strait();
+    bombed.units.push(unit(0, UnitKind::Condor, 12, 2));
+    let mut state = bombed.build().unwrap();
+    let condor = at(&state, 12, 2);
+    advance_to(&mut state, 12, &[run(0, vec![condor], 30, 4)]);
+    let mut alone = plain.build().unwrap();
+    advance_to(&mut alone, 12, &[]);
+    // Six Sentinels on East's island that West's eight alone do not
+    // outweigh by any rung's margin.
+    let island: Vec<serde_json::Value> = (0..6)
+        .map(|index| {
+            serde_json::json!({
+                "id": 1_000 + index,
+                "kind": "sentinel",
+                "tile": {"x": 30 + index % 3, "y": 10 + index / 3},
+                "seen": 12,
+            })
+        })
+        .collect();
+    let after = |difficulty, scenario: &Scenario, state: &State, missions: serde_json::Value| {
+        let mut scenario = scenario.clone();
+        scenario.players[0].bot_config = Some(rung(difficulty));
+        let mut json = serde_json::to_value(seat(&scenario, 0).checkpoint()).unwrap();
+        json["memory"]["units"] = island.clone().into();
+        json["missions"] = missions;
+        let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
+        let opponent = Opponent::restore(&checkpoint, &scenario, state, map(&scenario)).unwrap();
+        lifts(opponent, state)
+    };
+    let none = serde_json::json!({"next": 0, "list": []});
+    let clearing = serde_json::json!({
+        "next": 1,
+        "list": [{
+            "id": 0,
+            "task": {"task": "clear", "aim": {"x": 34, "y": 9}, "phase": "travel"},
+            "since": 0,
+            "units": [condor],
+            "goal": {"x": 34, "y": 9},
+        }],
+    });
+    assert!(
+        !after(BotDifficulty::Prime, &plain, &alone, none),
+        "premise: too few alone"
+    );
+    for (difficulty, counts) in [
+        (BotDifficulty::Prime, true),
+        (BotDifficulty::Veteran, true),
+        (BotDifficulty::Standard, false),
+    ] {
+        assert_eq!(
+            after(difficulty, &bombed, &state, clearing.clone()),
+            counts,
+            "{difficulty:?} counting the bomber out clearing the way"
+        );
+    }
+}
+
+#[test]
+fn a_lift_counts_the_guns_at_its_target_however_far_off_it_lands() {
+    let lifts_past = |bastions: &[(i32, i32)]| {
+        let mut scenario = strait();
+        for (x, y) in bastions {
+            scenario.buildings.push(BuildingSpec {
+                player: 1,
+                kind: BuildingKind::Bastion,
+                x: *x,
+                y: *y,
+            });
+        }
+        scenario.units.push(unit(0, UnitKind::Kestrel, 35, 7));
+        let state = scenario.build().unwrap();
+        let observation = ObservationData::fog_honest(&state, PlayerId(0));
+        assert_eq!(
+            observation.enemy_buildings.len(),
+            bastions.len() + 1,
+            "premise: West sees the start and its guns"
+        );
+        lifts(seat(&scenario, 0), &state)
+    };
+    assert!(lifts_past(&[]), "premise: the start alone is beatable");
+    assert!(
+        !lifts_past(&[(33, 4), (36, 4)]),
+        "two Bastions guarding the start outweigh the lift, though it would land beyond their reach"
     );
 }

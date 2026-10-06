@@ -97,16 +97,21 @@ the running total and mission state.
   model a difficulty, stance or personality limit, never what the bot owns or
   sends.
 - Missions recruit from available units in a fixed order (defend, lift, attack,
-  raid), and each takes only the roles it uses: attack takes line, siege and
-  anti-air units, with Tenders and Sappers in support; raid takes Scuttlers,
-  Sappers, or ground-attack aircraft too few for a strike; lift takes carriers
-  and a payload.
-- Several missions of a kind may run at once on distinct targets, each sized to
-  its own target's need.
-- A mission takes only the force it needs, keeps it while its purpose holds, and
-  releases it when the purpose disappears or recovery finishes. At a safe
-  transition it can yield suitable units to an emergency; loaded passengers are
-  released only after landing.
+  clearance, strike, raid), and each takes only the roles it uses: attack takes
+  line, siege and anti-air units, with Tenders and Sappers in support; raid
+  takes Scuttlers, Sappers, or ground-attack aircraft too few for a strike; lift
+  takes carriers and a payload; a clearance takes splash bombers while ground
+  reaches no enemy.
+- An attack, and a lift, runs one at a time and takes the whole free army it can
+  use beyond the home defense: one push that wins what it meets beats several
+  that each meet the enemy alone. Other missions may run several of a kind at
+  once on distinct targets, each sized to its own target's need.
+- A mission's need decides when it starts and whether it goes on: the known
+  force it would meet, by a margin. Attacks and lifts then take every suitable
+  free unit, and other missions take only the force they need. A mission keeps
+  its force while its purpose holds, and releases it when the purpose disappears
+  or recovery finishes. At a safe transition it can yield suitable units to an
+  emergency; loaded passengers are released only after landing.
 - Missions have phases (gather, travel, engage, withdraw, recover; load, fly,
   land, fight) and hysteresis, so repeated scoring does not turn each decision
   into a new plan.
@@ -169,23 +174,23 @@ instead of the order being proven in advance.
 
 Each behavior is proven by a staged scenario test.
 
-| Situation                            | Required response                                                                    |
-| ------------------------------------ | ------------------------------------------------------------------------------------ |
-| Enemy air seen                       | Anti-air proportional to seen enemy air                                              |
-| Enemy Airworks seen                  | Raise the anti-air need before enemy air arrives                                     |
-| Ground threat at base or expansion   | Defend                                                                               |
-| Air raid on base or expansion        | Defend with anti-air or fighters                                                     |
-| Richer economy than the enemy        | Build toward larger attacks, ground and air                                          |
-| Known defenses at target or on route | Bring siege, or pick another target                                                  |
-| Ground-severed enemy                 | Air operations or lift                                                               |
-| Local opportunity                    | Attack when the known local defense is beatable now, above a stance-bounded minimum  |
-| Losing a fight                       | Withdraw, with a threshold shaped by personality and difficulty                      |
-| Won a defense with army left         | Counterattack if the attack check passes                                             |
-| Enemy artillery shelling assets      | Prioritize and reach the artillery; raise the need for mobile and artillery counters |
-| Assets under indirect fire           | Target visible likely spotters                                                       |
-| Enemy unit mix                       | Choose units by coarse suitability against seen enemies                              |
-| Expensive investment wanted          | Save for it while keeping an army share                                              |
-| Several enemies                      | Choose a target with hysteresis                                                      |
+| Situation                            | Required response                                                                                                                                     |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Enemy air seen                       | Anti-air proportional to seen enemy air                                                                                                               |
+| Enemy Airworks seen                  | Raise the anti-air need before enemy air arrives                                                                                                      |
+| Ground threat at base or expansion   | Defend                                                                                                                                                |
+| Air raid on base or expansion        | Defend with anti-air or fighters                                                                                                                      |
+| Richer economy than the enemy        | Build toward larger attacks, ground and air                                                                                                           |
+| Known defenses at target or on route | Bring siege, or pick another target                                                                                                                   |
+| Ground-severed enemy                 | Splash bombers clear the anti-air around the lift's target; then a lift of the whole free army, after a recent look, lands out of reach of known fire |
+| Local opportunity                    | Attack when the free army beats the known army it would meet, above a stance-bounded minimum                                                          |
+| Losing a fight                       | Withdraw, with a threshold shaped by personality and difficulty                                                                                       |
+| Won a defense with army left         | Counterattack if the attack check passes                                                                                                              |
+| Enemy artillery shelling assets      | Prioritize and reach the artillery; raise the need for mobile and artillery counters                                                                  |
+| Assets under indirect fire           | Target visible likely spotters                                                                                                                        |
+| Enemy unit mix                       | Choose units by coarse suitability against seen enemies                                                                                               |
+| Expensive investment wanted          | Save for it while keeping an army share                                                                                                               |
+| Several enemies                      | Choose a target with hysteresis                                                                                                                       |
 
 It also covers scouting, where a point whose scout was lost on the way waits to
 go stale again rather than drawing scouts one after another into the same fire,
@@ -207,5 +212,9 @@ and trains every unit its faction fields.
   behind while an enemy could reach home; defense takes every unit.
 - **Difficulty** sets cognitive and execution limits: reaction delay,
   hesitation, unit orders per decision, memory decay, deterministic noise in
-  estimates, and decision interval. Lower rungs make understandable mistakes,
-  and higher rungs beat lower ones.
+  estimates, and decision interval. It also sets how well a seat carries out its
+  repertoire: lower rungs attack piecemeal, pick targets worse, leave
+  reinforcements at home, end fights on time while winning, withdraw at even
+  odds, and lift without a fresh look or without counting bomber cover. Every
+  rung keeps every capability. Lower rungs make understandable mistakes, and
+  higher rungs beat lower ones.

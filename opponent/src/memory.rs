@@ -24,6 +24,11 @@ const FAILURE_CAP: usize = 256;
 /// Ticks an enemy unit is remembered after it was last seen.
 const UNIT_TICKS: u64 = 600;
 
+/// Ticks an enemy ground unit seen on ground the seat's own does not reach is
+/// remembered: it cannot leave there without carriers, so it is likely still
+/// there long after a mobile unit would have moved on.
+const STRANDED_TICKS: u64 = 3_600;
+
 /// Enemy units remembered at once, the stalest forgotten first: a computation
 /// bound that normal play stays under, since units seen more than
 /// `UNIT_TICKS` ago are forgotten anyway.
@@ -88,7 +93,18 @@ struct Failure {
 impl Memory {
     /// Refreshes every enemy unit in sight, and forgets those gone stale or
     /// missing from where they were last seen.
+    #[cfg(test)]
     pub(crate) fn observe(&mut self, observation: &ObservationData) {
+        self.observe_stranded(observation, |_| false);
+    }
+
+    /// [`observe`](Self::observe), remembering for longer the ground units
+    /// `stranded` says stand on ground the seat's own does not reach.
+    pub(crate) fn observe_stranded(
+        &mut self,
+        observation: &ObservationData,
+        stranded: impl Fn(&SeenUnit) -> bool,
+    ) {
         let now = observation.tick;
         for unit in &observation.enemy_units {
             let seen = SeenUnit {
@@ -103,7 +119,12 @@ impl Memory {
             }
         }
         self.units.retain(|unit| {
-            now < unit.seen + UNIT_TICKS && (unit.seen == now || !observation.visible(unit.tile))
+            let ticks = if stranded(unit) {
+                STRANDED_TICKS
+            } else {
+                UNIT_TICKS
+            };
+            now < unit.seen + ticks && (unit.seen == now || !observation.visible(unit.tile))
         });
         while self.units.len() > UNIT_CAP {
             let stalest = self
@@ -161,6 +182,14 @@ impl Memory {
             self.scouted = vec![0; points];
         }
         &mut self.scouted
+    }
+
+    /// Whether scouting point `point` was in sight recently enough that the
+    /// enemy units seen around it are still remembered.
+    pub(crate) fn looked(&self, point: usize, now: u64) -> bool {
+        self.scouted
+            .get(point)
+            .is_some_and(|seen| now < seen + UNIT_TICKS)
     }
 
     /// Counts scouting point `point` as seen at `now`.
@@ -363,5 +392,42 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(older, Memory::default(), "a checkpoint from before raids");
+    }
+
+    #[test]
+    fn units_that_cannot_leave_their_ground_are_remembered_longer() {
+        use oxide_sim::{PlayerId, Scenario, UnitId};
+        let state = Scenario::skirmish().build().unwrap();
+        let mut observation = ObservationData::fog_honest(&state, PlayerId(0));
+        observation
+            .visible
+            .iter_mut()
+            .for_each(|visible| *visible = false);
+        let template = observation.my_units[0].clone();
+        observation.enemy_units = [(1, 10), (2, 20)]
+            .into_iter()
+            .map(|(id, x)| oxide_sim::observation::UnitObs {
+                id: UnitId(id),
+                kind: UnitKind::Sentinel,
+                tile: TilePos::new(x, 10),
+                ..template.clone()
+            })
+            .collect();
+        let mut memory = Memory::default();
+        let stranded = |unit: &SeenUnit| unit.id == UnitId(2);
+        memory.observe_stranded(&observation, stranded);
+        observation.enemy_units.clear();
+        let remembered = |memory: &Memory| -> Vec<UnitId> {
+            memory.units().iter().map(|unit| unit.id).collect()
+        };
+        observation.tick = UNIT_TICKS;
+        memory.observe_stranded(&observation, stranded);
+        assert_eq!(remembered(&memory), [UnitId(2)]);
+        observation.tick = STRANDED_TICKS - 1;
+        memory.observe_stranded(&observation, stranded);
+        assert_eq!(remembered(&memory), [UnitId(2)]);
+        observation.tick = STRANDED_TICKS;
+        memory.observe_stranded(&observation, stranded);
+        assert!(remembered(&memory).is_empty());
     }
 }

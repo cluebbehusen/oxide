@@ -55,6 +55,8 @@ struct Raid<'a> {
     rival: Option<oxide_sim::PlayerId>,
     /// Targets another strike holds or this decision gave up on.
     held: Vec<Objective>,
+    /// Ground reaches no enemy.
+    severed: bool,
 }
 
 impl Missions {
@@ -84,6 +86,7 @@ impl Missions {
             reserve: scratch.reserve,
             rival: scratch.rival,
             held: Vec::new(),
+            severed: scratch.severed,
         };
         let mut given_up: Vec<Objective> = Vec::new();
         for id in self.ids(striking_kind) {
@@ -119,6 +122,9 @@ impl Missions {
             .into_iter()
             .filter_map(|id| mine(observation, id))
             .filter(|unit| bomber(unit.kind) && healthy(unit, FIT))
+            // A seat that can only lift gathers its splash bombers to clear
+            // the way for its carriers.
+            .filter(|unit| !(raid.severed && super::clear::splash(unit.kind)))
             .collect();
         let fit = self
             .spare(observation, raid.map, raid.reserve)
