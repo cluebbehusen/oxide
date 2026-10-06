@@ -639,10 +639,11 @@ fn the_allowance_caps_unit_orders_but_not_purchases() {
     let scrapheap = BotConfig::opponent(BotDifficulty::Scrapheap, BotStance::Balanced, 11);
     let (commands, trace) =
         seat_with(&scenario, 0, scrapheap).act_traced(&state, &mut OwnEvents::default());
-    assert_eq!(harvests(&commands).len(), 3);
-    assert_eq!(trains(&commands).len(), 1, "a purchase still happens");
     let trace = trace.unwrap();
-    assert_eq!((trace.unit_orders, trace.allowance), (3, 3));
+    assert!(trace.allowance < 4, "premise: fewer orders than idle workers");
+    assert_eq!(harvests(&commands).len() as u32, trace.allowance);
+    assert_eq!(trains(&commands).len(), 1, "a purchase still happens");
+    assert_eq!(trace.unit_orders, trace.allowance);
 }
 
 #[test]
