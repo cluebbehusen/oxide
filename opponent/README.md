@@ -40,8 +40,7 @@ home. A worker harvesting a node whose route has turned dangerous is sent
 elsewhere the same way, or home. A worker left with nowhere to go first delivers
 any scrap it carries to a Foundry on its ground. Every ready producer then
 trains toward the army's needs. Difficulty caps the unit orders one decision
-issues; purchases do not count against that allowance. Through its first four
-minutes, Scrapheap trains an army only when something it has seen calls for one.
+issues; purchases do not count against that allowance.
 
 ## Defense
 

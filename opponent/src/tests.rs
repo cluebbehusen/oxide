@@ -1027,23 +1027,3 @@ fn a_seat_without_an_army_puts_up_a_turret_before_tech() {
         target(&armed)
     );
 }
-
-#[test]
-fn scrapheap_holds_off_an_army_through_its_opening() {
-    let scenario = arena(1_000);
-    let state = scenario.build().unwrap();
-    let fighters = |config: BotConfig| {
-        let commands = seat_with(&scenario, 0, config).act(&state, &mut OwnEvents::default());
-        trains(&commands)
-            .into_iter()
-            .filter(|(_, kind)| *kind != UnitKind::Harvester)
-            .count()
-    };
-    assert!(fighters(config()) > 0, "premise: Standard arms at once");
-    let scrapheap = BotConfig::opponent(BotDifficulty::Scrapheap, BotStance::Balanced, 11);
-    assert_eq!(
-        fighters(scrapheap),
-        0,
-        "nothing in sight calls for an army yet"
-    );
-}
