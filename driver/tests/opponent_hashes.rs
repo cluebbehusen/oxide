@@ -7,7 +7,7 @@ mod support;
 use chassis::grid::TilePos;
 use oxide_kit::GameReplay;
 use oxide_kit::controller::{SeatController, record_events, seat_controllers};
-use oxide_sim::scenario::{BotConfig, PlayerSpec, UnitSpec};
+use oxide_sim::scenario::{BotConfig, PlayerSpec, ScenarioMode, UnitSpec};
 use oxide_sim::{
     Command, Event, Faction, Order, PlayerCommand, PlayerId, Scenario, State, TickReport, UnitKind,
 };
@@ -20,7 +20,7 @@ fn scenario(name: &str, scrap: u32, worker: bool) -> Scenario {
     map[12][24] = '2';
     map[4][6] = 's';
     Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: name.into(),
         seed: 42,
         map: map

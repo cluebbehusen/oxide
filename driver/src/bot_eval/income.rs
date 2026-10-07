@@ -196,13 +196,13 @@ fn passive_per_minute(state: &State, player: PlayerId) -> u32 {
 mod tests {
     use super::*;
     use oxide_sim::Scenario;
-    use oxide_sim::scenario::{BuildingSpec, PlayerSpec};
+    use oxide_sim::scenario::{BuildingSpec, PlayerSpec, ScenarioMode};
     use oxide_sim::{Command, Faction, PlayerCommand, stats::HarvestStats};
     use std::path::Path;
 
     fn scenario(map: Vec<String>, buildings: Vec<BuildingSpec>) -> Scenario {
         Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "income".into(),
             seed: 5,
             map,

@@ -18,6 +18,7 @@ use crate::game::projection::{Program, Projection};
 use crate::typography::entity_name;
 use oxide_sim::stats::{BuildingKind, UnitKind, WeaponStats};
 use oxide_sim::{BuildingId, Order};
+use std::fmt::Write as _;
 
 /// What a card wears.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -499,12 +500,7 @@ fn order_subject(
                 || game.state.building(*site),
                 |projection| projection.building(game.state, *site),
             )?;
-            let ticks = b
-                .stats()
-                .construction
-                .map(|c| c.build_ticks)
-                .unwrap_or(1)
-                .max(1);
+            let ticks = b.stats().construction.map_or(1, |c| c.build_ticks).max(1);
             let frac = (b.progress as f32 / ticks as f32).clamp(0.0, 1.0);
             Some((
                 OrderSubject::Building(b.kind, faction_of(b.player)),
@@ -801,7 +797,7 @@ fn subject_detail(game: &Scene<'_>, order: &Order, progress: Option<f32>) -> Opt
         }
         Order::Salvage { building } => {
             let b = game.state.building(*building)?;
-            let cost = b.stats().construction.map(|c| c.cost).unwrap_or(0);
+            let cost = b.stats().construction.map_or(0, |c| c.cost);
             let left = u64::from(cost) * oxide_sim::stats::SALVAGE_REFUND_PERMILLE / 1000
                 * u64::from(b.hp)
                 / u64::from(b.stats().max_hp.max(1));
@@ -947,6 +943,10 @@ fn pile_panel(game: &Scene<'_>, tile: chassis::grid::TilePos) -> Option<Panel> {
     })
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "assembles every card and readout of the selection panel"
+)]
 fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -> Option<Panel> {
     if let Some(tile) = game.presentation.selection.pile {
         return pile_panel(game, tile);
@@ -1017,7 +1017,7 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
                 selected.buildings.len() - offline
             );
             if focused > 0 {
-                panel.summary.push_str(&format!(" · {focused} targeting"));
+                let _ = write!(panel.summary, " · {focused} targeting");
             }
         } else if let Some(building) = selected.buildings.first() {
             if let Some(target) = building.focus {
@@ -1313,7 +1313,7 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
             .flat_map(|(_, kinds)| kinds.iter().copied())
             .filter(|_| build_menu_open)
         {
-            let cost = kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
+            let cost = kind.base_stats().construction.map_or(0, |c| c.cost);
             // The same construction tech gate placement enforces: an
             // enabled card would only arm a ghost the sim refuses.
             let (enabled, why) = if !game.state.prerequisites_met(game.presentation.human, kind) {

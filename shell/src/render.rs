@@ -366,7 +366,7 @@ pub fn reduced_motion() -> bool {
 /// macroquad's high-dpi backing store absorbs the retina multiple
 /// underneath. Multiplying dpi in here double-sized every piece of
 /// chrome for four releases (the audit's giant menus and viewport-
-/// swallowing minimap, root-caused by a live probe: screen_w=1280 on a
+/// swallowing minimap, root-caused by a live probe: `screen_w=1280` on a
 /// 2560-pixel display). The user preference is the only factor.
 pub fn ui_scale() -> f32 {
     #[cfg(not(test))]
@@ -777,7 +777,7 @@ impl UnitSpriteFrame {
             crate::presentation_animation::PropulsionState::LiftRotors { cycle } => {
                 ((cycle * 3.0) as usize).min(2)
             }
-            _ => worker_phase,
+            crate::presentation_animation::PropulsionState::None => worker_phase,
         };
         Self {
             frame,
@@ -970,12 +970,12 @@ fn draw_unit_pass(
     alpha: f32,
     domain: oxide_sim::stats::Domain,
 ) {
+    const CULL_MARGIN: f32 = 2.5;
     let zoom = game.presentation.camera.zoom;
     let airborne = domain == oxide_sim::stats::Domain::Air;
     // Frustum cull with a margin covering the sprite, its shadow, rings,
     // and bars — off-camera machines cost nothing on grand maps.
     let (view_lo, view_hi) = game.presentation.camera.world_rect();
-    const CULL_MARGIN: f32 = 2.5;
     for unit in game.state.units() {
         // The body's current layer, not its kind's: a parked airframe
         // draws among ground bodies with no shadow or lift.
@@ -1253,8 +1253,7 @@ pub fn tutorial_card_rect(t: &crate::tutorial::Tutorial) -> Rect {
     let x = (viewport().x - w) * 0.5;
     let lines = (crate::tutorial::STEPS
         .get(t.step)
-        .map(|step| step.body(crate::platform::TOUCH_ONLY).len())
-        .unwrap_or(0)
+        .map_or(0, |step| step.body(crate::platform::TOUCH_ONLY).len())
         + usize::from(t.coach_active())) as f32;
     Rect::new(x, 36.0 * s, w, 34.0 * s + lines * 18.0 * s + 10.0 * s)
 }

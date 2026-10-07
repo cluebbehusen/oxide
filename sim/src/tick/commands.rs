@@ -104,7 +104,10 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
             Command::SetRally { building, rally } => {
                 apply_set_rally(state, pc.player, *building, *rally)
             }
-            Command::Surrender => apply_surrender(state, pc.player, events),
+            Command::Surrender => {
+                apply_surrender(state, pc.player, events);
+                Ok(())
+            }
             Command::RepairUnit {
                 units,
                 target,
@@ -463,7 +466,7 @@ fn apply_attack(
             ) {
                 landed += 1;
             }
-        } else if let Some(goal) = walk_goals[(stats.domain == Domain::Air) as usize]
+        } else if let Some(goal) = walk_goals[usize::from(stats.domain == Domain::Air)]
             && assign(u, Order::Run { goal }, queue)
         {
             landed += 1;
@@ -1188,6 +1191,7 @@ fn apply_unload(
 /// never share a building, or a welder and a stripper would feed the
 /// resolver an oscillator (and the bot's deepest-wound repair pick
 /// would re-crew every salvage it sees).
+#[derive(Clone, Copy)]
 enum Verb {
     Repair,
     Salvage,
@@ -1410,14 +1414,9 @@ fn apply_train(
 /// victory check and the command gate both read. Commands are phase 1
 /// and victory phase 10, so a decisive surrender ends the match on its
 /// own tick.
-fn apply_surrender(
-    state: &mut State,
-    player: PlayerId,
-    events: &mut Vec<Event>,
-) -> Result<(), RejectReason> {
+fn apply_surrender(state: &mut State, player: PlayerId, events: &mut Vec<Event>) {
     state.player_mut(player).resigned = true;
     events.push(Event::PlayerResigned { player });
-    Ok(())
 }
 
 fn apply_set_rally(

@@ -116,7 +116,7 @@ impl Drop for PathReservation {
 }
 
 /// A collision-free `{prefix}-{tick}` path in `dir`, reserved by
-/// `create_new` (O_EXCL). Every successful return owns its candidate;
+/// `create_new` (`O_EXCL`). Every successful return owns its candidate;
 /// collision suffixes have no arbitrary cutoff that can bypass the
 /// exclusive create.
 fn free_path(dir: &Path, prefix: &str, tick: u64, seed: u64) -> Result<PathReservation, SaveError> {
@@ -171,8 +171,7 @@ fn free_path(dir: &Path, prefix: &str, tick: u64, seed: u64) -> Result<PathReser
 fn now_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// Retention runs per record kind: live sessions and finished matches
@@ -191,7 +190,7 @@ fn rotate_prefix(dir: &Path, prefix: &str, keep: usize) {
         return;
     };
     let mut files: Vec<PathBuf> = entries
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .map(|e| e.path())
         .filter(|p| {
             p.extension().and_then(|e| e.to_str())
@@ -679,7 +678,7 @@ mod tests {
 
         let completed: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
-            .filter_map(|entry| entry.ok())
+            .filter_map(std::result::Result::ok)
             .map(|entry| entry.path())
             .filter(|path| crate::saved_game::inspect(path).is_ok())
             .collect();
@@ -738,12 +737,12 @@ mod tests {
     fn matches_rotate_against_their_own_budget() {
         let dir = scratch("matches");
         std::fs::create_dir_all(&dir).unwrap();
-        for n in 0..(KEEP_MATCHES + 1) {
+        for n in 0..=KEEP_MATCHES {
             std::fs::write(dir.join(format!("match-{n:010}.json")), b"{}").unwrap();
         }
         rotate(&dir);
         assert!(!dir.join(format!("match-{:010}.json", 0)).exists());
-        for n in 1..(KEEP_MATCHES + 1) {
+        for n in 1..=KEEP_MATCHES {
             assert!(dir.join(format!("match-{n:010}.json")).exists());
         }
         std::fs::remove_dir_all(&dir).ok();

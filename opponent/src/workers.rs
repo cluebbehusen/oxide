@@ -664,28 +664,25 @@ fn assign_idle(
             .iter_mut()
             .filter(|(node, _)| map.touches(*node, component))
             .min_by_key(|(node, open)| (Reverse(*open), frame.rank(from, doubled(*node))));
-        let node = match most_open {
-            Some((node, open)) => {
-                *open -= 1;
-                *node
-            }
-            None => {
-                let nearest = staffing
-                    .reachable
-                    .iter()
-                    .copied()
-                    .filter(|node| map.touches(*node, component) && safe(node))
-                    .min_by_key(|node| frame.rank(from, doubled(*node)));
-                let Some(node) = nearest else {
-                    if unit.carrying > 0 {
-                        loaded.push(unit);
-                    } else if stale(unit) {
-                        stranded.push(unit);
-                    }
-                    continue;
-                };
-                node
-            }
+        let node = if let Some((node, open)) = most_open {
+            *open -= 1;
+            *node
+        } else {
+            let nearest = staffing
+                .reachable
+                .iter()
+                .copied()
+                .filter(|node| map.touches(*node, component) && safe(node))
+                .min_by_key(|node| frame.rank(from, doubled(*node)));
+            let Some(node) = nearest else {
+                if unit.carrying > 0 {
+                    loaded.push(unit);
+                } else if stale(unit) {
+                    stranded.push(unit);
+                }
+                continue;
+            };
+            node
         };
         assignments.push((node, unit.id));
     }
@@ -734,5 +731,6 @@ fn assign_idle(
 /// Octile distance between two doubled-coordinate points, in tenths of a tile.
 fn octile_tenths(a: (i64, i64), b: (i64, i64)) -> i64 {
     let (dx, dy) = ((a.0 - b.0).abs(), (a.1 - b.1).abs());
-    (10 * dx.max(dy) + 4 * dx.min(dy)) / 2
+    let doubled = 10 * dx.max(dy) + 4 * dx.min(dy);
+    doubled / 2
 }

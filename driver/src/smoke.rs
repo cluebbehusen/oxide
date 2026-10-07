@@ -191,6 +191,10 @@ fn execute(addr: &str, patient: bool) -> Result<()> {
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the smoke checks run in order against one client"
+)]
 fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
     let start = client.state_hash()?;
     let advanced = client.advance(10)?;
@@ -299,30 +303,28 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
     );
     // The neutral PAUSED label belongs in the upper-right HUD. Count separated
     // glyph strokes so the minimap's straight border cannot mimic the label.
-    let oriented = tiny_skia::Pixmap::decode_png(&png_bytes)
-        .ok()
-        .is_some_and(|pixmap| {
-            let (width, height) = (pixmap.width() as usize, pixmap.height() as usize);
-            let text_rows = |flipped: bool| {
-                (height / 100..height * 4 / 100)
-                    .filter(|&y| {
-                        let y = if flipped { height - 1 - y } else { y };
-                        let mut previous = false;
-                        let mut strokes = 0;
-                        for x in width * 80 / 100..width * 99 / 100 {
-                            let px = pixmap.pixels()[y * width + x];
-                            let low = px.red().min(px.green()).min(px.blue());
-                            let high = px.red().max(px.green()).max(px.blue());
-                            let bright = low > 150 && high - low < 40;
-                            strokes += usize::from(bright && !previous);
-                            previous = bright;
-                        }
-                        strokes >= 3
-                    })
-                    .count()
-            };
-            text_rows(false) >= 3 && text_rows(true) < 3
-        });
+    let oriented = tiny_skia::Pixmap::decode_png(&png_bytes).is_ok_and(|pixmap| {
+        let (width, height) = (pixmap.width() as usize, pixmap.height() as usize);
+        let text_rows = |flipped: bool| {
+            (height / 100..height * 4 / 100)
+                .filter(|&y| {
+                    let y = if flipped { height - 1 - y } else { y };
+                    let mut previous = false;
+                    let mut strokes = 0;
+                    for x in width * 80 / 100..width * 99 / 100 {
+                        let px = pixmap.pixels()[y * width + x];
+                        let low = px.red().min(px.green()).min(px.blue());
+                        let high = px.red().max(px.green()).max(px.blue());
+                        let bright = low > 150 && high - low < 40;
+                        strokes += usize::from(bright && !previous);
+                        previous = bright;
+                    }
+                    strokes >= 3
+                })
+                .count()
+        };
+        text_rows(false) >= 3 && text_rows(true) < 3
+    });
     checks.note(
         "screenshot is right side up (PAUSED indicator in top bar)",
         oriented,

@@ -10,6 +10,7 @@ use crate::game::Game;
 use macroquad::prelude::{Vec2, vec2};
 use oxide_sim::Command;
 
+#[expect(clippy::too_many_lines, reason = "one arm per action")]
 pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: Action) {
     if input.construction_open()
         && matches!(
@@ -101,11 +102,11 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                     .toast("You can only command your own units");
                 return;
             }
-            if !game.presentation.selection.units.is_empty() {
+            if game.presentation.selection.units.is_empty() {
+                crate::building_actions::stop_or_scrap(game);
+            } else {
                 let units = game.presentation.selection.units.clone();
                 game.issue(Command::Stop { units });
-            } else {
-                crate::building_actions::stop_or_scrap(game);
             }
         }
         Action::TrainSlot(_)
@@ -337,7 +338,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             }
         }
         Action::HomeCamera => {
-            if let Some(center) = game.home_foundry().map(|b| b.center()) {
+            if let Some(center) = game.home_foundry().map(oxide_sim::Building::center) {
                 let target = vec2(center.x.to_num::<f32>(), center.y.to_num::<f32>());
                 game.presentation.camera.center = target;
                 game.presentation.camera.pan(vec2(0.0, 0.0)); // re-clamp

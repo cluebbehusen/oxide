@@ -406,18 +406,18 @@ impl Ledgers {
     /// Resolves a target's owner, falling back to the live state for ids
     /// the event stream never introduced (construction sites placed
     /// mid-match emit no event until they complete).
-    fn target_seat(&self, target: &Target, state: &State) -> Option<u8> {
+    fn target_seat(&self, target: Target, state: &State) -> Option<u8> {
         match target {
             Target::Unit(id) => self
                 .unit_owner
-                .get(id)
+                .get(&id)
                 .copied()
-                .or_else(|| state.unit(*id).map(|unit| unit.player.0)),
+                .or_else(|| state.unit(id).map(|unit| unit.player.0)),
             Target::Building(id) => self
                 .building
-                .get(id)
+                .get(&id)
                 .map(|(seat, _)| *seat)
-                .or_else(|| state.building(*id).map(|building| building.player.0)),
+                .or_else(|| state.building(id).map(|building| building.player.0)),
         }
     }
 }
@@ -495,21 +495,20 @@ impl BattleClusterer {
                 .max((y - cluster.anchor.1).abs())
                 <= BATTLE_RADIUS_TILES
         });
-        let cluster = match joined {
-            Some(cluster) => cluster,
-            None => {
-                self.active.push(BattleCluster {
-                    from_tick: tick,
-                    last_loss_tick: tick,
-                    anchor: (x, y),
-                    sum_x: 0,
-                    sum_y: 0,
-                    n: 0,
-                    transports: 0,
-                    losses: BTreeMap::new(),
-                });
-                self.active.last_mut().expect("just pushed")
-            }
+        let cluster = if let Some(cluster) = joined {
+            cluster
+        } else {
+            self.active.push(BattleCluster {
+                from_tick: tick,
+                last_loss_tick: tick,
+                anchor: (x, y),
+                sum_x: 0,
+                sum_y: 0,
+                n: 0,
+                transports: 0,
+                losses: BTreeMap::new(),
+            });
+            self.active.last_mut().expect("just pushed")
         };
         cluster.sum_x += x;
         cluster.sum_y += y;
@@ -636,6 +635,10 @@ struct SeatWindow {
 
 /// Re-executes `replay` once and returns the digest. Deterministic: the same
 /// replay and options yield the same report, byte for byte.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one replay pass feeds every digest table"
+)]
 pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryReport> {
     replay.validate(Some(SIM_VERSION))?;
     let total = oxide_kit::bounded_replay_duration(replay)?;
@@ -857,7 +860,7 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
                         shooter,
                         target
                             .as_ref()
-                            .and_then(|target| ledgers.target_seat(target, &state)),
+                            .and_then(|target| ledgers.target_seat(*target, &state)),
                         TilePos::containing(*target_pos),
                         now,
                         &mut contacted,
@@ -877,7 +880,7 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
                         shooter,
                         target
                             .as_ref()
-                            .and_then(|target| ledgers.target_seat(target, &state)),
+                            .and_then(|target| ledgers.target_seat(*target, &state)),
                         TilePos::containing(*target_pos),
                         now,
                         &mut contacted,
@@ -893,7 +896,7 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
                         Some(player.0),
                         target
                             .as_ref()
-                            .and_then(|target| ledgers.target_seat(target, &state)),
+                            .and_then(|target| ledgers.target_seat(*target, &state)),
                         TilePos::containing(*to),
                         now,
                         &mut contacted,
@@ -1571,7 +1574,7 @@ impl SummaryReport {
                 let _ = writeln!(
                     out,
                     "result: {} — decided at {} (t={}), {} post-game ticks",
-                    render_result(result, &self.outcome.winner_seats),
+                    render_result(*result, &self.outcome.winner_seats),
                     clock(decided),
                     decided,
                     self.outcome.post_game_ticks,
@@ -1581,7 +1584,7 @@ impl SummaryReport {
                 let _ = writeln!(
                     out,
                     "result: {}",
-                    render_result(result, &self.outcome.winner_seats)
+                    render_result(*result, &self.outcome.winner_seats)
                 );
             }
             _ => {
@@ -1673,16 +1676,16 @@ fn render_moment(kind: &TimelineKind) -> String {
         TimelineKind::GameOver {
             result,
             winner_seats,
-        } => format!("game over: {}", render_result(result, winner_seats)),
+        } => format!("game over: {}", render_result(*result, winner_seats)),
     }
 }
 
-fn render_result(result: &GameResult, winner_seats: &[u8]) -> String {
+fn render_result(result: GameResult, winner_seats: &[u8]) -> String {
     match result {
         GameResult::Victory { team } => {
             let seats = winner_seats
                 .iter()
-                .map(|seat| seat.to_string())
+                .map(std::string::ToString::to_string)
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("victory team {team} (seats: {seats})")
@@ -1997,7 +2000,7 @@ mod tests {
         for (kind, expected) in cases {
             assert_eq!(render_moment(&kind), expected);
         }
-        assert_eq!(render_result(&GameResult::Draw, &[]), "draw");
+        assert_eq!(render_result(GameResult::Draw, &[]), "draw");
     }
 
     #[test]

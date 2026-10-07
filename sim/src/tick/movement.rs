@@ -487,11 +487,7 @@ fn steer_turn_limited(
         let step = flight::safest_step(map, unit.pos, heading_before, radius);
         unit.heading = heading_before.wrapping_add(step.wrapping_mul(stats.turn_rate));
     };
-    if !flight::escapable(map, straight, unit.heading, radius) {
-        // Wall reflex: one more straight tick would leave no arc that stays
-        // inside the world, so bank away now, whatever the route wants.
-        bank_away(unit);
-    } else {
+    if flight::escapable(map, straight, unit.heading, radius) {
         match target {
             Some(target) => steer_toward(unit, map, stats, target),
             // No route: hold the bank and orbit. The circle is tangent to
@@ -511,6 +507,10 @@ fn steer_turn_limited(
         {
             bank_away(unit);
         }
+    } else {
+        // Wall reflex: one more straight tick would leave no arc that stays
+        // inside the world, so bank away now, whatever the route wants.
+        bank_away(unit);
     }
     let ahead = map.clamp_to_envelope(unit.pos + chassis::compass::dir(unit.heading) * stats.speed);
     let sky_open = |p: Vec2Fx| {
@@ -922,6 +922,13 @@ fn collision_pairs(
     index: &mut super::spatial::UnitIndex,
     owner_ranks: &[usize],
 ) -> Option<Vec<(usize, usize)>> {
+    fn root(group: &mut [usize], mut i: usize) -> usize {
+        while group[i] != i {
+            group[i] = group[group[i]];
+            i = group[i];
+        }
+        i
+    }
     index.rebuild(&state.units);
     let mut pairs = Vec::new();
     let mut pressed = Vec::new();
@@ -973,13 +980,6 @@ fn collision_pairs(
         return Some(sort_collision_pairs(state, owner_ranks, reversed, pairs));
     }
     let mut group: Vec<usize> = (0..bodies.len()).collect();
-    fn root(group: &mut [usize], mut i: usize) -> usize {
-        while group[i] != i {
-            group[i] = group[group[i]];
-            i = group[i];
-        }
-        i
-    }
     for &(i, j) in &pairs {
         let (a, b) = (root(&mut group, i), root(&mut group, j));
         group[a.max(b)] = a.min(b);
@@ -1159,7 +1159,7 @@ fn relaxation_pass(
 mod tests {
     use super::super::spatial::UnitIndex;
     use super::*;
-    use crate::scenario::{PlayerSpec, Scenario, UnitSpec};
+    use crate::scenario::{PlayerSpec, Scenario, ScenarioMode, UnitSpec};
     use crate::state::Faction;
     use crate::stats::UnitKind;
 
@@ -1539,7 +1539,7 @@ mod tests {
 
     fn boundary_pair() -> State {
         Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "boundary-pair".into(),
             seed: 1,
             map: vec![
@@ -1618,15 +1618,15 @@ mod tests {
         let mut map = vec![".".repeat(width as usize); height as usize];
         map[1].replace_range(1..2, "1");
         map[height as usize - 2].replace_range(width as usize - 2..width as usize - 1, "2");
-        map[blocked.y as usize].replace_range(blocked.x as usize..blocked.x as usize + 1, "#");
+        map[blocked.y as usize].replace_range((blocked.x as usize)..=(blocked.x as usize), "#");
         let mirrored_blocked = mirror_tile(blocked);
         map[mirrored_blocked.y as usize].replace_range(
-            mirrored_blocked.x as usize..mirrored_blocked.x as usize + 1,
+            (mirrored_blocked.x as usize)..=(mirrored_blocked.x as usize),
             "#",
         );
 
         let mut state = Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: name.into(),
             seed: 24_722,
             map,
@@ -1729,7 +1729,7 @@ mod tests {
         let anchor = TilePos::new(6, 6);
         let mirrored_anchor = TilePos::new(width - 2 - anchor.x, height - 2 - anchor.y);
         let mut state = Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "corner-hugging-pair".into(),
             seed: 7_002,
             map,
@@ -1872,7 +1872,7 @@ mod tests {
 
     fn collision_trio() -> State {
         Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "collision-trio".into(),
             seed: 3,
             map: vec![
@@ -1921,7 +1921,7 @@ mod tests {
         map[5].replace_range(5..6, "1");
         map[24].replace_range(42..43, "2");
         let mut state = Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "replay-center-crossing".into(),
             seed: 1_616_101,
             map,
@@ -2023,7 +2023,7 @@ mod tests {
         }
     }
 
-    fn assert_collision_half_turn(mut original: State, travel: Vec<Vec2Fx>) {
+    fn assert_collision_half_turn(mut original: State, travel: &[Vec2Fx]) {
         let width = Fx::from_num(original.map.width());
         let height = Fx::from_num(original.map.height());
         let mut rotated = original.clone();
@@ -2034,7 +2034,7 @@ mod tests {
 
         let mut original_index = UnitIndex::new();
         let mut rotated_index = UnitIndex::new();
-        resolve_collisions(&mut original, &travel, &mut original_index);
+        resolve_collisions(&mut original, travel, &mut original_index);
         resolve_collisions(&mut rotated, &rotated_travel, &mut rotated_index);
 
         for (unit, rotated_unit) in original.units.iter().zip(&rotated.units) {
@@ -2060,7 +2060,7 @@ mod tests {
             Vec2Fx::new(Fx::lit("-0.05"), Fx::lit("-0.01")),
         ];
 
-        assert_collision_half_turn(state, travel);
+        assert_collision_half_turn(state, &travel);
     }
 
     #[test]
@@ -2084,13 +2084,13 @@ mod tests {
             unit.pos = stack;
         }
 
-        assert_collision_half_turn(state, vec![Vec2Fx::ZERO; 3]);
+        assert_collision_half_turn(state, &[Vec2Fx::ZERO; 3]);
     }
 
     #[test]
     fn mirrored_seat_stacks_ignore_global_id_blocks() {
         let mut state = Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "mirrored-seat-stacks".into(),
             seed: 4,
             map: vec![
@@ -2253,7 +2253,7 @@ mod tests {
             Vec2Fx::new(Fx::lit("-0.12"), Fx::lit("-0.03")),
         ];
 
-        assert_collision_half_turn(state, travel);
+        assert_collision_half_turn(state, &travel);
     }
 
     /// A seat's light body meeting the other seat's heavy one, and the
@@ -2362,7 +2362,7 @@ mod tests {
     #[test]
     fn passed_waypoint_still_rejects_a_blocked_next_step() {
         let mut state = Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "blocked-next-waypoint".into(),
             seed: 2,
             map: vec![

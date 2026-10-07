@@ -5,6 +5,7 @@
 
 use crate::common;
 use common::{cmd, players, run, unit};
+use oxide_sim::scenario::ScenarioMode;
 
 use chassis::grid::TilePos;
 use oxide_sim::map::Terrain;
@@ -37,7 +38,7 @@ fn ridge(gap: bool, units: Vec<UnitSpec>) -> Scenario {
     }
     map.push(wall_row("############^###########"));
     Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "ridge".into(),
         seed: 9,
         map,
@@ -376,7 +377,7 @@ fn a_building_flush_against_the_ridge_is_safe_from_the_far_side() {
     }
     map.push("############^###########".to_string());
     let mut state = Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "flush".into(),
         seed: 9,
         map,

@@ -4,13 +4,22 @@
 //! machine noise can never flake a suite.
 
 use chassis::grid::TilePos;
-use oxide_sim::scenario::{PlayerSpec, UnitSpec};
+use oxide_sim::scenario::{PlayerSpec, ScenarioMode, UnitSpec};
 use oxide_sim::{Command, Faction, PlayerCommand, PlayerId, Scenario, UnitKind};
 
 /// A symmetric mass battle: `per_side` mixed-role units per seat on a
 /// 96x56 open field, foundries far corners, armies deployed in facing
-/// blocks. Deterministic for a given (per_side, seed).
+/// blocks. Deterministic for a given (`per_side`, seed).
 pub fn mass_battle(per_side: u32, seed: u64) -> Scenario {
+    // A fixed mixed roster cycle keeps every combat system hot:
+    // direct fire, sidearms, splash, air, anti-air.
+    const CYCLE: [UnitKind; 5] = [
+        UnitKind::Sentinel,
+        UnitKind::Scuttler,
+        UnitKind::Lancer,
+        UnitKind::Flakhound,
+        UnitKind::Buzzard,
+    ];
     let (w, h) = (96, 56);
     let mut map: Vec<String> = (0..h)
         .map(|y| {
@@ -34,15 +43,6 @@ pub fn mass_battle(per_side: u32, seed: u64) -> Scenario {
     chars[col] = '2';
     map[row] = chars.into_iter().collect();
 
-    // A fixed mixed roster cycle keeps every combat system hot:
-    // direct fire, sidearms, splash, air, anti-air.
-    const CYCLE: [UnitKind; 5] = [
-        UnitKind::Sentinel,
-        UnitKind::Scuttler,
-        UnitKind::Lancer,
-        UnitKind::Flakhound,
-        UnitKind::Buzzard,
-    ];
     let mut units = Vec::new();
     for i in 0..per_side {
         let kind = CYCLE[(i as usize) % CYCLE.len()];
@@ -63,7 +63,7 @@ pub fn mass_battle(per_side: u32, seed: u64) -> Scenario {
         });
     }
     Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: format!("mass-battle-{per_side}"),
         seed,
         map,

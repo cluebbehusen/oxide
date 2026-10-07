@@ -477,7 +477,7 @@ mod tests {
                 .filter(|unit| unit.player == player)
                 .map(|unit| unit.kind.role() as u8)
                 .collect();
-            units.sort();
+            units.sort_unstable();
             let mut structures: Vec<_> = state
                 .buildings()
                 .iter()

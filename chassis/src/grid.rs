@@ -41,6 +41,7 @@ impl TilePos {
     }
 
     /// Offsets by a delta.
+    #[must_use]
     pub const fn offset(self, dx: i32, dy: i32) -> Self {
         Self::new(self.x + dx, self.y + dy)
     }

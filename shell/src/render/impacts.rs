@@ -52,6 +52,7 @@ impl Recipient {
     }
 }
 
+#[derive(Clone, Copy)]
 pub(super) struct Contact {
     pub family: Family,
     pub recipient: Recipient,

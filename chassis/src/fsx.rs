@@ -33,14 +33,9 @@ where
     E: From<std::io::Error>,
     F: FnOnce(&mut dyn Write) -> Result<(), E>,
 {
-    let path = path.as_ref();
-    let parent = parent_dir(path);
-    std::fs::create_dir_all(parent)?;
     // Unique temp name: two sessions (or two threads of one) saving
     // the same stem concurrently must not clobber each other.
     static NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let nonce = NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let tmp = path.with_extension(format!("tmp.{}.{nonce}", std::process::id()));
     struct TempGuard<'a>(Option<&'a Path>);
     impl Drop for TempGuard<'_> {
         fn drop(&mut self) {
@@ -49,6 +44,11 @@ where
             }
         }
     }
+    let path = path.as_ref();
+    let parent = parent_dir(path);
+    std::fs::create_dir_all(parent)?;
+    let nonce = NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_extension(format!("tmp.{}.{nonce}", std::process::id()));
     let mut guard = TempGuard(Some(&tmp));
     let file = std::fs::File::create(&tmp)?;
     let mut writer = std::io::BufWriter::new(file);
@@ -82,7 +82,10 @@ pub fn sweep_temps(dir: &Path, older_than: Duration) -> usize {
         return 0;
     };
     let mut swept = 0;
-    for path in entries.filter_map(|e| e.ok()).map(|e| e.path()) {
+    for path in entries
+        .filter_map(std::result::Result::ok)
+        .map(|e| e.path())
+    {
         let temp_named = path
             .file_name()
             .and_then(|n| n.to_str())
@@ -116,7 +119,7 @@ mod tests {
     fn temps_in(dir: &Path) -> Vec<std::path::PathBuf> {
         std::fs::read_dir(dir)
             .unwrap()
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .map(|e| e.path())
             .filter(|p| {
                 p.file_name()

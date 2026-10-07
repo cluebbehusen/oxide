@@ -513,9 +513,9 @@ fn winner(row: &ScoredLadderRow) -> Result<Won> {
 /// Scores rows into pairs by comparison, refusing incomplete or repeated
 /// pairs and rows that disagree on a comparison's gate.
 pub fn build_report(rows: &[ScoredLadderRow]) -> Result<LadderReport> {
+    type ComparisonKey = (String, String, String);
     type PairKey = (String, String, String, String, String, u64);
     let mut pairs: BTreeMap<PairKey, PairLegs> = BTreeMap::new();
-    type ComparisonKey = (String, String, String);
     let mut worth: BTreeMap<ComparisonKey, PairShares> = BTreeMap::new();
     let mut rungs: BTreeMap<(String, usize), (BotDifficulty, SeatSummaryBuilder)> = BTreeMap::new();
     for (index, row) in rows.iter().enumerate() {
@@ -594,37 +594,34 @@ pub fn build_report(rows: &[ScoredLadderRow]) -> Result<LadderReport> {
                 label.run
             );
         };
-        let position = match comparisons.iter().position(|each| {
+        let position = if let Some(position) = comparisons.iter().position(|each| {
             each.manifest == label.manifest
                 && each.higher == label.higher
                 && each.lower == label.lower
         }) {
-            Some(position) => {
-                let each = &comparisons[position];
-                ensure!(
-                    each.gate == label.gate && each.min_decided_pairs == label.min_decided_pairs,
-                    "{} rows of {} against {} disagree on the gate",
-                    label.manifest,
-                    label.higher,
-                    label.lower
-                );
-                position
-            }
-            None => {
-                comparisons.push(ComparisonReport {
-                    manifest: label.manifest.clone(),
-                    higher: label.higher,
-                    lower: label.lower,
-                    gate: label.gate,
-                    min_decided_pairs: label.min_decided_pairs,
-                    verdict: Verdict::TooFewPairs,
-                    overall: Tally::default(),
-                    stances: Vec::new(),
-                    families: Vec::new(),
-                    worth: Vec::new(),
-                });
-                comparisons.len() - 1
-            }
+            let each = &comparisons[position];
+            ensure!(
+                each.gate == label.gate && each.min_decided_pairs == label.min_decided_pairs,
+                "{} rows of {} against {} disagree on the gate",
+                label.manifest,
+                label.higher,
+                label.lower
+            );
+            position
+        } else {
+            comparisons.push(ComparisonReport {
+                manifest: label.manifest.clone(),
+                higher: label.higher,
+                lower: label.lower,
+                gate: label.gate,
+                min_decided_pairs: label.min_decided_pairs,
+                verdict: Verdict::TooFewPairs,
+                overall: Tally::default(),
+                stances: Vec::new(),
+                families: Vec::new(),
+                worth: Vec::new(),
+            });
+            comparisons.len() - 1
         };
         let report = &mut comparisons[position];
         let winners = [forward, swapped];
@@ -670,12 +667,11 @@ pub fn build_report(rows: &[ScoredLadderRow]) -> Result<LadderReport> {
 
 /// The tally for `key`, added on first use.
 fn slice<K: PartialEq>(slices: &mut Vec<(K, Tally)>, key: K) -> &mut Tally {
-    let index = match slices.iter().position(|(each, _)| *each == key) {
-        Some(index) => index,
-        None => {
-            slices.push((key, Tally::default()));
-            slices.len() - 1
-        }
+    let index = if let Some(index) = slices.iter().position(|(each, _)| *each == key) {
+        index
+    } else {
+        slices.push((key, Tally::default()));
+        slices.len() - 1
     };
     &mut slices[index].1
 }

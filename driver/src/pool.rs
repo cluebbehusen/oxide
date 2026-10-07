@@ -44,7 +44,7 @@ where
     let results: Mutex<Vec<(usize, R)>> = Mutex::new(Vec::with_capacity(jobs.len()));
     let failure: Mutex<Option<anyhow::Error>> = Mutex::new(None);
     let workers = std::thread::available_parallelism()
-        .map_or(4, |n| n.get())
+        .map_or(4, std::num::NonZero::get)
         .min(limit.get())
         .min(jobs.len());
     std::thread::scope(|scope| {
@@ -126,9 +126,8 @@ mod tests {
         let err = fan_out(&jobs, |&j| {
             if j == 17 {
                 anyhow::bail!("job {j} refused")
-            } else {
-                Ok(j)
             }
+            Ok(j)
         })
         .unwrap_err();
         assert!(err.to_string().contains("job 17 refused"));

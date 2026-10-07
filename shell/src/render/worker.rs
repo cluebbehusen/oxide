@@ -592,7 +592,7 @@ fn draw_scuttler(
     for side in [-1., 1.] {
         let root = local(vec2(64. + side * 13., 47.));
         let elbow_local = vec2(64. + side * (25. + (gap - 14.) * 0.25), 31.).lerp(
-            vec2(64. + side * 25., (tip_center.y + 47.) * 0.5),
+            vec2(64. + side * 25., f32::midpoint(tip_center.y, 47.)),
             extension,
         );
         let elbow = local(elbow_local);

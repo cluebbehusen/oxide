@@ -170,7 +170,7 @@ impl Tutorial {
 
     /// Advances past every step the player has already demonstrated.
     /// Returns true while the tutorial still has cards to show.
-    pub fn advance(&mut self, demo: &Demo) -> bool {
+    pub fn advance(&mut self, demo: Demo) -> bool {
         loop {
             let done = match self.step {
                 0 => demo.trained,
@@ -256,17 +256,17 @@ mod tests {
     fn each_lesson_waits_for_its_demonstration() {
         let mut t = Tutorial::new();
         let mut demo = Demo::default();
-        assert!(t.advance(&demo), "school is in session");
+        assert!(t.advance(demo), "school is in session");
         assert_eq!(t.step, 0);
         demo.trained = true;
-        assert!(t.advance(&demo));
+        assert!(t.advance(demo));
         assert_eq!(t.step, 1, "training graduates lesson one only");
         demo.harvested = true;
-        assert!(t.advance(&demo));
+        assert!(t.advance(demo));
         assert_eq!(t.step, 1, "an accepted order alone is not income");
         demo.deposited = true;
         demo.built = true;
-        assert!(t.advance(&demo));
+        assert!(t.advance(demo));
         assert_eq!(t.step, 3, "already-demonstrated steps skip in one pass");
     }
 
@@ -282,7 +282,7 @@ mod tests {
             advanced: true,
             paused_menu: true,
         };
-        assert!(!t.advance(&demo), "nothing left to teach");
+        assert!(!t.advance(demo), "nothing left to teach");
     }
 
     #[test]

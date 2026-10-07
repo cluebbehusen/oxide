@@ -73,7 +73,7 @@ impl HomeScreen {
     fn with_recovery(mut self, recovery: Option<oxide_kit::recovery::InterruptedMatch>) -> Self {
         self.recovery = recovery;
         if let Some(record) = &self.recovery {
-            let seconds = record.ticks / oxide_sim::TICKS_PER_SECOND as u64;
+            let seconds = record.ticks / u64::from(oxide_sim::TICKS_PER_SECOND);
             self.menu.items.insert(
                 0,
                 if record.ticks == 0 {
@@ -117,6 +117,10 @@ impl HomeScreen {
     }
 
     /// The standing subtitle.
+    #[expect(
+        clippy::unused_self,
+        reason = "other screens answer this from their state"
+    )]
     pub fn subtitle(&self) -> &'static str {
         "machines eating a dead world"
     }

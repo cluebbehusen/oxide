@@ -1,6 +1,7 @@
 //! Fog, memory, command validation, and match rules — behavior suite, public API only.
 
 use crate::common;
+use oxide_sim::scenario::ScenarioMode;
 
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
@@ -87,7 +88,7 @@ fn ghost_memory_survives_unseen_demolition_until_revisited() {
         bot_config: None,
     });
     let scenario = Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "ghost-lab".into(),
         seed: 7,
         map: vec![
@@ -312,7 +313,7 @@ fn eliminated_players_cannot_command_survivors() {
         bot_config: None,
     });
     let scenario = Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "elimination".into(),
         seed: 3,
         map: vec![

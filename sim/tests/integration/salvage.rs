@@ -658,9 +658,7 @@ fn the_repair_salvage_pump_strictly_loses_scrap() {
     let drip_free = state.player(PlayerId(0)).scrap - drips_between(0, &state);
     assert!(
         drip_free < bank_start,
-        "welding back what salvage banked must cost more than it paid: {} -> {} (drip removed)",
-        bank_start,
-        drip_free
+        "welding back what salvage banked must cost more than it paid: {bank_start} -> {drip_free} (drip removed)"
     );
 }
 
@@ -1001,7 +999,9 @@ fn salvage_walks_the_construction_ramp_backward_on_schedule() {
     let total = u64::from(stats.max_hp)
         .saturating_mul(build_ticks)
         .div_ceil(ramp);
-    let first_visible = (1u64..).find(|t| ramp * t / build_ticks >= 1).unwrap();
+    let first_visible = (1..=build_ticks)
+        .find(|t| ramp * t / build_ticks >= 1)
+        .unwrap();
     assert_eq!(
         end - start + 1,
         total - first_visible + 1,
@@ -1133,7 +1133,7 @@ fn foundry_repair_bills_against_its_authored_price() {
     let millis = |t: u64| {
         (ramp * t / ticks) * basis * oxide_sim::stats::REPAIR_COST_PERMILLE / u64::from(max_hp)
     };
-    let stall = (0u64..)
+    let stall = (0..ticks)
         .find(|&p| millis(p + 1).div_ceil(1000) > 1)
         .unwrap();
     let expected = u32::try_from(ramp * stall / ticks).unwrap();

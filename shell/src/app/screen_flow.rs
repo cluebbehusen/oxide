@@ -196,7 +196,7 @@ pub(super) fn update_and_draw(
         Screen::FinalMap(final_map) => {
             final_map_frame(app, final_map, &events, time.presentation, &mut rerun)
         }
-        Screen::Results(results) => results_frame(app, results, &events, &mut rerun)?,
+        Screen::Results(results) => results_frame(app, results, &events, &mut rerun),
         Screen::Replays(shelf) => replays_frame(app, shelf, &events, &mut rerun),
         Screen::Pause(ps) => pause_frame(app, ps, &events)?,
         Screen::Busy(busy) => persistence::frame(app, busy, &events)?,
@@ -509,7 +509,7 @@ fn wizard_frame(app: &mut App, mut w: Wizard, events: &[RawEvent], rerun: &mut b
             WizardStep::Map => w.browser.draw(&w.entries, &mut app.previews),
             WizardStep::Setup => w.draw_setup(&app.draft, &mut app.previews),
         }
-        w.draw_back(app.input.mouse);
+        crate::button::draw_back(app.input.mouse);
         Screen::Wizard(w)
     }
 }
@@ -641,7 +641,7 @@ fn playing_frame(
         next = Some(open_pause(&mut app.game, PauseCause::Suspension));
     }
     if let Some(t) = app.tutorial.as_mut()
-        && !t.advance(&app.game.demo)
+        && !t.advance(app.game.demo)
     {
         app.tutorial = None;
     }
@@ -764,7 +764,7 @@ fn results_frame(
     mut results: ResultsScreen,
     events: &[RawEvent],
     rerun: &mut bool,
-) -> Result<Screen> {
+) -> Screen {
     let input_scope = app
         .game
         .diagnostic_stage(oxide_kit::diagnostics::Stage::Input);
@@ -778,7 +778,7 @@ fn results_frame(
     drop(input_scope);
     render::draw(&app.game.view(), &app.sprites, &app.input);
     results.draw(&app.game);
-    Ok(match out {
+    match out {
         screens::results::Out::Stay => Screen::Results(results),
         screens::results::Out::Rematch if app.game.net_role().is_some() => {
             app.menu_notice = Some((
@@ -813,7 +813,7 @@ fn results_frame(
             persistence::Intent::Leave(screens::pause::LeaveVerb::MainMenu, false),
             Screen::Results(results),
         ),
-    })
+    }
 }
 
 fn replays_frame(app: &mut App, mut shelf: Shelf, events: &[RawEvent], rerun: &mut bool) -> Screen {
@@ -901,7 +901,7 @@ fn pause_frame(app: &mut App, mut ps: PauseScreen, events: &[RawEvent]) -> Resul
                 app.game.scenario.name,
                 app.game.state.current_tick()
             );
-            ps.begin_naming(suggested);
+            ps.begin_naming(&suggested);
             Screen::Pause(ps)
         }
         screens::pause::Out::Save(name) => {

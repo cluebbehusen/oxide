@@ -8,7 +8,7 @@ use common::{cmd, open_arena, players, run, unit};
 
 use chassis::grid::TilePos;
 use chassis::replay::Replay;
-use oxide_sim::scenario::{PlayerSpec, UnitSpec};
+use oxide_sim::scenario::{PlayerSpec, ScenarioMode, UnitSpec};
 use oxide_sim::{
     BuildingKind, Command, Event, Faction, Order, PlayerCommand, PlayerId, SIM_VERSION, Scenario,
     State, Target, UnitKind,
@@ -717,7 +717,7 @@ fn team_range(kind: UnitKind, with_spotter: bool) -> Scenario {
         units.push(unit(2, UnitKind::Harvester, 9, 6));
     }
     Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "team-shell-range".into(),
         seed: 9,
         map: vec![
@@ -861,7 +861,7 @@ fn assert_artillery_fires_through_shared_sight(
 
 fn peak_prediction_range() -> Scenario {
     Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "peak-prediction-range".into(),
         seed: 11,
         map: vec![

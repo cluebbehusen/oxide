@@ -81,7 +81,7 @@ impl Client {
     pub fn status(&mut self) -> Result<oxide_protocol::StatusView> {
         match self.call(Request::Status)? {
             Reply::Status(view) => Ok(view),
-            other => wrong_reply("status", other),
+            other => wrong_reply("status", &other),
         }
     }
 
@@ -92,7 +92,7 @@ impl Client {
     ) -> Result<oxide_protocol::StateView> {
         match self.call(Request::QueryState { filter })? {
             Reply::State(view) => Ok(view),
-            other => wrong_reply("state", other),
+            other => wrong_reply("state", &other),
         }
     }
 
@@ -100,7 +100,7 @@ impl Client {
     pub fn state_hash(&mut self) -> Result<oxide_protocol::HashView> {
         match self.call(Request::StateHash)? {
             Reply::Hash(view) => Ok(view),
-            other => wrong_reply("hash", other),
+            other => wrong_reply("hash", &other),
         }
     }
 
@@ -108,7 +108,7 @@ impl Client {
     pub fn camera(&mut self) -> Result<oxide_protocol::CameraView> {
         match self.call(Request::QueryCamera)? {
             Reply::Camera(view) => Ok(view),
-            other => wrong_reply("camera", other),
+            other => wrong_reply("camera", &other),
         }
     }
 
@@ -116,7 +116,7 @@ impl Client {
     pub fn ui(&mut self) -> Result<oxide_protocol::UiView> {
         match self.call(Request::QueryUi)? {
             Reply::Ui(view) => Ok(view),
-            other => wrong_reply("ui", other),
+            other => wrong_reply("ui", &other),
         }
     }
 
@@ -124,7 +124,7 @@ impl Client {
     pub fn advance(&mut self, ticks: u64) -> Result<oxide_protocol::AdvancedView> {
         match self.call(Request::AdvanceTicks { ticks })? {
             Reply::Advanced(view) => Ok(view),
-            other => wrong_reply("advanced", other),
+            other => wrong_reply("advanced", &other),
         }
     }
 
@@ -132,7 +132,7 @@ impl Client {
     pub fn present(&mut self, ticks: u64) -> Result<oxide_protocol::PresentedView> {
         match self.call(Request::PresentTicks { ticks })? {
             Reply::Presented(view) => Ok(view),
-            other => wrong_reply("presented", other),
+            other => wrong_reply("presented", &other),
         }
     }
 
@@ -173,7 +173,7 @@ impl Client {
     }
 }
 
-fn wrong_reply<T>(expected: &str, got: Reply) -> Result<T> {
+fn wrong_reply<T>(expected: &str, got: &Reply) -> Result<T> {
     bail!("expected a {expected} reply, got {got:?}")
 }
 
@@ -183,8 +183,8 @@ mod tests {
     use std::io::{Cursor, Read};
     use std::net::TcpListener;
 
-    fn encoded(response: ResponseEnvelope) -> Vec<u8> {
-        let mut bytes = serde_json::to_vec(&response).unwrap();
+    fn encoded(response: &ResponseEnvelope) -> Vec<u8> {
+        let mut bytes = serde_json::to_vec(response).unwrap();
         bytes.push(b'\n');
         bytes
     }
@@ -214,7 +214,7 @@ mod tests {
     #[test]
     fn response_reader_enforces_complete_bounded_frames() {
         let response = ResponseEnvelope::ok(1, Reply::Ok);
-        let exact = encoded(response.clone());
+        let exact = encoded(&response);
         let payload_len = exact.len() - 1;
         let parsed = read_response(&mut Cursor::new(exact), payload_len).unwrap();
         assert_eq!(parsed, response);
@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn client_preserves_transport_correlation_and_server_errors() {
         let refusal =
-            call_against(encoded(ResponseEnvelope::err(0, "too many clients"))).unwrap_err();
+            call_against(encoded(&ResponseEnvelope::err(0, "too many clients"))).unwrap_err();
         assert!(
             refusal
                 .to_string()
@@ -247,7 +247,8 @@ mod tests {
             "{refusal:#}"
         );
 
-        let unsolicited_ok = call_against(encoded(ResponseEnvelope::ok(0, Reply::Ok))).unwrap_err();
+        let unsolicited_ok =
+            call_against(encoded(&ResponseEnvelope::ok(0, Reply::Ok))).unwrap_err();
         assert!(
             unsolicited_ok
                 .to_string()
@@ -255,7 +256,7 @@ mod tests {
             "{unsolicited_ok:#}"
         );
 
-        let mismatch = call_against(encoded(ResponseEnvelope::ok(99, Reply::Ok))).unwrap_err();
+        let mismatch = call_against(encoded(&ResponseEnvelope::ok(99, Reply::Ok))).unwrap_err();
         assert!(
             mismatch
                 .to_string()
@@ -264,7 +265,7 @@ mod tests {
         );
 
         let server_error =
-            call_against(encoded(ResponseEnvelope::err(1, "bad command"))).unwrap_err();
+            call_against(encoded(&ResponseEnvelope::err(1, "bad command"))).unwrap_err();
         assert!(
             server_error
                 .to_string()

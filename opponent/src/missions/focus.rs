@@ -140,7 +140,7 @@ fn shooters(map: &MapModel, members: &[&UnitObs], enemy: &UnitObs) -> Vec<UnitId
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxide_sim::scenario::{PlayerSpec, UnitSpec};
+    use oxide_sim::scenario::{PlayerSpec, ScenarioMode, UnitSpec};
     use oxide_sim::{Faction, PlayerId, Scenario, UnitKind};
 
     /// A 20 by 9 field, starts at (2, 1) and (17, 1), with a one-tile chasm
@@ -180,7 +180,7 @@ mod tests {
             }))
             .collect();
         Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "focus".into(),
             seed: 1,
             map,

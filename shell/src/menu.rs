@@ -8,6 +8,7 @@
 use macroquad::prelude::*;
 use oxide_protocol::{Key, MouseButton, RawEvent};
 use oxide_sim::Scenario;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::press::Press;
@@ -166,7 +167,7 @@ impl Menu {
     /// `dir` to the list's edge, then fall back the other way — jump
     /// keys (Home, End, paging) and programmatic selects must land
     /// NEAR their target, never teleport across the list because a
-    /// section label sat in the way (PageUp once snapped to the bottom
+    /// section label sat in the way (`PageUp` once snapped to the bottom
     /// Back row through the browser's leading header).
     fn snap_clamped(&self, index: usize, dir: i64) -> usize {
         let n = self.items.len() as i64;
@@ -576,9 +577,10 @@ impl Menu {
         }
 
         let scrolls = first > 0 || first + visible < self.items.len();
-        let hint = coaching
-            .map(binding_hint)
-            .unwrap_or_else(|| menu_footer(crate::platform::TOUCH_ONLY, scrolls));
+        let hint = coaching.map_or_else(
+            || menu_footer(crate::platform::TOUCH_ONLY, scrolls),
+            binding_hint,
+        );
         let mut hint_size = 18.0 * s;
         let mut hint_dims = measure_text(&hint, None, hint_size as u16, 1.0);
         let max_width = view_w() - 32.0 * s;
@@ -648,7 +650,7 @@ pub struct PreviewCache {
 impl Default for PreviewCache {
     fn default() -> Self {
         Self {
-            slots: Default::default(),
+            slots: HashMap::default(),
             worker: PreviewWorker::spawn(),
         }
     }
@@ -743,7 +745,7 @@ pub fn discover_scenarios() -> Vec<ScenarioEntry> {
     let mut entries: Vec<ScenarioEntry> = Vec::new();
     if let Ok(dir) = std::fs::read_dir(crate::assets::resource_root().join("scenarios")) {
         let mut paths: Vec<PathBuf> = dir
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .map(|e| e.path())
             .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
             .collect();

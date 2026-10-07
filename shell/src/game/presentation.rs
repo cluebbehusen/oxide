@@ -61,7 +61,7 @@ pub struct Presentation {
     /// Scorch decals where buildings died: (world pos, seconds old).
     pub scorches: Vec<(Vec2, f32)>,
     /// Live under-attack alerts: world position and seconds of age.
-    /// Pulsed on the minimap, jumpable, aged out by update_fx.
+    /// Pulsed on the minimap, jumpable, aged out by `update_fx`.
     pub alerts: Vec<(Vec2, f32)>,
     /// Where trouble last landed — the jump key's target.
     pub last_alert: Option<Vec2>,
@@ -83,7 +83,7 @@ pub struct Presentation {
     /// model hit-testing reads, so drawn and clickable can never
     /// disagree. A `Cell` because drawing borrows presentation.
     pub layout: std::cell::Cell<crate::layout::LayoutModel>,
-    /// The frame's command panel, built once in draw_hud and read by
+    /// The frame's command panel, built once in `draw_hud` and read by
     /// the tooltip pass — building it twice per frame was pure waste.
     pub panel_model: std::cell::RefCell<Option<crate::panel::Panel>>,
     /// The selection's programs through the staged commands, shared by the
@@ -239,13 +239,15 @@ impl Presentation {
             .buildings()
             .iter()
             .find(|b| b.player == human)
-            .map(|b| world_vec(b.center()))
-            .unwrap_or_else(|| {
-                vec2(
-                    state.map().width() as f32 * 0.5,
-                    state.map().height() as f32 * 0.5,
-                )
-            });
+            .map_or_else(
+                || {
+                    vec2(
+                        state.map().width() as f32 * 0.5,
+                        state.map().height() as f32 * 0.5,
+                    )
+                },
+                |b| world_vec(b.center()),
+            );
         let camera = Camera::new(focus, state.map().width(), state.map().height(), viewport);
         let boundary_fog = crate::boundary_fog::BoundaryFog::new(state, human);
         Self {
@@ -456,7 +458,7 @@ impl Presentation {
                 + self
                     .slide_motion
                     .get(&unit.id.0)
-                    .map_or(0.0, |slide| slide.current_yaw());
+                    .map_or(0.0, super::super::slide_motion::SlideMotion::current_yaw);
             self.track_motion
                 .entry(unit.id.0)
                 .or_insert_with(|| crate::track_motion::TrackMotion::new(tick, heading))

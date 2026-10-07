@@ -141,6 +141,7 @@ fn identity_color(cue: AllegianceCue, rank: usize, colorblind: bool) -> Color {
 mod tests {
     use super::*;
     use oxide_sim::scenario::PlayerSpec;
+    use oxide_sim::scenario::ScenarioMode;
     use oxide_sim::{Faction, Scenario};
 
     fn scenario(count: usize, team: impl Fn(usize) -> Option<u8>) -> Scenario {
@@ -149,7 +150,7 @@ mod tests {
             map[3 + (seat / 4) * 16][3 + (seat % 4) * 16] = anchor;
         }
         Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "Seat presentation".into(),
             seed: 1,
             map: map

@@ -378,7 +378,7 @@ mod tests {
     use crate::Faction;
     use crate::command::Command;
     use crate::ids::PlayerId;
-    use crate::scenario::{PlayerSpec, Scenario, UnitSpec};
+    use crate::scenario::{PlayerSpec, Scenario, ScenarioMode, UnitSpec};
     use crate::stats::UnitKind;
     use crate::{PlayerCommand, State};
     use chassis::fx::Fx;
@@ -393,7 +393,7 @@ mod tests {
         rows[1] = "#1.....................#".to_string();
         rows[13] = "#....................2.#".to_string();
         Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "mirror".into(),
             seed: 3,
             map: rows,

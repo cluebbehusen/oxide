@@ -421,6 +421,7 @@ fn units(ids: Vec<u32>) -> Vec<UnitId> {
     ids.into_iter().map(UnitId).collect()
 }
 
+#[expect(clippy::too_many_lines, reason = "one arm per live subcommand")]
 pub(crate) fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
     Ok(vec![match cmd {
         LiveCmd::Status => Request::Status,
@@ -845,6 +846,7 @@ pub(crate) fn capture_sequence(
     present: bool,
     out: &std::path::Path,
 ) -> Result<()> {
+    const SHEET_SCALE: f32 = 0.25;
     if !(2..=64).contains(&frames) {
         bail!("frames must be within 2..=64");
     }
@@ -880,7 +882,6 @@ pub(crate) fn capture_sequence(
 
     let first = tiny_skia::Pixmap::decode_png(&std::fs::read(&paths[0])?)
         .context("decoding first frame")?;
-    const SHEET_SCALE: f32 = 0.25;
     let tile_w = (first.width() as f32 * SHEET_SCALE).ceil() as u32;
     let tile_h = (first.height() as f32 * SHEET_SCALE).ceil() as u32;
     let columns = (frames as f32).sqrt().ceil() as u32;

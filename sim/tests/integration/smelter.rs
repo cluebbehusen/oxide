@@ -7,7 +7,7 @@ use crate::common;
 use common::open_arena;
 
 use chassis::grid::TilePos;
-use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
+use oxide_sim::scenario::{BuildingSpec, PlayerSpec, ScenarioMode, UnitSpec};
 use oxide_sim::stats::{BuildingKind, CRUCIBLE_SMELT_PERIOD};
 use oxide_sim::{Faction, PlayerId, Scenario, State, UnitKind};
 
@@ -148,7 +148,7 @@ fn mirrored_crucibles_smelt_mirrored_wreck_tiles() {
     // must burn mirrored tiles, not whichever an absolute scan meets first.
     let (width, height) = (30usize, 10usize);
     let mut rows = vec![vec!['.'; width]; height];
-    for row in rows.iter_mut() {
+    for row in &mut rows {
         row[0] = '#';
         row[width - 1] = '#';
     }
@@ -163,7 +163,7 @@ fn mirrored_crucibles_smelt_mirrored_wreck_tiles() {
         height as i32 - ch - left_anchor.y,
     );
     let scenario = Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "mirrored-smelters".into(),
         seed: 3,
         map: rows.into_iter().map(|r| r.into_iter().collect()).collect(),
@@ -245,7 +245,7 @@ fn a_centered_crucible_smelts_in_its_owners_home_frame() {
     let anchor = TilePos::new(14, 4);
     let build = |owner: u8| {
         let mut rows = vec![vec!['.'; width]; height];
-        for row in rows.iter_mut() {
+        for row in &mut rows {
             row[0] = '#';
             row[width - 1] = '#';
         }
@@ -254,7 +254,7 @@ fn a_centered_crucible_smelts_in_its_owners_home_frame() {
         rows[1][1] = '1';
         rows[height - 3][width - 3] = '2';
         let scenario = Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "centered-smelter".into(),
             seed: 3,
             map: rows.into_iter().map(|r| r.into_iter().collect()).collect(),

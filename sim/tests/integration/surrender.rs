@@ -4,6 +4,7 @@
 
 use crate::common;
 use common::cmd;
+use oxide_sim::scenario::ScenarioMode;
 
 use chassis::replay::Replay;
 use oxide_sim::command::RejectReason;
@@ -25,7 +26,7 @@ fn arena4() -> Scenario {
         bot_config: None,
     };
     Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "surrender-arena".into(),
         seed: 42,
         map: vec![

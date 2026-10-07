@@ -142,7 +142,7 @@ fn max_scroll(all: &[Line], view: Vec2, ui: f32) -> f32 {
 }
 
 /// Card and band sizes at this viewport. Returns
-/// (band_x, band_w, card_w, card_h, heading_h, top, bottom).
+/// (`band_x`, `band_w`, `card_w`, `card_h`, `heading_h`, top, bottom).
 fn metrics(view: Vec2, ui: f32) -> (f32, f32, f32, f32, f32, f32, f32) {
     let cols = columns(view.x, ui) as f32;
     let band_w = (view.x - 96.0 * ui).min(1120.0 * ui);
@@ -199,8 +199,8 @@ impl Browser {
 
     /// Re-selects the remembered map by PATH (section sorts must never
     /// move the highlight onto a different map).
-    pub fn select_path(&mut self, entries: &[ScenarioEntry], path: &Option<std::path::PathBuf>) {
-        if let Some(i) = entries.iter().position(|e| &e.path == path) {
+    pub fn select_path(&mut self, entries: &[ScenarioEntry], path: Option<&std::path::Path>) {
+        if let Some(i) = entries.iter().position(|e| e.path.as_deref() == path) {
             self.selected = i;
         }
         self.selected = self.selected.min(entries.len().saturating_sub(1));
@@ -363,7 +363,9 @@ impl Browser {
                     self.selected = (self.selected + 1).min(last);
                     self.ensure_visible(entries);
                 }
-                RawEvent::KeyDown { key: Key::Up } | RawEvent::KeyDown { key: Key::Down } => {
+                RawEvent::KeyDown {
+                    key: Key::Up | Key::Down,
+                } => {
                     let down = matches!(*event, RawEvent::KeyDown { key: Key::Down });
                     let all = lines(entries, cols);
                     let (li, ci) = Self::locate(entries, cols, self.selected);
@@ -952,9 +954,9 @@ mod tests {
     fn the_remembered_pick_is_found_by_path() {
         let entries = shelf();
         let mut b = Browser::new();
-        b.select_path(&entries, &entries[7].path.clone());
+        b.select_path(&entries, entries[7].path.as_deref());
         assert_eq!(b.selected, 7);
-        b.select_path(&entries, &Some(std::path::PathBuf::from("gone.json")));
+        b.select_path(&entries, Some(std::path::Path::new("gone.json")));
         assert_eq!(b.selected, 7, "a vanished file keeps the old ground");
     }
 }

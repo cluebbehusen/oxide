@@ -91,6 +91,7 @@ impl Stage {
 }
 
 /// Display context sampled once per frame and attached to incidents.
+#[derive(Clone, Copy)]
 pub struct FrameContext<'a> {
     /// Visible screen's stable name.
     pub screen: &'static str,
@@ -248,7 +249,7 @@ struct Seat {
 }
 
 struct Second {
-    second: u64,
+    index: u64,
     frames: u32,
     ticks: u64,
     longest_us: u64,
@@ -285,10 +286,10 @@ impl Recent {
         if self
             .seconds
             .back()
-            .is_none_or(|current| current.second != second)
+            .is_none_or(|current| current.index != second)
         {
             self.seconds.push_back(Second {
-                second,
+                index: second,
                 frames: 0,
                 ticks: 0,
                 longest_us: 0,
@@ -306,7 +307,7 @@ impl Recent {
         while self
             .seconds
             .front()
-            .is_some_and(|oldest| oldest.second + RECENT_SECONDS <= second)
+            .is_some_and(|oldest| oldest.index + RECENT_SECONDS <= second)
         {
             self.seconds.pop_front();
         }
@@ -324,7 +325,7 @@ impl Recent {
     fn json(&self) -> Value {
         json!({
             "seconds": self.seconds.iter().map(|second| json!({
-                "uptime_s": second.second,
+                "uptime_s": second.index,
                 "frames": second.frames,
                 "ticks": second.ticks,
                 "longest_frame_us": second.longest_us,
@@ -513,7 +514,7 @@ impl Inner {
         }
     }
 
-    fn record_panic(&self, message: &str, location: Option<String>, backtrace: String) {
+    fn record_panic(&self, message: &str, location: Option<&str>, backtrace: String) {
         let thread = std::thread::current();
         let mut details = Map::new();
         details.insert(
@@ -608,7 +609,7 @@ struct OpenStall {
     tick: u64,
 }
 
-fn watch(inner: Arc<Inner>) {
+fn watch(inner: &Inner) {
     let poll = (inner.stall / 4).min(Duration::from_millis(250));
     let mut main = None;
     let mut seats: [Option<OpenStall>; SEATS] = std::array::from_fn(|_| None);
@@ -713,7 +714,7 @@ impl Monitor {
         let watchdog = inner.clone();
         std::thread::Builder::new()
             .name("oxide-watchdog".into())
-            .spawn(move || watch(watchdog))?;
+            .spawn(move || watch(&watchdog))?;
         Ok(Self { inner })
     }
 
@@ -742,7 +743,7 @@ impl Monitor {
                     });
                     monitor.inner.record_panic(
                         message,
-                        location,
+                        location.as_deref(),
                         std::backtrace::Backtrace::force_capture().to_string(),
                     );
                 }

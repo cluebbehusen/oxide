@@ -158,7 +158,6 @@ impl Missions {
     /// lately and not under known guns needs: its known guard by the margin,
     /// at least one. None while no such line is known.
     pub(crate) fn raid_squad(
-        &self,
         observation: &ObservationData,
         map: &MapModel,
         profile: &ResolvedProfile,

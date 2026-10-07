@@ -17,6 +17,10 @@ use chassis::grid::TilePos;
 /// leash is set here (and refreshed by retaliation), never by player
 /// commands: an explicit attack is a commitment, and `assign` clears
 /// any tether the moment a command lands.
+#[expect(
+    clippy::option_option,
+    reason = "`None` means no ordinary search ran; `Some(None)` means it found nothing"
+)]
 pub(super) fn idle(
     state: &mut State,
     index: &super::super::spatial::UnitIndex,
@@ -35,7 +39,7 @@ pub(super) fn idle(
         match leash.cooldown {
             0 => {
                 unit.leash.as_mut().expect("just seen").cooldown =
-                    crate::stats::LEASH_REACQUIRE_COOLDOWN
+                    crate::stats::LEASH_REACQUIRE_COOLDOWN;
             }
             1 => {
                 unit.leash = None;
@@ -155,21 +159,18 @@ pub(super) fn land(
                 None,
             );
             let unit = state.unit_mut(id).expect("caller checked");
-            match next {
-                Some(goal) => {
-                    unit.order = Order::Land { goal, from };
-                    unit.path = None;
-                }
-                None => {
-                    let (player, pos) = (unit.player, unit.pos);
-                    unit.drop_active_order();
-                    events.push(Event::OrderStalled {
-                        unit: id,
-                        player,
-                        pos,
-                        reason: StallReason::NoOpenGround,
-                    });
-                }
+            if let Some(goal) = next {
+                unit.order = Order::Land { goal, from };
+                unit.path = None;
+            } else {
+                let (player, pos) = (unit.player, unit.pos);
+                unit.drop_active_order();
+                events.push(Event::OrderStalled {
+                    unit: id,
+                    player,
+                    pos,
+                    reason: StallReason::NoOpenGround,
+                });
             }
             return;
         }
@@ -242,25 +243,22 @@ pub(super) fn land(
     }
     let route = landing::run_in_route(state, stats, kind, pos, heading, goal, RunIn::Landing);
     let unit = state.unit_mut(id).expect("caller checked");
-    match route {
-        Some(waypoints) => {
-            unit.path = Some(PathFollow {
-                final_point: None,
-                goal,
-                waypoints,
-                next: 0,
-            });
-        }
-        None => {
-            let (player, pos) = (unit.player, unit.pos);
-            unit.drop_active_order();
-            events.push(Event::OrderStalled {
-                unit: id,
-                player,
-                pos,
-                reason: StallReason::NoRoute,
-            });
-        }
+    if let Some(waypoints) = route {
+        unit.path = Some(PathFollow {
+            final_point: None,
+            goal,
+            waypoints,
+            next: 0,
+        });
+    } else {
+        let (player, pos) = (unit.player, unit.pos);
+        unit.drop_active_order();
+        events.push(Event::OrderStalled {
+            unit: id,
+            player,
+            pos,
+            reason: StallReason::NoRoute,
+        });
     }
 }
 
@@ -816,11 +814,11 @@ mod tests {
 
     #[test]
     fn a_reachable_routed_walk_serializes_exactly_like_the_legacy_tile_order() {
+        type Issue = fn(Vec<crate::UnitId>) -> Command;
         use crate::{Command, Order, PlayerCommand, PlayerId, UnitKind};
         use chassis::grid::TilePos;
         let map = [".............."; 8];
         let goal = TilePos::new(6, 4);
-        type Issue = fn(Vec<crate::UnitId>) -> Command;
         let commands: [(Issue, LegacyOrder); 3] = [
             (
                 |units| Command::Run {

@@ -22,8 +22,7 @@ fn dist_from(state: &State, id: oxide_sim::UnitId, tile: TilePos) -> Fx {
         .units()
         .iter()
         .find(|u| u.id == id)
-        .map(|u| u.pos.dist(tile.center()))
-        .unwrap_or(Fx::ZERO)
+        .map_or(Fx::ZERO, |u| u.pos.dist(tile.center()))
 }
 
 /// Ticks a lone unit's walk on an empty copy of the lane — the solo

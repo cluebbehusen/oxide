@@ -307,7 +307,7 @@ impl ResultsScreen {
     }
 
     /// Stable labels for automation and accessibility.
-    pub fn items(&self) -> Vec<String> {
+    pub fn items() -> Vec<String> {
         ACTIONS.iter().map(|label| (*label).to_string()).collect()
     }
 
@@ -484,14 +484,14 @@ impl ResultsScreen {
             );
             draw_text(
                 "BUILT",
-                (columns[2] + columns[3]) * 0.5 - 17.0 * s,
+                f32::midpoint(columns[2], columns[3]) - 17.0 * s,
                 header_y,
                 layout.header_size,
                 theme::TEXT_SECONDARY,
             );
             draw_text(
                 "LOST",
-                (columns[4] + columns[5]) * 0.5 - 14.0 * s,
+                f32::midpoint(columns[4], columns[5]) - 14.0 * s,
                 header_y,
                 layout.header_size,
                 theme::TEXT_SECONDARY,
@@ -1088,7 +1088,7 @@ mod tests {
         let mut mouse = vec2(0.0, 0.0);
         let mut sounds = Vec::new();
 
-        assert_eq!(screen.items()[2], "VIEW FINAL MAP");
+        assert_eq!(ResultsScreen::items()[2], "VIEW FINAL MAP");
         assert_eq!(
             screen.update(
                 &[

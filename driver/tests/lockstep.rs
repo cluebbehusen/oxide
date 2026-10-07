@@ -70,7 +70,10 @@ impl Link {
             return;
         }
         let spread = u64::from(self.rng.next_below(2 * self.jitter + 1));
-        let at = (now + self.latency + ms(spread) - ms(u64::from(self.jitter))).max(self.last);
+        let at = (now + self.latency + ms(spread))
+            .checked_sub(ms(u64::from(self.jitter)))
+            .unwrap()
+            .max(self.last);
         self.last = at;
         self.queue.push_back((at, line));
     }
@@ -135,7 +138,7 @@ impl Machine {
 
     /// Executes `batch`, returning its report for any other bots this
     /// machine hosts.
-    fn execute(&mut self, batch: Vec<PlayerCommand>) -> TickReport {
+    fn execute(&mut self, batch: &[PlayerCommand]) -> TickReport {
         let report = runner::record_and_tick(&mut self.state, batch, Some(&mut self.replay));
         record_events(std::slice::from_mut(&mut self.player), &report);
         let tick = self.state.current_tick();
@@ -201,7 +204,7 @@ impl Client {
                         command: Command::Surrender,
                     });
                 }
-                self.machine.execute(batch);
+                self.machine.execute(&batch);
                 let state = &self.machine.state;
                 self.session.executed(|| state.hash());
             }
@@ -319,7 +322,7 @@ impl Net {
                 Some(mut batch) => {
                     batch.extend(bot_execution::commands(&host.machine.state, &mut host.bots));
                     host.session.publish(&batch);
-                    let report = host.machine.execute(batch);
+                    let report = host.machine.execute(&batch);
                     record_events(&mut host.bots, &report);
                     let state = &host.machine.state;
                     host.session.executed(|| state.hash());
@@ -405,7 +408,7 @@ fn a_stuck_client_with_a_live_network_is_dropped_and_surrenders() {
         }
     );
     assert_eq!(net.host.events.len(), 1);
-    assert!(dropped_at >= Duration::from_secs(4) + PROGRESS_TIMEOUT - ms(500));
+    assert!(dropped_at + ms(500) >= Duration::from_secs(4) + PROGRESS_TIMEOUT);
     assert!(
         net.clients[0].end.is_none(),
         "the waiting host kept heartbeating"
@@ -630,7 +633,7 @@ fn a_match_starts_and_stays_in_sync_over_tcp() {
             if let Some(mut batch) = session.seal(now) {
                 batch.extend(bot_execution::commands(&host.state, &mut bots));
                 session.publish(&batch);
-                let report = host.execute(batch);
+                let report = host.execute(&batch);
                 record_events(&mut bots, &report);
                 let state = &host.state;
                 session.executed(|| state.hash());
@@ -650,7 +653,7 @@ fn a_match_starts_and_stays_in_sync_over_tcp() {
                 for order in machine.orders() {
                     client.send(order);
                 }
-                machine.execute(batch);
+                machine.execute(&batch);
                 let state = &machine.state;
                 client.executed(|| state.hash());
             }

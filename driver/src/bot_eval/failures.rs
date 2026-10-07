@@ -281,7 +281,7 @@ impl FailureDetectors {
                     // post-tick state; its producer still marks its home.
                     let Some(home) = state
                         .unit(unit)
-                        .map(|trained| trained.tile())
+                        .map(oxide_sim::Unit::tile)
                         .or_else(|| state.building(building).map(|producer| producer.anchor))
                     else {
                         continue;
@@ -675,7 +675,7 @@ fn legal_units<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
+    use oxide_sim::scenario::{BuildingSpec, PlayerSpec, ScenarioMode, UnitSpec};
     use oxide_sim::{Faction, Scenario};
 
     /// The Scuttler, the cheapest unit a Foundry trains.
@@ -689,7 +689,7 @@ mod tests {
         let mut map = vec![ground.clone(); 12];
         map[2] = anchored.into_iter().collect();
         Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "detectors".into(),
             seed: 3,
             map,

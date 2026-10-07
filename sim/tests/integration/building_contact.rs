@@ -8,7 +8,7 @@ fn scene(kind: &str, own_building: bool) -> State {
         "name":"local contact", "mode":"sandbox", "seed":42, "map":vec!["................................";24],
         "players":[{"name":"Local","faction":"ferrous","scrap":10000,"bot":false},{"name":"Target","faction":"cupric","scrap":0,"bot":false}],
         "units":[{"player":0,"kind":kind,"x":12,"y":9}],
-        "buildings":[{"player":if own_building {0} else {1},"kind":"fabricator","x":10,"y":10}]
+        "buildings":[{"player":i32::from(!own_building),"kind":"fabricator","x":10,"y":10}]
     })).unwrap();
     scenario.build().unwrap()
 }
@@ -176,7 +176,7 @@ fn unusable_building_stances_stall_once_and_obey_order_failure_policy() {
             "players":[{"name":"Local","faction":"ferrous","scrap":10000,"bot":false},
                        {"name":"Target","faction":"cupric","scrap":0,"bot":false}],
             "units":[{"player":0,"kind":kind,"x":4,"y":4}],
-            "buildings":[{"player":if own_building {0} else {1},"kind":"foundry","x":5,"y":5}]
+            "buildings":[{"player":i32::from(!own_building),"kind":"foundry","x":5,"y":5}]
         })).unwrap();
         let initial = scenario.build().unwrap();
         let id = initial.units()[0].id;

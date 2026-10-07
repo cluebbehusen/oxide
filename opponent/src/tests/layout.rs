@@ -358,7 +358,7 @@ fn a_gun_out_of_sight_changes_no_building() {
         "premise: West never saw it"
     );
     let unseen = under_in(base, |scenario| {
-        put(scenario, 1, BuildingKind::Bastion, hidden)
+        put(scenario, 1, BuildingKind::Bastion, hidden);
     });
     assert_eq!(quiet, unseen);
 }

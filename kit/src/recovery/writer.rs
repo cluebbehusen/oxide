@@ -38,12 +38,12 @@ struct Shared {
     error: Mutex<Option<String>>,
 }
 impl Shared {
-    fn fail(&self, error: impl ToString) {
+    fn fail(&self, error: &str) {
         self.stopped.store(true, Ordering::Release);
         if let Ok(mut slot) = self.error.lock()
             && slot.is_none()
         {
-            *slot = Some(error.to_string());
+            *slot = Some(error.to_owned());
         }
     }
 }
@@ -151,13 +151,13 @@ impl RecoveryWriter {
         checkpoint: Option<crate::checkpoint::SessionCheckpoint>,
         build: BuildIdentity,
     ) -> Result<Self> {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
         ensure!(
             source
                 .as_ref()
                 .is_none_or(|source| source.parent() == Some(root.as_path())),
             "recovered source is outside the recording root"
         );
-        static NEXT: AtomicU64 = AtomicU64::new(0);
         let session = format!(
             "session-{:020}-{}-{}",
             SystemTime::now()
@@ -187,13 +187,13 @@ impl RecoveryWriter {
                 if let Err(error) = run(
                     &root,
                     &worker_directory,
-                    header,
-                    receiver,
+                    &header,
+                    &receiver,
                     &worker_shared,
                     &mut lease,
                     source,
                 ) {
-                    worker_shared.fail(format!("{error:#}"));
+                    worker_shared.fail(&format!("{error:#}"));
                 }
                 let status = snapshot(&worker_shared);
                 if lease.is_some() {
@@ -336,8 +336,8 @@ fn command_bytes(command: &Command) -> usize {
 fn run(
     root: &Path,
     directory: &Path,
-    header: Header,
-    receiver: mpsc::Receiver<Queued>,
+    header: &Header,
+    receiver: &mpsc::Receiver<Queued>,
     shared: &Shared,
     lease_guard: &mut Option<File>,
     source: Option<PathBuf>,
@@ -507,7 +507,7 @@ fn run(
                         prepared = false;
                     }
                     Event::Clean { tick: at } => {
-                        ensure!(*at == tick && !prepared, "invalid recovery close")
+                        ensure!(*at == tick && !prepared, "invalid recovery close");
                     }
                 }
                 let clean = matches!(queued.event, Event::Clean { .. });
@@ -614,7 +614,7 @@ fn managed_size(root: &Path) -> u64 {
                 .flatten()
                 .filter_map(Result::ok)
                 .filter_map(|entry| entry.metadata().ok())
-                .filter(|metadata| metadata.is_file())
+                .filter(std::fs::Metadata::is_file)
                 .map(|metadata| metadata.len())
                 .sum::<u64>();
             if read_lease(directory).is_none() {

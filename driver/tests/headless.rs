@@ -3,6 +3,7 @@
 //! without a window.
 
 use oxide_driver::{pool, runner};
+use oxide_sim::scenario::ScenarioMode;
 use oxide_sim::{PlayerCommand, Scenario, State};
 use std::path::{Path, PathBuf};
 
@@ -116,7 +117,7 @@ fn shipped_scenarios() -> Vec<PathBuf> {
         "expected the shipped maps, found {}",
         paths.len()
     );
-    paths.sort_by_key(|p| std::cmp::Reverse(std::fs::metadata(p).map(|m| m.len()).unwrap_or(0)));
+    paths.sort_by_key(|p| std::cmp::Reverse(std::fs::metadata(p).map_or(0, |m| m.len())));
     paths
 }
 
@@ -272,9 +273,8 @@ fn run_scenario_surfaces_a_build_failure_with_context() {
         bot: false,
         bot_config: None,
     });
-    let err = match runner::run_scenario(&scenario, 10, false, false) {
-        Ok(_) => panic!("an anchorless seat must fail the build"),
-        Err(err) => err,
+    let Err(err) = runner::run_scenario(&scenario, 10, false, false) else {
+        panic!("an anchorless seat must fail the build");
     };
     assert!(err.to_string().contains("building scenario"), "{err}");
 }
@@ -322,7 +322,7 @@ fn a_decided_match_latches_its_result_and_keeps_ticking() {
         }
     }
     let scenario = Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "firing-squad".into(),
         seed: 7,
         map,

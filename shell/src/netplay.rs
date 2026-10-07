@@ -249,7 +249,7 @@ impl ClientLink {
                 match connection.try_recv() {
                     Ok(Some(line)) => {
                         if let Err(end) = self.session.receive(&line, now) {
-                            return self.end(end);
+                            return Some(self.end(end));
                         }
                     }
                     Ok(None) => break,
@@ -275,7 +275,7 @@ impl ClientLink {
             return game.state.result().is_none().then_some(End::HostLost);
         }
         if let Err(end) = self.session.poll(now) {
-            return self.end(end);
+            return Some(self.end(end));
         }
         for line in self.session.take_outgoing() {
             connection.send(&line);
@@ -286,12 +286,12 @@ impl ClientLink {
         None
     }
 
-    fn end(&mut self, end: ClientEnd) -> Option<End> {
+    fn end(&mut self, end: ClientEnd) -> End {
         self.connection = None;
-        Some(match end {
+        match end {
             ClientEnd::Desync { tick } => End::Desync { tick },
             ClientEnd::HostSilent | ClientEnd::Protocol => End::HostLost,
-        })
+        }
     }
 }
 

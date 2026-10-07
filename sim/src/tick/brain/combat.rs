@@ -22,7 +22,9 @@ use chassis::grid::TilePos;
 /// The movement domain a target occupies (buildings sit on the ground).
 fn target_domain(state: &State, target: Target) -> Domain {
     match target {
-        Target::Unit(uid) => state.unit(uid).map_or(Domain::Ground, |u| u.domain()),
+        Target::Unit(uid) => state
+            .unit(uid)
+            .map_or(Domain::Ground, crate::state::Unit::domain),
         Target::Building(_) => Domain::Ground,
     }
 }
@@ -351,7 +353,7 @@ pub(super) fn land_shells(state: &mut State, hits: &mut Vec<PendingHit>, events:
         let radius_sq = radius * radius;
         // Splash-vulnerable buried charges (see the buffer_shot twin).
         if shell.targets.ground {
-            for b in state.buildings.iter() {
+            for b in &state.buildings {
                 if b.hp == 0
                     || b.provisional
                     || !b.kind.is_stealthy()
@@ -371,7 +373,7 @@ pub(super) fn land_shells(state: &mut State, hits: &mut Vec<PendingHit>, events:
                 ));
             }
         }
-        for u in state.units.iter() {
+        for u in &state.units {
             if u.hp == 0
                 || !state.hostile(shell.player, u.player)
                 || !shell.targets.covers(u.domain())
@@ -415,7 +417,7 @@ fn buffer_shot(
     ));
     let Some(radius) = weapon.splash else { return };
     let radius_sq = radius * radius;
-    for u in state.units.iter() {
+    for u in &state.units {
         if u.hp == 0
             || !state.hostile(attacker_owner, u.player)
             || Target::Unit(u.id) == victim
@@ -437,7 +439,7 @@ fn buffer_shot(
     // charge is splash-vulnerable, detected or not — saturation fire is
     // the honest way to clear a field you cannot see.
     if weapon.targets.ground {
-        for b in state.buildings.iter() {
+        for b in &state.buildings {
             if b.hp == 0
                 || b.provisional
                 || !b.kind.is_stealthy()
@@ -1101,7 +1103,7 @@ fn sapper_attack(
         ));
         let ring = crate::stats::SAPPER_BLAST_RADIUS;
         let ring_sq = ring * ring;
-        for u in state.units.iter() {
+        for u in &state.units {
             if u.hp == 0
                 || !state.hostile(me, u.player)
                 || Target::Unit(u.id) == target
@@ -1160,48 +1162,44 @@ fn sapper_attack(
         // open doorstep instead.
         None
     };
-    let routed = match goal {
-        Some(goal) => route_for(state, kind, tile, goal).map(|w| (goal, w)),
-        None => {
-            let mut best: Option<(TilePos, Vec<TilePos>)> = None;
-            if let Target::Building(bid) = target
-                && let Some(b) = state.building(bid)
-            {
-                let stats = b.stats();
-                for t in super::super::rect_adjacent_tiles(b.anchor, (stats.size.0, stats.size.1)) {
-                    if !state.passable_for(Domain::Ground, t) {
-                        continue;
-                    }
-                    if let Some(w) = route_for(state, kind, tile, t) {
-                        best = Some((t, w));
-                        break;
-                    }
+    let routed = if let Some(goal) = goal {
+        route_for(state, kind, tile, goal).map(|w| (goal, w))
+    } else {
+        let mut best: Option<(TilePos, Vec<TilePos>)> = None;
+        if let Target::Building(bid) = target
+            && let Some(b) = state.building(bid)
+        {
+            let stats = b.stats();
+            for t in super::super::rect_adjacent_tiles(b.anchor, (stats.size.0, stats.size.1)) {
+                if !state.passable_for(Domain::Ground, t) {
+                    continue;
+                }
+                if let Some(w) = route_for(state, kind, tile, t) {
+                    best = Some((t, w));
+                    break;
                 }
             }
-            best
         }
+        best
     };
-    match routed {
-        Some((goal, waypoints)) => {
-            let unit = state.unit_mut(id).expect("caller checked");
-            unit.path = Some(PathFollow {
-                final_point: None,
-                goal,
-                waypoints,
-                next: 0,
-            });
-        }
-        None => {
-            let unit = state.unit_mut(id).expect("caller checked");
-            let (player, upos) = (unit.player, unit.pos);
-            unit.clear_program();
-            events.push(Event::OrderStalled {
-                unit: id,
-                player,
-                pos: upos,
-                reason: StallReason::NoRoute,
-            });
-        }
+    if let Some((goal, waypoints)) = routed {
+        let unit = state.unit_mut(id).expect("caller checked");
+        unit.path = Some(PathFollow {
+            final_point: None,
+            goal,
+            waypoints,
+            next: 0,
+        });
+    } else {
+        let unit = state.unit_mut(id).expect("caller checked");
+        let (player, upos) = (unit.player, unit.pos);
+        unit.clear_program();
+        events.push(Event::OrderStalled {
+            unit: id,
+            player,
+            pos: upos,
+            reason: StallReason::NoRoute,
+        });
     }
 }
 
@@ -1296,12 +1294,14 @@ fn bomber_attack(
         // shares with a neighbour, and a shell landing exactly there is
         // credited to the lowest-id footprint touching it.
         let center = match target {
-            Target::Building(bid) => state.building(bid).map_or(center, |b| b.center()),
+            Target::Building(bid) => state
+                .building(bid)
+                .map_or(center, crate::state::Building::center),
             Target::Unit(_) => center,
         };
         // The stick lays out along the flight line, centered on the aim
         // point; a single bomb is a one-entry stick.
-        let salvo = weapon.salvo.max(1) as i32;
+        let salvo = i32::from(weapon.salvo.max(1));
         for k in 0..salvo {
             let along = Fx::from_num(2 * k - (salvo - 1)) * chassis::fx::HALF;
             let impact = center + hv * (along * crate::stats::BOMB_SALVO_SPACING);
@@ -1388,7 +1388,7 @@ fn bomber_attack(
         .as_ref()
         .is_none_or(|p| p.goal != target_tile && p.goal.chebyshev(target_tile) > 1);
     if stale {
-        match landing::run_in_route(
+        if let Some(waypoints) = landing::run_in_route(
             state,
             stats,
             kind,
@@ -1397,26 +1397,23 @@ fn bomber_attack(
             target_tile,
             landing::RunIn::Attack,
         ) {
-            Some(waypoints) => {
-                let unit = state.unit_mut(id).expect("caller checked");
-                unit.path = Some(PathFollow {
-                    final_point: None,
-                    goal: target_tile,
-                    waypoints,
-                    next: 0,
-                });
-            }
-            None => {
-                let unit = state.unit_mut(id).expect("caller checked");
-                let (player, upos) = (unit.player, unit.pos);
-                unit.clear_program();
-                events.push(Event::OrderStalled {
-                    unit: id,
-                    player,
-                    pos: upos,
-                    reason: StallReason::NoRoute,
-                });
-            }
+            let unit = state.unit_mut(id).expect("caller checked");
+            unit.path = Some(PathFollow {
+                final_point: None,
+                goal: target_tile,
+                waypoints,
+                next: 0,
+            });
+        } else {
+            let unit = state.unit_mut(id).expect("caller checked");
+            let (player, upos) = (unit.player, unit.pos);
+            unit.clear_program();
+            events.push(Event::OrderStalled {
+                unit: id,
+                player,
+                pos: upos,
+                reason: StallReason::NoRoute,
+            });
         }
     }
 }
@@ -1471,6 +1468,10 @@ fn egress_goal(
 /// cover — hands control back to the remembered hunt (or idle,
 /// where auto-acquire finds the next fight).
 #[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the whole chase-and-hit decision for one unit"
+)]
 pub(super) fn attack(
     state: &mut State,
     index: &super::super::spatial::UnitIndex,
@@ -2142,7 +2143,7 @@ mod tests {
     use super::super::super::spatial::UnitIndex;
     use super::*;
     use crate::command::{Command, PlayerCommand};
-    use crate::scenario::{PlayerSpec, Scenario, UnitSpec};
+    use crate::scenario::{PlayerSpec, Scenario, ScenarioMode, UnitSpec};
     use crate::state::Faction;
     use crate::stats::UnitKind;
 
@@ -2219,7 +2220,7 @@ mod tests {
 
     fn boundary_duel() -> State {
         Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "boundary-duel".into(),
             seed: 1,
             map: vec![
@@ -2341,7 +2342,7 @@ mod tests {
             });
         }
         let scenario = Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "acquisition-differential".into(),
             seed: 7,
             map: rows.into_iter().map(|r| r.into_iter().collect()).collect(),
@@ -2480,7 +2481,7 @@ mod tests {
             });
         }
         let scenario = Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "sidearm-differential".into(),
             seed: 11,
             map: rows.into_iter().map(|r| r.into_iter().collect()).collect(),

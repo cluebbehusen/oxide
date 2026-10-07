@@ -8,7 +8,7 @@ use crate::common;
 use common::{cmd, players};
 
 use chassis::grid::TilePos;
-use oxide_sim::scenario::{BuildingSpec, UnitSpec};
+use oxide_sim::scenario::{BuildingSpec, ScenarioMode, UnitSpec};
 use oxide_sim::stats::{
     BuildingKind, EXTRACTOR_REMOTE_INCOME_PER_MINUTE, EXTRACTOR_SUPPORTED_INCOME_PER_MINUTE,
 };
@@ -19,7 +19,7 @@ use oxide_sim::{
 /// A 20x10 arena with one frame mid-field ('E' anchor at (9, 4)).
 fn arena(scrap: u32, units: Vec<UnitSpec>, buildings: Vec<BuildingSpec>) -> Scenario {
     Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "extractor-arena".into(),
         seed: 7,
         map: vec![
@@ -94,7 +94,7 @@ fn support_arena(
         common::building(0, BuildingKind::Extractor, SUPPORT_FRAME.x, SUPPORT_FRAME.y),
     );
     Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "extractor-support-arena".into(),
         seed: 17,
         map: tiles
@@ -137,7 +137,7 @@ fn earnings_over(mut state: State, start: u64, ticks: u64) -> u32 {
 /// A wider field where the frame begins outside seat zero's Foundry sight.
 fn fog_arena(units: Vec<UnitSpec>) -> Scenario {
     Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "extractor-fog-arena".into(),
         seed: 11,
         map: vec![

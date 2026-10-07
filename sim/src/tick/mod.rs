@@ -584,6 +584,7 @@ pub(crate) fn tile_adjacent_to_rect(tile: TilePos, anchor: TilePos, size: (i32, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scenario::ScenarioMode;
 
     #[test]
     fn command_phase_inspection_is_pure_and_stops_before_the_tick() {
@@ -893,7 +894,7 @@ mod tests {
         use crate::{Faction, UnitKind};
 
         crate::Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "Calibration Open - Cupric".into(),
             seed: 1_616_101,
             map: [
@@ -976,7 +977,7 @@ mod tests {
             commands.push(PlayerCommand {
                 player: PlayerId(player),
                 command: Command::Train {
-                    building: BuildingId(player as u32),
+                    building: BuildingId(u32::from(player)),
                     kind: UnitKind::Harvester,
                 },
             });

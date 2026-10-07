@@ -294,7 +294,7 @@ fn return_cargo_rejects_forged_worker_and_target_references() {
 #[test]
 fn return_cargo_cancels_a_partial_harvest_and_can_be_overridden_by_move() {
     let mut state = open_arena_with(24, 16, vec![unit(0, UnitKind::Harvester, 10, 5)], |rows| {
-        rows[5][11] = 's'
+        rows[5][11] = 's';
     })
     .build()
     .unwrap();

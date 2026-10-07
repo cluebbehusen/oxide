@@ -1,6 +1,6 @@
 //! The command band, the orders dock, and the hover tooltip — the
 //! selection panel's entire drawn form. Geometry it publishes rides
-//! the LayoutModel; the pure card model lives in crate::panel.
+//! the `LayoutModel`; the pure card model lives in `crate::panel`.
 
 use super::*;
 use crate::render::prim::{fill_rect, stroke_rect};
@@ -634,6 +634,10 @@ fn selection_info_rect(viewport: Vec2, width: f32, content_height: f32, actions:
 }
 
 /// Draws the command panel band and returns its clickable geometry.
+#[expect(
+    clippy::too_many_lines,
+    reason = "lays out and draws the whole selection panel"
+)]
 pub(crate) fn draw_panel(
     game: &crate::game::Scene<'_>,
     sprites: &Sprites,
@@ -697,7 +701,7 @@ pub(crate) fn draw_panel(
         else {
             match icon {
                 CardIcon::Unit(kind) => {
-                    sprites.draw_portrait(dest, &[(sprites.unit(*kind, faction), tint)])
+                    sprites.draw_portrait(dest, &[(sprites.unit(*kind, faction), tint)]);
                 }
                 CardIcon::Building(kind, tier) => blit_building(dest, *kind, *tier, faction, tint),
                 CardIcon::Verb(v) => blit(dest, sprites.verb_icon(*v), tint),
@@ -1363,6 +1367,7 @@ pub(crate) fn draw_panel(
 /// hotkey, cost, description, weapon lines, and why a disabled card
 /// refuses. Rebuilt from the same panel model the frame drew.
 pub(crate) fn draw_panel_tooltip(game: &crate::game::Scene<'_>, input: &InputState) {
+    use crate::layout::TooltipSide;
     let panel = game.presentation.panel_model.borrow();
     let Some(panel) = panel.as_ref() else {
         return;
@@ -1371,7 +1376,6 @@ pub(crate) fn draw_panel_tooltip(game: &crate::game::Scene<'_>, input: &InputSta
     if !layout.panel_top.is_finite() {
         return;
     }
-    use crate::layout::TooltipSide;
     let s = ui_scale();
     // A resting finger previews the card it covers; a touch-only build
     // has no hover, so its stale mouse point never does.

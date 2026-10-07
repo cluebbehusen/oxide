@@ -147,11 +147,11 @@ fn group_action(game: &mut Game, input: &mut InputState, slot: usize) {
                 .is_some_and(|u| u.player == game.presentation.human)
         })
         .collect();
-    input.groups[slot] = alive.clone();
+    input.groups[slot].clone_from(&alive);
     if alive.is_empty() {
         return;
     }
-    game.presentation.selection.units = alive.clone();
+    game.presentation.selection.units.clone_from(&alive);
     game.presentation.selection.buildings.clear();
     let now = input.now;
     if input

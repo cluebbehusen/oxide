@@ -1128,7 +1128,7 @@ fn restore(watch: &mut SeatWatch, state: &State, player: PlayerId, own: &[&Build
 mod tests {
     use super::*;
     use chassis::fx::{Fx, Vec2Fx};
-    use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
+    use oxide_sim::scenario::{BuildingSpec, PlayerSpec, ScenarioMode, UnitSpec};
     use oxide_sim::{BuildingId, Faction, Scenario, UnitId};
 
     /// A 24-wide field: West's start at (2, 2) and East's at (20, 2), 12 rows
@@ -1153,7 +1153,7 @@ mod tests {
             factions.push(Faction::Ferrous);
         }
         Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "reactivity".into(),
             seed: 3,
             map,
@@ -1163,7 +1163,7 @@ mod tests {
                 .map(|(seat, faction)| PlayerSpec {
                     name: format!("seat {seat}"),
                     faction,
-                    team: trio.then_some(if seat == 1 { 1 } else { 0 }),
+                    team: trio.then_some(u8::from(seat == 1)),
                     scrap: 0,
                     bot: false,
                     bot_config: None,

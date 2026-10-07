@@ -71,8 +71,7 @@ pub(crate) fn build_shell_executable_for(release: bool) -> Result<PathBuf> {
             .lines()
             .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
             .filter_map(|message| message["message"]["rendered"].as_str().map(str::to_owned))
-            .collect::<Vec<_>>()
-            .join("");
+            .collect::<String>();
         bail!(
             "building oxide-shell failed:\n{rendered}{}",
             String::from_utf8_lossy(&output.stderr)

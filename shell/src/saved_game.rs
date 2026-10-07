@@ -351,11 +351,6 @@ mod tests {
     }
     #[test]
     fn metadata_reads_stop_before_the_payload_and_corruption_is_checked_on_load() {
-        let path = Fixture::new();
-        let game = Game::new(Scenario::skirmish()).unwrap();
-        write(&game, meta(&game), &path.0).unwrap();
-        let original = std::fs::read(&path.0).unwrap();
-        let header_end = 12 + u32::from_le_bytes(original[8..12].try_into().unwrap()) as usize;
         struct MetadataOnly {
             inner: std::io::Cursor<Vec<u8>>,
             limit: u64,
@@ -382,6 +377,11 @@ mod tests {
                 Ok(position)
             }
         }
+        let path = Fixture::new();
+        let game = Game::new(Scenario::skirmish()).unwrap();
+        write(&game, meta(&game), &path.0).unwrap();
+        let original = std::fs::read(&path.0).unwrap();
+        let header_end = 12 + u32::from_le_bytes(original[8..12].try_into().unwrap()) as usize;
         let mut reader = MetadataOnly {
             inner: std::io::Cursor::new(original.clone()),
             limit: header_end as u64,

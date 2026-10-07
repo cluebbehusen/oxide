@@ -693,6 +693,7 @@ fn print_summary(rows: &[PathBuf], json: bool) -> Result<()> {
     Ok(())
 }
 
+#[expect(clippy::too_many_lines, reason = "one arm per subcommand")]
 fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::RecoveryInspect { directory, export } => {

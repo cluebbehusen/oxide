@@ -275,11 +275,9 @@ fn panics_record_their_message_location_and_bounded_backtrace() {
         Monitor::start_with(Some(root.clone()), build(), Duration::from_secs(60)).unwrap();
     monitor.frame(context(5, None));
     let simulation = monitor.stage(Stage::Simulation, 5).unwrap();
-    monitor.inner.record_panic(
-        "boom",
-        Some("sim/src/tick.rs:1:2".into()),
-        "é".repeat(20_000),
-    );
+    monitor
+        .inner
+        .record_panic("boom", Some("sim/src/tick.rs:1:2"), "é".repeat(20_000));
     let log = incidents(&root);
     let panic = &log[0];
     assert_eq!(panic["kind"], "panic");

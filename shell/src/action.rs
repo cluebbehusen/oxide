@@ -190,9 +190,9 @@ impl Action {
             Self::Upgrade => 4 | 8,
             Self::StopOrScrap => UNITS | 4,
             Self::Patrol => UNITS,
-            Self::Salvage | Self::Run | Self::Hunt | Self::RepairUnit => UNITS | 496,
+            Self::Salvage | Self::Run | Self::Hunt | Self::RepairUnit => UNITS | 0b1_1111_0000,
             Self::Unload => 2,
-            Self::ReturnCargo => 4096 | 496,
+            Self::ReturnCargo => 4096 | 0b1_1111_0000,
             Self::BuildCategory(_) => 16,
             Self::Build(kind) => Context::BuildCategory(building_category(kind)).bit(),
             Self::ReplayPause
@@ -438,7 +438,15 @@ impl BindingMap {
     }
 
     pub fn classic() -> Self {
-        use Action::*;
+        use Action::{
+            AssignGroup, Back, Build, BuildCategory, ClearRally, Confirm, CycleIdleWorker,
+            DeleteSave, HomeCamera, Hunt, JumpToLastAlert, MenuDown, MenuEnd, MenuHome, MenuLeft,
+            MenuPageDown, MenuPageUp, MenuRight, MenuUp, PanDown, PanLeft, PanRight, PanUp, Patrol,
+            RecallBookmark, RepairUnit, ReplayBack, ReplayEnd, ReplayForward, ReplayPause,
+            ReplaySpeed, ReplayStart, ReplayStats, ReturnCargo, Run, Salvage, SetBookmark,
+            SetRally, Slot, StopOrScrap, ToggleBuildPalette, ToggleOverlay, TogglePause, TrainSlot,
+            Unload, Upgrade,
+        };
         let mut map = Self {
             bindings: Vec::new(),
             secondary: Vec::new(),
@@ -674,8 +682,7 @@ impl BindingMap {
     }
     pub fn label(&self, action: Action) -> String {
         self.chord_for(action)
-            .map(Self::chord_label)
-            .unwrap_or_else(|| "unbound".into())
+            .map_or_else(|| "unbound".into(), Self::chord_label)
     }
     pub fn labels(&self, action: Action) -> String {
         [0, 1]
@@ -724,7 +731,7 @@ impl BindingMap {
         };
         match rows.iter_mut().find(|b| b.action == action) {
             Some(b) => b.chord = chord,
-            None => rows.push(Binding { action, chord }),
+            None => rows.push(Binding { chord, action }),
         }
         true
     }

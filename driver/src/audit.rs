@@ -9,6 +9,7 @@ use chassis::grid::TilePos;
 use oxide_sim::stats::BuildingKind;
 use oxide_sim::{Scenario, State};
 use serde::Serialize;
+use std::collections::BinaryHeap;
 
 /// One seat's room and spacing.
 #[derive(Debug, Serialize)]
@@ -158,7 +159,7 @@ fn ground_route(state: &State, from: &[TilePos], to: &[TilePos]) -> Option<usize
     let index = |t: TilePos| (t.y * w + t.x) as usize;
     let mut dist: Vec<u32> = vec![u32::MAX; (w * h) as usize];
     let mut heap: std::collections::BinaryHeap<std::cmp::Reverse<(u32, i32, i32)>> =
-        Default::default();
+        BinaryHeap::default();
     for &s in from {
         dist[index(s)] = 0;
         heap.push(std::cmp::Reverse((0, s.x, s.y)));
@@ -210,11 +211,16 @@ fn ground_route(state: &State, from: &[TilePos], to: &[TilePos]) -> Option<usize
 /// BFS over air-passable tiles (footprint to footprint) measures the
 /// detour the sim's air router would actually take.
 fn air_route(state: &State, a: &oxide_sim::Building, b: &oxide_sim::Building) -> Option<f64> {
+    // Uniform-cost search with diagonals at sqrt(2), so the detour
+    // branch reports the same Euclidean-ish tile unit as the straight
+    // line — a hop-counting BFS made peak maps read closer than open
+    // ones on diagonal geometry.
+    const SQRT2: f64 = std::f64::consts::SQRT_2;
     let center = |f: &oxide_sim::Building| {
         let (w, h) = f.stats().size;
         (
-            f.anchor.x as f64 + w as f64 / 2.0,
-            f.anchor.y as f64 + h as f64 / 2.0,
+            f64::from(f.anchor.x) + f64::from(w) / 2.0,
+            f64::from(f.anchor.y) + f64::from(h) / 2.0,
         )
     };
     let (ax, ay) = center(a);
@@ -241,14 +247,9 @@ fn air_route(state: &State, a: &oxide_sim::Building, b: &oxide_sim::Building) ->
             .tile(t)
             .is_some_and(|tile| !tile.terrain.blocks_air())
     };
-    // Uniform-cost search with diagonals at sqrt(2), so the detour
-    // branch reports the same Euclidean-ish tile unit as the straight
-    // line — a hop-counting BFS made peak maps read closer than open
-    // ones on diagonal geometry.
-    const SQRT2: f64 = std::f64::consts::SQRT_2;
     let mut dist: Vec<f64> = vec![f64::INFINITY; (w * h) as usize];
     let mut heap: std::collections::BinaryHeap<std::cmp::Reverse<(u64, i32, i32)>> =
-        Default::default();
+        BinaryHeap::default();
     // Costs are ordered through their raw bit patterns: all values are
     // non-negative finite floats, where the IEEE ordering agrees with
     // the numeric one.
@@ -383,18 +384,20 @@ pub fn audit(scenario: &Scenario) -> Result<MapAudit> {
                 .buildings()
                 .iter()
                 .find(|b| b.player.0 == *seat && b.kind == BuildingKind::Foundry)
-                .map(|b| {
+                .map_or((0.0, 0.0), |b| {
                     let size = b.stats().size;
                     (
-                        b.anchor.x as f64 + size.0 as f64 / 2.0,
-                        b.anchor.y as f64 + size.1 as f64 / 2.0,
+                        f64::from(b.anchor.x) + f64::from(size.0) / 2.0,
+                        f64::from(b.anchor.y) + f64::from(size.1) / 2.0,
                     )
-                })
-                .unwrap_or((0.0, 0.0));
+                });
             let nearest_scrap = nodes
                 .iter()
                 .map(|n| {
-                    let (dx, dy) = (n.x as f64 + 0.5 - center.0, n.y as f64 + 0.5 - center.1);
+                    let (dx, dy) = (
+                        f64::from(n.x) + 0.5 - center.0,
+                        f64::from(n.y) + 0.5 - center.1,
+                    );
                     (dx * dx + dy * dy).sqrt()
                 })
                 .fold(f64::INFINITY, f64::min);
@@ -403,7 +406,10 @@ pub fn audit(scenario: &Scenario) -> Result<MapAudit> {
                 .extractor_frames()
                 .iter()
                 .map(|f| {
-                    let (dx, dy) = (f.x as f64 + 1.0 - center.0, f.y as f64 + 1.0 - center.1);
+                    let (dx, dy) = (
+                        f64::from(f.x) + 1.0 - center.0,
+                        f64::from(f.y) + 1.0 - center.1,
+                    );
                     (dx * dx + dy * dy).sqrt()
                 })
                 .fold(None, |best: Option<f64>, d| {
@@ -480,6 +486,7 @@ impl MapAudit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxide_sim::scenario::ScenarioMode;
 
     #[test]
     fn an_obstruction_never_shrinks_the_reported_air_route() {
@@ -503,7 +510,7 @@ mod tests {
             }
             rows.push("####################".to_string());
             Scenario {
-                mode: Default::default(),
+                mode: ScenarioMode::Match,
                 name: "detour".into(),
                 seed: 5,
                 map: rows,
@@ -548,7 +555,7 @@ mod tests {
         }
         rows.push("####################".to_string());
         let scenario = Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "detour".into(),
             seed: 5,
             map: rows,

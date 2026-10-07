@@ -1447,7 +1447,7 @@ fn life(totals: &KindLedger) -> String {
     } else {
         format!(
             "{:.0}",
-            totals.lifetime as f64 / totals.deaths as f64 / oxide_sim::TICKS_PER_SECOND as f64
+            totals.lifetime as f64 / totals.deaths as f64 / f64::from(oxide_sim::TICKS_PER_SECOND)
         )
     }
 }
@@ -1556,7 +1556,7 @@ pub fn render_shares(shares: &[WorthShare]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
+    use oxide_sim::scenario::{BuildingSpec, PlayerSpec, ScenarioMode, UnitSpec};
     use oxide_sim::{AttackTarget, Command, Faction, PlayerCommand, PlayerId, Scenario};
 
     /// A 32-wide, 12-deep field: West's start at (2, 2) and East's at
@@ -1573,7 +1573,7 @@ mod tests {
         top[28] = '2';
         map[2] = top.into_iter().collect();
         Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "ledger".into(),
             seed: 5,
             map,

@@ -7,13 +7,13 @@ use common::{building, cmd, players, run_until, unit};
 
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
-use oxide_sim::scenario::{BuildingSpec, UnitSpec};
+use oxide_sim::scenario::{BuildingSpec, ScenarioMode, UnitSpec};
 use oxide_sim::stats::{BuildingKind, CHARGE_ARRAY_DETECT_RADIUS, CHARGE_BASE_ARRAY_DETECT_RADIUS};
 use oxide_sim::{Command, Event, Order, PlayerId, Scenario, State, Target, UnitKind};
 
 fn arena(map: Vec<String>, units: Vec<UnitSpec>, buildings: Vec<BuildingSpec>) -> Scenario {
     Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "field-kit-arena".into(),
         seed: 17,
         map,
@@ -455,8 +455,7 @@ fn saturation_fire_clears_a_field_without_detonation() {
         for event in &report.events {
             match event {
                 Event::BuildingDestroyed { building, .. }
-                    if *building
-                        == state.buildings().first().map(|b| b.id).unwrap_or(*building) => {}
+                    if *building == state.buildings().first().map_or(*building, |b| b.id) => {}
                 _ => {}
             }
             if matches!(event, Event::ChargeDetonated { .. }) {

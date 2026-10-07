@@ -7,7 +7,7 @@ use crate::profile::ResolvedProfile;
 fn fielded(far: (i32, i32)) -> Scenario {
     let mut scenario = field();
     for (x, y) in [(6, 11), far] {
-        scenario.map[y as usize].replace_range(x as usize..x as usize + 1, "s");
+        scenario.map[y as usize].replace_range((x as usize)..=(x as usize), "s");
     }
     scenario
 }

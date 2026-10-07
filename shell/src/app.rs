@@ -320,7 +320,7 @@ fn draft_scenario(draft: &NewMatchDraft, personality_seed_base: u64) -> Result<S
     // seats on one faction-derived label ("North West Ferrous" twice),
     // so duplicates take an ordinal instead of refusing to launch.
     let mut seen: Vec<String> = Vec::new();
-    for player in scenario.players.iter_mut() {
+    for player in &mut scenario.players {
         if seen.contains(&player.name) {
             let mut n = 2;
             while seen.contains(&format!("{} {n}", player.name)) {
@@ -585,6 +585,7 @@ fn raises_combat_music(kind: SoundKind) -> bool {
     )
 }
 
+#[expect(clippy::too_many_lines, reason = "startup and the native frame loop")]
 pub(crate) async fn run(args: Args) -> Result<()> {
     let review_font = std::env::var_os("OXIDE_REVIEW_FONT")
         .map(std::fs::read)
@@ -626,7 +627,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
     render::set_control_groups(config.control_groups);
     crate::strategic_markers::set_prefs(config.markers);
     mark("config loaded");
-    let sprites = assets::Sprites::load().await?;
+    let sprites = assets::Sprites::load()?;
     mark("sprites loaded");
     let sounds = assets::Sounds::load().await?;
     mark("sounds loaded");
@@ -741,7 +742,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         mixer: Mixer::default(),
         soundtrack,
         frame_profiler: FrameProfiler::new(profile_frames),
-        report_job: Default::default(),
+        report_job: crate::diagnostic_report::ReportJob::default(),
         persistence: persistence::Worker::new()?,
         persistence_result: None,
         catalog_id: None,
@@ -784,7 +785,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             speed: visible_speed(&screen, &app.game),
             width: screen_width() as u32,
             height: screen_height() as u32,
-            dpi: macroquad::miniquad::window::dpi_scale() as f64,
+            dpi: f64::from(macroquad::miniquad::window::dpi_scale()),
             paused: match &screen {
                 Screen::Playback(playback) => playback.paused,
                 Screen::Pause(_) => true,
@@ -1392,7 +1393,7 @@ fn capture_ui(screen: &Screen, app: &App) -> UiView {
                 mode: screen_mode(screen).to_string(),
                 title: Some("MATCH RESULT".to_string()),
                 selected: Some(results.selected()),
-                items: results.items(),
+                items: ResultsScreen::items(),
                 visible_range: Some([0, 4]),
                 hover: results.hover(),
                 chrome: None,
@@ -1838,7 +1839,7 @@ mod tests {
     fn keyboard_is_wanted_only_while_naming() {
         let mut pause = PauseScreen::open(false, true);
         assert!(!text_entry(&Screen::Pause(PauseScreen::open(false, true))));
-        pause.begin_naming("Skirmish | t40".to_string());
+        pause.begin_naming("Skirmish | t40");
         assert!(text_entry(&Screen::Pause(pause)));
         assert!(!text_entry(&Screen::Playing));
     }

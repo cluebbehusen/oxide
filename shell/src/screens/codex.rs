@@ -19,6 +19,7 @@ use macroquad::prelude::*;
 use oxide_protocol::{Key, RawEvent};
 use oxide_sim::Faction;
 use oxide_sim::stats::{BuildingKind, Domain, UnitKind};
+use std::fmt::Write as _;
 
 /// What a codex frame decided.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -120,6 +121,10 @@ impl CodexScreen {
     }
 
     /// The debug protocol's stable mode name.
+    #[expect(
+        clippy::unused_self,
+        reason = "other screens answer this from their state"
+    )]
     pub fn mode_name(&self) -> &'static str {
         "codex"
     }
@@ -281,7 +286,7 @@ impl CodexScreen {
             );
             match entry {
                 Entry::Unit(kind) => {
-                    sprites.draw_portrait(dest, &[(sprites.unit(kind, *faction), WHITE)])
+                    sprites.draw_portrait(dest, &[(sprites.unit(kind, *faction), WHITE)]);
                 }
                 Entry::Building(kind) => {
                     let mut layers = vec![(sprites.building(kind, *faction), WHITE)];
@@ -421,7 +426,7 @@ fn building_notes(kind: BuildingKind) -> Vec<String> {
             stats.max_hp
         );
         for weapon in building_weapon_lines(kind, tier as u8) {
-            line.push_str(&format!("; {weapon}"));
+            let _ = write!(line, "; {weapon}");
         }
         notes.push(line);
     }

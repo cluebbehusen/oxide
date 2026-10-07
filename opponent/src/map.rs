@@ -339,13 +339,14 @@ impl MapModel {
                         .flat_map(|gate| gate.tiles.iter().copied())
                         .collect();
                     tiles.sort_unstable();
-                    let home = match flooded.iter().find(|(closed, _)| *closed == tiles) {
-                        Some((_, home)) => home.clone(),
-                        None => {
-                            let home = self.reach_without(start, &tiles);
-                            flooded.push((tiles, home.clone()));
-                            home
-                        }
+                    let home = if let Some((_, home)) =
+                        flooded.iter().find(|(closed, _)| *closed == tiles)
+                    {
+                        home.clone()
+                    } else {
+                        let home = self.reach_without(start, &tiles);
+                        flooded.push((tiles, home.clone()));
+                        home
                     };
                     let cut = Cut {
                         hostile,
@@ -871,7 +872,7 @@ fn edge_tiles(foundry: TilePos, slot: TilePos) -> Vec<TilePos> {
 /// Whether `tile`, off the lanes, touches one.
 fn edge_tile(foundry: TilePos, tile: TilePos) -> bool {
     let (x, y) = residue(foundry, tile);
-    !lane(foundry, tile) && !(matches!(x, 0 | 1) && matches!(y, 0 | 1))
+    !lane(foundry, tile) && (!matches!(x, 0 | 1) || !matches!(y, 0 | 1))
 }
 
 /// The slot holding `tile`, off the lanes.

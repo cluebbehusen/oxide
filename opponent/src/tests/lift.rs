@@ -713,7 +713,7 @@ fn emptied_carriers_short_of_orders_fly_home_before_the_lift_fights() {
     }
     landed.units.push(unit(1, UnitKind::Sylph, 20, 8));
     for (x, y) in [(2, 14), (2, 15)] {
-        landed.map[y].replace_range(x..x + 1, "s");
+        landed.map[y].replace_range(x..=x, "s");
     }
     landed.units.push(harvester(0, 4, 14));
     landed.units.push(harvester(0, 4, 15));

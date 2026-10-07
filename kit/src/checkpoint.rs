@@ -321,6 +321,7 @@ impl RecordedCheckpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxide_sim::scenario::BotConfig;
     use oxide_sim::{Command, PlayerId};
 
     fn checkpoint() -> RecordedCheckpoint {
@@ -411,7 +412,7 @@ mod tests {
         assert!(bad.restore().is_err());
         let mut bad = original.clone();
         bad.session.scenario.players[0].bot = true;
-        bad.session.scenario.players[0].bot_config = Some(Default::default());
+        bad.session.scenario.players[0].bot_config = Some(BotConfig::default());
         assert!(bad.session.restore().is_err());
         let json = serde_json::to_value(original).unwrap();
         for (field, value) in [
@@ -479,7 +480,7 @@ mod tests {
             player: PlayerId(seat),
             command: Command::Stop { units: vec![] },
         }));
-        let report = crate::runner::record_and_tick(&mut state, commands, Some(&mut suffix));
+        let report = crate::runner::record_and_tick(&mut state, &commands, Some(&mut suffix));
         record_events(&mut bots, &report);
         suffix.meta.ticks = Some(state.current_tick());
 
@@ -577,7 +578,7 @@ mod tests {
         };
         forged(&|bad| bad["bots"].as_array_mut().unwrap().swap(0, 1));
         forged(&|bad| {
-            bad["bots"][1] = serde_json::json!({"controller": {"player": 1}, "events": []})
+            bad["bots"][1] = serde_json::json!({"controller": {"player": 1}, "events": []});
         });
         forged(&|bad| bad["bots"][0]["memory"] = serde_json::json!([]));
         forged(&|bad| bad["bots"][0] = bad["bots"][1].clone());

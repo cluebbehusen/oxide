@@ -1,6 +1,7 @@
 //! Movement, routing, collision, and order programs — behavior suite, public API only.
 
 use crate::common;
+use oxide_sim::scenario::ScenarioMode;
 
 use chassis::grid::TilePos;
 use oxide_sim::scenario::PlayerSpec;
@@ -226,7 +227,7 @@ fn group_moves_fan_out_over_distinct_tiles() {
         state.units().iter().map(|u| u.order).collect::<Vec<_>>()
     );
     // …near the click, on distinct goals (spread), without stacking.
-    let mut tiles: Vec<TilePos> = state.units().iter().map(|u| u.tile()).collect();
+    let mut tiles: Vec<TilePos> = state.units().iter().map(oxide_sim::Unit::tile).collect();
     for t in &tiles {
         assert!(
             t.chebyshev(TilePos::new(10, 4)) <= 3,
@@ -249,7 +250,7 @@ fn congestion_survives_nonconsecutive_unit_ids() {
     // survivors (ids 0, 1, 4, 6, 7) crowd one node — the economy must keep
     // flowing exactly as it does with dense ids.
     let scenario = Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "id-gaps".into(),
         seed: 42,
         map: vec![
@@ -330,7 +331,7 @@ fn congestion_survives_nonconsecutive_unit_ids() {
         let report = state.tick(&[]);
         for event in &report.events {
             if let Event::ScrapDeposited { amount, .. } = event {
-                deposited[(tick >= 1500) as usize] += amount;
+                deposited[usize::from(tick >= 1500)] += amount;
             }
         }
     }
@@ -613,7 +614,7 @@ fn an_unreachable_leg_ends_short_and_the_program_continues() {
     // The queued second leg targets a sealed pocket. The walker gets as
     // close as it can, reports that once, and runs the third leg.
     let scenario = Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "sealed-pocket".into(),
         seed: 42,
         map: vec![

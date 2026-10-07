@@ -279,7 +279,7 @@ pub(super) fn advance(unit: &mut Unit, terrain: &GroundTerrain, parked: &ParkedB
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scenario::{PlayerSpec, UnitSpec};
+    use crate::scenario::{PlayerSpec, ScenarioMode, UnitSpec};
     use crate::state::PathFollow;
     use crate::{Faction, Scenario, UnitKind};
 
@@ -297,7 +297,7 @@ mod tests {
         }
         let rows: Vec<String> = rows.into_iter().map(|r| r.into_iter().collect()).collect();
         Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "ground-motor".into(),
             seed: 1,
             map: rows,

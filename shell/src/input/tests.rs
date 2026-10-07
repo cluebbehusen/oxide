@@ -2,6 +2,7 @@
 //! resolver against a real (headless) sim.
 
 use super::*;
+use oxide_sim::scenario::ScenarioMode;
 use oxide_sim::{PlayerCommand, UnitKind};
 
 mod double_click;
@@ -3743,7 +3744,7 @@ fn an_allied_site_under_fog_refuses_selection() {
         bot_config: None,
     };
     let mut scenario = oxide_sim::Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "ally-site-arena".into(),
         seed: 7,
         map: vec![
@@ -5484,7 +5485,7 @@ fn a_group_sent_into_fog_draws_its_click_for_every_member() {
         }
     };
 
-    assert!(goals(&game).iter().all(|goal| goal.is_pending()));
+    assert!(goals(&game).iter().all(oxide_sim::Goal::is_pending));
     draws_the_click(&game);
 
     let mut exposed = false;
@@ -5496,7 +5497,7 @@ fn a_group_sent_into_fog_draws_its_click_for_every_member() {
         }
     }
     assert!(exposed, "the walk explores its click on the way");
-    let mut targets: Vec<_> = goals(&game).iter().map(|goal| goal.target()).collect();
+    let mut targets: Vec<_> = goals(&game).iter().map(oxide_sim::Goal::target).collect();
     targets.sort_unstable_by_key(|tile| (tile.y, tile.x));
     targets.dedup();
     assert_eq!(targets.len(), group.len(), "each member took its own slot");
@@ -5819,7 +5820,7 @@ fn the_tutorial_survives_its_own_literal_instructions() {
     let bank = |game: &Game| game.state.player(game.presentation.human).scrap;
 
     // Select the Foundry and use the displayed production shortcut.
-    assert!(t.advance(&game.demo));
+    assert!(t.advance(game.demo));
     assert_eq!(t.step, 0);
     assert!(bank(&game) >= harvester_cost, "lesson 1 must be affordable");
     let home = game.home_foundry().unwrap().center();
@@ -5830,7 +5831,7 @@ fn the_tutorial_survives_its_own_literal_instructions() {
     apply_events(&mut game, &mut input, &click(screen.x, screen.y));
     controls_key(&mut game, &mut input, Key::Q);
     game.do_tick();
-    assert!(t.advance(&game.demo));
+    assert!(t.advance(game.demo));
     assert_eq!(t.step, 1, "training graduates lesson 1");
 
     // Lesson 2 — select a harvester, right-click a scrap pile; the
@@ -5855,7 +5856,7 @@ fn the_tutorial_survives_its_own_literal_instructions() {
     right_click(&mut game, &mut input, vec2(7.5, 2.5)); // the home scrap pile
     game.do_tick();
     assert!(game.demo.harvested, "the order was accepted");
-    assert!(t.advance(&game.demo));
+    assert!(t.advance(game.demo));
     assert_eq!(
         t.step, 1,
         "an accepted order alone must not graduate the lesson"
@@ -5867,7 +5868,7 @@ fn the_tutorial_survives_its_own_literal_instructions() {
         game.do_tick();
     }
     assert!(game.demo.deposited, "a load reaches the bank within budget");
-    assert!(t.advance(&game.demo));
+    assert!(t.advance(game.demo));
     assert_eq!(t.step, 2, "income graduates the mining lesson");
 
     // Lesson 3 — "Pick a DIFFERENT harvester": the hauler keeps its
@@ -5914,7 +5915,7 @@ fn the_tutorial_survives_its_own_literal_instructions() {
         game.pending
     );
     game.do_tick();
-    assert!(t.advance(&game.demo));
+    assert!(t.advance(game.demo));
     assert_eq!(t.step, 3, "the site graduates the building lesson");
     assert!(
         game.state
@@ -5940,7 +5941,7 @@ fn the_tutorial_survives_its_own_literal_instructions() {
     apply_events(&mut game, &mut input, &click(screen.x, screen.y));
     controls_key(&mut game, &mut input, Key::E);
     game.do_tick();
-    assert!(t.advance(&game.demo));
+    assert!(t.advance(game.demo));
     assert_eq!(t.step, 4, "the fighter graduates the arming lesson");
 
     // Lesson 5 — right-click ground with a fighter selected.
@@ -5958,13 +5959,13 @@ fn the_tutorial_survives_its_own_literal_instructions() {
     apply_events(&mut game, &mut input, &click(p.x, p.y));
     right_click(&mut game, &mut input, vec2(12.5, 9.5));
     game.do_tick();
-    assert!(t.advance(&game.demo));
+    assert!(t.advance(game.demo));
     assert_eq!(t.step, 5, "advance graduates the march lesson");
 
     // Lesson 6 is the pause menu, a frame-loop act outside the
     // command stream; its flag flips in main.rs.
     game.demo.paused_menu = true;
-    assert!(!t.advance(&game.demo), "school is out");
+    assert!(!t.advance(game.demo), "school is out");
 }
 
 /// Publishes the live panel's card whose action `pick` accepts at one
@@ -6036,13 +6037,13 @@ fn the_tutorial_survives_its_own_touch_instructions() {
     };
 
     // "Tap your Foundry, then the Harvester card."
-    assert!(t.advance(&game.demo));
+    assert!(t.advance(game.demo));
     assert!(STEPS[0].body(true)[0].contains("Harvester card"));
     let world = home(&game);
     tap_world(&mut game, &mut input, world);
     tap_panel_card(&mut game, &mut input, |card| card.title == "Harvester");
     game.do_tick();
-    assert!(t.advance(&game.demo));
+    assert!(t.advance(game.demo));
     assert_eq!(t.step, 1, "training graduates lesson 1");
 
     // "Select a Harvester and long-press a scrap pile."
@@ -6058,7 +6059,7 @@ fn the_tutorial_survives_its_own_touch_instructions() {
         }
         game.do_tick();
     }
-    assert!(t.advance(&game.demo));
+    assert!(t.advance(game.demo));
     assert_eq!(t.step, 2, "income graduates the mining lesson");
 
     // "Tap Build, then a building, then open ground."
@@ -6084,7 +6085,7 @@ fn the_tutorial_survives_its_own_touch_instructions() {
         game.pending
     );
     game.do_tick();
-    assert!(t.advance(&game.demo));
+    assert!(t.advance(game.demo));
     assert_eq!(t.step, 3, "the site graduates the building lesson");
 
     // "Train a Sentinel at the Foundry."
@@ -6092,7 +6093,7 @@ fn the_tutorial_survives_its_own_touch_instructions() {
     tap_world(&mut game, &mut input, world);
     tap_panel_card(&mut game, &mut input, |card| card.title == "Sentinel");
     game.do_tick();
-    assert!(t.advance(&game.demo));
+    assert!(t.advance(game.demo));
     assert_eq!(t.step, 4, "the fighter graduates the arming lesson");
 
     // "Long-press ground with a combat unit selected."
@@ -6100,7 +6101,7 @@ fn the_tutorial_survives_its_own_touch_instructions() {
     tap_world(&mut game, &mut input, at);
     long_press_world(&mut game, &mut input, vec2(12.5, 9.5));
     game.do_tick();
-    assert!(t.advance(&game.demo));
+    assert!(t.advance(game.demo));
     assert_eq!(t.step, 5, "advance graduates the march lesson");
 
     // "Tap the menu button at the top right to open the pause menu."
@@ -6109,7 +6110,7 @@ fn the_tutorial_survives_its_own_touch_instructions() {
     tap(&mut game, &mut input, menu);
     assert!(input.take_menu_request(), "the menu button asks for pause");
     game.demo.paused_menu = true;
-    assert!(!t.advance(&game.demo), "school is out");
+    assert!(!t.advance(game.demo), "school is out");
 }
 
 #[test]

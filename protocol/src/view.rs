@@ -165,11 +165,11 @@ pub struct BuildingView {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub provisional: bool,
     /// Construction or training progress ticks.
-    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub progress: u32,
     /// Upgrade-ladder rung (0 = base). Visible in every view: a
     /// building's tier shows in its silhouette on the ground.
-    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub tier: u8,
 }
 
@@ -338,12 +338,9 @@ fn default_true() -> bool {
     true
 }
 
-fn is_zero_u8(n: &u8) -> bool {
-    *n == 0
-}
-
-fn is_zero_u32(n: &u32) -> bool {
-    *n == 0
+/// Serde skip predicate: omits a field that still holds its default value.
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
 }
 
 /// Shell status summary.
@@ -406,9 +403,9 @@ pub struct UiView {
     /// Row under the pointer (highlight only — never the selection).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hover: Option<usize>,
-    /// Gameplay chrome geometry as [top_bar_h, panel_top, minimap x/y/w/h,
-    /// panel_right, orders x/y/w/h] in window pixels — the same
-    /// LayoutModel hit-testing reads, so an agent can aim clicks at (or
+    /// Gameplay chrome geometry as [`top_bar_h`, `panel_top`, minimap x/y/w/h,
+    /// `panel_right`, orders x/y/w/h] in window pixels — the same
+    /// `LayoutModel` hit-testing reads, so an agent can aim clicks at (or
     /// away from) real chrome. The command band spans only to
     /// `panel_right`; `orders` is the queue dock on the left edge,
     /// zero-sized when absent. Menu modes report `None`.
@@ -451,17 +448,17 @@ impl StateView {
                         .collect()
                 }
             } else {
-                Default::default()
+                Vec::default()
             },
             units: if filter.units {
                 state.units().iter().map(unit_view).collect()
             } else {
-                Default::default()
+                Vec::default()
             },
             buildings: if filter.buildings {
                 state.buildings().iter().map(building_view).collect()
             } else {
-                Default::default()
+                Vec::default()
             },
             map: filter.map.then(|| ascii_with_entities(state)),
         }
@@ -588,6 +585,7 @@ fn ascii_with_entities(state: &State) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxide_sim::scenario::ScenarioMode;
 
     #[test]
     fn capture_respects_filters_and_overlays_entities() {
@@ -781,7 +779,7 @@ mod tests {
             bot_config: None,
         };
         let scenario = oxide_sim::Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "landing-fog".into(),
             seed: 11,
             map: vec![

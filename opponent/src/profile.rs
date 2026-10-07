@@ -138,7 +138,7 @@ impl ResolvedProfile {
             &envelope,
             non_guile_budget,
         );
-        let (primary, secondary) = ranked_specialties(&values, dealt_primary, dealt_secondary);
+        let (primary, secondary) = ranked_specialties(values, dealt_primary, dealt_secondary);
 
         Self {
             difficulty: config.difficulty,
@@ -270,7 +270,7 @@ fn normalize_non_guile(seed: u64, values: &mut [u8; 6], envelope: &[Envelope; 6]
 }
 
 fn ranked_specialties(
-    values: &[u8; 6],
+    values: [u8; 6],
     dealt_primary: Specialty,
     dealt_secondary: Specialty,
 ) -> (Specialty, Specialty) {
@@ -298,7 +298,7 @@ mod tests {
 
     #[test]
     fn resolution_is_repeatable_and_difficulty_does_not_change_personality() {
-        let config = BotConfig::new(BotDifficulty::Prime, BotStance::Aggressive, 0xC0FFEE);
+        let config = BotConfig::new(BotDifficulty::Prime, BotStance::Aggressive, 0xC0_FF_EE);
         let first = ResolvedProfile::resolve(config);
         let second = ResolvedProfile::resolve(config);
         assert_eq!(first, second);

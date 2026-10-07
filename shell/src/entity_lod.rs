@@ -132,10 +132,7 @@ fn contact_sources(manifest: &HashMap<String, [f32; 4]>) -> BTreeSet<Source> {
         .collect()
 }
 impl EntityLod {
-    pub(crate) async fn load(
-        manifest: &HashMap<String, [f32; 4]>,
-        page_height: f32,
-    ) -> Result<Self> {
+    pub(crate) fn load(manifest: &HashMap<String, [f32; 4]>, page_height: f32) -> Result<Self> {
         let sources = entity_sources(manifest);
         let count = sources
             .iter()
@@ -315,7 +312,7 @@ fn blend_material(texture: &Texture2D) -> Result<Material> {
     use macroquad::miniquad::{BlendFactor, BlendState, BlendValue, Equation, PipelineParams};
     let material = load_material(
         ShaderSource::Glsl {
-            vertex: r#"#version 100
+            vertex: r"#version 100
 attribute vec3 position;
 attribute vec2 texcoord;
 attribute vec4 color0;
@@ -326,8 +323,8 @@ varying highp vec2 uv;
 varying lowp vec4 color;
 varying highp vec4 sampling;
 void main(){ gl_Position=Projection*Model*vec4(position,1.0); uv=texcoord; color=color0/255.0; sampling=normal; }
-"#,
-            fragment: r#"#version 100
+",
+            fragment: r"#version 100
 precision highp float;
 varying highp vec2 uv;
 varying lowp vec4 color;
@@ -343,7 +340,7 @@ void main(){
     }
     gl_FragColor=vec4(pixel.rgb*color.rgb*color.a,pixel.a*color.a);
 }
-"#,
+",
         },
         MaterialParams {
             pipeline_params: PipelineParams {
@@ -610,7 +607,7 @@ mod tests {
     }
     #[test]
     fn levels_change_continuously_at_every_boundary() {
-        for width in 8000..129000 {
+        for width in 8000..129_000 {
             let weights = |w| {
                 let (a, b, t) = lod_mix(vec2(128.0, 128.0), vec2(w, w));
                 let mut out = [0.0; 4];

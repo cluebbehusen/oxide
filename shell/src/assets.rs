@@ -908,7 +908,7 @@ fn atlas_page(mut source: Rect, page_height: f32) -> (usize, Rect) {
 impl Sprites {
     /// Loads the atlas up front; a missing or incomplete atlas is a
     /// startup error, not a mid-game pop.
-    pub async fn load() -> Result<Self> {
+    pub fn load() -> Result<Self> {
         let texture = Texture2D::from_image(
             &load_resource_image("assets/sprites/atlas.png")
                 .context("loading assets/sprites/atlas.png (run from the workspace root)")?,
@@ -947,7 +947,7 @@ impl Sprites {
             air_shadow,
             burst,
         ] = pick(&rects, SINGLE_KEYS)?;
-        let entity_lod = crate::entity_lod::EntityLod::load(&rects, page_height).await?;
+        let entity_lod = crate::entity_lod::EntityLod::load(&rects, page_height)?;
         Ok(Self {
             sentinel_rig: unit_rig(&rects, "sentinel", 4)?,
             warden_rig: unit_rig(&rects, "warden", 4)?,
@@ -1114,7 +1114,7 @@ impl Sprites {
         let bounds = layers
             .iter()
             .map(|(source, _)| self.entity_lod.bounds(*source))
-            .reduce(|a, b| a.combine_with(b))
+            .reduce(macroquad::math::Rect::combine_with)
             .unwrap_or(Rect::new(0.0, 0.0, 1.0, 1.0));
         let inset = dest.w.min(dest.h) * 0.05;
         let extent =
@@ -1515,7 +1515,7 @@ impl Sprites {
 
     /// The construction lattice: dense early, sparse near completion.
     pub fn scaffold(&self, dense: bool) -> Rect {
-        self.scaffold[if dense { 0 } else { 1 }]
+        self.scaffold[usize::from(!dense)]
     }
 
     /// A death-scatter hull shard.
@@ -1922,7 +1922,7 @@ mod tests {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/sounds");
         let mut actual: Vec<String> = std::fs::read_dir(&dir)
             .expect("assets/sounds exists")
-            .filter_map(|entry| entry.ok())
+            .filter_map(std::result::Result::ok)
             .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("wav"))
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .collect();

@@ -16,7 +16,7 @@ use oxide_sim::{Command, Event, Order, PlayerId, State, UnitKind};
 fn wounded_turret(
     state: &mut State,
     builder: oxide_sim::UnitId,
-    raiders: Vec<oxide_sim::UnitId>,
+    raiders: &[oxide_sim::UnitId],
 ) -> (oxide_sim::BuildingId, oxide_sim::UnitId, u32) {
     state.tick(&[cmd(
         0,
@@ -43,7 +43,7 @@ fn wounded_turret(
     state.tick(&[cmd(
         1,
         Command::Hunt {
-            units: raiders.clone(),
+            units: raiders.to_vec(),
             goal: TilePos::new(3, 4),
             queue: false,
         },
@@ -100,7 +100,7 @@ fn harvesters_weld_wounds_shut_for_a_price() {
     .unwrap();
     let builder = state.units()[0].id;
     let raiders = vec![state.units()[1].id, state.units()[2].id];
-    let (turret, welder, wounded_hp) = wounded_turret(&mut state, builder, raiders);
+    let (turret, welder, wounded_hp) = wounded_turret(&mut state, builder, &raiders);
     let bank_before = state.player(PlayerId(0)).scrap;
     state.tick(&[cmd(
         0,
@@ -144,7 +144,7 @@ fn a_rejected_welders_prepaid_coin_comes_back() {
     let mut state = scenario.build().unwrap();
     let builder = state.units()[0].id;
     let raiders = vec![state.units()[1].id, state.units()[2].id];
-    let (turret, opener, _) = wounded_turret(&mut state, builder, raiders);
+    let (turret, opener, _) = wounded_turret(&mut state, builder, &raiders);
     // Clear the producer doorstep before training the two synchronized
     // torches. Spawn placement may legitimately choose any open side of the
     // Foundry; leaving the opener there lets contact-arrival stop a newcomer
@@ -324,7 +324,7 @@ fn an_empty_bank_stalls_the_torch() {
     let mut state = scenario.build().unwrap();
     let builder = state.units()[0].id;
     let raiders = vec![state.units()[1].id, state.units()[2].id];
-    let (turret, welder, _) = wounded_turret(&mut state, builder, raiders);
+    let (turret, welder, _) = wounded_turret(&mut state, builder, &raiders);
     state.tick(&[cmd(
         0,
         Command::Repair {
@@ -486,7 +486,7 @@ fn reissued_repairs_still_pay_for_the_welding() {
     .unwrap();
     let builder = state.units()[0].id;
     let raiders = vec![state.units()[1].id, state.units()[2].id];
-    let (turret, welder, _) = wounded_turret(&mut state, builder, raiders);
+    let (turret, welder, _) = wounded_turret(&mut state, builder, &raiders);
     let bank_before = state.player(PlayerId(0)).scrap;
     // Reissue the identical repair every 4 ticks — the bot-think cadence
     // that used to reset the billing counter before it ever reached a
@@ -533,7 +533,7 @@ fn the_torch_bills_its_first_scrap_the_tick_it_lights() {
     .unwrap();
     let builder = state.units()[0].id;
     let raiders = vec![state.units()[1].id, state.units()[2].id];
-    let (turret, welder, _) = wounded_turret(&mut state, builder, raiders);
+    let (turret, welder, _) = wounded_turret(&mut state, builder, &raiders);
     let bank_before = state.player(PlayerId(0)).scrap;
     state.tick(&[cmd(
         0,
@@ -574,7 +574,7 @@ fn the_last_coin_prepays_its_full_scrap_of_welding() {
     let mut state = scenario.build().unwrap();
     let builder = state.units()[0].id;
     let raiders = vec![state.units()[1].id, state.units()[2].id];
-    let (turret, welder, _) = wounded_turret(&mut state, builder, raiders);
+    let (turret, welder, _) = wounded_turret(&mut state, builder, &raiders);
     assert_eq!(state.player(PlayerId(0)).scrap, 1, "test premise: one coin");
     let hp_before = state.building(turret).unwrap().hp;
 
@@ -604,7 +604,7 @@ fn the_last_coin_prepays_its_full_scrap_of_welding() {
         (ramp * ticks / ramp_ticks) * basis * oxide_sim::stats::REPAIR_COST_PERMILLE
             / u64::from(stats.max_hp)
     };
-    let stall_tick = (0u64..)
+    let stall_tick = (0..ramp_ticks)
         .find(|&p| millis(p + 1).div_ceil(1000) > 1)
         .unwrap();
     let welded = u32::try_from(ramp * stall_tick / ramp_ticks).unwrap();
@@ -637,7 +637,7 @@ fn a_queued_repair_waits_its_turn_then_welds() {
         state.units()[1].id,
         state.units()[2].id,
     );
-    let (turret, welder, wounded_hp) = wounded_turret(&mut state, builder, vec![r1, r2]);
+    let (turret, welder, wounded_hp) = wounded_turret(&mut state, builder, &[r1, r2]);
 
     // Send the welder marching, then queue the weld behind the march.
     let waypoint = TilePos::new(10, 2);

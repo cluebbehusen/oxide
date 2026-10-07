@@ -254,8 +254,8 @@ impl PauseScreen {
     /// Opens the name field over the pause menu, prefilled with the
     /// caller's suggestion so Enter-Enter saves without typing (the
     /// Start-preselected doctrine).
-    pub fn begin_naming(&mut self, suggested: String) {
-        let field = TextField::new("SAVE GAME", "SAVE", &suggested, Self::NAME_MAX);
+    pub fn begin_naming(&mut self, suggested: &str) {
+        let field = TextField::new("SAVE GAME", "SAVE", suggested, Self::NAME_MAX);
         self.menu = field.menu();
         self.naming = Some(field);
     }
@@ -676,7 +676,7 @@ mod tests {
     fn naming_at_1280(suggested: &str) -> (PauseScreen, crate::text_field::Layout) {
         crate::render::set_viewport(1280.0, 800.0);
         let mut p = PauseScreen::open(false, true);
-        p.begin_naming(suggested.to_string());
+        p.begin_naming(suggested);
         let layout = crate::text_field::layout(vec2(1280.0, 800.0), crate::render::ui_scale());
         (p, layout)
     }
@@ -771,7 +771,7 @@ mod tests {
         let mut p = PauseScreen::open(false, true);
         assert_eq!(activate(&mut p, "Save Game"), Out::SaveGame);
         assert!(!p.confirming(), "saving destroys nothing — no dialog");
-        p.begin_naming("skirmish | t100".to_string());
+        p.begin_naming("skirmish | t100");
         assert!(p.naming());
         assert_eq!(
             p.menu.items[0], "skirmish | t100_",
@@ -788,7 +788,7 @@ mod tests {
     #[test]
     fn the_name_field_edits_with_text_and_backspace_and_escape_cancels() {
         let mut p = PauseScreen::open(false, true);
-        p.begin_naming(String::new());
+        p.begin_naming("");
         type_text(&mut p, "abc");
         assert_eq!(drive(&mut p, Key::Backspace), Out::Stay);
         assert_eq!(p.menu.items[0], "ab_");
@@ -803,7 +803,7 @@ mod tests {
             "the cursor returns to the verb"
         );
         // An empty name refuses to commit instead of writing a blank.
-        p.begin_naming(String::new());
+        p.begin_naming("");
         assert_eq!(drive(&mut p, Key::Enter), Out::Stay);
         assert!(p.naming(), "the field waits for a real name");
     }
@@ -811,7 +811,7 @@ mod tests {
     #[test]
     fn repeated_backspace_edges_clear_the_name_field_in_one_frame() {
         let mut p = PauseScreen::open(false, true);
-        p.begin_naming("oxide".to_string());
+        p.begin_naming("oxide");
         let mut mouse = vec2(0.0, 0.0);
         let mut sounds = Vec::new();
         let repeats = [
@@ -838,7 +838,7 @@ mod tests {
     #[test]
     fn the_name_field_caps_its_length_and_the_verdict_shows_until_the_next_pick() {
         let mut p = PauseScreen::open(false, true);
-        p.begin_naming("x".repeat(40));
+        p.begin_naming(&"x".repeat(40));
         let shown = p.menu.items[0].clone();
         assert_eq!(
             shown.chars().count(),

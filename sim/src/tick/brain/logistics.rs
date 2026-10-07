@@ -97,26 +97,23 @@ pub(super) fn board(
     if !stale {
         return;
     }
-    match boarding_route(state, kind, pos, carrier_pos) {
-        Some((goal, waypoints)) => {
-            let unit = state.unit_mut(id).expect("caller checked");
-            unit.path = Some(PathFollow {
-                final_point: None,
-                goal,
-                waypoints,
-                next: 0,
-            });
-        }
-        None => {
-            let unit = state.unit_mut(id).expect("caller checked");
-            unit.drop_active_order();
-            events.push(Event::OrderStalled {
-                unit: id,
-                player,
-                pos,
-                reason: StallReason::NoRoute,
-            });
-        }
+    if let Some((goal, waypoints)) = boarding_route(state, kind, pos, carrier_pos) {
+        let unit = state.unit_mut(id).expect("caller checked");
+        unit.path = Some(PathFollow {
+            final_point: None,
+            goal,
+            waypoints,
+            next: 0,
+        });
+    } else {
+        let unit = state.unit_mut(id).expect("caller checked");
+        unit.drop_active_order();
+        events.push(Event::OrderStalled {
+            unit: id,
+            player,
+            pos,
+            reason: StallReason::NoRoute,
+        });
     }
 }
 

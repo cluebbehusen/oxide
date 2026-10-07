@@ -210,7 +210,7 @@ pub struct Config {
     pub ui_scale: f32,
     /// Camera feel.
     pub camera: CameraPrefs,
-    /// Window size at startup, WIDTHxHEIGHT.
+    /// Window size at startup, `WIDTHxHEIGHT`.
     pub window: (u32, u32),
     /// Accessibility: damp decorative animation (alert pulses, ping
     /// rings, muzzle flashes). Informational motion — unit movement,
@@ -531,7 +531,7 @@ mod tests {
         assert_eq!(loaded, config, "the old config survived the failed save");
         let temps: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
             .collect();
         assert!(temps.is_empty(), "no temp survives a failed save");

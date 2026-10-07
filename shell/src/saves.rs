@@ -121,7 +121,10 @@ fn scan_cancellable(
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
-    for path in entries.filter_map(|e| e.ok()).map(|e| e.path()) {
+    for path in entries
+        .filter_map(std::result::Result::ok)
+        .map(|e| e.path())
+    {
         if cancelled() {
             break;
         }

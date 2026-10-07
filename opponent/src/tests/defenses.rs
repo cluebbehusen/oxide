@@ -1332,8 +1332,7 @@ fn every_gate_of_a_cut_draws_its_own_gun_and_charges() {
     let offered = |scenario: &Scenario, kind: BuildingKind| {
         let state = scenario.build().unwrap();
         offer(&wanted(scenario, &state, &Memory::default(), 85), kind)
-            .map(|(anchor, _)| anchor)
-            .unwrap_or_else(|| panic!("a {kind:?} is wanted"))
+            .map_or_else(|| panic!("a {kind:?} is wanted"), |(anchor, _)| anchor)
     };
     for kind in [BuildingKind::Turret, BuildingKind::ScuttleCharge] {
         let first = offered(&scenario, kind);

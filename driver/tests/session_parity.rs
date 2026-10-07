@@ -221,7 +221,7 @@ fn every_live_verb_works_headless_over_tcp_and_the_record_reproduces() -> Result
 /// Needs a native window (spawns a real shell), so it runs with the
 /// #[ignore]d battery, never in CI.
 #[test]
-#[ignore]
+#[ignore = "needs a native window"]
 fn the_live_shell_and_the_headless_session_answer_identically() -> Result<()> {
     let scratch = Scratch::new();
     let scenario_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

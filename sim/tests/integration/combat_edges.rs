@@ -7,6 +7,7 @@
 
 use crate::common;
 use common::{arena, cmd, face_target, players, run_until, unit};
+use oxide_sim::scenario::ScenarioMode;
 
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
@@ -26,7 +27,7 @@ fn a_ground_chaser_stalls_when_no_standing_room_reaches_a_flyer_deep_in_rock() {
     // column, never within 5 tiles of the chaser — so no mid-flight
     // auto-acquire drags the fight open early.
     let scenario = Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "walled-flyer".into(),
         seed: 42,
         map: vec![
@@ -120,7 +121,7 @@ fn a_fogged_flyer_footing_never_leaks_through_the_stall_reason() {
     // NoFiringPosition would tell the player the unseen flyer sits
     // over impassable ground.
     let scenario = Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "fogged-flyer".into(),
         seed: 42,
         map: vec![
@@ -340,7 +341,7 @@ fn a_dead_attacker_draws_no_answer() {
     // auto-acquire an enemy base inside its aggro and never reach the
     // retaliation branch.
     let scenario = Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "buffered-answer".into(),
         seed: 42,
         map: vec![
@@ -439,7 +440,7 @@ fn a_surviving_shooter_is_answered_when_the_victims_own_target_falls() {
     // because the 0.10 rail one-shots the Sentinel; shell arrival is
     // read from sim state, so the same-tick staging is exact.)
     let scenario = Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "fell-in-resolution".into(),
         seed: 42,
         map: vec![
@@ -605,7 +606,7 @@ fn radar_detects_at_the_ring_and_goes_quiet_one_tile_beyond() {
     // harvesters straddle that edge, both far outside any friendly true
     // sight.
     let scenario = Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "radar-edge".into(),
         seed: 42,
         map: vec![
@@ -679,7 +680,7 @@ fn a_ground_chaser_flanks_to_a_firing_position_it_can_actually_shoot_from() {
     // from, and take the kill. (Before range-aware selection this soft-
     // locked: the chaser parked on the corner forever, out of range.)
     let scenario = Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "flanked-flyer".into(),
         seed: 42,
         map: vec![

@@ -44,7 +44,7 @@ pub fn commands(state: &State, bots: &mut [SeatController]) -> Vec<PlayerCommand
 fn executor() -> &'static BotExecutor {
     static EXECUTOR: OnceLock<BotExecutor> = OnceLock::new();
     EXECUTOR.get_or_init(|| {
-        BotExecutor::new(std::thread::available_parallelism().map_or(1, |n| n.get()))
+        BotExecutor::new(std::thread::available_parallelism().map_or(1, std::num::NonZero::get))
     })
 }
 

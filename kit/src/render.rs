@@ -23,23 +23,23 @@ fn rgb(hex: u32) -> Color {
     )
 }
 
-const GROUND: u32 = 0x232329;
-const ROCK: u32 = 0x52525E;
-const PEAK: u32 = 0x22212A;
-const PEAK_FACE: u32 = 0x34333D;
-const PEAK_LIP: u32 = 0x57545F;
-const PIT: u32 = 0x0B0B10;
-const PIT_RIM: u32 = 0x1B1B22;
-const SCRAP_FULL: u32 = 0xD9A441;
-const SCRAP_LOW: u32 = 0x8C6A2F;
-const FRAME: u32 = 0x3E3E48;
-const HP_BACK: u32 = 0x141418;
-const HP_FRONT: u32 = 0xE8E4D8;
+const GROUND: u32 = 0x23_23_29;
+const ROCK: u32 = 0x52_52_5E;
+const PEAK: u32 = 0x22_21_2A;
+const PEAK_FACE: u32 = 0x34_33_3D;
+const PEAK_LIP: u32 = 0x57_54_5F;
+const PIT: u32 = 0x0B_0B_10;
+const PIT_RIM: u32 = 0x1B_1B_22;
+const SCRAP_FULL: u32 = 0xD9_A4_41;
+const SCRAP_LOW: u32 = 0x8C_6A_2F;
+const FRAME: u32 = 0x3E_3E_48;
+const HP_BACK: u32 = 0x14_14_18;
+const HP_FRONT: u32 = 0xE8_E4_D8;
 
 fn faction_color(faction: Faction) -> u32 {
     match faction {
-        Faction::Ferrous => 0xC4573B,
-        Faction::Cupric => 0x3F9482,
+        Faction::Ferrous => 0xC4_57_3B,
+        Faction::Cupric => 0x3F_94_82,
     }
 }
 
@@ -121,7 +121,7 @@ pub fn render_state(state: &State) -> Pixmap {
                 );
             }
             (Terrain::Ground, 0) if tile.cosmetic == 1 => {
-                fill_rect(&mut pixmap, x, y, TILE_PX, TILE_PX, 0x2C2C34);
+                fill_rect(&mut pixmap, x, y, TILE_PX, TILE_PX, 0x2C_2C_34);
             }
             (Terrain::Ground, 0) => {}
             (Terrain::Ground, scrap) => {

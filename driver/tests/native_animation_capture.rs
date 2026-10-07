@@ -61,12 +61,13 @@ impl NativeCapture {
             }
         };
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-        let output = std::env::var_os("OXIDE_ANIMATION_CAPTURE_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
+        let output = std::env::var_os("OXIDE_ANIMATION_CAPTURE_DIR").map_or_else(
+            || {
                 root.join("screenshots/native-animation")
                     .join(format!("run-{}", std::process::id()))
-            });
+            },
+            PathBuf::from,
+        );
         std::fs::create_dir_all(&output)?;
         Ok(Self {
             shell: Some(shell),
@@ -76,9 +77,9 @@ impl NativeCapture {
         })
     }
 
-    fn load(&mut self, scenario: Value) -> Result<StateView> {
+    fn load(&mut self, scenario: &Value) -> Result<StateView> {
         let path = self.home.join("animation-stage.json");
-        std::fs::write(&path, serde_json::to_vec_pretty(&scenario)?)?;
+        std::fs::write(&path, serde_json::to_vec_pretty(scenario)?)?;
         expect_ok(self.client.call(Request::LoadScenario {
             path: path.to_string_lossy().into_owned(),
         })?)?;
@@ -254,15 +255,19 @@ fn combat_capture_schedule(cooldown: u32) -> Vec<u64> {
 
 #[test]
 #[ignore = "opens a real native window and writes visual review artifacts"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scripted session in the real shell"
+)]
 fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
     let mut harness = NativeCapture::spawn()?;
 
-    let overview = harness.load(overview_scenario())?;
+    let overview = harness.load(&overview_scenario())?;
     assert_eq!(overview.units.len(), 13);
     harness.capture_stage("00-idle-overview", 1, 1)?;
 
     for kind in ALL_UNIT_KINDS {
-        let movement = harness.load(movement_scenario(kind))?;
+        let movement = harness.load(&movement_scenario(kind))?;
         let mover = unit_kind(&movement, 0, kind)?;
         let start = movement
             .units
@@ -289,7 +294,7 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
         assert_ne!(start, finish, "{kind:?} movement stage did not move");
     }
 
-    let overview = harness.load(overview_scenario())?;
+    let overview = harness.load(&overview_scenario())?;
     let harvester = unit_at(&overview, 0, [10, 10])?;
     harness.command(
         0,
@@ -316,7 +321,7 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
         "harvest capture never reached a full cargo bay"
     );
 
-    let overview = harness.load(overview_scenario())?;
+    let overview = harness.load(&overview_scenario())?;
     let builder = unit_at(&overview, 0, [6, 15])?;
     harness.command(
         0,
@@ -337,7 +342,7 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
         }
     )));
 
-    let overview = harness.load(overview_scenario())?;
+    let overview = harness.load(&overview_scenario())?;
     let foundry = building(&overview, 0, BuildingKind::Foundry)?;
     harness.command(
         0,
@@ -355,7 +360,7 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
         }
     )));
 
-    let overview = harness.load(overview_scenario())?;
+    let overview = harness.load(&overview_scenario())?;
     let fabricator = building(&overview, 0, BuildingKind::Fabricator)?;
     harness.command(
         0,
@@ -373,11 +378,11 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
         }
     )));
 
-    harness.load(overview_scenario())?;
+    harness.load(&overview_scenario())?;
     harness.capture_stage("06-array-and-reclaimer-continuous", 20, 2)?;
 
     for kind in combat_kinds() {
-        let view = harness.load(unit_duel_scenario(kind))?;
+        let view = harness.load(&unit_duel_scenario(kind))?;
         let attacker = unit_kind(&view, 0, kind)?;
         let target = view
             .units
@@ -414,7 +419,7 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
         );
     }
 
-    let view = harness.load(sentinel_sidearm_scenario())?;
+    let view = harness.load(&sentinel_sidearm_scenario())?;
     let sentinel = unit_kind(&view, 0, UnitKind::Sentinel)?;
     let target = unit_kind(&view, 1, UnitKind::Talon)?;
     harness.command(1, Command::Surrender)?;
@@ -444,7 +449,7 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
         BuildingKind::FlakTurret,
         BuildingKind::Bastion,
     ] {
-        let view = harness.load(defense_duel_scenario(kind))?;
+        let view = harness.load(&defense_duel_scenario(kind))?;
         let gun = building(&view, 0, kind)?;
         let target = view
             .units
@@ -477,7 +482,7 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
         );
     }
 
-    let repair = harness.load(building_repair_scenario())?;
+    let repair = harness.load(&building_repair_scenario())?;
     let attacker = unit_kind(&repair, 1, UnitKind::Sentinel)?;
     let patient = building(&repair, 0, BuildingKind::Array)?;
     harness.present(1)?;
@@ -536,7 +541,7 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
         "field-repair capture never accepted a weld"
     );
 
-    let repair_bay = harness.load(repair_bay_scenario())?;
+    let repair_bay = harness.load(&repair_bay_scenario())?;
     let attacker = unit_kind(&repair_bay, 1, UnitKind::Sentinel)?;
     let patient = unit_kind(&repair_bay, 0, UnitKind::Sentinel)?;
     harness.command(
@@ -608,7 +613,7 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
         "Repair Bay capture never increased patient hp"
     );
 
-    let flight = harness.load(landing_scenario())?;
+    let flight = harness.load(&landing_scenario())?;
     let condor = unit_kind(&flight, 0, UnitKind::Condor)?;
     harness.command(
         0,
@@ -643,7 +648,7 @@ fn captures_promoted_tender_and_condor_in_the_real_shell() -> Result<()> {
     let mut harness = NativeCapture::spawn()?;
 
     for kind in [UnitKind::Tender, UnitKind::Condor] {
-        let movement = harness.load(movement_scenario(kind))?;
+        let movement = harness.load(&movement_scenario(kind))?;
         let mover = unit_kind(&movement, 0, kind)?;
         harness.command(
             0,
@@ -656,7 +661,7 @@ fn captures_promoted_tender_and_condor_in_the_real_shell() -> Result<()> {
         harness.capture_stage(&format!("promoted-movement/{}", kind.name()), 12, 1)?;
     }
 
-    let repair = harness.load(tender_repair_scenario())?;
+    let repair = harness.load(&tender_repair_scenario())?;
     let attacker = unit_kind(&repair, 1, UnitKind::Sentinel)?;
     let patient = building(&repair, 0, BuildingKind::Array)?;
     harness.present(1)?;
@@ -714,7 +719,7 @@ fn captures_promoted_tender_and_condor_in_the_real_shell() -> Result<()> {
         "Tender capture never accepted a weld"
     );
 
-    let duel = harness.load(condor_duel_scenario())?;
+    let duel = harness.load(&condor_duel_scenario())?;
     let condor = unit_kind(&duel, 0, UnitKind::Condor)?;
     let target = duel
         .units
@@ -756,7 +761,7 @@ fn captures_promoted_airworks_and_scouts_in_the_real_shell() -> Result<()> {
     let mut harness = NativeCapture::spawn()?;
 
     for kind in [UnitKind::Gnat, UnitKind::Kestrel] {
-        let movement = harness.load(promoted_scout_movement_scenario(kind))?;
+        let movement = harness.load(&promoted_scout_movement_scenario(kind))?;
         let mover = unit_kind(&movement, 0, kind)?;
         harness.command(
             0,
@@ -769,7 +774,7 @@ fn captures_promoted_airworks_and_scouts_in_the_real_shell() -> Result<()> {
         harness.capture_stage(&format!("promoted-scout-movement/{}", kind.name()), 12, 1)?;
     }
 
-    let view = harness.load(airworks_launch_scenario())?;
+    let view = harness.load(&airworks_launch_scenario())?;
     let airworks = building(&view, 0, BuildingKind::Airworks)?;
     let airworks_anchor = view
         .buildings
@@ -970,10 +975,10 @@ fn write_config(home: &Path) -> Result<()> {
 }
 
 fn write_sheet(frames: &[PathBuf], path: &Path) -> Result<()> {
+    const SCALE: f32 = 0.25;
     let first_path = frames.first().context("contact sheet has no frames")?;
     let first = tiny_skia::Pixmap::decode_png(&std::fs::read(first_path)?)
         .context("decoding first animation frame")?;
-    const SCALE: f32 = 0.25;
     let tile_w = (first.width() as f32 * SCALE).ceil() as u32;
     let tile_h = (first.height() as f32 * SCALE).ceil() as u32;
     let columns = (frames.len() as f32).sqrt().ceil() as u32;
@@ -1020,10 +1025,10 @@ fn empty_map(scrap: &[TilePos]) -> Vec<String> {
         .collect()
 }
 
-fn scenario(name: &str, scrap: &[TilePos], units: Vec<Value>, buildings: Vec<Value>) -> Value {
+fn scenario(name: &str, scrap: &[TilePos], units: &[Value], buildings: &[Value]) -> Value {
     json!({
         "name": name,
-        "seed": 20260802,
+        "seed": 20_260_802,
         "players": [
             { "name": "Ferrous", "faction": "ferrous", "scrap": 5000, "bot": false },
             {
@@ -1083,8 +1088,8 @@ fn overview_scenario() -> Value {
     scenario(
         "Native Animation Overview",
         &[TilePos::new(11, 10)],
-        units,
-        buildings,
+        &units,
+        &buildings,
     )
 }
 
@@ -1096,10 +1101,10 @@ fn combat_kinds() -> impl Iterator<Item = UnitKind> {
 
 fn movement_scenario(kind: UnitKind) -> Value {
     scenario(
-        &format!("Native {:?} Movement", kind),
+        &format!("Native {kind:?} Movement"),
         &[],
-        vec![unit(0, kind, 15, 10)],
-        Vec::new(),
+        &[unit(0, kind, 15, 10)],
+        &Vec::new(),
     )
 }
 
@@ -1160,10 +1165,10 @@ fn unit_duel_scenario(attacker: UnitKind) -> Value {
         Vec::new()
     };
     scenario(
-        &format!("Native {:?} Fire", attacker),
+        &format!("Native {attacker:?} Fire"),
         &[],
-        units,
-        buildings,
+        &units,
+        &buildings,
     )
 }
 
@@ -1171,11 +1176,11 @@ fn sentinel_sidearm_scenario() -> Value {
     scenario(
         "Native Sentinel AA Sidearm",
         &[],
-        vec![
+        &[
             unit(0, UnitKind::Sentinel, 15, 10),
             unit(1, UnitKind::Talon, 17, 10),
         ],
-        Vec::new(),
+        &Vec::new(),
     )
 }
 
@@ -1183,11 +1188,11 @@ fn condor_duel_scenario() -> Value {
     scenario(
         "Native Condor Bomb Release",
         &[],
-        vec![
+        &[
             unit(0, UnitKind::Condor, 15, 10),
             unit(1, UnitKind::Harvester, 15, 8),
         ],
-        Vec::new(),
+        &Vec::new(),
     )
 }
 
@@ -1195,8 +1200,8 @@ fn airworks_launch_scenario() -> Value {
     scenario(
         "Native Airworks Kestrel Launch",
         &[],
-        Vec::new(),
-        vec![structure(0, BuildingKind::Airworks, 15, 10)],
+        &Vec::new(),
+        &[structure(0, BuildingKind::Airworks, 15, 10)],
     )
 }
 
@@ -1216,10 +1221,10 @@ fn defense_duel_scenario(defense: BuildingKind) -> Value {
         buildings.push(structure(0, BuildingKind::Array, 21, 12));
     }
     scenario(
-        &format!("Native {:?} Fire", defense),
+        &format!("Native {defense:?} Fire"),
         &[],
-        vec![unit(1, target, target_x, 10)],
-        buildings,
+        &[unit(1, target, target_x, 10)],
+        &buildings,
     )
 }
 
@@ -1227,11 +1232,11 @@ fn building_repair_scenario() -> Value {
     scenario(
         "Native Field Repair",
         &[],
-        vec![
+        &[
             unit(0, UnitKind::Harvester, 12, 10),
             unit(1, UnitKind::Sentinel, 18, 10),
         ],
-        vec![structure(0, BuildingKind::Array, 16, 10)],
+        &[structure(0, BuildingKind::Array, 16, 10)],
     )
 }
 
@@ -1239,11 +1244,11 @@ fn tender_repair_scenario() -> Value {
     scenario(
         "Native Tender Repair",
         &[],
-        vec![
+        &[
             unit(0, UnitKind::Tender, 15, 10),
             unit(1, UnitKind::Sentinel, 18, 10),
         ],
-        vec![structure(0, BuildingKind::Array, 16, 10)],
+        &[structure(0, BuildingKind::Array, 16, 10)],
     )
 }
 
@@ -1251,10 +1256,10 @@ fn repair_bay_scenario() -> Value {
     scenario(
         "Native Repair Bay",
         &[],
-        vec![
+        &[
             unit(0, UnitKind::Sentinel, 18, 11),
             unit(1, UnitKind::Sentinel, 20, 11),
         ],
-        vec![structure(0, BuildingKind::RepairBay, 15, 10)],
+        &[structure(0, BuildingKind::RepairBay, 15, 10)],
     )
 }

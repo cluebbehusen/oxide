@@ -589,7 +589,7 @@ fn draw_defense_mount(
     action: Option<usize>,
 ) {
     let draw = |x, y, tint, params| {
-        sprites.draw_building(x, y, tint, params, game.presentation.camera.zoom)
+        sprites.draw_building(x, y, tint, params, game.presentation.camera.zoom);
     };
     let faction = game.state.player(building.player).faction;
     let screen = game
@@ -644,7 +644,12 @@ fn draw_defense_mount(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one draw pass over every building and its dressing"
+)]
 pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
+    const BUILDING_CULL_MARGIN: f32 = 4.5;
     let zoom = game.presentation.camera.zoom;
     let draw = |x, y, tint, params| sprites.draw_building(x, y, tint, params, zoom);
     // Buildings an own crew is actively stripping (the salvage
@@ -768,7 +773,6 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
     // Frustum cull by anchor with a margin covering the widest footprint
     // plus bars and site dressing — off-camera works cost nothing.
     let (view_lo, view_hi) = game.presentation.camera.world_rect();
-    const BUILDING_CULL_MARGIN: f32 = 4.5;
     for building in game.state.buildings().iter().filter(|b| !b.provisional) {
         if building.player != game.presentation.human
             && !game.presentation.all_seeing()
@@ -871,11 +875,7 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
         }
         if !building.built {
             // Construction progress in bone, distinct from training amber.
-            let ticks = building
-                .stats()
-                .construction
-                .map(|c| c.build_ticks)
-                .unwrap_or(1);
+            let ticks = building.stats().construction.map_or(1, |c| c.build_ticks);
             let fraction = building.progress as f32 / ticks as f32;
             draw_rectangle(screen.x, screen.y + dest.y + 3.0, dest.x, 4.0, HP_BACK);
             draw_rectangle(
@@ -912,11 +912,7 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
         } else if building.built {
             building.hp < max_hp
         } else {
-            let ticks = building
-                .stats()
-                .construction
-                .map(|c| c.build_ticks)
-                .unwrap_or(1);
+            let ticks = building.stats().construction.map_or(1, |c| c.build_ticks);
             let start = max_hp / 5;
             let expected = start + (max_hp - start) * building.progress.min(ticks) / ticks;
             building.hp < expected
@@ -1025,9 +1021,9 @@ fn moth_bomb_pose(
     let side = vec2(-heading.y, heading.x);
     let row = release.slot / 2;
     let lateral = if release.slot.is_multiple_of(2) {
-        -0.234375
+        -0.234_375
     } else {
-        0.234375
+        0.234_375
     };
     let start = launch + side * lateral + heading * ((19.0 - row as f32 * 14.0) / 64.0);
     let lead = (oxide_sim::UnitKind::Moth.stats().speed.to_num::<f32>() * total / 3.0)
@@ -1346,6 +1342,7 @@ fn draw_splash_bloom(sprites: &Sprites, center: Vec2, zoom: f32, radius: f32, pr
     super::destruction::draw_hit(sprites, center, zoom, radius, progress);
 }
 
+#[expect(clippy::too_many_lines, reason = "draws every shell and effect kind")]
 pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
     let sees = |p: Vec2| {
         game.my_vision()
@@ -1427,7 +1424,7 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
             let normal = vec2(-direction.y, direction.x);
             let missile = shell.kind == oxide_sim::ProjectileKind::Missile;
             let length = game.presentation.camera.zoom * if missile { 0.375 } else { 0.28 };
-            let width = game.presentation.camera.zoom * if missile { 0.078125 } else { 0.13 };
+            let width = game.presentation.camera.zoom * if missile { 0.078_125 } else { 0.13 };
             let center = shell_at
                 - vec2(
                     0.0,
@@ -3303,7 +3300,7 @@ mod tests {
         for (tier, stats) in kind.tiers().iter().enumerate() {
             let mut ranges = Vec::new();
             visit_building_ranges(vec2(10.0, 10.0), kind, tier as u8, |range| {
-                ranges.push(range)
+                ranges.push(range);
             });
             let weapon = ranges
                 .iter()
@@ -3367,7 +3364,7 @@ mod tests {
             game.presentation.selection.units = vec![id];
             let mut indicators = Vec::new();
             visit_active_ranges(&game.view(), &InputState::new(), |indicator| {
-                indicators.push(indicator)
+                indicators.push(indicator);
             });
             let weapons: Vec<_> = indicators
                 .iter()

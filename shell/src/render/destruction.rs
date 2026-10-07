@@ -446,12 +446,10 @@ fn air_fragment(body: UnitBody, seed: u32, index: usize, age: f32) -> AirFragmen
             } else {
                 0.25
             },
-            if index < 2 {
-                0.0
-            } else if index == 2 {
-                -1.0
-            } else {
-                1.0
+            match index.cmp(&2) {
+                std::cmp::Ordering::Less => 0.0,
+                std::cmp::Ordering::Equal => -1.0,
+                std::cmp::Ordering::Greater => 1.0,
             },
         ),
         body.rotation,

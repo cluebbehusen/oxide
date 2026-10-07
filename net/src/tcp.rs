@@ -87,7 +87,7 @@ impl Connection {
         let (read, incoming) = mpsc::sync_channel(INCOMING_LINES);
         thread::Builder::new()
             .name("oxide-net-read".into())
-            .spawn(move || read_lines(reader, read))?;
+            .spawn(move || read_lines(reader, &read))?;
         let writer = thread::Builder::new()
             .name("oxide-net-write".into())
             .spawn(move || write_lines(writer, to_write))
@@ -144,7 +144,7 @@ impl Drop for Connection {
     }
 }
 
-fn read_lines(socket: TcpStream, lines: SyncSender<String>) {
+fn read_lines(socket: TcpStream, lines: &SyncSender<String>) {
     let mut reader = BufReader::new(socket);
     let mut buffer = Vec::new();
     loop {
@@ -298,7 +298,8 @@ mod tests {
 
     #[test]
     fn an_oversized_or_non_utf8_line_closes_the_connection_both_ways() {
-        let malformed: [&[u8]; 2] = [&[b'a'; MAX_LINE_BYTES + 1], &[0xff, b'\n']];
+        let oversized = vec![b'a'; MAX_LINE_BYTES + 1];
+        let malformed: [&[u8]; 2] = [&oversized, &[0xff, b'\n']];
         for bytes in malformed {
             let (host, mut raw) = accepted_from_raw();
             raw.write_all(bytes).unwrap();

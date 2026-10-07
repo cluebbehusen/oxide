@@ -625,8 +625,8 @@ mod tests {
 
     #[test]
     fn every_drop_leaves_the_gate_at_once_and_seals_one_surrender() {
-        let later = PROGRESS_TIMEOUT;
         type DropA = fn(&mut HostSession, Duration);
+        let later = PROGRESS_TIMEOUT;
         let drops: [(DropReason, DropA); 4] = [
             (DropReason::Closed, |host, _| host.disconnected(A)),
             (DropReason::Protocol, |host, now| host.receive(A, "{", now)),

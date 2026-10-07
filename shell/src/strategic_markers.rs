@@ -52,7 +52,11 @@ enum Role {
 }
 
 fn role(kind: UnitKind) -> Role {
-    use UnitKind::*;
+    use UnitKind::{
+        Avalanche, Bombard, Breaker, Buzzard, Condor, Darter, Excavator, Flakhound, Gnat,
+        Harvester, Kestrel, Lancer, Moth, Sapper, Scuttler, Sentinel, Shrike, Skyhook, Stinger,
+        Sylph, Talon, Tender, Warden, Wisp,
+    };
     match kind {
         Harvester | Excavator => Role::Worker,
         Sentinel | Lancer | Buzzard | Darter | Warden | Breaker => Role::Gun,
@@ -129,7 +133,7 @@ pub fn draw_markers(game: &Scene<'_>, alpha: f32) {
                     center.y + b.1,
                     1.4,
                     ink,
-                )
+                );
             };
             match role(unit.kind) {
                 Role::Worker => {
@@ -314,9 +318,12 @@ pub(crate) fn draw_buildings(game: &Scene<'_>) {
 }
 
 fn building_glyph(kind: oxide_sim::BuildingKind, p: Vec2, ink: Color) {
-    use oxide_sim::BuildingKind::*;
+    use oxide_sim::BuildingKind::{
+        Airworks, Array, Barricade, Bastion, Crucible, Extractor, Fabricator, FlakTurret, Foundry,
+        Reclaimer, RepairBay, ScuttleCharge, Turret,
+    };
     let line = |a: (f32, f32), b: (f32, f32)| {
-        draw_line(p.x + a.0, p.y + a.1, p.x + b.0, p.y + b.1, 1.35, ink)
+        draw_line(p.x + a.0, p.y + a.1, p.x + b.0, p.y + b.1, 1.35, ink);
     };
     match kind {
         Foundry | Fabricator | Crucible => {

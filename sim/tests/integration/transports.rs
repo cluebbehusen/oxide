@@ -3,6 +3,7 @@
 use crate::common;
 use common::wide_open_map as open_map;
 use common::{cmd, players, unit};
+use oxide_sim::scenario::ScenarioMode;
 
 use chassis::fx::{Fx, Vec2Fx};
 use chassis::grid::TilePos;
@@ -13,7 +14,7 @@ use oxide_sim::{Command, Event, Faction, Scenario, State, Target, UnitId, UnitKi
 
 fn arena(map: Vec<String>, units: Vec<UnitSpec>) -> Scenario {
     Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "sling-arena".into(),
         seed: 13,
         map,

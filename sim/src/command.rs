@@ -196,7 +196,7 @@ pub enum Command {
     },
     /// Give built armed buildings a preferred known hostile objective.
     /// The preference persists until contact loss, observed invalidation,
-    /// replacement, or ClearFocus. A defense still fires at an ordinary target when its
+    /// replacement, or `ClearFocus`. A defense still fires at an ordinary target when its
     /// preference is currently out of reach or behind blocking terrain.
     FocusFire {
         /// The defenses to retask. The sim reads this as a sorted set.

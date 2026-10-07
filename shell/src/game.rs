@@ -276,6 +276,10 @@ impl Game {
     /// onto the same log. In a deterministic sim a replay *is* a save file
     /// — this is "load game".
     pub fn from_replay(replay: GameReplay) -> Result<Self> {
+        // Loading replays synchronously on the frame loop: a structurally
+        // valid file can still claim an absurd duration and freeze the UI
+        // for minutes. ~28 game-hours is beyond any honest session.
+        const MAX_LOAD_TICKS: u64 = oxide_kit::MAX_REPLAY_TICKS;
         let _load = oxide_kit::diagnostics::stage(Stage::ReplayLoad, 0);
         // Untrusted file: enforce the invariants recording guarantees, and
         // refuse cross-version saves outright — resuming one would keep
@@ -295,10 +299,6 @@ impl Game {
                 .last()
                 .map_or(0, |c| c.tick.saturating_add(1))
         });
-        // Loading replays synchronously on the frame loop: a structurally
-        // valid file can still claim an absurd duration and freeze the UI
-        // for minutes. ~28 game-hours is beyond any honest session.
-        const MAX_LOAD_TICKS: u64 = oxide_kit::MAX_REPLAY_TICKS;
         anyhow::ensure!(
             total <= MAX_LOAD_TICKS,
             "replay spans {total} ticks, beyond the {MAX_LOAD_TICKS}-tick interactive load limit \
@@ -555,13 +555,13 @@ impl Game {
             }
         }
 
-        if !self.suppress_presentation {
-            self.presentation
-                .observe_tick(&self.state, &report.events, &report.movement);
-        } else {
+        if self.suppress_presentation {
             self.presentation
                 .projectile_releases
                 .observe(&self.state, &report.events);
+        } else {
+            self.presentation
+                .observe_tick(&self.state, &report.events, &report.movement);
         }
         // Dead units leave the selection — and so do HOSTILES whose
         // ground fog has re-covered: the panel reads live hp from the
@@ -782,6 +782,7 @@ impl oxide_protocol::DebugSession for Game {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxide_sim::scenario::ScenarioMode;
 
     #[test]
     fn recovery_records_the_shell_boundary_and_resumes_the_same_future() {
@@ -1591,7 +1592,7 @@ mod tests {
             bot_config: bot.then_some(oxide_sim::scenario::BotConfig::default()),
         };
         let scenario = Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "concede-arena".into(),
             seed: 42,
             map: vec![
