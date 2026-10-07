@@ -35,6 +35,10 @@
     {
       "path": "../../../scenarios/subsidence.json",
       "family": "constrained"
+    },
+    {
+      "path": "../../../scenarios/severance.json",
+      "family": "severed"
     }
   ]
 }

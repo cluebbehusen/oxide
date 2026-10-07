@@ -8,18 +8,16 @@
 //! difficulty. A comparison passes once the higher rung's share of decided
 //! legs reaches its gate over at least the manifest's number of decided pairs.
 
-use crate::bot_eval::AttackCalibration;
 use crate::bot_eval::{
     DEFAULT_STALL_LOOP_LIMIT, EvaluationBatchOptions, EvaluationLeg, EvaluationPlan, Termination,
     ensure_unique_execution_plans, evaluate_batch,
 };
-use crate::bot_matrix::{
+use crate::evaluation::{
     ManifestMap, MapFamily, MatchMode, REPLAY_INDEX_FILE, distinct, load_scenarios, seat_teams,
     seated_plan,
 };
-use crate::ledger::{
-    LedgerPool, PairShares, SeatLedger, WorthShare, render_shares, team_shares, worth_shares,
-};
+use crate::ledger::{PairShares, SeatLedger, WorthShare, render_shares, team_shares, worth_shares};
+use crate::seat_summary::{SeatEvidence, SeatSummary, SeatSummaryBuilder, rank};
 use anyhow::{Context, Result, bail, ensure};
 use oxide_sim::Scenario;
 use oxide_sim::scenario::{BotConfig, BotController, BotDifficulty, BotStance};
@@ -28,9 +26,6 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-
-/// Unit and building kinds each rung's ledger table shows.
-const LEDGER_KINDS: usize = 8;
 
 /// One rung against a lower one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -308,23 +303,14 @@ pub struct ScoredLadderRow {
     pub termination: Termination,
     /// Seats on the winning team.
     pub winner_seats: Vec<u8>,
+    /// Ticks the leg ran.
+    #[serde(default)]
+    pub duration_ticks: u64,
     /// Configuration by seat.
     pub seats: Vec<LadderSeat>,
-    /// QA evidence by seat; rows recorded before the ledger existed carry
-    /// none of the fields scoring reads here.
+    /// QA evidence by seat.
     #[serde(default)]
-    pub evidence: Vec<LadderEvidence>,
-}
-
-/// The fields of a seat's evidence the ladder report reads.
-#[derive(Debug, Clone, Deserialize)]
-pub struct LadderEvidence {
-    /// What the seat's units and buildings did.
-    #[serde(default)]
-    pub ledger: Option<SeatLedger>,
-    /// What it believed when it launched each attack, and how they went.
-    #[serde(default)]
-    pub attacks: Option<AttackCalibration>,
+    pub evidence: Vec<SeatEvidence>,
 }
 
 /// A seat's configured controller.
@@ -454,17 +440,15 @@ pub struct ComparisonReport {
     pub worth: Vec<WorthShare>,
 }
 
-/// One rung's pooled ledger and attack calibration in one manifest.
+/// One rung's seats in one manifest, pooled over every comparison it plays.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct RungLedger {
+pub struct RungReport {
     /// Manifest whose rows these are.
     pub manifest: String,
     /// The rung.
     pub rung: BotDifficulty,
-    /// Its seats' ledgers, pooled over every comparison it plays.
-    pub ledger: LedgerPool,
-    /// Its attack calibration, summed; absent when no row records one.
-    pub attacks: Option<AttackCalibration>,
+    /// Its seats' failure incidents, reactivity, income, ledger and attacks.
+    pub summary: SeatSummary,
 }
 
 /// Every manifest's comparisons, in the order rows first name them.
@@ -472,8 +456,8 @@ pub struct RungLedger {
 pub struct LadderReport {
     /// Comparisons.
     pub comparisons: Vec<ComparisonReport>,
-    /// Each rung's ledger, by manifest and then from the lowest rung up.
-    pub rungs: Vec<RungLedger>,
+    /// Each rung's seats, by manifest and then from the lowest rung up.
+    pub rungs: Vec<RungReport>,
 }
 
 /// Which rung won a leg: `Some(true)` for the higher rung, `Some(false)` for
@@ -540,7 +524,7 @@ pub fn build_report(rows: &[ScoredLadderRow]) -> Result<LadderReport> {
     let mut pairs: BTreeMap<PairKey, PairLegs> = BTreeMap::new();
     type ComparisonKey = (String, String, String);
     let mut worth: BTreeMap<ComparisonKey, PairShares> = BTreeMap::new();
-    let mut rungs: BTreeMap<(String, usize), RungLedger> = BTreeMap::new();
+    let mut rungs: BTreeMap<(String, usize), (BotDifficulty, SeatSummaryBuilder)> = BTreeMap::new();
     for (index, row) in rows.iter().enumerate() {
         let label = &row.ladder;
         let ledgers: Vec<Option<&SeatLedger>> = row
@@ -570,27 +554,11 @@ pub fn build_report(rows: &[ScoredLadderRow]) -> Result<LadderReport> {
             let Some(config) = seat.config else {
                 continue;
             };
-            let rank = BotDifficulty::ALL
-                .iter()
-                .position(|rung| *rung == config.difficulty)
-                .unwrap_or(0);
-            let pooled = rungs
-                .entry((label.manifest.clone(), rank))
-                .or_insert_with(|| RungLedger {
-                    manifest: label.manifest.clone(),
-                    rung: config.difficulty,
-                    ledger: LedgerPool::default(),
-                    attacks: None,
-                });
-            if let Some(ledger) = &evidence.ledger {
-                pooled.ledger.add(ledger);
-            }
-            if let Some(attacks) = &evidence.attacks {
-                pooled
-                    .attacks
-                    .get_or_insert_with(AttackCalibration::default)
-                    .add(attacks);
-            }
+            rungs
+                .entry((label.manifest.clone(), rank(config.difficulty)))
+                .or_insert_with(|| (config.difficulty, SeatSummaryBuilder::default()))
+                .1
+                .add(evidence, row.duration_ticks);
         }
         let key = (
             label.manifest.clone(),
@@ -697,8 +665,12 @@ pub fn build_report(rows: &[ScoredLadderRow]) -> Result<LadderReport> {
     Ok(LadderReport {
         comparisons,
         rungs: rungs
-            .into_values()
-            .filter(|rung| rung.ledger.seats > 0)
+            .into_iter()
+            .map(|((manifest, _), (rung, builder))| RungReport {
+                manifest,
+                rung,
+                summary: builder.finish(),
+            })
             .collect(),
     })
 }
@@ -755,20 +727,21 @@ impl LadderReport {
             }
             out.push('\n');
         }
+        let mut manifests: Vec<&str> = Vec::new();
         for rung in &self.rungs {
-            let _ = writeln!(
-                out,
-                "{}: {} ledger, {} seat-legs",
-                rung.manifest, rung.rung, rung.ledger.seats
-            );
-            if let Some(attacks) = &rung.attacks {
-                let _ = writeln!(
-                    out,
-                    "  attacks, by strength sent against the known defense:"
-                );
-                attacks.render(&mut out, "    ");
+            if !manifests.contains(&rung.manifest.as_str()) {
+                manifests.push(&rung.manifest);
             }
-            rung.ledger.render(&mut out, "  ", Some(LEDGER_KINDS));
+        }
+        for manifest in manifests {
+            let _ = writeln!(out, "{manifest}: seats by rung");
+            let groups: Vec<(String, &SeatSummary)> = self
+                .rungs
+                .iter()
+                .filter(|rung| rung.manifest == manifest)
+                .map(|rung| (rung.rung.to_string(), &rung.summary))
+                .collect();
+            crate::seat_summary::render(&mut out, &groups);
             out.push('\n');
         }
         out
@@ -963,6 +936,7 @@ mod tests {
             })
             .unwrap_or_default();
         ScoredLadderRow {
+            duration_ticks: 1_000,
             ladder: LadderLabel {
                 manifest: "ladder".into(),
                 map: "skirmish".into(),
@@ -1131,14 +1105,14 @@ mod tests {
         let mut rows: Vec<ScoredLadderRow> = pair(0, Some(Prime), Some(Prime)).into();
         for row in &mut rows {
             let higher = usize::from(row.leg == EvaluationLeg::Swapped);
-            let mut evidence: Vec<LadderEvidence> = (0..2)
-                .map(|_| LadderEvidence {
+            let mut evidence: Vec<SeatEvidence> = (0..2)
+                .map(|_| SeatEvidence {
                     ledger: Some(ledger(300)),
-                    attacks: None,
+                    ..SeatEvidence::default()
                 })
                 .collect();
             evidence[higher].ledger = Some(ledger(700));
-            evidence[higher].attacks = Some(AttackCalibration::default());
+            evidence[higher].attacks = Some(crate::bot_eval::AttackCalibration::default());
             row.evidence = evidence;
         }
         rows.extend(pair(1, Some(Standard), None));
@@ -1154,7 +1128,13 @@ mod tests {
         let rungs: Vec<(BotDifficulty, u64, bool)> = report
             .rungs
             .iter()
-            .map(|rung| (rung.rung, rung.ledger.seats, rung.attacks.is_some()))
+            .map(|rung| {
+                (
+                    rung.rung,
+                    rung.summary.ledger.seats,
+                    rung.summary.attacks.is_some(),
+                )
+            })
             .collect();
         assert_eq!(
             rungs,

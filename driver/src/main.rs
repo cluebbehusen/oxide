@@ -174,43 +174,14 @@ enum Cmd {
         )]
         decision_trace_out: Option<Box<PathBuf>>,
     },
-    /// Run a manifest's matrix of oxide-opponent against the frozen oxide-bot
-    /// on duel, team and free-for-all maps, publish its rows and print the
-    /// report. Baseline legs
-    /// (oxide-bot against itself) are reused from a cache while the reference
-    /// digest is unchanged: the `bot/`, `sim/` and `chassis/` sources, the
-    /// `kit` code that hosts oxide-bot, and `Cargo.lock`.
-    BotMatrix {
-        /// Matrix manifest; its map paths resolve against its directory.
-        manifest: PathBuf,
-        /// Directory for rows.jsonl; existing rows are never replaced.
-        #[arg(long)]
-        out: PathBuf,
-        /// Maximum simultaneous matches; bounded by available CPUs.
-        #[arg(long, default_value = "4")]
-        jobs: std::num::NonZeroUsize,
-        /// Candidate recorded in newly evaluated rows. Defaults to the
-        /// build's version and revision.
-        #[arg(long)]
-        candidate: Option<String>,
-        /// Baseline row cache. Defaults to a per-user cache shared by every
-        /// checkout.
-        #[arg(long)]
-        baseline_cache: Option<PathBuf>,
-        /// Directory for a replay of every evaluated leg, with their compact
-        /// rows in legs.jsonl; cached baseline legs have none.
-        #[arg(long)]
-        replay_dir: Option<PathBuf>,
-        /// Print the report as JSON.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Report rows written by `bot-matrix`.
-    BotMatrixReport {
+    /// Pool the seats of evaluation rows, from `bot-eval` or `bot-ladder`, by
+    /// match mode and difficulty: failure incidents, deliveries, reactivity,
+    /// income and the impact ledger.
+    BotSummary {
         /// rows.jsonl files.
         #[arg(required = true)]
         rows: Vec<PathBuf>,
-        /// Print the report as JSON.
+        /// Print the summary as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -733,9 +704,8 @@ fn print_ladder_report(rows: &[PathBuf], json: bool) -> Result<()> {
     Ok(())
 }
 
-fn print_matrix_report(rows: &[PathBuf], json: bool) -> Result<()> {
-    let report =
-        oxide_driver::bot_matrix::build_report(&oxide_driver::bot_matrix::load_rows(rows)?)?;
+fn print_summary(rows: &[PathBuf], json: bool) -> Result<()> {
+    let report = oxide_driver::seat_summary::summarize(rows)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -994,54 +964,7 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Cmd::BotMatrix {
-            manifest: manifest_path,
-            out,
-            jobs,
-            candidate,
-            baseline_cache,
-            replay_dir,
-            json,
-        } => {
-            use oxide_driver::bot_matrix;
-            let manifest = bot_matrix::MatrixManifest::load(&manifest_path)?;
-            let base = manifest_path
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new("."));
-            let legs = bot_matrix::expand(&manifest, &manifest.scenarios(base)?)?;
-            let rows_path = bot_matrix::preflight_output(&out)?;
-            let baseline_cache = match baseline_cache {
-                Some(path) => path,
-                None => bot_matrix::default_baseline_cache()
-                    .context("no home directory for the baseline cache; pass --baseline-cache")?,
-            };
-            let candidate = candidate.unwrap_or_else(default_candidate);
-            eprintln!(
-                "bot-matrix {}: {} legs, baseline cache {}",
-                manifest.name,
-                legs.len(),
-                baseline_cache.display()
-            );
-            let run = bot_matrix::run_matrix(
-                &legs,
-                manifest.tick_limit,
-                &bot_matrix::MatrixOptions {
-                    candidate: &candidate,
-                    jobs,
-                    baseline_cache: &baseline_cache,
-                    replay_dir: replay_dir.as_deref(),
-                },
-            )?;
-            bot_matrix::publish_rows(&run.rows, &rows_path)?;
-            eprintln!(
-                "evaluated {} legs, reused {} cached baseline legs; wrote {}",
-                run.evaluated,
-                run.reused,
-                rows_path.display()
-            );
-            print_matrix_report(&[rows_path], json)?;
-        }
-        Cmd::BotMatrixReport { rows, json } => print_matrix_report(&rows, json)?,
+        Cmd::BotSummary { rows, json } => print_summary(&rows, json)?,
         Cmd::BotLadder {
             manifest: manifest_path,
             out,
@@ -1050,13 +973,13 @@ fn main() -> Result<()> {
             replay_dir,
             json,
         } => {
-            use oxide_driver::{bot_ladder, bot_matrix};
+            use oxide_driver::{bot_ladder, evaluation};
             let manifest = bot_ladder::LadderManifest::load(&manifest_path)?;
             let base = manifest_path
                 .parent()
                 .unwrap_or_else(|| std::path::Path::new("."));
             let legs = bot_ladder::expand(&manifest, &manifest.scenarios(base)?)?;
-            let rows_path = bot_matrix::preflight_output(&out)?;
+            let rows_path = evaluation::preflight_output(&out)?;
             let candidate = candidate.unwrap_or_else(default_candidate);
             eprintln!("bot-ladder {}: {} legs", manifest.name, legs.len());
             let rows = bot_ladder::run_ladder(
@@ -1068,7 +991,7 @@ fn main() -> Result<()> {
                     replay_dir: replay_dir.as_deref(),
                 },
             )?;
-            bot_matrix::publish_rows(&rows, &rows_path)?;
+            evaluation::publish_rows(&rows, &rows_path)?;
             eprintln!("wrote {}", rows_path.display());
             print_ladder_report(&[rows_path], json)?;
         }
@@ -1801,38 +1724,15 @@ mod tests {
     }
 
     #[test]
-    fn bot_matrix_requires_an_output_directory_and_defaults_to_four_jobs() {
-        assert!(Cli::try_parse_from(["oxide-driver", "bot-matrix", "smoke.json"]).is_err());
-        let cli = Cli::try_parse_from([
-            "oxide-driver",
-            "bot-matrix",
-            "smoke.json",
-            "--out",
-            "matrix",
-        ])
-        .expect("bot-matrix parses");
-        let Cmd::BotMatrix {
-            manifest,
-            out,
-            jobs,
-            candidate,
-            baseline_cache,
-            replay_dir,
-            json,
-        } = cli.cmd
-        else {
-            panic!("bot-matrix parsed as another command")
+    fn bot_summary_requires_rows() {
+        assert!(Cli::try_parse_from(["oxide-driver", "bot-summary"]).is_err());
+        let cli = Cli::try_parse_from(["oxide-driver", "bot-summary", "a.jsonl", "--json"])
+            .expect("bot-summary parses");
+        let Cmd::BotSummary { rows, json } = cli.cmd else {
+            panic!("bot-summary parsed as another command")
         };
-        assert_eq!(
-            (manifest, out),
-            (PathBuf::from("smoke.json"), PathBuf::from("matrix"))
-        );
-        assert_eq!(jobs.get(), 4);
-        assert_eq!(
-            (candidate, baseline_cache, replay_dir, json),
-            (None, None, None, false)
-        );
-        assert!(Cli::try_parse_from(["oxide-driver", "bot-matrix-report"]).is_err());
+        assert_eq!(rows, [PathBuf::from("a.jsonl")]);
+        assert!(json);
     }
 
     #[test]
