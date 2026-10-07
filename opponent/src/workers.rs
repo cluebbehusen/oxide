@@ -731,5 +731,6 @@ fn assign_idle(
 /// Octile distance between two doubled-coordinate points, in tenths of a tile.
 fn octile_tenths(a: (i64, i64), b: (i64, i64)) -> i64 {
     let (dx, dy) = ((a.0 - b.0).abs(), (a.1 - b.1).abs());
-    i64::midpoint(10 * dx.max(dy), 4 * dx.min(dy))
+    let doubled = 10 * dx.max(dy) + 4 * dx.min(dy);
+    doubled / 2
 }
