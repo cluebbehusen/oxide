@@ -209,7 +209,7 @@ mod tests {
             let traces = std::fs::read(trace).unwrap();
             assert_eq!(
                 traces.split(|&b| b == b'\n').count() - 1,
-                result.trace_rows as usize
+                usize::try_from(result.trace_rows).unwrap()
             );
             let replays: Vec<_> = plans
                 .iter()

@@ -174,7 +174,7 @@ impl SessionCheckpoint {
             .iter()
             .enumerate()
             .filter(|(_, seat)| seat.bot && seat.bot_config.is_some())
-            .map(|(seat, _)| PlayerId(seat as u8))
+            .map(|(seat, _)| PlayerId::from_index(seat))
             .collect()
     }
 

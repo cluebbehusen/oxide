@@ -164,7 +164,11 @@ pub(crate) fn write_frame(file: &mut impl Write, value: &impl Serialize) -> Resu
         bytes.len() as u64 <= MAX_BYTES,
         "recovery record exceeds size limit"
     );
-    file.write_all(&(bytes.len() as u32).to_le_bytes())?;
+    file.write_all(
+        &u32::try_from(bytes.len())
+            .expect("lengths fit in u32")
+            .to_le_bytes(),
+    )?;
     file.write_all(&chassis::hash::fnv1a(&bytes).to_le_bytes())?;
     file.write_all(&bytes)?;
     Ok(bytes.len() + 12)
@@ -569,7 +573,8 @@ pub fn export(directory: &Path, destination: &Path, running_build: &BuildIdentit
             manifest["checkpoint"] = serde_json::to_value(checkpoint)?;
         }
         ensure!(
-            pretty_size(&manifest)? <= MAX_BYTES as usize,
+            pretty_size(&manifest)?
+                <= usize::try_from(MAX_BYTES).expect("the byte limit fits in usize"),
             "report manifest too large"
         );
         let unattached = recording_root(directory)

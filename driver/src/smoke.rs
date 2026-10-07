@@ -12,6 +12,7 @@
 use crate::client::Client;
 use crate::runner;
 use anyhow::{Context, Result, bail};
+use chassis::grid::as_index;
 use oxide_protocol::{RawEvent, Reply, Request, StateFilter};
 use oxide_sim::{Command, PlayerId, UnitId, UnitKind};
 use std::path::PathBuf;
@@ -189,6 +190,20 @@ fn execute(addr: &str, patient: bool) -> Result<()> {
         bail!("smoke failures: {}", checks.failures.join(", "));
     }
     Ok(())
+}
+
+/// The logical screen point of a world position under `cam`, the space
+/// injected pointer events speak.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "logical screen points need only f32 precision"
+)]
+fn screen_point(cam: &oxide_protocol::CameraView, wx: f64, wy: f64) -> (f32, f32) {
+    let [lo_x, lo_y, hi_x, hi_y] = cam.world_rect;
+    (
+        ((wx - lo_x) / (hi_x - lo_x) * cam.viewport[0]) as f32,
+        ((wy - lo_y) / (hi_y - lo_y) * cam.viewport[1]) as f32,
+    )
 }
 
 #[expect(
@@ -408,16 +423,7 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
         .find(|u| u.player == 0 && u.kind == UnitKind::Harvester)
         .context("no harvester to select")?;
     let cam = client.camera()?;
-    let [lo_x, lo_y, hi_x, hi_y] = cam.world_rect;
-    // Injected pointer events speak LOGICAL points — the same space the
-    // camera reply uses.
-    let to_screen = |wx: f64, wy: f64| {
-        (
-            ((wx - lo_x) / (hi_x - lo_x) * cam.viewport[0]) as f32,
-            ((wy - lo_y) / (hi_y - lo_y) * cam.viewport[1]) as f32,
-        )
-    };
-    let (hx, hy) = to_screen(harvester.pos[0], harvester.pos[1]);
+    let (hx, hy) = screen_point(&cam, harvester.pos[0], harvester.pos[1]);
     for event in [
         RawEvent::MouseDown {
             button: oxide_protocol::MouseButton::Left,
@@ -467,6 +473,10 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
         f64::from(chrome[4]),
         f64::from(chrome[5]),
     );
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "logical screen points need only f32 precision"
+    )]
     let (cx, cy) = ((mm_x + mm_w * 0.8) as f32, (mm_y + mm_h * 0.8) as f32);
     for event in [
         RawEvent::MouseDown {
@@ -512,13 +522,6 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
     }
     std::thread::sleep(Duration::from_millis(100));
     let cam2 = client.camera()?;
-    let [lo_x2, lo_y2, hi_x2, hi_y2] = cam2.world_rect;
-    let to_screen2 = |wx: f64, wy: f64| {
-        (
-            ((wx - lo_x2) / (hi_x2 - lo_x2) * cam2.viewport[0]) as f32,
-            ((wy - lo_y2) / (hi_y2 - lo_y2) * cam2.viewport[1]) as f32,
-        )
-    };
     // A commit tile chosen from data, not guesswork: open ground ('.')
     // near the foundry (inside its vision), clear of every unit's tile.
     let foundry = view
@@ -526,6 +529,10 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
         .iter()
         .find(|b| b.player == 0)
         .context("no own foundry in view")?;
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "unit positions lie on the map, well inside i32"
+    )]
     let occupied: Vec<(i32, i32)> = view
         .units
         .iter()
@@ -541,8 +548,8 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
                 }
                 let (tx, ty) = (fx + dx, fy + dy);
                 let open = rows
-                    .get(ty as usize)
-                    .and_then(|row| row.chars().nth(tx as usize))
+                    .get(as_index(ty))
+                    .and_then(|row| row.chars().nth(as_index(tx)))
                     .is_some_and(|c| c == '.' || c == ',');
                 if open && !occupied.contains(&(tx, ty)) {
                     commit = Some((tx, ty));
@@ -552,7 +559,7 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
         }
     }
     let (tx, ty) = commit.context("no open tile near the foundry")?;
-    let (bx, by) = to_screen2(f64::from(tx) + 0.5, f64::from(ty) + 0.5);
+    let (bx, by) = screen_point(&cam2, f64::from(tx) + 0.5, f64::from(ty) + 0.5);
     for event in [
         RawEvent::MouseDown {
             button: oxide_protocol::MouseButton::Left,

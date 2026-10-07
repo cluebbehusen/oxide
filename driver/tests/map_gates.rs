@@ -5,6 +5,7 @@
 //! addition); these gates bind labels and future maps, not history.
 
 use chassis::grid::TilePos;
+use chassis::grid::as_index;
 use oxide_driver::audit::audit;
 use oxide_sim::map::Map;
 use oxide_sim::scenario::BotConfig;
@@ -573,7 +574,7 @@ fn reachable_rect_perimeter(
                 && y >= 0
                 && x < map.width()
                 && y < map.height()
-                && reachable[(y * map.width() + x) as usize]
+                && reachable[as_index(y * map.width() + x)]
         })
     })
 }
@@ -596,7 +597,7 @@ fn reachable_ground_rect_perimeter(
                     .buildings()
                     .iter()
                     .all(|building| !building.contains(tile))
-                && reachable[(y * map.width() + x) as usize]
+                && reachable[as_index(y * map.width() + x)]
         })
     })
 }
@@ -650,7 +651,7 @@ fn reachable_builder_ground(
     seat: PlayerId,
     restored_frame: Option<TilePos>,
 ) -> Vec<bool> {
-    let index = |tile: TilePos| (tile.y * map.width() + tile.x) as usize;
+    let index = |tile: TilePos| as_index(tile.y * map.width() + tile.x);
     let blocked = |tile: TilePos| {
         restored_frame.is_some_and(|frame| {
             rect_contains(frame, BuildingKind::Extractor.base_stats().size, tile)
@@ -660,7 +661,7 @@ fn reachable_builder_ground(
             .any(|building| building.contains(tile))
     };
     let passable = |tile: TilePos| map.terrain_passable(tile) && !blocked(tile);
-    let mut reachable = vec![false; (map.width() * map.height()) as usize];
+    let mut reachable = vec![false; as_index(map.width() * map.height())];
     let mut queue = VecDeque::new();
     for unit in state
         .units()
@@ -692,12 +693,12 @@ fn reachable_builder_ground(
 }
 
 fn reachable_air_from_foundry(map: &Map, foundry: TilePos) -> Vec<bool> {
-    let index = |tile: TilePos| (tile.y * map.width() + tile.x) as usize;
+    let index = |tile: TilePos| as_index(tile.y * map.width() + tile.x);
     let passable = |tile: TilePos| {
         map.tile(tile)
             .is_some_and(|map_tile| !map_tile.terrain.blocks_air())
     };
-    let mut reachable = vec![false; (map.width() * map.height()) as usize];
+    let mut reachable = vec![false; as_index(map.width() * map.height())];
     let mut queue = VecDeque::new();
     if passable(foundry) {
         reachable[index(foundry)] = true;
@@ -822,7 +823,7 @@ fn foundry_doorstep_reached(map: &Map, anchor: TilePos, reachable: &[bool]) -> b
                 && door_y >= 0
                 && door_x < map.width()
                 && door_y < map.height()
-                && reachable[(door_y * map.width() + door_x) as usize]
+                && reachable[as_index(door_y * map.width() + door_x)]
         })
     })
 }
@@ -847,7 +848,7 @@ fn foundry_ground_doorstep_reached(
                     .buildings()
                     .iter()
                     .all(|building| !building.contains(tile))
-                && reachable[(door_y * map.width() + door_x) as usize]
+                && reachable[as_index(door_y * map.width() + door_x)]
         })
     })
 }
@@ -967,7 +968,7 @@ fn every_map_mirrors_its_paired_seats_entry_by_entry() {
 
         let state = scenario.build().expect("shipped maps build");
         for index in 0..scenario.players.len() {
-            let seat = PlayerId(index as u8);
+            let seat = PlayerId::from_index(index);
             let mirror = partner(seat);
             assert_ne!(mirror, seat, "{name}: seat {index} is its own mirror");
             assert_eq!(

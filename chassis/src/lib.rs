@@ -1,11 +1,6 @@
 #![doc = include_str!("../README.md")]
 // Floats and hash-ordered collections would break bit-identical replays.
 #![deny(clippy::float_arithmetic, clippy::disallowed_types)]
-#![warn(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss
-)]
 
 pub mod compass;
 pub mod fsx;

@@ -363,7 +363,7 @@ impl FailureDetectors {
             if let Some(ground) = &self.ground {
                 classify(detector, state, ground, now);
             }
-            let player = PlayerId(index as u8);
+            let player = PlayerId::from_index(index);
             if !state.accepts_commands(player) {
                 detector.sites.clear();
                 detector.starvation = Episode::default();
@@ -437,7 +437,7 @@ impl FailureDetectors {
                 starvation.flagged = true;
                 detector.failures.starved_production.record(
                     now,
-                    index as u32,
+                    u32::try_from(index).expect("building indices fit in u32"),
                     cheapest.expect("starving implies a legal unit").name(),
                 );
             }
@@ -589,7 +589,7 @@ fn check_idle_army(detector: &mut SeatDetector, state: &State, player: PlayerId,
     }
     detector.rests.retain(|id, _| present.contains(id));
     let contested = state.players().iter().enumerate().any(|(seat, other)| {
-        state.hostile(player, PlayerId(seat as u8)) && other.eliminated_at.is_none()
+        state.hostile(player, PlayerId::from_index(seat)) && other.eliminated_at.is_none()
     });
     let episode = &mut detector.idle_army;
     if !contested || idle < (army / 2).max(IDLE_ARMY_FLOOR) {
@@ -1083,7 +1083,7 @@ mod tests {
     /// column `x` rightward, and any extra units after them.
     fn army(count: u32, x: i32, y: i32, extra: &[UnitSpec]) -> Scenario {
         let mut scenario = scenario(Vec::new(), 0);
-        for index in 0..count as i32 {
+        for index in 0..i32::try_from(count).unwrap() {
             scenario.units.push(UnitSpec {
                 player: 0,
                 kind: UnitKind::Sentinel,
@@ -1097,7 +1097,7 @@ mod tests {
 
     /// Enough Sentinels to clear [`IDLE_ARMY_FLOOR`].
     fn large() -> u32 {
-        (IDLE_ARMY_FLOOR / u64::from(UnitKind::Sentinel.stats().cost)) as u32 + 1
+        u32::try_from(IDLE_ARMY_FLOOR / u64::from(UnitKind::Sentinel.stats().cost)).unwrap() + 1
     }
 
     fn idle_army(detectors: FailureDetectors) -> u64 {
@@ -1168,7 +1168,9 @@ mod tests {
 
     #[test]
     fn an_enemy_the_army_cannot_hit_does_not_keep_it_busy() {
-        let flak = (IDLE_ARMY_FLOOR / u64::from(UnitKind::Flakhound.stats().cost)) as i32 + 1;
+        let flak = i32::try_from(IDLE_ARMY_FLOOR / u64::from(UnitKind::Flakhound.stats().cost))
+            .unwrap()
+            + 1;
         let mut scenario = scenario(Vec::new(), 0);
         for index in 0..flak {
             scenario.units.push(UnitSpec {

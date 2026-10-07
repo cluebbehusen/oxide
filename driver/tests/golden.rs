@@ -134,7 +134,7 @@ struct Roster {
 
 impl Roster {
     fn add(&mut self, player: u8, kind: UnitKind, x: i32, y: i32) -> UnitId {
-        let id = UnitId(self.units.len() as u32);
+        let id = UnitId(u32::try_from(self.units.len()).unwrap());
         self.units.push(UnitSpec { player, kind, x, y });
         id
     }
@@ -226,12 +226,12 @@ fn showcase_scenario() -> (Scenario, Cast) {
     let west: Vec<UnitId> = line(Faction::Ferrous)
         .into_iter()
         .enumerate()
-        .map(|(i, kind)| roster.add(0, kind, 8 + i as i32, 20))
+        .map(|(i, kind)| roster.add(0, kind, 8 + i32::try_from(i).unwrap(), 20))
         .collect();
     let east: Vec<UnitId> = line(Faction::Cupric)
         .into_iter()
         .enumerate()
-        .map(|(i, kind)| roster.add(1, kind, 8 + i as i32, 22))
+        .map(|(i, kind)| roster.add(1, kind, 8 + i32::try_from(i).unwrap(), 22))
         .collect();
     let interloper = roster.add(2, UnitKind::Sentinel, 20, 20);
     // The same-faction-foes pin must not depend on the interloper

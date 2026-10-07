@@ -4,6 +4,7 @@
 //! machine noise can never flake a suite.
 
 use chassis::grid::TilePos;
+use chassis::grid::as_index;
 use oxide_sim::scenario::{PlayerSpec, ScenarioMode, UnitSpec};
 use oxide_sim::{Command, Faction, PlayerCommand, PlayerId, Scenario, UnitKind};
 
@@ -37,8 +38,8 @@ pub fn mass_battle(per_side: u32, seed: u64) -> Scenario {
         })
         .collect();
     // Seat 2's anchor at the footprint mirror.
-    let row = (h - 2 - 3) as usize;
-    let col = (w - 2 - 3) as usize;
+    let row = as_index(h - 2 - 3);
+    let col = as_index(w - 2 - 3);
     let mut chars: Vec<char> = map[row].chars().collect();
     chars[col] = '2';
     map[row] = chars.into_iter().collect();
@@ -46,7 +47,10 @@ pub fn mass_battle(per_side: u32, seed: u64) -> Scenario {
     let mut units = Vec::new();
     for i in 0..per_side {
         let kind = CYCLE[(i as usize) % CYCLE.len()];
-        let (dx, dy) = ((i / 24) as i32, (i % 24) as i32);
+        let (dx, dy) = (
+            i32::try_from(i / 24).expect("grid offsets fit in i32"),
+            i32::try_from(i % 24).expect("grid offsets fit in i32"),
+        );
         units.push(UnitSpec {
             player: 0,
             kind,

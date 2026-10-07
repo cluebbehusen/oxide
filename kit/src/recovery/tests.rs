@@ -278,7 +278,7 @@ fn every_truncated_tail_keeps_only_completed_commands() {
         let record = inspect_reader(&mut &bytes[..end]).unwrap();
         let tick = record.replay.meta.ticks.unwrap();
         assert!(tick <= 1);
-        assert_eq!(record.replay.commands.len(), tick as usize);
+        assert_eq!(record.replay.commands.len(), usize::try_from(tick).unwrap());
         if tick == 1 {
             assert_eq!(record.replay.commands[0].command, command());
         }

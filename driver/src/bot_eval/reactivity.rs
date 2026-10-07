@@ -492,7 +492,11 @@ impl ReactivityDetectors {
                     fights.insert(
                         mission.id,
                         Fight {
-                            case: Case::new(now, mission.id as u32, kind_name(mission.kind)),
+                            case: Case::new(
+                                now,
+                                u32::try_from(mission.id).expect("mission ids fit in u32"),
+                                kind_name(mission.kind),
+                            ),
                             engaged: mission.units,
                             last: mission.units,
                         },
@@ -536,7 +540,7 @@ impl ReactivityDetectors {
             let Some(watch) = watch else {
                 continue;
             };
-            let player = PlayerId(index as u8);
+            let player = PlayerId::from_index(index);
             if !state.accepts_commands(player) {
                 settle(watch);
                 continue;
@@ -777,7 +781,7 @@ fn first_foundries(state: &State) -> Vec<Option<Start>> {
                 .buildings()
                 .iter()
                 .filter(|building| {
-                    building.player == PlayerId(seat as u8)
+                    building.player == PlayerId::from_index(seat)
                         && building.kind == BuildingKind::Foundry
                 })
                 .min_by_key(|building| building.id)
@@ -908,7 +912,7 @@ fn scout(
     now: u64,
 ) {
     for (seat, start) in starts.iter().enumerate() {
-        let owner = PlayerId(seat as u8);
+        let owner = PlayerId::from_index(seat);
         let Some(Start {
             anchor,
             size: (width, height),

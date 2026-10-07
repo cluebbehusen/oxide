@@ -1527,7 +1527,7 @@ pub fn worth_shares(pairs: &PairShares) -> Vec<WorthShare> {
             });
             Some(WorthShare {
                 tick: *tick,
-                pairs: means.len() as u32,
+                pairs: u32::try_from(means.len()).expect("lengths fit in u32"),
                 mean,
                 interval,
             })
@@ -2306,7 +2306,7 @@ mod tests {
         );
         let state = staged(&scenario, |value| {
             let width = value["map"]["grid"]["width"].as_i64().unwrap();
-            let cell = (8 * width + 13) as usize;
+            let cell = usize::try_from(8 * width + 13).unwrap();
             value["map"]["grid"]["cells"][cell]["wreck"] = serde_json::json!(1);
         });
         assert_eq!(state.map().wreck_at(TilePos::new(13, 8)), 1);

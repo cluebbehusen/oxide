@@ -20,6 +20,7 @@
 
 use anyhow::{Context, Result, bail};
 use chassis::grid::TilePos;
+use chassis::grid::as_index;
 use oxide_driver::auto::{ShellGuard, SpawnOptions, spawn_shell, ui};
 use oxide_driver::client::Client;
 use oxide_protocol::{Reply, Request, StateFilter, StateView};
@@ -974,22 +975,32 @@ fn write_config(home: &Path) -> Result<()> {
     Ok(())
 }
 
+/// `value` rounded up to whole pixels.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "contact sheet sizes are small positive pixel counts"
+)]
+fn ceil_px(value: f32) -> u32 {
+    value.ceil() as u32
+}
+
 fn write_sheet(frames: &[PathBuf], path: &Path) -> Result<()> {
     const SCALE: f32 = 0.25;
     let first_path = frames.first().context("contact sheet has no frames")?;
     let first = tiny_skia::Pixmap::decode_png(&std::fs::read(first_path)?)
         .context("decoding first animation frame")?;
-    let tile_w = (first.width() as f32 * SCALE).ceil() as u32;
-    let tile_h = (first.height() as f32 * SCALE).ceil() as u32;
-    let columns = (frames.len() as f32).sqrt().ceil() as u32;
-    let rows = (frames.len() as u32).div_ceil(columns);
+    let tile_w = ceil_px(first.width() as f32 * SCALE);
+    let tile_h = ceil_px(first.height() as f32 * SCALE);
+    let columns = ceil_px((frames.len() as f32).sqrt());
+    let rows = u32::try_from(frames.len()).unwrap().div_ceil(columns);
     let mut sheet = tiny_skia::Pixmap::new(columns * tile_w, rows * tile_h)
         .context("allocating animation contact sheet")?;
     for (index, frame_path) in frames.iter().enumerate() {
         let frame = tiny_skia::Pixmap::decode_png(&std::fs::read(frame_path)?)
             .with_context(|| format!("decoding {}", frame_path.display()))?;
-        let col = index as u32 % columns;
-        let row = index as u32 / columns;
+        let col = u32::try_from(index).unwrap() % columns;
+        let row = u32::try_from(index).unwrap() / columns;
         sheet.draw_pixmap(
             0,
             0,
@@ -1007,18 +1018,18 @@ fn write_sheet(frames: &[PathBuf], path: &Path) -> Result<()> {
 fn empty_map(scrap: &[TilePos]) -> Vec<String> {
     let mut map = vec![vec![b'.'; MAP_WIDTH as usize]; MAP_HEIGHT as usize];
     for x in 0..MAP_WIDTH {
-        map[0][x as usize] = b'#';
-        map[(MAP_HEIGHT - 1) as usize][x as usize] = b'#';
+        map[0][as_index(x)] = b'#';
+        map[(MAP_HEIGHT - 1) as usize][as_index(x)] = b'#';
     }
     for y in 0..MAP_HEIGHT {
-        map[y as usize][0] = b'#';
-        map[y as usize][(MAP_WIDTH - 1) as usize] = b'#';
+        map[as_index(y)][0] = b'#';
+        map[as_index(y)][(MAP_WIDTH - 1) as usize] = b'#';
     }
     map[2][2] = b'1';
     map[2][28] = b'3';
     map[18][28] = b'2';
     for tile in scrap {
-        map[tile.y as usize][tile.x as usize] = b's';
+        map[as_index(tile.y)][as_index(tile.x)] = b's';
     }
     map.into_iter()
         .map(|row| String::from_utf8(row).expect("ASCII map"))

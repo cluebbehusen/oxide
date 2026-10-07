@@ -75,7 +75,7 @@ impl IncomeTracker {
         let checkpoint = INCOME_CHECKPOINTS.contains(&now);
         let collected = (window_start || checkpoint).then(|| self.stats.snapshot(state));
         for seat in 0..self.watched.len() {
-            let player = PlayerId(seat as u8);
+            let player = PlayerId::from_index(seat);
             // A seat that is out while its team plays on would add samples
             // of an empty economy.
             if !self.watched[seat] || state.player(player).eliminated_at.is_some() {
@@ -91,8 +91,10 @@ impl IncomeTracker {
                 let earned = u64::from(deposits - start_deposits) + passive;
                 self.samples[seat].push(IncomeSample {
                     tick: now,
-                    actual_per_minute: (earned * u64::from(TICKS_PER_MINUTE) / INCOME_WINDOW_TICKS)
-                        as u32,
+                    actual_per_minute: u32::try_from(
+                        earned * u64::from(TICKS_PER_MINUTE) / INCOME_WINDOW_TICKS,
+                    )
+                    .expect("tick counts fit in u32"),
                     saturation_per_minute: saturation_per_minute(state, player),
                 });
             }
@@ -176,9 +178,11 @@ fn passive_per_minute(state: &State, player: PlayerId) -> u32 {
         .filter(|building| building.player == player && building.built && building.hp > 0)
         .map(|building| match building.kind {
             BuildingKind::Reclaimer if building.tier == 0 => {
-                TICKS_PER_MINUTE / RECLAIMER_PERIOD as u32
+                TICKS_PER_MINUTE / u32::try_from(RECLAIMER_PERIOD).expect("periods fit in u32")
             }
-            BuildingKind::Reclaimer => TICKS_PER_MINUTE / REFINERY_PERIOD as u32,
+            BuildingKind::Reclaimer => {
+                TICKS_PER_MINUTE / u32::try_from(REFINERY_PERIOD).expect("periods fit in u32")
+            }
             BuildingKind::Extractor if !seat.resigned => {
                 match state.extractor_income(building.id) {
                     Some(ExtractorIncome::Supported) => EXTRACTOR_SUPPORTED_INCOME_PER_MINUTE,
@@ -186,7 +190,9 @@ fn passive_per_minute(state: &State, player: PlayerId) -> u32 {
                     None => 0,
                 }
             }
-            BuildingKind::Foundry if drip => TICKS_PER_MINUTE / FOUNDRY_DRIP_PERIOD as u32,
+            BuildingKind::Foundry if drip => {
+                TICKS_PER_MINUTE / u32::try_from(FOUNDRY_DRIP_PERIOD).expect("periods fit in u32")
+            }
             _ => 0,
         })
         .sum()
@@ -350,13 +356,13 @@ mod tests {
         let state: State = serde_json::from_value(value).unwrap();
         assert_eq!(
             passive_per_minute(&state, PlayerId(0)),
-            TICKS_PER_MINUTE / RECLAIMER_PERIOD as u32
-                + TICKS_PER_MINUTE / REFINERY_PERIOD as u32
-                + TICKS_PER_MINUTE / FOUNDRY_DRIP_PERIOD as u32
+            TICKS_PER_MINUTE / u32::try_from(RECLAIMER_PERIOD).unwrap()
+                + TICKS_PER_MINUTE / u32::try_from(REFINERY_PERIOD).unwrap()
+                + TICKS_PER_MINUTE / u32::try_from(FOUNDRY_DRIP_PERIOD).unwrap()
         );
         assert_eq!(
             passive_per_minute(&state, PlayerId(1)),
-            TICKS_PER_MINUTE / FOUNDRY_DRIP_PERIOD as u32
+            TICKS_PER_MINUTE / u32::try_from(FOUNDRY_DRIP_PERIOD).unwrap()
         );
     }
 
@@ -378,7 +384,7 @@ mod tests {
             sample.saturation_per_minute,
             saturation_per_minute(&state, PlayerId(0))
         );
-        let drip = TICKS_PER_MINUTE / FOUNDRY_DRIP_PERIOD as u32;
+        let drip = TICKS_PER_MINUTE / u32::try_from(FOUNDRY_DRIP_PERIOD).unwrap();
         assert!(
             sample.actual_per_minute >= drip,
             "an idle seat still earns its drip: {sample:?}"

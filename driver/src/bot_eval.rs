@@ -240,7 +240,7 @@ impl EvaluationPlan {
             .enumerate()
             .filter_map(|(seat, controller)| {
                 controller.map(|controller| {
-                    controller.seat_controller(PlayerId(seat as u8), &opponent_map)
+                    controller.seat_controller(PlayerId::from_index(seat), &opponent_map)
                 })
             })
             .collect()
@@ -424,7 +424,7 @@ pub struct SeatEvidence {
 impl SeatEvidence {
     fn new(seat: usize) -> Self {
         Self {
-            seat: seat as u8,
+            seat: u8::try_from(seat).expect("seat indices fit in u8"),
             commands: 0,
             rejections: 0,
             rejection_reasons: BTreeMap::new(),
@@ -787,7 +787,7 @@ fn evaluate_plan_artifact_impl(
             .iter()
             .enumerate()
             .map(|(seat, player)| SeatConfiguration {
-                seat: seat as u8,
+                seat: u8::try_from(seat).expect("seat indices fit in u8"),
                 faction: player.faction,
                 team: state.players()[seat].team,
                 config: plan.controllers[seat].map(EvaluationController::config),
@@ -1688,7 +1688,7 @@ mod tests {
             for (seat_index, (seat, (faction, config))) in
                 row.seats.iter().zip(expected).enumerate()
             {
-                assert_eq!(seat.seat, seat_index as u8);
+                assert_eq!(seat.seat, u8::try_from(seat_index).unwrap());
                 assert_eq!(seat.faction, faction);
                 assert_eq!(seat.config, config);
                 assert_eq!(seat.profile, config.map(ResolvedProfile::resolve));
