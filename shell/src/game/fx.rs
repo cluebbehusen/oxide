@@ -954,6 +954,7 @@ impl Presentation {
     /// Turns a tick's events into flashes and queued clips. Explosions can be
     /// heard through fog; the camera mixer bounds their audible distance.
     /// Visual effects retain their independent sight rules.
+    #[expect(clippy::too_many_lines, reason = "one arm per simulation event")]
     pub(super) fn spawn_fx(&mut self, state: &State, events: &[Event]) {
         let sees = |game: &Self, pos: chassis::fx::Vec2Fx| {
             state

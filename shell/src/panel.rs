@@ -943,6 +943,10 @@ fn pile_panel(game: &Scene<'_>, tile: chassis::grid::TilePos) -> Option<Panel> {
     })
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "assembles every card and readout of the selection panel"
+)]
 fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -> Option<Panel> {
     if let Some(tile) = game.presentation.selection.pile {
         return pile_panel(game, tile);

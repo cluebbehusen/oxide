@@ -348,6 +348,10 @@ impl LayoutModel {
     /// Computes the frame's chrome geometry. `panel_top` is the band's
     /// top edge (`f32::INFINITY` when no panel is shown).
     #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "the slot arrays move into the model"
+    )]
     pub fn compute(
         viewport: Vec2,
         ui: f32,

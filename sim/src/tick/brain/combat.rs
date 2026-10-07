@@ -1468,6 +1468,10 @@ fn egress_goal(
 /// cover — hands control back to the remembered hunt (or idle,
 /// where auto-acquire finds the next fight).
 #[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the whole chase-and-hit decision for one unit"
+)]
 pub(super) fn attack(
     state: &mut State,
     index: &super::super::spatial::UnitIndex,

@@ -292,6 +292,10 @@ fn fire_unit(
 /// no ordinary target. `acquired` receives the ordinary acquisition whenever
 /// this judged one, so a brain later in the same tick need not repeat it.
 #[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::option_option,
+    reason = "`None` means no ordinary search ran; `Some(None)` means it found nothing"
+)]
 pub(in crate::tick::brain) fn automatic_radar(
     state: &mut State,
     index: &super::super::super::spatial::UnitIndex,

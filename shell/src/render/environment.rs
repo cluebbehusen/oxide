@@ -147,7 +147,7 @@ impl TerraceField {
         }
     }
 
-    fn max_depth(&self) -> i32 {
+    fn max_depth() -> i32 {
         LAYERS
             .iter()
             .map(|layer| 1 + layer.bench_cells + 1)
@@ -192,7 +192,7 @@ impl TerraceField {
         Some((side, (along * 6 / length.max(1)).clamp(0, 5)))
     }
 
-    fn bench_cells(&self, layer: usize, segment: Option<(Side, i32)>) -> i32 {
+    fn bench_cells(layer: usize, segment: Option<(Side, i32)>) -> i32 {
         let Some((side, segment)) = segment else {
             return LAYERS[layer].bench_cells;
         };
@@ -222,7 +222,7 @@ impl TerraceField {
             if depth <= cursor {
                 return Material::Riser(layer);
             }
-            cursor += self.bench_cells(layer, segment);
+            cursor += Self::bench_cells(layer, segment);
             if depth <= cursor {
                 return Material::Bench(layer);
             }
@@ -244,7 +244,7 @@ impl TerraceField {
     }
 
     fn visible_ranges(&self) -> (std::ops::Range<i32>, std::ops::Range<i32>) {
-        let pad = self.max_depth();
+        let pad = Self::max_depth();
         let left = (((-self.rect.x) / self.cell).floor() as i32 - 1).max(-pad);
         let right = (((screen_width() - self.rect.x) / self.cell).ceil() as i32 + 1)
             .min(self.inner_width + pad);

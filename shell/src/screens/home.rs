@@ -117,6 +117,10 @@ impl HomeScreen {
     }
 
     /// The standing subtitle.
+    #[expect(
+        clippy::unused_self,
+        reason = "other screens answer this from their state"
+    )]
     pub fn subtitle(&self) -> &'static str {
         "machines eating a dead world"
     }

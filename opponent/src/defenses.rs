@@ -538,17 +538,11 @@ impl<'a> Guard<'a> {
     /// ally's buildings see, since it fires no further than something spots
     /// for it. An Array adds two thousand for each point further along the way
     /// in that nothing sees yet.
-    fn gain(
-        &self,
-        asset: &Asset,
-        kind: BuildingKind,
-        anchor: TilePos,
-        reach: Option<Cover>,
-    ) -> u64 {
+    fn gain(asset: &Asset, kind: BuildingKind, anchor: TilePos, reach: Option<Cover>) -> u64 {
         if kind == BuildingKind::Array {
             let centre = footprint_centre(kind, anchor);
             return 2_000
-                * self.watched(asset, |point, seen| {
+                * Self::watched(asset, |point, seen| {
                     !seen && distance2(centre, point) <= 4 * RADAR * RADAR
                 });
         }
@@ -578,7 +572,7 @@ impl<'a> Guard<'a> {
 
     /// Points far along `asset`'s ways in, from the ground and the air, that
     /// `counts`, given each point and whether own buildings see it.
-    fn watched(&self, asset: &Asset, counts: impl Fn((i64, i64), bool) -> bool) -> u64 {
+    fn watched(asset: &Asset, counts: impl Fn((i64, i64), bool) -> bool) -> u64 {
         [Domain::Ground, Domain::Air]
             .into_iter()
             .filter_map(|domain| asset.approach(domain))
@@ -905,7 +899,7 @@ impl<'a> Guard<'a> {
                 continue;
             };
             let most = if kind == BuildingKind::Array {
-                2_000 * self.watched(asset, |_, seen| !seen)
+                2_000 * Self::watched(asset, |_, seen| !seen)
             } else {
                 approach
                     .open
@@ -938,7 +932,7 @@ impl<'a> Guard<'a> {
             for anchor in guard_sites(self.map, self.observation.me, asset, approach, kind) {
                 let centre = footprint_centre(kind, anchor);
                 let worth = asset.value
-                    * self.gain(asset, kind, anchor, reach)
+                    * Self::gain(asset, kind, anchor, reach)
                     * self.weight(approach, kind)
                     / 1_000;
                 if worth > 0 {
@@ -1156,7 +1150,7 @@ fn upgrade(guard: &Guard<'_>, building: &BuildingObs, weight: u64) -> Option<(In
                     .map(|approach| approach.evidence.weight())
                     .max()
                     .unwrap_or(0);
-                let watched = guard.watched(asset, |point, _| {
+                let watched = Guard::watched(asset, |point, _| {
                     distance2(centre, point) <= 4 * RADAR * RADAR
                 });
                 asset.value * watched * evidence
@@ -1711,26 +1705,23 @@ fn approach(known: &Known<'_>, asset: &Asset, domain: Domain) -> Option<Approach
         && map.start(observation.me) == Some(asset.anchor))
     .then(|| held(known, asset, source))
     .flatten();
-    let (edge, mut samples, gate_of): (i64, Vec<(i64, i64)>, Vec<usize>) = match &cut {
+    let (edge, mut samples, gate_of): (i64, Vec<(i64, i64)>, Vec<usize>) = if let Some(cut) = &cut {
         // Each gate, and the way on from it.
-        Some(cut) => {
-            let (samples, gate_of) = cut
-                .gates
-                .iter()
-                .enumerate()
-                .flat_map(|(index, gate)| {
-                    let mut samples = vec![gate.centre];
-                    samples.extend(along(gate.centre, source, 0, &APPROACH));
-                    samples.truncate(APPROACH.len());
-                    samples.into_iter().map(move |sample| (sample, index))
-                })
-                .unzip();
-            (0, samples, gate_of)
-        }
-        None => {
-            let edge = edge(asset, source);
-            (edge, along(centre, source, edge, &APPROACH), Vec::new())
-        }
+        let (samples, gate_of) = cut
+            .gates
+            .iter()
+            .enumerate()
+            .flat_map(|(index, gate)| {
+                let mut samples = vec![gate.centre];
+                samples.extend(along(gate.centre, source, 0, &APPROACH));
+                samples.truncate(APPROACH.len());
+                samples.into_iter().map(move |sample| (sample, index))
+            })
+            .unzip();
+        (0, samples, gate_of)
+    } else {
+        let edge = edge(asset, source);
+        (edge, along(centre, source, edge, &APPROACH), Vec::new())
     };
     if samples.is_empty() {
         samples.push(source);

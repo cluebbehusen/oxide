@@ -634,6 +634,10 @@ fn selection_info_rect(viewport: Vec2, width: f32, content_height: f32, actions:
 }
 
 /// Draws the command panel band and returns its clickable geometry.
+#[expect(
+    clippy::too_many_lines,
+    reason = "lays out and draws the whole selection panel"
+)]
 pub(crate) fn draw_panel(
     game: &crate::game::Scene<'_>,
     sprites: &Sprites,

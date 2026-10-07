@@ -255,6 +255,10 @@ fn combat_capture_schedule(cooldown: u32) -> Vec<u64> {
 
 #[test]
 #[ignore = "opens a real native window and writes visual review artifacts"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scripted session in the real shell"
+)]
 fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
     let mut harness = NativeCapture::spawn()?;
 

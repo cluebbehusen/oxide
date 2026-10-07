@@ -644,6 +644,10 @@ fn draw_defense_mount(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one draw pass over every building and its dressing"
+)]
 pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
     const BUILDING_CULL_MARGIN: f32 = 4.5;
     let zoom = game.presentation.camera.zoom;
@@ -1338,6 +1342,7 @@ fn draw_splash_bloom(sprites: &Sprites, center: Vec2, zoom: f32, radius: f32, pr
     super::destruction::draw_hit(sprites, center, zoom, radius, progress);
 }
 
+#[expect(clippy::too_many_lines, reason = "draws every shell and effect kind")]
 pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
     let sees = |p: Vec2| {
         game.my_vision()

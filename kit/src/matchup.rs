@@ -383,6 +383,7 @@ pub fn siege(
 
 /// One physical leg. Logical side A occupies `a_player`; the other
 /// logical side and its optional garrison occupy the opposite seat.
+#[expect(clippy::too_many_lines, reason = "stages and plays one leg end to end")]
 fn siege_leg(
     a: &[(UnitKind, u32)],
     b: &[(UnitKind, u32)],

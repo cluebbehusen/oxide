@@ -191,6 +191,10 @@ fn execute(addr: &str, patient: bool) -> Result<()> {
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the smoke checks run in order against one client"
+)]
 fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
     let start = client.state_hash()?;
     let advanced = client.advance(10)?;

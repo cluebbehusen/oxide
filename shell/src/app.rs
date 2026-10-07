@@ -585,6 +585,7 @@ fn raises_combat_music(kind: SoundKind) -> bool {
     )
 }
 
+#[expect(clippy::too_many_lines, reason = "startup and the native frame loop")]
 pub(crate) async fn run(args: Args) -> Result<()> {
     let review_font = std::env::var_os("OXIDE_REVIEW_FONT")
         .map(std::fs::read)
@@ -626,7 +627,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
     render::set_control_groups(config.control_groups);
     crate::strategic_markers::set_prefs(config.markers);
     mark("config loaded");
-    let sprites = assets::Sprites::load().await?;
+    let sprites = assets::Sprites::load()?;
     mark("sprites loaded");
     let sounds = assets::Sounds::load().await?;
     mark("sounds loaded");
@@ -1392,7 +1393,7 @@ fn capture_ui(screen: &Screen, app: &App) -> UiView {
                 mode: screen_mode(screen).to_string(),
                 title: Some("MATCH RESULT".to_string()),
                 selected: Some(results.selected()),
-                items: results.items(),
+                items: ResultsScreen::items(),
                 visible_range: Some([0, 4]),
                 hover: results.hover(),
                 chrome: None,

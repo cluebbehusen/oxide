@@ -132,10 +132,7 @@ fn contact_sources(manifest: &HashMap<String, [f32; 4]>) -> BTreeSet<Source> {
         .collect()
 }
 impl EntityLod {
-    pub(crate) async fn load(
-        manifest: &HashMap<String, [f32; 4]>,
-        page_height: f32,
-    ) -> Result<Self> {
+    pub(crate) fn load(manifest: &HashMap<String, [f32; 4]>, page_height: f32) -> Result<Self> {
         let sources = entity_sources(manifest);
         let count = sources
             .iter()

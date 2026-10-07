@@ -777,7 +777,7 @@ impl UnitSpriteFrame {
             crate::presentation_animation::PropulsionState::LiftRotors { cycle } => {
                 ((cycle * 3.0) as usize).min(2)
             }
-            _ => worker_phase,
+            crate::presentation_animation::PropulsionState::None => worker_phase,
         };
         Self {
             frame,

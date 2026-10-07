@@ -672,6 +672,7 @@ fn leash_clocks_are_bounded_at_deserialization() {
 }
 
 #[test]
+#[expect(clippy::too_many_lines, reason = "one forgery per checklist row")]
 fn every_checklist_row_refuses_its_forgery() {
     let fixtures: Vec<Forgery> = vec![
         (

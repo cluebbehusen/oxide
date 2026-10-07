@@ -358,6 +358,10 @@ impl Missions {
 
     /// Moves the attack at `index` through its phases. Returns the target
     /// when the attack gave up on it.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one attack's phase transitions in order"
+    )]
     fn advance(
         &mut self,
         index: usize,

@@ -1076,6 +1076,7 @@ impl State {
     ///
     /// Public for tooling that wants to re-check a state it mutated by
     /// hand; the sim itself never calls it inside [`State::tick`].
+    #[expect(clippy::too_many_lines, reason = "one check per serialized invariant")]
     pub fn validate_invariants(&self) -> Result<(), StateIntegrityError> {
         use StateIntegrityError as E;
 

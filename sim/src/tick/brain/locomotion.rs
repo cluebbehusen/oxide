@@ -17,6 +17,10 @@ use chassis::grid::TilePos;
 /// leash is set here (and refreshed by retaliation), never by player
 /// commands: an explicit attack is a commitment, and `assign` clears
 /// any tether the moment a command lands.
+#[expect(
+    clippy::option_option,
+    reason = "`None` means no ordinary search ran; `Some(None)` means it found nothing"
+)]
 pub(super) fn idle(
     state: &mut State,
     index: &super::super::spatial::UnitIndex,

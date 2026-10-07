@@ -635,6 +635,10 @@ struct SeatWindow {
 
 /// Re-executes `replay` once and returns the digest. Deterministic: the same
 /// replay and options yield the same report, byte for byte.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one replay pass feeds every digest table"
+)]
 pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryReport> {
     replay.validate(Some(SIM_VERSION))?;
     let total = oxide_kit::bounded_replay_duration(replay)?;

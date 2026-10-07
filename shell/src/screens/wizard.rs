@@ -1063,13 +1063,12 @@ impl Wizard {
         None
     }
 
-    /// Draws the corner Back button both steps share.
-    pub fn draw_back(&self, mouse: Vec2) {
-        crate::button::draw_back(mouse);
-    }
-
     /// Draws the setup screen: team-grouped seat cards, the Start
     /// button, and the live map with every chair marked.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "lays out and draws the whole setup screen"
+    )]
     pub fn draw_setup(&self, draft: &NewMatchDraft, previews: &mut PreviewCache) {
         let Some(scenario) = draft.scenario.as_deref() else {
             return;

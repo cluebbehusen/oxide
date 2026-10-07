@@ -604,7 +604,7 @@ fn the_last_coin_prepays_its_full_scrap_of_welding() {
         (ramp * ticks / ramp_ticks) * basis * oxide_sim::stats::REPAIR_COST_PERMILLE
             / u64::from(stats.max_hp)
     };
-    let stall_tick = (0u64..)
+    let stall_tick = (0..ramp_ticks)
         .find(|&p| millis(p + 1).div_ceil(1000) > 1)
         .unwrap();
     let welded = u32::try_from(ramp * stall_tick / ramp_ticks).unwrap();

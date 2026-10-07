@@ -245,6 +245,10 @@ pub(crate) struct Producer<'a> {
 /// focus fire and scouting, then production. A short defense instead buys an
 /// emergency static defense, trains no more Harvesters, and frees protected
 /// scrap for this decision's production.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one decision in its documented priority order"
+)]
 pub(crate) fn decide(
     observation: &ObservationData,
     events: &[OwnEvent],
@@ -564,13 +568,7 @@ pub(crate) fn decide(
             // lever, sooner the more guile.
             let raiding = income.saturating_add(4 * u32::from(profile.traits.guile)) >= RAID_INCOME;
             let scuttlers = if raiding {
-                persistent.missions.raid_squad(
-                    observation,
-                    map,
-                    profile,
-                    &persistent.memory,
-                    &scratch,
-                )
+                Missions::raid_squad(observation, map, profile, &persistent.memory, &scratch)
             } else {
                 0
             };

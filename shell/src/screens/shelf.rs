@@ -68,7 +68,7 @@ impl Shelf {
     pub(crate) fn set_catalog(&mut self, entries: Vec<ReplayEntry>) {
         let selected = self.rows.get(self.menu.selected).and_then(|row| match row {
             RowKind::Entry(i) => Some(self.entries[*i].path.clone()),
-            _ => None,
+            RowKind::Header => None,
         });
         let mut fresh = Self::from_entries(entries);
         if let Some(path) = selected

@@ -10,6 +10,7 @@ use crate::game::Game;
 use macroquad::prelude::{Vec2, vec2};
 use oxide_sim::Command;
 
+#[expect(clippy::too_many_lines, reason = "one arm per action")]
 pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: Action) {
     if input.construction_open()
         && matches!(

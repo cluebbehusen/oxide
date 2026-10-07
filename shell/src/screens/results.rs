@@ -307,7 +307,7 @@ impl ResultsScreen {
     }
 
     /// Stable labels for automation and accessibility.
-    pub fn items(&self) -> Vec<String> {
+    pub fn items() -> Vec<String> {
         ACTIONS.iter().map(|label| (*label).to_string()).collect()
     }
 
@@ -1088,7 +1088,7 @@ mod tests {
         let mut mouse = vec2(0.0, 0.0);
         let mut sounds = Vec::new();
 
-        assert_eq!(screen.items()[2], "VIEW FINAL MAP");
+        assert_eq!(ResultsScreen::items()[2], "VIEW FINAL MAP");
         assert_eq!(
             screen.update(
                 &[

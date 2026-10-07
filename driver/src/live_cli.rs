@@ -421,6 +421,7 @@ fn units(ids: Vec<u32>) -> Vec<UnitId> {
     ids.into_iter().map(UnitId).collect()
 }
 
+#[expect(clippy::too_many_lines, reason = "one arm per live subcommand")]
 pub(crate) fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
     Ok(vec![match cmd {
         LiveCmd::Status => Request::Status,
