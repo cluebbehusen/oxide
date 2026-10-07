@@ -1,7 +1,7 @@
 //! Seat evidence pooled over many legs: failure incidents, deliveries,
 //! reactivity, income, the impact ledger and attack calibration, with their
 //! text tables. The ladder pools it by rung; `bot-summary` pools any
-//! evaluation rows by match mode and difficulty.
+//! evaluation rows by team layout and difficulty.
 
 use crate::bot_eval::{
     AttackCalibration, Deliveries, INCOME_CHECKPOINTS, IncomeSample, SeatFailures, SeatReactivity,
@@ -412,21 +412,21 @@ struct SummarySeat {
     config: Option<BotConfig>,
 }
 
-/// Evaluation rows pooled by match mode and then by difficulty.
+/// Evaluation rows pooled by team layout and then by difficulty.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RowSummary {
     /// Legs read.
     pub legs: u32,
-    /// Each match mode and difficulty with its pooled seats, in mode and
+    /// Each team layout and difficulty with its pooled seats, in layout and
     /// then difficulty order.
     pub groups: Vec<(String, SeatSummary)>,
 }
 
 /// Reads evaluation rows from JSONL files and pools every controlled seat's
-/// evidence by match mode and difficulty.
+/// evidence by team layout and difficulty.
 pub fn summarize(paths: &[PathBuf]) -> Result<RowSummary> {
     let mut legs = 0;
-    let mut groups: BTreeMap<(MatchMode, usize), (String, SeatSummaryBuilder)> = BTreeMap::new();
+    let mut groups: BTreeMap<(String, usize), (String, SeatSummaryBuilder)> = BTreeMap::new();
     for path in paths {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading evaluation rows {}", path.display()))?;
@@ -444,8 +444,7 @@ pub fn summarize(paths: &[PathBuf]) -> Result<RowSummary> {
                 line + 1
             );
             let teams: Vec<u8> = row.seats.iter().map(|seat| seat.team).collect();
-            let mode = MatchMode::of(&teams)
-                .with_context(|| format!("{}:{}", path.display(), line + 1))?;
+            let mode = layout(&teams);
             legs += 1;
             for (seat, evidence) in row.seats.iter().zip(&row.evidence) {
                 let Some(config) = seat.config else {
@@ -453,10 +452,10 @@ pub fn summarize(paths: &[PathBuf]) -> Result<RowSummary> {
                 };
                 let rank = rank(config.difficulty);
                 groups
-                    .entry((mode, rank))
+                    .entry((mode.clone(), rank))
                     .or_insert_with(|| {
                         (
-                            format!("{} {}", mode.as_str(), config.difficulty),
+                            format!("{mode} {}", config.difficulty),
                             SeatSummaryBuilder::default(),
                         )
                     })
@@ -472,6 +471,26 @@ pub fn summarize(paths: &[PathBuf]) -> Result<RowSummary> {
             .map(|(label, builder)| (label, builder.finish()))
             .collect(),
     })
+}
+
+/// How `teams`, each seat's team, divide the seats: a duel, two equal teams or
+/// a free-for-all by name, and any other division by its team sizes, largest
+/// first, such as `2v1` or `2v2v2`.
+fn layout(teams: &[u8]) -> String {
+    if let Ok(mode) = MatchMode::of(teams) {
+        return mode.as_str().to_owned();
+    }
+    let mut sizes: BTreeMap<u8, usize> = BTreeMap::new();
+    for &team in teams {
+        *sizes.entry(team).or_default() += 1;
+    }
+    let mut sizes: Vec<usize> = sizes.into_values().collect();
+    sizes.sort_unstable_by(|a, b| b.cmp(a));
+    sizes
+        .iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join("v")
 }
 
 /// A difficulty's place from the lowest rung up.
@@ -544,7 +563,7 @@ mod tests {
     }
 
     #[test]
-    fn rows_pool_by_mode_and_difficulty_from_the_lowest_rung_up() {
+    fn rows_pool_by_layout_and_difficulty_from_the_lowest_rung_up() {
         let dir = std::env::temp_dir().join(format!("oxide-seat-summary-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("rows.jsonl");
@@ -552,12 +571,14 @@ mod tests {
             row(&[0, 1], &["prime", "standard"], 2),
             row(&[0, 1], &["prime", "standard"], 0),
             row(&[0, 0, 1, 1], &["standard"; 4], 1),
+            row(&[0, 0, 1], &["standard"; 3], 0),
+            row(&[0, 0, 1, 1, 2, 2], &["standard"; 6], 0),
         ];
         std::fs::write(&path, rows.join("\n")).unwrap();
         let summary = summarize(&[path]).unwrap();
         std::fs::remove_dir_all(&dir).ok();
 
-        assert_eq!(summary.legs, 3);
+        assert_eq!(summary.legs, 5);
         let groups: Vec<(&str, u32, u64, u64)> = summary
             .groups
             .iter()
@@ -573,12 +594,14 @@ mod tests {
         assert_eq!(
             groups,
             [
+                ("2v1 standard", 3, 3, 0),
+                ("2v2v2 standard", 6, 6, 0),
                 ("duel standard", 2, 2, 2),
                 ("duel prime", 2, 2, 2),
                 ("teams standard", 4, 4, 4),
             ]
         );
-        let income = &summary.groups[0].1.income;
+        let income = &summary.groups[2].1.income;
         assert_eq!(income.len(), 2);
         assert_eq!(
             (income[0].samples, income[0].percent_of_saturation),

@@ -12,7 +12,7 @@ use oxide_net::{
     same_build,
 };
 use oxide_sim::scenario::{BotConfig, BotDifficulty, BotStance};
-use oxide_sim::{Command, PlayerCommand, PlayerId, SIM_VERSION, Scenario, State, Tick};
+use oxide_sim::{Command, PlayerCommand, PlayerId, SIM_VERSION, Scenario, State, Tick, TickReport};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::thread;
@@ -133,13 +133,16 @@ impl Machine {
             .collect()
     }
 
-    fn execute(&mut self, batch: Vec<PlayerCommand>) {
+    /// Executes `batch`, returning its report for any other bots this
+    /// machine hosts.
+    fn execute(&mut self, batch: Vec<PlayerCommand>) -> TickReport {
         let report = runner::record_and_tick(&mut self.state, batch, Some(&mut self.replay));
         record_events(std::slice::from_mut(&mut self.player), &report);
         let tick = self.state.current_tick();
         if reports_hash(tick) {
             self.hashes.push((tick, self.state.hash()));
         }
+        report
     }
 
     fn commands(&self) -> Vec<(Tick, PlayerCommand)> {
@@ -316,7 +319,8 @@ impl Net {
                 Some(mut batch) => {
                     batch.extend(bot_execution::commands(&host.machine.state, &mut host.bots));
                     host.session.publish(&batch);
-                    host.machine.execute(batch);
+                    let report = host.machine.execute(batch);
+                    record_events(&mut host.bots, &report);
                     let state = &host.machine.state;
                     host.session.executed(|| state.hash());
                     host.next_due = now + TICK;
@@ -626,7 +630,8 @@ fn a_match_starts_and_stays_in_sync_over_tcp() {
             if let Some(mut batch) = session.seal(now) {
                 batch.extend(bot_execution::commands(&host.state, &mut bots));
                 session.publish(&batch);
-                host.execute(batch);
+                let report = host.execute(batch);
+                record_events(&mut bots, &report);
                 let state = &host.state;
                 session.executed(|| state.hash());
             }

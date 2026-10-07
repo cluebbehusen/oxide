@@ -163,7 +163,7 @@ enum Cmd {
         decision_trace_out: Option<Box<PathBuf>>,
     },
     /// Pool the seats of evaluation rows, from `bot-eval` or `bot-ladder`, by
-    /// match mode and difficulty: failure incidents, deliveries, reactivity,
+    /// team layout and difficulty: failure incidents, deliveries, reactivity,
     /// income and the impact ledger.
     BotSummary {
         /// rows.jsonl files.

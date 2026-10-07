@@ -73,7 +73,7 @@ exporter's identity. Source archives report unknown provenance.
 - `seat_summary` pools the seats of evaluation rows: failure incidents,
   deliveries, reactivity, income, the impact ledger and attack calibration, with
   their tables. `bot-summary <rows.jsonl>...` pools any `bot-eval` or
-  `bot-ladder` rows by match mode and difficulty. Evaluation inputs live in
+  `bot-ladder` rows by team layout and difficulty. Evaluation inputs live in
   `evaluation/`, not `scenarios/`, whose every file the shell menu, map gates
   and golden sweeps read.
 - `bot_ladder` expands a manifest from `evaluation/ladder/` into pairs of
