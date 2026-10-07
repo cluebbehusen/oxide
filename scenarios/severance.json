@@ -59,9 +59,7 @@
    "faction": "cupric",
    "scrap": 260,
    "bot": true,
-   "bot_config": {
-    "controller": "opponent"
-   }
+   "bot_config": {}
   }
  ],
  "units": [

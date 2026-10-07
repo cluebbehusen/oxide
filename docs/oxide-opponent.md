@@ -2,9 +2,7 @@
 
 `oxide-opponent` is the reactive, best-effort opponent every bot seat runs. This
 page is its normative specification: what it must do, what it must keep exact,
-and what it may not do. [Bot strategy](bot-strategy.md),
-[bot architecture](bot-architecture.md) and `docs/bot/` describe `oxide-bot` and
-do not apply to this crate. The
+and what it may not do. The
 [oxide-opponent skill](../.agents/skills/oxide-opponent/SKILL.md) holds the
 working rules.
 

@@ -79,8 +79,8 @@ fn replay_inspect_emits_stable_json_snapshots_and_command_silence() {
     assert_eq!(report["scenario"]["name"], "Skirmish Basin");
     assert_eq!(report["scenario"]["players"][1]["bot"], true);
     assert_eq!(
-        report["scenario"]["players"][1]["bot_config"]["controller"],
-        "opponent"
+        report["scenario"]["players"][1]["bot_config"],
+        serde_json::json!({})
     );
     assert_eq!(report["final_state"]["tick"], 120);
     assert_eq!(report["final_state"]["recorded_commands"], 3);

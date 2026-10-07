@@ -11,23 +11,12 @@ These run in the existing workspace test jobs; no wall-clock CI threshold is
 needed. Run the focused checks while developing:
 
 ```sh
-cargo test -p oxide-bot --lib --locked opaque_payload_uses_a_compact_byte_string
-cargo test -p oxide-bot --lib --locked completed_field_storage_scales_with_recipes_not_distance_arrays
-cargo test -p oxide-bot --lib --locked recipes_preserve_mixed_progress_and_completed_overlay_distances
-cargo test -p oxide-bot --lib --locked planning::tests::
 cargo test -p oxide-kit --lib --locked bot_execution::background_tests::
 cargo test -p oxide-shell --locked saved_game::tests::
 ```
 
 The size guards cover distinct failure modes:
 
-- A 4 KiB opaque controller payload permits at most 128 bytes of CBOR envelope
-  overhead. Integer arrays or textual byte expansion must not silently replace a
-  byte string.
-- Thirty-two completed 128×128 approach fields must encode within 32 KiB,
-  including their shared blocked grid. They are created through ordinary field
-  requests, restore exactly, and answer with zero new work. Partial searches
-  retain their progression and use the existing mixed-progress round trip.
 - The existing 500-unit mass-battle generator, with both seats controlled, and
   the shipped seven-bot Skyhook scenario advance 24 ticks, then save through the
   production format. Each file must remain within 1 MiB compressed and 8 MiB

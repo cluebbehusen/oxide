@@ -25,9 +25,8 @@ the complete unit roster, settings, and controls. Normal skirmishes use
 deterministic rules-based opponents with four difficulty levels and Turtle,
 Balanced, or Aggressive stances. A hidden seeded identity varies each opponent's
 strategic preferences. They receive no extra resources, information, build
-access, or combat advantages. The [bot architecture](docs/bot-architecture.md)
-explains current ownership and execution; [bot strategy](docs/bot-strategy.md)
-describes the intended opponent behavior.
+access, or combat advantages. The
+[opponent specification](docs/oxide-opponent.md) describes how they play.
 
 ## The game
 
@@ -169,7 +168,7 @@ Supporting directories:
 - [`assets/`](assets/) contains production sprites and sounds.
 - [`tools/`](tools/) contains deterministic asset generators and review tools.
 - [`.agents/skills/`](.agents/skills/) contains maintained procedures for
-  simulation work, scripted bots, live QA, maps, visual assets, and sound.
+  simulation work, the opponent, live QA, maps, visual assets, and sound.
 
 The load-bearing rule is:
 

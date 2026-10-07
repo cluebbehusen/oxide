@@ -1647,7 +1647,7 @@ mod tests {
     #[test]
     fn opponent_choices_start_from_the_map_and_follow_backtracking_rules() {
         let mut authored = Scenario::skirmish();
-        authored.players[1].bot_config = Some(oxide_sim::scenario::BotConfig::scripted(
+        authored.players[1].bot_config = Some(oxide_sim::scenario::BotConfig::new(
             BotDifficulty::Prime,
             BotStance::Aggressive,
             0xDEAD_BEEF,

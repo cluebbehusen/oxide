@@ -6,7 +6,6 @@
 use crate::controller::{ControllerCheckpoint, SeatController};
 use crate::{GameReplay, stats::LiveMatchStats};
 use anyhow::{Context, Result, ensure};
-use oxide_sim::scenario::BotController;
 use oxide_sim::{PlayerCommand, PlayerId, SIM_VERSION, Scenario, State};
 use serde::{Deserialize, Serialize};
 
@@ -157,11 +156,7 @@ impl SessionCheckpoint {
             scenario: scenario.clone(),
             state: state.clone(),
             snapshot_binding: snapshot_binding(scenario, state),
-            bots: bots
-                .iter()
-                .map(SeatController::checkpoint)
-                .collect::<Result<_, _>>()
-                .map_err(anyhow::Error::msg)?,
+            bots: bots.iter().map(SeatController::checkpoint).collect(),
             pending: pending.to_vec(),
             stats: stats.cloned(),
         };
@@ -173,16 +168,13 @@ impl SessionCheckpoint {
         Ok(checkpoint)
     }
 
-    fn expected_seats(&self) -> Vec<(PlayerId, BotController)> {
+    fn expected_seats(&self) -> Vec<PlayerId> {
         self.scenario
             .players
             .iter()
             .enumerate()
-            .filter(|(_, seat)| seat.bot)
-            .filter_map(|(seat, spec)| {
-                spec.bot_config
-                    .map(|config| (PlayerId(seat as u8), config.controller))
-            })
+            .filter(|(_, seat)| seat.bot && seat.bot_config.is_some())
+            .map(|(seat, _)| PlayerId(seat as u8))
             .collect()
     }
 
@@ -248,10 +240,8 @@ impl SessionCheckpoint {
     }
 }
 
-fn roster(bots: &[SeatController]) -> Vec<(PlayerId, BotController)> {
-    bots.iter()
-        .map(|bot| (bot.player(), bot.controller()))
-        .collect()
+fn roster(bots: &[SeatController]) -> Vec<PlayerId> {
+    bots.iter().map(SeatController::player).collect()
 }
 
 pub(crate) fn validate_setup(scenario: &Scenario, state: &State) -> Result<()> {
@@ -475,7 +465,7 @@ mod tests {
 
     #[test]
     fn a_save_between_an_own_event_and_the_next_decision_resumes_identically() {
-        use crate::controller::{SeatTrace, record_events, seat_controllers};
+        use crate::controller::{record_events, seat_controllers};
         let scenario = crate::controller::mixed_skirmish();
         let mut state = scenario.build().unwrap();
         let mut bots = seat_controllers(&scenario).unwrap();
@@ -499,7 +489,7 @@ mod tests {
             SessionCheckpoint::capture(&scenario, &state, &bots, &[], None).unwrap(),
         )
         .unwrap();
-        assert_eq!(json["bots"][0]["opponent"]["events"], rejected);
+        assert_eq!(json["bots"][0]["events"], rejected);
         let mut restored = serde_json::from_value::<SessionCheckpoint>(json.clone())
             .unwrap()
             .restore()
@@ -524,20 +514,25 @@ mod tests {
                 assert_eq!(resumed.report, original.report);
                 assert_eq!(resumed.traces, original.traces);
             }
-            received.extend(original.traces.into_iter().filter_map(|trace| match trace {
-                SeatTrace::Opponent(trace) if !trace.events.is_empty() => {
-                    Some((trace.tick, serde_json::to_value(trace.events).unwrap()))
-                }
-                _ => None,
-            }));
+            received.extend(
+                original
+                    .traces
+                    .into_iter()
+                    .filter(|trace| !trace.events.is_empty())
+                    .map(|trace| (trace.tick, serde_json::to_value(trace.events).unwrap())),
+            );
         }
-        assert_eq!(received.first(), Some(&(36, rejected)));
+        assert_eq!(
+            received[..2],
+            [(30, rejected.clone()), (36, rejected)],
+            "each seat hears its own rejection at its next decision: Prime decides every 6 ticks, Standard every 12"
+        );
         assert_eq!(restored.state.hash(), state.hash());
         assert_eq!(recovered.state.hash(), state.hash());
     }
 
     #[test]
-    fn mixed_controllers_round_trip_and_reject_forged_rosters() {
+    fn bot_seats_round_trip_and_reject_forged_rosters() {
         let scenario = crate::controller::mixed_skirmish();
         let mut state = scenario.build().unwrap();
         let mut bots = crate::controller::seat_controllers(&scenario).unwrap();
@@ -546,9 +541,9 @@ mod tests {
         }
         let captured = SessionCheckpoint::capture(&scenario, &state, &bots, &[], None).unwrap();
         let json = serde_json::to_value(&captured).unwrap();
-        assert_eq!(json["bots"][0]["opponent"]["controller"]["player"], 0);
-        assert_eq!(json["bots"][0]["opponent"]["events"], serde_json::json!([]));
-        assert!(json["bots"][1]["scripted"].is_object());
+        assert_eq!(json["bots"][0]["controller"]["player"], 0);
+        assert_eq!(json["bots"][0]["events"], serde_json::json!([]));
+        assert_eq!(json["bots"][1]["controller"]["player"], 1);
 
         let mut restored = serde_json::from_value::<SessionCheckpoint>(json.clone())
             .unwrap()
@@ -582,10 +577,9 @@ mod tests {
         };
         forged(&|bad| bad["bots"].as_array_mut().unwrap().swap(0, 1));
         forged(&|bad| {
-            bad["bots"][1] =
-                serde_json::json!({"opponent": {"controller": {"player": 1}, "events": []}})
+            bad["bots"][1] = serde_json::json!({"controller": {"player": 1}, "events": []})
         });
-        forged(&|bad| bad["bots"][0]["opponent"]["memory"] = serde_json::json!([]));
+        forged(&|bad| bad["bots"][0]["memory"] = serde_json::json!([]));
         forged(&|bad| bad["bots"][0] = bad["bots"][1].clone());
         forged(&|bad| bad["bots"].as_array_mut().unwrap().truncate(1));
         forged(&|bad| bad["bots"][0] = serde_json::json!({"oracle": {"player": 0}}));

@@ -13,10 +13,7 @@ Build provenance belongs to this executable. Its build script watches the driver
 and shared dependency package trees plus shared build inputs, assets, and
 scenarios; shell-only edits and private workspace notes do not contribute to its
 dirty status. Reports retain both the original recording identity and this
-exporter's identity. Source archives report unknown provenance. The build also
-embeds a reference digest of the `oxide-bot`, simulation and `chassis` sources,
-the `kit` code that hosts `oxide-bot`, and `Cargo.lock`, which evaluation
-records as the frozen reference it compares against.
+exporter's identity. Source archives report unknown provenance.
 
 ## Main pieces
 
@@ -50,31 +47,29 @@ records as the frozen reference it compares against.
   and controller; `--json` prints each game's ledgers.
 - `bot_eval` runs the player-facing controllers to a decision, tick ceiling, or
   stall-loop anomaly, and emits compact JSONL with candidate, scenario,
-  tick-ceiling, exact-profile, and anomaly provenance. `--controller` selects
-  `opponent` (`oxide-opponent`, the default) or `scripted` (`oxide-bot`, until
-  its removal), and `--opponent-controller` overrides seat one of a two-seat
-  scenario. It can exchange complete controller configurations between seats for
-  paired controller, personality or difficulty comparisons, including crossed
-  exact simulation seeds, personality seeds, faction assignments, and geometry
-  cells. Persisted batches are staged and never replace earlier evidence.
-  Optional decision traces stream fog-honest controller diagnostics to a
-  separate JSONL sidecar without entering compact rows or replays. A returned
-  publication error rolls back files created by that invocation. Abrupt process
-  termination can leave hidden staging files or a partial replay set because
-  arbitrary final paths cannot be published atomically; inspect and remove that
-  incomplete batch, then rerun it under a fresh candidate.
+  tick-ceiling, exact-profile, and anomaly provenance. It can exchange complete
+  controller configurations between seats for paired controller, personality or
+  difficulty comparisons, including crossed exact simulation seeds, personality
+  seeds, faction assignments, and geometry cells. Persisted batches are staged
+  and never replace earlier evidence. Optional decision traces stream fog-honest
+  controller diagnostics to a separate JSONL sidecar without entering compact
+  rows or replays. A returned publication error rolls back files created by that
+  invocation. Abrupt process termination can leave hidden staging files or a
+  partial replay set because arbitrary final paths cannot be published
+  atomically; inspect and remove that incomplete batch, then rerun it under a
+  fresh candidate.
 - Evaluation rows also record each seat's team and elimination tick, the
-  producing build and reference digest, omniscient failure detectors (repeated
-  impossible orders, abandoned paid construction, starved production,
-  `oxide-opponent` missions stuck in one phase, and an army idle at home) with
-  per-producer idle diagnostics, the fate of armed ground units trained on
-  severed ground, income against a saturated-economy estimate while the seat is
-  still in the match, and the seat's impact ledger. `oxide-opponent` seats also
-  record attack calibration: each attack its decisions launched, with the known
-  defense, margin, need and strength sent that `Opponent::launches` reports,
-  followed through its mission to how it ended and what its units dealt and
-  lost. These are QA evidence computed from authoritative state and what a
-  controller reports; they never reach a controller.
+  producing build, omniscient failure detectors (repeated impossible orders,
+  abandoned paid construction, starved production, `oxide-opponent` missions
+  stuck in one phase, and an army idle at home) with per-producer idle
+  diagnostics, the fate of armed ground units trained on severed ground, income
+  against a saturated-economy estimate while the seat is still in the match, and
+  the seat's impact ledger. `oxide-opponent` seats also record attack
+  calibration: each attack its decisions launched, with the known defense,
+  margin, need and strength sent that `Opponent::launches` reports, followed
+  through its mission to how it ended and what its units dealt and lost. These
+  are QA evidence computed from authoritative state and what a controller
+  reports; they never reach a controller.
 - `seat_summary` pools the seats of evaluation rows: failure incidents,
   deliveries, reactivity, income, the impact ledger and attack calibration, with
   their tables. `bot-summary <rows.jsonl>...` pools any `bot-eval` or
@@ -100,9 +95,8 @@ records as the frozen reference it compares against.
   seven-bot Skyhook game, and a staged mature-army match kept under
   `tests/fixtures/performance/` so it stays out of the shipped pool. It reports
   average and p99 wall time per decision, total CPU, and the fog-honest
-  observation and `oxide-bot` orientation costs, per seat and per controller.
-  Seats decide serially with tracing off; its command and final hashes equal an
-  untimed run.
+  observation cost, per seat and pooled. Seats decide serially with tracing off;
+  its command and final hashes equal an untimed run.
 - `tick_profile` shows where simulation time goes inside a window of recorded
   ticks. It rebuilds a replay to the window's first tick, re-simulates the
   window from a clone of that world under macOS's `sample`, and reports each
@@ -135,11 +129,10 @@ cargo run -p oxide-driver -- bot-eval skirmish --difficulty prime --paired
 cargo test -p oxide-driver --locked
 ```
 
-The
-[evaluation procedure](../.agents/skills/scripted-bot/references/evaluation.md)
-owns comparison matrices, trace capture, seed/profile provenance and anomaly
-interpretation. The live-QA skill owns native inspection. Aggregate results do
-not establish opponent quality or isolate simulation fairness.
+The [oxide-opponent skill](../.agents/skills/oxide-opponent/SKILL.md) owns the
+ladder, trace capture, seed and profile provenance and anomaly interpretation.
+The live-QA skill owns native inspection. Aggregate results do not establish
+opponent quality or isolate simulation fairness.
 
 `bot-eval --jobs N` bounds concurrent matches (default four, capped by available
 CPUs and leg count). Multiple match workers disable nested bot-seat parallelism;

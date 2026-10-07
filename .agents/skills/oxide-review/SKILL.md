@@ -18,9 +18,8 @@ review read-only.
 Identify the checkout, commit, comparison base and relevant uncommitted work.
 Distinguish what is on the PR from what exists only locally. Read the affected
 crate README and relevant architecture sections. Intended bot behavior is in
-`docs/bot-strategy.md` for `oxide-bot` and `docs/oxide-opponent.md` for
-`oxide-opponent`; neither is proof of current behavior. Follow changed data
-through its producer, owner, consumers and retirement rather than reviewing
+`docs/oxide-opponent.md`; it is not proof of current behavior. Follow changed
+data through its producer, owner, consumers and retirement rather than reviewing
 isolated functions.
 
 For a reported bug, recover the exact trigger and expected result. Inspect the

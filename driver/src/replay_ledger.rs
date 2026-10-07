@@ -155,18 +155,12 @@ pub fn load(path: &Path) -> Result<GameReplay> {
     oxide_kit::load_replay(path).with_context(|| format!("loading {}", path.display()))
 }
 
-/// The label a seat pools under: its faction and controller.
+/// The label a seat pools under: its faction and, for a bot, its difficulty.
 fn group(seat: &LedgerSeat) -> String {
     let controller = match seat.controller {
         SeatPlayer::Human => "human".to_owned(),
         SeatPlayer::Unknown => "unknown controller".to_owned(),
-        SeatPlayer::Bot { config } => {
-            let controller = serde_json::to_value(config.controller)
-                .ok()
-                .and_then(|value| value.as_str().map(str::to_owned))
-                .unwrap_or_default();
-            format!("{controller} {}", config.difficulty)
-        }
+        SeatPlayer::Bot { config } => format!("bot {}", config.difficulty),
     };
     let faction = serde_json::to_value(seat.faction)
         .ok()
@@ -244,7 +238,7 @@ mod tests {
 
     #[test]
     fn evaluation_replays_name_the_controllers_that_drove_their_seats() {
-        let prime = BotConfig::opponent(BotDifficulty::Prime, BotStance::Balanced, 9);
+        let prime = BotConfig::new(BotDifficulty::Prime, BotStance::Balanced, 9);
         let controllers =
             serde_json::to_string(&[Some(EvaluationController::configured(prime)), None]).unwrap();
         assert_eq!(

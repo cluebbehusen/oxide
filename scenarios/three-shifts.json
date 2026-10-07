@@ -67,9 +67,7 @@
    "scrap": 150,
    "bot": true,
    "team": 0,
-   "bot_config": {
-    "controller": "opponent"
-   }
+   "bot_config": {}
   },
   {
    "name": "West Alley Ferrous",
@@ -77,9 +75,7 @@
    "scrap": 150,
    "bot": true,
    "team": 0,
-   "bot_config": {
-    "controller": "opponent"
-   }
+   "bot_config": {}
   },
   {
    "name": "East Causeway Cupric",
@@ -87,9 +83,7 @@
    "scrap": 150,
    "bot": true,
    "team": 1,
-   "bot_config": {
-    "controller": "opponent"
-   }
+   "bot_config": {}
   },
   {
    "name": "East Plate Ferrous",
@@ -97,9 +91,7 @@
    "scrap": 150,
    "bot": true,
    "team": 1,
-   "bot_config": {
-    "controller": "opponent"
-   }
+   "bot_config": {}
   },
   {
    "name": "East Alley Cupric",
@@ -107,9 +99,7 @@
    "scrap": 150,
    "bot": true,
    "team": 1,
-   "bot_config": {
-    "controller": "opponent"
-   }
+   "bot_config": {}
   }
  ],
  "units": [

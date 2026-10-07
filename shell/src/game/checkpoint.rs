@@ -435,16 +435,13 @@ mod tests {
     fn an_opponent_seat_continues_through_save_recovery_and_replay_resume() {
         let mut scenario = Scenario::skirmish();
         scenario.players[1].bot = true;
-        scenario.players[1].bot_config = Some(oxide_sim::scenario::BotConfig::opponent(
+        scenario.players[1].bot_config = Some(oxide_sim::scenario::BotConfig::new(
             oxide_sim::scenario::BotDifficulty::Standard,
             oxide_sim::scenario::BotStance::Balanced,
             17,
         ));
         let mut original = Game::with_viewport(scenario, vec2(1280.0, 720.0)).unwrap();
-        assert!(matches!(
-            original.bots.as_slice(),
-            [SeatController::Opponent { .. }]
-        ));
+        assert_eq!(original.bots.len(), 1);
         original.advance_ticks(121);
         original.stage(oxide_sim::PlayerCommand {
             player: PlayerId(1),
@@ -456,12 +453,12 @@ mod tests {
         let controllers = |game: &Game| {
             game.bots
                 .iter()
-                .map(|bot| serde_json::to_value(bot.checkpoint().unwrap()).unwrap())
+                .map(|bot| serde_json::to_value(bot.checkpoint()).unwrap())
                 .collect::<Vec<_>>()
         };
         let pending = controllers(&original);
         assert_eq!(
-            pending[0]["opponent"]["events"],
+            pending[0]["events"],
             serde_json::json!([{"event": "command_rejected", "reason": "no_valid_units"}])
         );
 

@@ -532,7 +532,7 @@ mod tests {
                 .map(|(seat, (team, difficulty))| serde_json::json!({
                     "seat": seat,
                     "team": team,
-                    "config": {"controller": "opponent", "difficulty": difficulty},
+                    "config": {"difficulty": difficulty},
                 }))
                 .collect::<Vec<_>>(),
             "evidence": teams

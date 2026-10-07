@@ -58,9 +58,7 @@
    "scrap": 150,
    "bot": true,
    "team": 1,
-   "bot_config": {
-    "controller": "opponent"
-   }
+   "bot_config": {}
   },
   {
    "name": "South West Ferrous",
@@ -68,9 +66,7 @@
    "scrap": 150,
    "bot": true,
    "team": 0,
-   "bot_config": {
-    "controller": "opponent"
-   }
+   "bot_config": {}
   },
   {
    "name": "South East Cupric",
@@ -78,9 +74,7 @@
    "scrap": 150,
    "bot": true,
    "team": 1,
-   "bot_config": {
-    "controller": "opponent"
-   }
+   "bot_config": {}
   }
  ],
  "units": [

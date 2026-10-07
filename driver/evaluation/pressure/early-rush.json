@@ -35,9 +35,7 @@
         "faction": "ferrous",
         "scrap": 300,
         "bot": true,
-        "bot_config": {
-          "controller": "opponent"
-        }
+        "bot_config": {}
       },
       {
         "name": "Attacker",

@@ -263,7 +263,7 @@ fn defense_outranks_workers_under_a_small_allowance() {
     }
     scenario.units.extend((4..=5).map(|x| harvester(0, x, 7)));
     let state = scenario.build().unwrap();
-    let scrapheap = BotConfig::opponent(BotDifficulty::Scrapheap, BotStance::Balanced, 11);
+    let scrapheap = BotConfig::new(BotDifficulty::Scrapheap, BotStance::Balanced, 11);
     let (commands, trace) =
         seat_with(&scenario, 0, scrapheap).act_traced(&state, &mut OwnEvents::default());
     let trace = trace.unwrap();
@@ -842,7 +842,7 @@ fn an_upgraded_building_is_worth_every_tier_it_paid_for() {
 fn a_gun_in_sight_shelling_the_base_is_attacked() {
     for config in [
         config(),
-        BotConfig::opponent(BotDifficulty::Prime, BotStance::Balanced, 11),
+        BotConfig::new(BotDifficulty::Prime, BotStance::Balanced, 11),
     ] {
         let mut scenario = shelling(&[0]);
         // A West Scuttler beside the gun reveals it. The gun stands beyond the

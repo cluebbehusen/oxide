@@ -7,7 +7,6 @@ publish.workspace = true
 description = "Headless harness and live-game client for Oxide"
 
 [dependencies]
-oxide-bot = { workspace = true }
 oxide-opponent = { workspace = true }
 chassis = { workspace = true }
 oxide-sim = { workspace = true }

@@ -5,25 +5,22 @@
 //! the commands and the resulting world equal an untimed run of the same
 //! scenario, which the report's command and final hashes let a caller check.
 //!
-//! Beside each decision, the fog-honest observation build and `oxide-bot`'s
-//! orientation are timed by calling their public functions on the same
-//! pre-tick world after every seat has decided, so these probes never warm or
-//! slow a measured decision.
+//! Beside each decision, the fog-honest observation build is timed by calling
+//! it on the same pre-tick world after every seat has decided, so the probe
+//! never warms or slows a measured decision.
 
 use anyhow::{Context, Result};
-use oxide_bot::{Observation, Orientation};
 use oxide_kit::GameReplay;
 use oxide_kit::controller::{SeatController, record_events, seat_controllers};
 use oxide_protocol::hash_hex;
 use oxide_sim::observation::ObservationData;
-use oxide_sim::scenario::{BotConfig, BotController, BotDifficulty, BotStance};
-use oxide_sim::{BuildingKind, GameResult, PlayerId, Scenario, State};
+use oxide_sim::scenario::{BotConfig, BotDifficulty, BotStance};
+use oxide_sim::{GameResult, PlayerId, Scenario, State};
 use serde::Serialize;
 use std::time::{Duration, Instant};
 
-/// The profile every bot seat of a named workload plays, apart from its
-/// controller.
-const PROFILE: BotConfig = BotConfig::opponent(BotDifficulty::Standard, BotStance::Balanced, 0);
+/// The profile every bot seat of a named workload plays.
+const PROFILE: BotConfig = BotConfig::new(BotDifficulty::Standard, BotStance::Balanced, 0);
 
 /// A named timing workload: one map, its bot seats and their profile, and a
 /// tick window from the scenario start. Every bot seat plays Standard,
@@ -63,8 +60,8 @@ impl Workload {
         }
     }
 
-    /// The workload's scenario with `controller` in every bot seat.
-    pub fn scenario(self, controller: BotController) -> Scenario {
+    /// The workload's scenario with every bot seat configured.
+    pub fn scenario(self) -> Scenario {
         let (mut scenario, every_seat) = match self {
             Self::Duel => (Scenario::skirmish(), true),
             Self::Skyhook => (
@@ -81,10 +78,7 @@ impl Workload {
         for seat in &mut scenario.players {
             seat.bot |= every_seat;
             if seat.bot {
-                seat.bot_config = Some(BotConfig {
-                    controller,
-                    ..PROFILE
-                });
+                seat.bot_config = Some(PROFILE);
             }
         }
         scenario
@@ -152,8 +146,6 @@ impl Summary {
 pub struct SeatCost {
     /// Seat index.
     pub player: u8,
-    /// Controller driving the seat.
-    pub controller: BotController,
     /// Configured difficulty.
     pub difficulty: BotDifficulty,
     /// Configured stance.
@@ -165,25 +157,17 @@ pub struct SeatCost {
     pub decision: Summary,
     /// `ObservationData::fog_honest` for the seat at each due decision.
     pub observation: Summary,
-    /// `oxide-bot`'s `Orientation::observe` of that observation, at due
-    /// decisions where the seat has a home Foundry. Absent for other
-    /// controllers.
-    pub orientation: Option<Summary>,
 }
 
-/// Every seat of one controller kind, pooled.
+/// Every bot seat, pooled.
 #[derive(Debug, Serialize)]
-pub struct ControllerCost {
-    /// The controller.
-    pub controller: BotController,
-    /// Seats it drives.
+pub struct PooledCost {
+    /// Seats pooled.
     pub seats: usize,
     /// Every due decision of those seats.
     pub decision: Summary,
     /// Every observation probe of those seats.
     pub observation: Summary,
-    /// Every orientation probe, for `oxide-bot`.
-    pub orientation: Option<Summary>,
 }
 
 /// One timed run.
@@ -207,8 +191,8 @@ pub struct CostReport {
     pub final_hash: String,
     /// Bot seats in seat order.
     pub seats: Vec<SeatCost>,
-    /// Seats pooled by controller, in controller order.
-    pub controllers: Vec<ControllerCost>,
+    /// Every bot seat pooled; absent without any.
+    pub all: Option<PooledCost>,
     /// Wall time of each simulation tick.
     pub simulation: Summary,
 }
@@ -218,10 +202,6 @@ struct SeatSamples {
     config: BotConfig,
     decisions: Vec<u64>,
     observations: Vec<u64>,
-    orientations: Vec<u64>,
-    /// Latched at the first probe with a home Foundry, as `oxide-bot`
-    /// latches its own frame at its first decision.
-    frame: Option<Orientation>,
 }
 
 impl SeatSamples {
@@ -237,8 +217,6 @@ impl SeatSamples {
             config,
             decisions: Vec::new(),
             observations: Vec::new(),
-            orientations: Vec::new(),
-            frame: None,
         })
     }
 
@@ -246,39 +224,17 @@ impl SeatSamples {
         let start = Instant::now();
         let observation = ObservationData::fog_honest(state, self.player);
         self.observations.push(nanos(start.elapsed()));
-        if self.config.controller != BotController::Scripted {
-            return;
-        }
-        let observation = Observation::from_data(observation);
-        let Some(home) = observation
-            .my_buildings
-            .iter()
-            .filter(|building| !building.provisional && building.kind == BuildingKind::Foundry)
-            .min_by_key(|building| building.id)
-            .map(|building| building.anchor)
-        else {
-            return;
-        };
-        let frame = *self
-            .frame
-            .get_or_insert_with(|| Orientation::for_home(&observation, home));
-        let start = Instant::now();
-        let oriented = std::hint::black_box(frame.observe(&observation));
-        self.orientations.push(nanos(start.elapsed()));
-        drop(oriented);
+        drop(std::hint::black_box(observation));
     }
 
     fn cost(&self) -> SeatCost {
-        let scripted = self.config.controller == BotController::Scripted;
         SeatCost {
             player: self.player.0,
-            controller: self.config.controller,
             difficulty: self.config.difficulty,
             stance: self.config.stance,
             personality_seed: self.config.personality_seed,
             decision: Summary::of(&self.decisions),
             observation: Summary::of(&self.observations),
-            orientation: scripted.then(|| Summary::of(&self.orientations)),
         }
     }
 }
@@ -335,32 +291,14 @@ pub fn measure(
     if let Some(replay) = replay {
         replay.meta.ticks = Some(state.current_tick());
     }
-    let controllers = BotController::ALL
-        .into_iter()
-        .filter_map(|controller| {
-            let seats: Vec<_> = samples
-                .iter()
-                .filter(|seat| seat.config.controller == controller)
-                .collect();
-            let pooled = |pick: fn(&SeatSamples) -> &[u64]| {
-                Summary::of(
-                    &seats
-                        .iter()
-                        .flat_map(|seat| pick(seat))
-                        .copied()
-                        .collect::<Vec<_>>(),
-                )
-            };
-            (!seats.is_empty()).then(|| ControllerCost {
-                controller,
-                seats: seats.len(),
-                decision: pooled(|seat| &seat.decisions),
-                observation: pooled(|seat| &seat.observations),
-                orientation: (controller == BotController::Scripted)
-                    .then(|| pooled(|seat| &seat.orientations)),
-            })
-        })
-        .collect();
+    let pooled = |pick: fn(&SeatSamples) -> &[u64]| {
+        Summary::of(&samples.iter().flat_map(pick).copied().collect::<Vec<_>>())
+    };
+    let all = (!samples.is_empty()).then(|| PooledCost {
+        seats: samples.len(),
+        decision: pooled(|seat| &seat.decisions),
+        observation: pooled(|seat| &seat.observations),
+    });
     Ok(CostReport {
         workload: workload.to_owned(),
         scenario: scenario.name.clone(),
@@ -371,7 +309,7 @@ pub fn measure(
         command_hash: hash_hex(command_hash),
         final_hash: hash_hex(state.hash()),
         seats: samples.iter().map(SeatSamples::cost).collect(),
-        controllers,
+        all,
         simulation: Summary::of(&simulation),
     })
 }
@@ -383,27 +321,15 @@ impl CostReport {
         use std::fmt::Write;
         let micros = |ns: u64| format!("{:.1}", ns as f64 / 1_000.0);
         let millis = |ns: u64| format!("{:.1}", ns as f64 / 1_000_000.0);
-        let row = |seat: &str,
-                   controller: BotController,
-                   profile: &str,
-                   decision: Summary,
-                   observation: Summary,
-                   orientation: Option<Summary>| {
-            let (orient_avg, orient_p99) = orientation.map_or_else(
-                || ("-".to_owned(), "-".to_owned()),
-                |summary| (micros(summary.avg_ns), micros(summary.p99_ns)),
-            );
+        let row = |seat: &str, profile: &str, decision: Summary, observation: Summary| {
             format!(
-                "{seat:<5} {:<10} {profile:<22} {:>9} {:>9} {:>9} {:>9} {:>8} {:>8} {:>10} {:>10}",
-                controller.as_str(),
+                "{seat:<5} {profile:<22} {:>9} {:>9} {:>9} {:>9} {:>8} {:>8}",
                 decision.count,
                 micros(decision.avg_ns),
                 micros(decision.p99_ns),
                 millis(decision.total_ns),
                 micros(observation.avg_ns),
                 micros(observation.p99_ns),
-                orient_avg,
-                orient_p99,
             )
         };
         let outcome = match self.result {
@@ -424,18 +350,8 @@ impl CostReport {
         );
         let _ = writeln!(
             out,
-            "\n{:<5} {:<10} {:<22} {:>9} {:>9} {:>9} {:>9} {:>8} {:>8} {:>10} {:>10}",
-            "seat",
-            "controller",
-            "profile",
-            "decisions",
-            "avg µs",
-            "p99 µs",
-            "total ms",
-            "obs avg",
-            "obs p99",
-            "orient avg",
-            "orient p99"
+            "\n{:<5} {:<22} {:>9} {:>9} {:>9} {:>9} {:>8} {:>8}",
+            "seat", "profile", "decisions", "avg µs", "p99 µs", "total ms", "obs avg", "obs p99"
         );
         for seat in &self.seats {
             let profile = format!(
@@ -447,25 +363,21 @@ impl CostReport {
                 "{}",
                 row(
                     &seat.player.to_string(),
-                    seat.controller,
                     &profile,
                     seat.decision,
                     seat.observation,
-                    seat.orientation,
                 )
             );
         }
-        for controller in &self.controllers {
+        if let Some(all) = &self.all {
             let _ = writeln!(
                 out,
                 "{}",
                 row(
                     "all",
-                    controller.controller,
-                    &format!("{} seats", controller.seats),
-                    controller.decision,
-                    controller.observation,
-                    controller.orientation,
+                    &format!("{} seats", all.seats),
+                    all.decision,
+                    all.observation,
                 )
             );
         }
@@ -490,6 +402,7 @@ impl CostReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxide_sim::BuildingKind;
     use oxide_sim::scenario::ScenarioMode;
 
     #[test]
@@ -530,28 +443,22 @@ mod tests {
         for (workload, expected) in Workload::ALL.into_iter().zip(seats) {
             assert_eq!(workload.name().parse(), Ok(workload));
             assert!(workload.ticks() > 0);
-            for controller in BotController::ALL {
-                let scenario = workload.scenario(controller);
-                scenario.build().expect("workload scenarios build");
-                let seated = seat_controllers(&scenario).unwrap();
+            let scenario = workload.scenario();
+            scenario.build().expect("workload scenarios build");
+            let seated = seat_controllers(&scenario).unwrap();
+            assert_eq!(
+                seated
+                    .iter()
+                    .map(|seat| seat.player().0)
+                    .collect::<Vec<_>>(),
+                expected,
+                "{workload} seats"
+            );
+            for seat in &seated {
                 assert_eq!(
-                    seated
-                        .iter()
-                        .map(|seat| seat.player().0)
-                        .collect::<Vec<_>>(),
-                    expected,
-                    "{workload} seats"
+                    scenario.players[usize::from(seat.player().0)].bot_config,
+                    Some(PROFILE)
                 );
-                for seat in &seated {
-                    assert_eq!(seat.controller(), controller);
-                    assert_eq!(
-                        scenario.players[usize::from(seat.player().0)].bot_config,
-                        Some(BotConfig {
-                            controller,
-                            ..PROFILE
-                        })
-                    );
-                }
             }
         }
         assert_eq!(Workload::Skyhook.ticks(), 20_000);
@@ -560,7 +467,7 @@ mod tests {
 
     #[test]
     fn mature_armies_mirror_an_army_and_structures_for_each_seat() {
-        let scenario = Workload::MatureArmies.scenario(BotController::Scripted);
+        let scenario = Workload::MatureArmies.scenario();
         assert_eq!(scenario.mode, ScenarioMode::Match);
         let state = scenario.build().unwrap();
         let holdings = |player: PlayerId| {

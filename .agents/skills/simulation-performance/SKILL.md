@@ -26,11 +26,11 @@ cargo build --release --locked -p oxide-driver
 driver=target/release/oxide-driver
 mkdir -p replays/benchmark
 for workload in duel skyhook mature-armies; do
-  "$driver" bot-cost $workload --controller opponent --json \
+  "$driver" bot-cost $workload --json \
     --save-replay replays/benchmark/$workload.json > replays/benchmark/$workload.cost.json
 done
 "$driver" bot-cost --scenario scenarios/compass-grand.json --ticks 20000 \
-  --controller opponent --json --save-replay replays/benchmark/compass-grand.json \
+  --json --save-replay replays/benchmark/compass-grand.json \
   > replays/benchmark/compass-grand.cost.json
 ```
 

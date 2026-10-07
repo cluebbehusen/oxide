@@ -77,9 +77,7 @@
    "team": 0,
    "scrap": 150,
    "bot": true,
-   "bot_config": {
-    "controller": "opponent"
-   }
+   "bot_config": {}
   },
   {
    "name": "Mid South West Ferrous",
@@ -87,9 +85,7 @@
    "team": 0,
    "scrap": 150,
    "bot": true,
-   "bot_config": {
-    "controller": "opponent"
-   }
+   "bot_config": {}
   },
   {
    "name": "South West Cupric",
@@ -97,9 +93,7 @@
    "team": 0,
    "scrap": 150,
    "bot": true,
-   "bot_config": {
-    "controller": "opponent"
-   }
+   "bot_config": {}
   },
   {
    "name": "North East Ferrous",
@@ -107,9 +101,7 @@
    "team": 1,
    "scrap": 150,
    "bot": true,
-   "bot_config": {
-    "controller": "opponent"
-   }
+   "bot_config": {}
   },
   {
    "name": "Mid North East Cupric",
@@ -117,9 +109,7 @@
    "team": 1,
    "scrap": 150,
    "bot": true,
-   "bot_config": {
-    "controller": "opponent"
-   }
+   "bot_config": {}
   },
   {
    "name": "Mid South East Ferrous",
@@ -127,9 +117,7 @@
    "team": 1,
    "scrap": 150,
    "bot": true,
-   "bot_config": {
-    "controller": "opponent"
-   }
+   "bot_config": {}
   },
   {
    "name": "South East Cupric",
@@ -137,9 +125,7 @@
    "team": 1,
    "scrap": 150,
    "bot": true,
-   "bot_config": {
-    "controller": "opponent"
-   }
+   "bot_config": {}
   }
  ],
  "units": [

@@ -405,7 +405,7 @@ mod tests {
             seat.bot = true;
             seat.bot_config = Some(oxide_sim::scenario::BotConfig::default());
         }
-        scenario.players[0].bot_config = Some(oxide_sim::scenario::BotConfig::opponent(
+        scenario.players[0].bot_config = Some(oxide_sim::scenario::BotConfig::new(
             Default::default(),
             Default::default(),
             0,
@@ -437,7 +437,7 @@ mod tests {
                 };
                 let pending = controllers(&original);
                 assert_eq!(
-                    pending[0]["opponent"]["events"],
+                    pending[0]["events"],
                     serde_json::json!([{"event": "command_rejected", "reason": "no_valid_units"}])
                 );
                 let mut snapshot = original.recorder.clone();

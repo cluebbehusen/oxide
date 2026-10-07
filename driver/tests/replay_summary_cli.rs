@@ -28,7 +28,7 @@ fn stop(player: u8, unit: UnitId) -> PlayerCommand {
 
 fn save_fixture() -> TempReplay {
     let mut scenario = Scenario::skirmish();
-    scenario.players[1].bot_config = Some(BotConfig::opponent(
+    scenario.players[1].bot_config = Some(BotConfig::new(
         BotDifficulty::Prime,
         BotStance::Aggressive,
         8_675_309,
@@ -87,7 +87,6 @@ fn replay_summary_emits_the_json_contract() {
     assert_eq!(
         report["seats"][1]["bot_config"],
         serde_json::json!({
-            "controller": "opponent",
             "difficulty": "prime",
             "stance": "aggressive",
             "personality_seed": 8_675_309,
@@ -114,7 +113,7 @@ fn replay_summary_text_carries_header_digests_and_legend() {
     assert!(text.contains("Skirmish Basin"), "missing header:\n{text}");
     assert!(
         text.contains(
-            "seat 1: Cupric  Cupric  team 1  bot (opponent, prime / aggressive, personality seed 8675309)"
+            "seat 1: Cupric  Cupric  team 1  bot (prime / aggressive, personality seed 8675309)"
         ),
         "missing exact bot configuration:\n{text}"
     );

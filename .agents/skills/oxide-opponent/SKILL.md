@@ -4,16 +4,13 @@ description:
   Build and evaluate oxide-opponent, Oxide's reactive best-effort opponent
   controller. Use for any work in the oxide-opponent crate or its host
   integration, its tests and staged scenarios, its CPU and line reports, its
-  evaluation, and its difficulty, stance and personality mapping. Not for
-  oxide-bot; use scripted-bot for that.
+  evaluation, and its difficulty, stance and personality mapping.
 ---
 
 # oxide-opponent
 
 Read [the specification](../../../docs/oxide-opponent.md) first. It is normative
-for this crate. `docs/bot-strategy.md`, `docs/bot/` and the scripted-bot skill
-describe `oxide-bot` and do not apply here; do not import their
-exact-allocation, forecasting or planning-progress requirements.
+for this crate.
 
 ## Rules
 
@@ -252,14 +249,14 @@ on adds no empty samples.
 
 ## Pressure scenarios
 
-`cargo run --release -p oxide-driver -- bot-pressure --controller opponent` runs
-the staged scenarios in `driver/evaluation/pressure/`; `--replay-dir` saves each
-run for `replay-summary`. A scripted attacker seat issues tick-stamped commands
-for its preset units while the bot defends. Its Foundry stands in a walled
-corner: for early rush, air switch and siege the corner opens at its far end, so
-the defender's ground reaches it only by a long route and the defender is not
-cut off from its enemy; for lift drop it is an island no ground unit reaches,
-since the drop must come by air.
+`cargo run --release -p oxide-driver -- bot-pressure` runs the staged scenarios
+in `driver/evaluation/pressure/`; `--replay-dir` saves each run for
+`replay-summary`. A scripted attacker seat issues tick-stamped commands for its
+preset units while the bot defends. Its Foundry stands in a walled corner: for
+early rush, air switch and siege the corner opens at its far end, so the
+defender's ground reaches it only by a long route and the defender is not cut
+off from its enemy; for lift drop it is an island no ground unit reaches, since
+the drop must come by air.
 
 - **Early rush:** Sentinels and Scuttlers attack the base; the Foundry must
   stand at the deadline.

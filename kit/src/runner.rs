@@ -231,11 +231,11 @@ mod tests {
                 traces.extend(traced.traces);
             }
 
-            let mut traced_seats: Vec<u8> = traces.iter().map(|trace| trace.player().0).collect();
+            let mut traced_seats: Vec<u8> = traces.iter().map(|trace| trace.player.0).collect();
             traced_seats.sort_unstable();
             traced_seats.dedup();
             assert_eq!(traced_seats, seats, "every configured bot should think");
-            assert!(traces.iter().all(|trace| trace.tick() < 25));
+            assert!(traces.iter().all(|trace| trace.tick < 25));
             assert_eq!(traced_state.hash(), ordinary_state.hash());
             assert_eq!(
                 serde_json::to_vec(&traced_replay).unwrap(),

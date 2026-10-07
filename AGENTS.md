@@ -12,19 +12,17 @@ Read the README for the crate you are changing:
 | -------------------------------------- | ------------------------------------------------------------------------------------ |
 | [`chassis`](chassis/README.md)         | Reusable deterministic primitives. No game rules or engine dependencies.             |
 | [`oxide-sim`](sim/README.md)           | Game rules and player-knowledge projection.                                          |
-| [`oxide-bot`](bot/README.md)           | Observation-driven opponent policy and command production.                           |
-| [`oxide-opponent`](opponent/README.md) | Reactive, best-effort opponent controller alongside `oxide-bot`.                     |
+| [`oxide-opponent`](opponent/README.md) | Reactive, best-effort opponent controller.                                           |
 | [`oxide-protocol`](protocol/README.md) | Debug wire types, framing, input events, and state views.                            |
 | [`oxide-kit`](kit/README.md)           | Shared replay, statistics, fixture, and CPU-rendering services.                      |
 | [`oxide-net`](net/README.md)           | Lockstep multiplayer: wire messages, session core, start barrier, and TCP transport. |
 | [`oxide-shell`](shell/README.md)       | Macroquad input, UI, rendering, audio, persistence, and live session.                |
 | [`oxide-driver`](driver/README.md)     | Headless runner, inspectors, map audit, live client, profiling, and smoke QA.        |
 
-Implementation contracts live in `docs/simulation-architecture.md`,
-`docs/shell-architecture.md`, and `docs/bot-architecture.md`. Keep those
-descriptive. `oxide-opponent`, a second opponent controller alongside
-`oxide-bot`, is specified in `docs/oxide-opponent.md`. Put repeatable procedures
-in a skill and historical results in notes or version control.
+Implementation contracts live in `docs/simulation-architecture.md` and
+`docs/shell-architecture.md`. Keep those descriptive. `oxide-opponent` is
+specified in `docs/oxide-opponent.md`. Put repeatable procedures in a skill and
+historical results in notes or version control.
 
 ## Keep instructions in their proper place
 
@@ -68,9 +66,8 @@ where a profile shows a real win.
 The target is strict: **same seed plus same command log produces bit-identical
 state on every run and platform.**
 
-- `chassis`, `oxide-sim`, `oxide-bot`, and `oxide-opponent` contain no
-  floating-point arithmetic. Use `chassis::fx::Fx`; floats are
-  presentation-only.
+- `chassis`, `oxide-sim`, and `oxide-opponent` contain no floating-point
+  arithmetic. Use `chassis::fx::Fx`; floats are presentation-only.
 - Never depend on `HashMap` or `HashSet` iteration for an outcome. Use complete,
   stable ordering. Geometric ties must also preserve the documented symmetry:
   use the existing query-, footprint-, or owner-relative ranks instead of
@@ -83,8 +80,7 @@ state on every run and platform.**
 - `State::tick(&[PlayerCommand])` is the only game-state transition. Mouse,
   touch, bot, replay, and debug input all stage recorded commands.
 - Simulation time is ticks only. Rendering, audio, presentation caches, debug
-  reads and frame timing are observational. Bot planning progress and answer
-  readiness can affect future commands and must follow deterministic budgets.
+  reads and frame timing are observational.
 - Preserve documented parity when a pass alternates direction for fairness.
 
 ## State and session boundaries
@@ -100,15 +96,11 @@ state on every run and platform.**
 - Player saves restore validated session checkpoints without executing history.
   Replays retain world origins and commands. Tick `N` is the state before
   commands stamped `N` execute; restoration never adds a hidden mutation.
-- Controller checkpoints preserve memory, saved knowledge and deterministic work
-  progress needed for continuation. Scenario-derived data rebuilds from the
-  bound scenario; completed planning answers rebuild from retained recipes and
-  knowledge without spending live work or delaying readiness. Do not drop
-  progress merely because its eventual answer is derivable. Controller
-  validation rejects state that could panic or cause unbounded work; a forged
-  value that only changes play is accepted. `oxide-opponent` has no planning
-  progress: its checkpoints hold exactly the non-derivable state its
-  specification lists, and a new checkpoint field needs a design review.
+- Controller checkpoints hold exactly the non-derivable state the
+  `oxide-opponent` specification lists; scenario-derived data rebuilds from the
+  bound scenario. Controller validation rejects state that could panic or cause
+  unbounded work; a forged value that only changes play is accepted. A new
+  checkpoint field needs a design review.
 - `FogView` is the canonical player-knowledge surface. Omniscient QA views must
   never feed a bot or player decision.
 - Live, playback, and headless sessions share `oxide_protocol::DebugSession`.
@@ -123,19 +115,13 @@ information and shares human costs, prerequisites, queues, caps, build times,
 movement, combat, and economy. Never hide bot-only income, vision, stats, legal
 actions, or construction privileges behind controller code.
 
-[`docs/bot-strategy.md`](docs/bot-strategy.md) is the normative design model for
-`oxide-bot`, the retired opponent kept only until it is removed. It defines the
-observe, remember, forecast, allocate, plan, commit, and evaluate loop.
-Personality influences both cross-domain investment and execution within a
-funded domain, but never access to information, strategies, units, commands, or
-rules.
-
 [`docs/oxide-opponent.md`](docs/oxide-opponent.md) is normative for
-`oxide-opponent`, the reactive best-effort player-facing opponent. Work on that
-crate follows its specification and the oxide-opponent skill, not
-`docs/bot-strategy.md` or `docs/bot/`. It must not reintroduce exact
+`oxide-opponent`, the reactive best-effort opponent. Work on that crate follows
+its specification and the oxide-opponent skill. It must not introduce exact
 cross-domain allocation, production forecasts, plan search or planning state
-that spans decisions. Its counts come from need: a constant may bound
+that spans decisions. Personality influences both cross-domain investment and
+execution within a funded domain, but never access to information, strategies,
+units, commands, or rules. Its counts come from need: a constant may bound
 computation or model a difficulty, stance or personality limit, never what the
 bot owns or sends.
 
@@ -175,19 +161,15 @@ contract is wrong.
 
 The coverage script builds once for both gates: the unit gate counts library and
 binary unit tests, and the combined gate adds the integration suites. The
-combined gate skips the representative-map integrity soak and the focused
-dense-bomber production lifecycle because LLVM instrumentation makes them
-expensive while adding little line coverage. `cargo test --workspace --locked`
-runs both; the exhaustive all-map integrity soak is opt-in. Compact controller
-contracts run under combined coverage.
+combined gate skips the representative-map integrity soak because LLVM
+instrumentation makes it expensive while adding little line coverage.
+`cargo test --workspace --locked` runs it; the exhaustive all-map integrity soak
+is opt-in. Compact controller contracts run under combined coverage.
 
-CI runs `oxide-bot`'s own suites on Linux only. macOS and Windows still run the
-driver's hash fixtures and integrity soak, which exercise it.
-
-The `oxide-sim` and `oxide-bot` integration suites each compile into one test
-binary: modules of `tests/integration/main.rs`, whose guard test fails on an
-undeclared file. Add new suites there rather than as separate files under
-`tests/`; each extra binary recompiles and relinks against the workspace.
+The `oxide-sim` integration suite compiles into one test binary: modules of
+`tests/integration/main.rs`, whose guard test fails on an undeclared file. Add
+new suites there rather than as separate files under `tests/`; each extra binary
+recompiles and relinks against the workspace.
 
 Hash fixtures supplement explicit behavior assertions in small, staged
 scenarios. Do not pin autonomous match histories or require particular

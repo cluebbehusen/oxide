@@ -616,8 +616,7 @@ fn an_enemy_army_that_could_walk_home_holds_an_attack_the_seat_could_launch() {
 fn a_turtle_keeps_more_at_home_than_an_aggressive_seat() {
     let sent = |stance: BotStance| -> usize {
         let mut scenario = armed(8, &[]);
-        scenario.players[0].bot_config =
-            Some(BotConfig::opponent(BotDifficulty::Standard, stance, 11));
+        scenario.players[0].bot_config = Some(BotConfig::new(BotDifficulty::Standard, stance, 11));
         let state = scenario.build().unwrap();
         let commands = remembering(&scenario, &state, 4).act(&state, &mut OwnEvents::default());
         hunts(&commands).iter().map(|(units, _)| units.len()).sum()
@@ -937,7 +936,7 @@ fn the_upper_rungs_go_after_the_unguarded_target() {
         ],
         &[(24, 5), (25, 5), (26, 5), (27, 5)],
     );
-    let prime = BotConfig::opponent(BotDifficulty::Prime, BotStance::Balanced, 11);
+    let prime = BotConfig::new(BotDifficulty::Prime, BotStance::Balanced, 11);
     assert_eq!(target_of(&scenario, prime), open);
     assert_eq!(
         target_of(&scenario, config()),
@@ -951,7 +950,7 @@ fn the_lowest_rung_marches_on_a_foundry() {
     let scenario = targets(&[(BuildingKind::Crucible, 34, 10)], &[]);
     let mut scenario = scenario;
     scenario.units.push(unit(0, UnitKind::Kestrel, 40, 12));
-    let scrapheap = BotConfig::opponent(BotDifficulty::Scrapheap, BotStance::Balanced, 11);
+    let scrapheap = BotConfig::new(BotDifficulty::Scrapheap, BotStance::Balanced, 11);
     assert_eq!(target_of(&scenario, scrapheap), TilePos::new(43, 11));
     assert_eq!(
         target_of(&scenario, config()),
@@ -974,10 +973,10 @@ fn the_lowest_rung_sometimes_attacks_into_an_army_it_cannot_beat() {
     };
     let seeds = 0..20;
     for seed in seeds.clone() {
-        let standard = BotConfig::opponent(BotDifficulty::Standard, BotStance::Balanced, seed);
+        let standard = BotConfig::new(BotDifficulty::Standard, BotStance::Balanced, seed);
         assert!(!launches(standard), "Standard judges the army right");
     }
-    let scrapheap = |seed| BotConfig::opponent(BotDifficulty::Scrapheap, BotStance::Balanced, seed);
+    let scrapheap = |seed| BotConfig::new(BotDifficulty::Scrapheap, BotStance::Balanced, seed);
     assert!(
         seeds.clone().any(|seed| launches(scrapheap(seed))),
         "some Scrapheap underrates it"
@@ -989,7 +988,7 @@ fn the_lowest_rung_sometimes_attacks_into_an_army_it_cannot_beat() {
 }
 
 fn rung(difficulty: BotDifficulty) -> BotConfig {
-    BotConfig::opponent(difficulty, BotStance::Balanced, 11)
+    BotConfig::new(difficulty, BotStance::Balanced, 11)
 }
 
 /// Where the travelling attack's army stands, mid-field.
@@ -1176,7 +1175,7 @@ fn an_attack_pulling_back_sends_no_reinforcements_after_it() {
     let mut scenario = advanced(BotDifficulty::Prime, &east);
     // Aggressive keeps only half the threat home, so some of West's army
     // is free to join.
-    scenario.players[0].bot_config = Some(BotConfig::opponent(
+    scenario.players[0].bot_config = Some(BotConfig::new(
         BotDifficulty::Prime,
         BotStance::Aggressive,
         11,
