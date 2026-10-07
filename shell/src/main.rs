@@ -1,4 +1,7 @@
 #![doc = include_str!("../README.md")]
+// The workspace's disallowed types guard simulation determinism. Shell state
+// (interpolation caches, input sets) is presentation and may hash.
+#![allow(clippy::disallowed_types)]
 
 mod action;
 mod app;
@@ -219,7 +222,8 @@ fn window_conf() -> Conf {
         // pixels to afford; post-atlas it's crisp text and art for free.
         high_dpi: !args.no_high_dpi,
         // Miniquad replaces the macOS Dock icon with its 64px image. Leave
-        // the packaged app's full-resolution icns in place when available.
+        // the packaged app's full-resolution icns in place when available;
+        // sharpening the dev-run icon would take an unsafe AppKit call.
         icon: if cfg!(target_os = "macos")
             && paths::bundle_resources().is_some_and(|root| root.join("oxide.icns").is_file())
         {

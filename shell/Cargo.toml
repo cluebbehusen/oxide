@@ -33,13 +33,5 @@ macroquad = { version = "0.4.16", features = ["audio"] }
 # whole session.
 png = "0.17"
 
-[lints.clippy]
-# The workspace-wide disallowed-types list guards *sim* determinism. Shell
-# state (interpolation caches, input sets) is presentation and may hash.
-disallowed_types = "allow"
-
-[lints.rust]
-# The dev-run dock icon is a touch soft for this (miniquad's icon path
-# caps at 64px, and sharpening it means an AppKit call): the bundled
-# .app is crisp via its icns, and that trade keeps the shell unsafe-free.
-unsafe_code = "forbid"
+[lints]
+workspace = true

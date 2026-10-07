@@ -23,6 +23,35 @@ oxide-protocol = { path = "protocol" }
 oxide-kit = { path = "kit" }
 oxide-net = { path = "net" }
 
+# Members inherit this table whole, since Cargo refuses per-crate additions to
+# it. Crate roots carry their own extra levels: the deterministic crates deny
+# `float_arithmetic` and `disallowed_types`, and the shell allows hash maps.
+[workspace.lints.rust]
+missing_docs = "warn"
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# No checked integer-to-float conversion exists, and every value converted
+# here stays far below `f32`'s 2^24 exact-integer range.
+cast_precision_loss = "allow"
+# Re-enabled at each crate root once that crate's casts are checked.
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+# Its suggested `assert_eq!(x, [] as [T; 0])` reads worse than `is_empty`.
+assert_is_empty = "allow"
+# Stat tables keep one arm per kind so each kind's values read in one place.
+match_same_arms = "allow"
+# Internal crates: error and panic sections and `#[must_use]` on every
+# getter would document little the signatures do not already say.
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+similar_names = "allow"
+# Modules split into child files share the parent's imports via `use super::*`.
+wildcard_imports = "allow"
+
 # iPadOS 27 refuses to launch apps linked against its SDK unless they adopt
 # the UIScene lifecycle, and only unreleased miniquad master does. The pin
 # also brings iOS dpi reporting. It stops just before master's switch to

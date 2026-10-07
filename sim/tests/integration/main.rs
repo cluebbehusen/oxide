@@ -3,6 +3,8 @@
 //! Each suite is a module so the workspace builds and links one executable
 //! here instead of one per file.
 
+#![deny(clippy::float_arithmetic, clippy::disallowed_types)]
+
 mod aircraft_turning;
 mod bastion_acquisition;
 mod behavior_combat;

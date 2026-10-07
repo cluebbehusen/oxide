@@ -5,3 +5,7 @@ disallowed-types = [
     { path = "std::collections::HashMap", reason = "iteration order is nondeterministic — use BTreeMap or a Vec with stable ids" },
     { path = "std::collections::HashSet", reason = "iteration order is nondeterministic — use BTreeSet or a sorted Vec" },
 ]
+
+# Longer functions are split, or carry an `#[expect]` saying why they read
+# best whole.
+too-many-lines-threshold = 250

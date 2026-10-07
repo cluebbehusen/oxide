@@ -18,10 +18,5 @@ thiserror = { workspace = true }
 rand_pcg = "0.9"
 rand_core = "0.9"
 
-[lints.rust]
-missing_docs = "warn"
-unsafe_code = "forbid"
-
-[lints.clippy]
-float_arithmetic = "deny"
-disallowed_types = "deny"
+[lints]
+workspace = true

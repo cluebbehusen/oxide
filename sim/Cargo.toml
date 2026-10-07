@@ -12,10 +12,5 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 
-[lints.rust]
-missing_docs = "warn"
-unsafe_code = "forbid"
-
-[lints.clippy]
-float_arithmetic = "deny"
-disallowed_types = "deny"
+[lints]
+workspace = true
