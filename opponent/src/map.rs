@@ -872,7 +872,7 @@ fn edge_tiles(foundry: TilePos, slot: TilePos) -> Vec<TilePos> {
 /// Whether `tile`, off the lanes, touches one.
 fn edge_tile(foundry: TilePos, tile: TilePos) -> bool {
     let (x, y) = residue(foundry, tile);
-    !lane(foundry, tile) && !(matches!(x, 0 | 1) && matches!(y, 0 | 1))
+    !lane(foundry, tile) && (!matches!(x, 0 | 1) || !matches!(y, 0 | 1))
 }
 
 /// The slot holding `tile`, off the lanes.

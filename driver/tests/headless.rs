@@ -273,9 +273,8 @@ fn run_scenario_surfaces_a_build_failure_with_context() {
         bot: false,
         bot_config: None,
     });
-    let err = match runner::run_scenario(&scenario, 10, false, false) {
-        Ok(_) => panic!("an anchorless seat must fail the build"),
-        Err(err) => err,
+    let Err(err) = runner::run_scenario(&scenario, 10, false, false) else {
+        panic!("an anchorless seat must fail the build");
     };
     assert!(err.to_string().contains("building scenario"), "{err}");
 }

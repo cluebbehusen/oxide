@@ -251,7 +251,7 @@ fn cli_args() -> Args {
 
 #[macroquad::main(window_conf)]
 async fn main() {
-    if let Err(err) = app::run(cli_args()).await {
+    if let Err(err) = Box::pin(app::run(cli_args())).await {
         eprintln!("fatal: {err:#}");
         std::process::exit(1);
     }

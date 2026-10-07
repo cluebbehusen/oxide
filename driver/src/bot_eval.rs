@@ -1163,7 +1163,7 @@ impl EvidenceBatch {
             ));
             match std::fs::File::create_new(&candidate) {
                 Ok(_) => break candidate,
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(error) => {
                     return Err(error).with_context(|| {
                         format!("reserving staging file {}", candidate.display())

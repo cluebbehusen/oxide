@@ -18,6 +18,7 @@ use oxide_sim::{PlayerCommand, State};
 use serde::Serialize;
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 /// The demangled name every sample inside the simulation passes through.
@@ -341,14 +342,15 @@ impl Scan {
             self.window
         );
         for window in &self.windows {
-            out.push_str(&format!(
-                "  ticks {:>6}..{:<6}  avg {:>9.1} µs  max {:>9.1} µs  {:>5} units\n",
+            let _ = writeln!(
+                out,
+                "  ticks {:>6}..{:<6}  avg {:>9.1} µs  max {:>9.1} µs  {:>5} units",
                 window.from,
                 window.from + window.ticks,
                 micros(window.avg_ns),
                 micros(window.max_ns),
                 window.units
-            ));
+            );
         }
         out
     }
@@ -596,12 +598,13 @@ impl Profile {
             100.0 * (self.samples - self.tick_samples) as f64 / self.samples.max(1) as f64
         );
         let mut section = |title: &str, shares: &[Share]| {
-            out.push_str(&format!("\n{title}\n"));
+            let _ = writeln!(out, "\n{title}");
             for share in shares.iter().take(top) {
-                out.push_str(&format!(
-                    "{:>6.1}%  {:>7}  {}\n",
+                let _ = writeln!(
+                    out,
+                    "{:>6.1}%  {:>7}  {}",
                     share.percent, share.samples, share.function
-                ));
+                );
             }
         };
         section("phases (direct callees of State::tick)", &self.phases);

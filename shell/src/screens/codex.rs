@@ -19,6 +19,7 @@ use macroquad::prelude::*;
 use oxide_protocol::{Key, RawEvent};
 use oxide_sim::Faction;
 use oxide_sim::stats::{BuildingKind, Domain, UnitKind};
+use std::fmt::Write as _;
 
 /// What a codex frame decided.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -421,7 +422,7 @@ fn building_notes(kind: BuildingKind) -> Vec<String> {
             stats.max_hp
         );
         for weapon in building_weapon_lines(kind, tier as u8) {
-            line.push_str(&format!("; {weapon}"));
+            let _ = write!(line, "; {weapon}");
         }
         notes.push(line);
     }

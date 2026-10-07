@@ -138,7 +138,7 @@ impl ResolvedProfile {
             &envelope,
             non_guile_budget,
         );
-        let (primary, secondary) = ranked_specialties(&values, dealt_primary, dealt_secondary);
+        let (primary, secondary) = ranked_specialties(values, dealt_primary, dealt_secondary);
 
         Self {
             difficulty: config.difficulty,
@@ -270,7 +270,7 @@ fn normalize_non_guile(seed: u64, values: &mut [u8; 6], envelope: &[Envelope; 6]
 }
 
 fn ranked_specialties(
-    values: &[u8; 6],
+    values: [u8; 6],
     dealt_primary: Specialty,
     dealt_secondary: Specialty,
 ) -> (Specialty, Specialty) {

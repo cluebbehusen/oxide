@@ -249,7 +249,7 @@ struct Seat {
 }
 
 struct Second {
-    second: u64,
+    index: u64,
     frames: u32,
     ticks: u64,
     longest_us: u64,
@@ -286,10 +286,10 @@ impl Recent {
         if self
             .seconds
             .back()
-            .is_none_or(|current| current.second != second)
+            .is_none_or(|current| current.index != second)
         {
             self.seconds.push_back(Second {
-                second,
+                index: second,
                 frames: 0,
                 ticks: 0,
                 longest_us: 0,
@@ -307,7 +307,7 @@ impl Recent {
         while self
             .seconds
             .front()
-            .is_some_and(|oldest| oldest.second + RECENT_SECONDS <= second)
+            .is_some_and(|oldest| oldest.index + RECENT_SECONDS <= second)
         {
             self.seconds.pop_front();
         }
@@ -325,7 +325,7 @@ impl Recent {
     fn json(&self) -> Value {
         json!({
             "seconds": self.seconds.iter().map(|second| json!({
-                "uptime_s": second.second,
+                "uptime_s": second.index,
                 "frames": second.frames,
                 "ticks": second.ticks,
                 "longest_frame_us": second.longest_us,

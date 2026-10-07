@@ -12,6 +12,7 @@ use oxide_kit::controller::{record_events, seat_controllers};
 use oxide_sim::stats::{Domain, Role};
 use oxide_sim::{BuildingKind, Command, PlayerCommand, PlayerId, Scenario, State, UnitId};
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 use std::path::Path;
 
 /// One staged situation.
@@ -361,17 +362,18 @@ pub fn report(outcomes: &[PressureOutcome]) -> String {
             Check::SilencesArtillery => "silences_artillery",
             Check::ClearsLanding => "clears_landing",
         };
-        text.push_str(&format!(
-            "{:<18} {:<18} {:<7} {:>5}  {}\n",
+        let _ = writeln!(
+            text,
+            "{:<18} {:<18} {:<7} {:>5}  {}",
             outcome.name,
             check,
             if outcome.passed { "pass" } else { "FAIL" },
             outcome.ticks,
             outcome.detail
-        ));
+        );
     }
     let passed = outcomes.iter().filter(|outcome| outcome.passed).count();
-    text.push_str(&format!("{passed}/{} passed\n", outcomes.len()));
+    let _ = writeln!(text, "{passed}/{} passed", outcomes.len());
     text
 }
 

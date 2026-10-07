@@ -386,7 +386,7 @@ fn design(enabled: &[Factor]) -> Vec<Cell> {
 }
 
 /// Level labels for the enabled factors, in [`Factor::ALL`] order.
-fn labels(enabled: &[Factor], cell: &Cell) -> Vec<String> {
+fn labels(enabled: &[Factor], cell: Cell) -> Vec<String> {
     Factor::ALL
         .iter()
         .filter(|f| enabled.contains(f))
@@ -444,13 +444,13 @@ pub fn run_factorial(
         let played = play(&base, seed, cell, max_ticks, config)?;
         eprintln!(
             "  {} · seed {} · {} ticks · {:?}",
-            labels(enabled, &cell).join(" "),
+            labels(enabled, cell).join(" "),
             played.seed,
             played.ticks,
             played.outcome
         );
         Ok(FactorialMatch {
-            levels: labels(enabled, &cell),
+            levels: labels(enabled, cell),
             ..played
         })
     })?;
@@ -483,7 +483,7 @@ pub fn run_factorial(
                 .collect();
             let tally = tally(&played);
             CellRecord {
-                levels: labels(enabled, cell),
+                levels: labels(enabled, *cell),
                 matches: tally.matches,
                 seat_wins: tally.seat_wins,
                 draws: tally.draws,

@@ -43,6 +43,14 @@ cast_sign_loss = "allow"
 assert_is_empty = "allow"
 # Stat tables keep one arm per kind so each kind's values read in one place.
 match_same_arms = "allow"
+# Floats exist only for presentation, where exact comparisons check values
+# that were copied or snapped rather than computed.
+float_cmp = "allow"
+# Independent flags stay separate fields; exclusive states already use enums.
+fn_params_excessive_bools = "allow"
+struct_excessive_bools = "allow"
+# Geometry reads naturally with x, y, w, and h.
+many_single_char_names = "allow"
 # Internal crates: error and panic sections and `#[must_use]` on every
 # getter would document little the signatures do not already say.
 missing_errors_doc = "allow"

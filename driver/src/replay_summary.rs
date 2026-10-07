@@ -406,18 +406,18 @@ impl Ledgers {
     /// Resolves a target's owner, falling back to the live state for ids
     /// the event stream never introduced (construction sites placed
     /// mid-match emit no event until they complete).
-    fn target_seat(&self, target: &Target, state: &State) -> Option<u8> {
+    fn target_seat(&self, target: Target, state: &State) -> Option<u8> {
         match target {
             Target::Unit(id) => self
                 .unit_owner
-                .get(id)
+                .get(&id)
                 .copied()
-                .or_else(|| state.unit(*id).map(|unit| unit.player.0)),
+                .or_else(|| state.unit(id).map(|unit| unit.player.0)),
             Target::Building(id) => self
                 .building
-                .get(id)
+                .get(&id)
                 .map(|(seat, _)| *seat)
-                .or_else(|| state.building(*id).map(|building| building.player.0)),
+                .or_else(|| state.building(id).map(|building| building.player.0)),
         }
     }
 }
@@ -856,7 +856,7 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
                         shooter,
                         target
                             .as_ref()
-                            .and_then(|target| ledgers.target_seat(target, &state)),
+                            .and_then(|target| ledgers.target_seat(*target, &state)),
                         TilePos::containing(*target_pos),
                         now,
                         &mut contacted,
@@ -876,7 +876,7 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
                         shooter,
                         target
                             .as_ref()
-                            .and_then(|target| ledgers.target_seat(target, &state)),
+                            .and_then(|target| ledgers.target_seat(*target, &state)),
                         TilePos::containing(*target_pos),
                         now,
                         &mut contacted,
@@ -892,7 +892,7 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
                         Some(player.0),
                         target
                             .as_ref()
-                            .and_then(|target| ledgers.target_seat(target, &state)),
+                            .and_then(|target| ledgers.target_seat(*target, &state)),
                         TilePos::containing(*to),
                         now,
                         &mut contacted,
@@ -1570,7 +1570,7 @@ impl SummaryReport {
                 let _ = writeln!(
                     out,
                     "result: {} — decided at {} (t={}), {} post-game ticks",
-                    render_result(result, &self.outcome.winner_seats),
+                    render_result(*result, &self.outcome.winner_seats),
                     clock(decided),
                     decided,
                     self.outcome.post_game_ticks,
@@ -1580,7 +1580,7 @@ impl SummaryReport {
                 let _ = writeln!(
                     out,
                     "result: {}",
-                    render_result(result, &self.outcome.winner_seats)
+                    render_result(*result, &self.outcome.winner_seats)
                 );
             }
             _ => {
@@ -1672,11 +1672,11 @@ fn render_moment(kind: &TimelineKind) -> String {
         TimelineKind::GameOver {
             result,
             winner_seats,
-        } => format!("game over: {}", render_result(result, winner_seats)),
+        } => format!("game over: {}", render_result(*result, winner_seats)),
     }
 }
 
-fn render_result(result: &GameResult, winner_seats: &[u8]) -> String {
+fn render_result(result: GameResult, winner_seats: &[u8]) -> String {
     match result {
         GameResult::Victory { team } => {
             let seats = winner_seats
@@ -1996,7 +1996,7 @@ mod tests {
         for (kind, expected) in cases {
             assert_eq!(render_moment(&kind), expected);
         }
-        assert_eq!(render_result(&GameResult::Draw, &[]), "draw");
+        assert_eq!(render_result(GameResult::Draw, &[]), "draw");
     }
 
     #[test]

@@ -18,6 +18,7 @@ use crate::game::projection::{Program, Projection};
 use crate::typography::entity_name;
 use oxide_sim::stats::{BuildingKind, UnitKind, WeaponStats};
 use oxide_sim::{BuildingId, Order};
+use std::fmt::Write as _;
 
 /// What a card wears.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1012,7 +1013,7 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
                 selected.buildings.len() - offline
             );
             if focused > 0 {
-                panel.summary.push_str(&format!(" · {focused} targeting"));
+                let _ = write!(panel.summary, " · {focused} targeting");
             }
         } else if let Some(building) = selected.buildings.first() {
             if let Some(target) = building.focus {

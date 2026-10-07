@@ -138,8 +138,8 @@ impl Machine {
 
     /// Executes `batch`, returning its report for any other bots this
     /// machine hosts.
-    fn execute(&mut self, batch: Vec<PlayerCommand>) -> TickReport {
-        let report = runner::record_and_tick(&mut self.state, &batch, Some(&mut self.replay));
+    fn execute(&mut self, batch: &[PlayerCommand]) -> TickReport {
+        let report = runner::record_and_tick(&mut self.state, batch, Some(&mut self.replay));
         record_events(std::slice::from_mut(&mut self.player), &report);
         let tick = self.state.current_tick();
         if reports_hash(tick) {
@@ -204,7 +204,7 @@ impl Client {
                         command: Command::Surrender,
                     });
                 }
-                self.machine.execute(batch);
+                self.machine.execute(&batch);
                 let state = &self.machine.state;
                 self.session.executed(|| state.hash());
             }
@@ -322,7 +322,7 @@ impl Net {
                 Some(mut batch) => {
                     batch.extend(bot_execution::commands(&host.machine.state, &mut host.bots));
                     host.session.publish(&batch);
-                    let report = host.machine.execute(batch);
+                    let report = host.machine.execute(&batch);
                     record_events(&mut host.bots, &report);
                     let state = &host.machine.state;
                     host.session.executed(|| state.hash());
@@ -633,7 +633,7 @@ fn a_match_starts_and_stays_in_sync_over_tcp() {
             if let Some(mut batch) = session.seal(now) {
                 batch.extend(bot_execution::commands(&host.state, &mut bots));
                 session.publish(&batch);
-                let report = host.execute(batch);
+                let report = host.execute(&batch);
                 record_events(&mut bots, &report);
                 let state = &host.state;
                 session.executed(|| state.hash());
@@ -653,7 +653,7 @@ fn a_match_starts_and_stays_in_sync_over_tcp() {
                 for order in machine.orders() {
                     client.send(order);
                 }
-                machine.execute(batch);
+                machine.execute(&batch);
                 let state = &machine.state;
                 client.executed(|| state.hash());
             }

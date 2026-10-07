@@ -298,7 +298,8 @@ mod tests {
 
     #[test]
     fn an_oversized_or_non_utf8_line_closes_the_connection_both_ways() {
-        let malformed: [&[u8]; 2] = [&[b'a'; MAX_LINE_BYTES + 1], &[0xff, b'\n']];
+        let oversized = vec![b'a'; MAX_LINE_BYTES + 1];
+        let malformed: [&[u8]; 2] = [&oversized, &[0xff, b'\n']];
         for bytes in malformed {
             let (host, mut raw) = accepted_from_raw();
             raw.write_all(bytes).unwrap();

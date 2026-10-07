@@ -40,20 +40,15 @@ pub fn line_blocked(a: Vec2Fx, b: Vec2Fx, mut passable: impl FnMut(TilePos) -> b
         return false;
     }
     let delta = b - a;
-    let step_x: i32 = if delta.x > Fx::ZERO {
-        1
-    } else if delta.x < Fx::ZERO {
-        -1
-    } else {
-        0
+    let step = |axis: Fx| -> i32 {
+        match axis.cmp(&Fx::ZERO) {
+            std::cmp::Ordering::Greater => 1,
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Equal => 0,
+        }
     };
-    let step_y: i32 = if delta.y > Fx::ZERO {
-        1
-    } else if delta.y < Fx::ZERO {
-        -1
-    } else {
-        0
-    };
+    let step_x = step(delta.x);
+    let step_y = step(delta.y);
     // Parametric distance (0..1 along the segment) to the next x/y tile
     // boundary, and per-tile increments — SATURATING Q32.32 arithmetic.
     // A delta component can be as small as one fixed-point ulp (two

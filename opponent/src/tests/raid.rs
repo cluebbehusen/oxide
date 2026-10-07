@@ -208,12 +208,12 @@ fn bombers_too_few_for_a_strike_harry_a_harvest_line() {
 /// beside the target. The attack is in `phase`, with the Sapper a member
 /// when `member`.
 fn sapping(
-    phase: serde_json::Value,
+    phase: &serde_json::Value,
     member: bool,
     since: u64,
 ) -> (State, Opponent, UnitId, Option<BuildingId>) {
     let (state, opponent, sappers, turrets) =
-        besieging(&phase, member, since, &[(40, 10)], &[(10, 12)], |_| {});
+        besieging(phase, member, since, &[(40, 10)], &[(10, 12)], |_| {});
     (state, opponent, sappers[0], turrets.first().copied())
 }
 
@@ -456,7 +456,7 @@ fn a_raid_sends_only_the_raiders_its_target_needs() {
 
 #[test]
 fn an_attack_on_a_defended_target_takes_free_sappers_along() {
-    let (state, mut opponent, sapper, _) = sapping(serde_json::json!("recover"), false, 12);
+    let (state, mut opponent, sapper, _) = sapping(&serde_json::json!("recover"), false, 12);
     let commands = opponent.act(&state, &mut OwnEvents::default());
     assert!(
         runs(&commands).iter().any(|(units, _)| *units == [sapper]),
@@ -467,7 +467,7 @@ fn an_attack_on_a_defended_target_takes_free_sappers_along() {
 #[test]
 fn a_fighting_attack_sends_its_sappers_at_the_nearest_defense() {
     let (state, mut opponent, sapper, turret) =
-        sapping(serde_json::json!({"engage": {"focus": null}}), true, 12);
+        sapping(&serde_json::json!({"engage": {"focus": null}}), true, 12);
     let commands = opponent.act(&state, &mut OwnEvents::default());
     assert_eq!(
         attacks(&commands),
@@ -478,7 +478,7 @@ fn a_fighting_attack_sends_its_sappers_at_the_nearest_defense() {
 #[test]
 fn a_fighting_attack_s_sappers_keep_their_orders_when_it_regroups() {
     let (state, mut opponent, sapper, turret) =
-        sapping(serde_json::json!({"engage": {"focus": null}}), true, 0);
+        sapping(&serde_json::json!({"engage": {"focus": null}}), true, 0);
     let late = {
         let mut state = state.clone();
         while state.current_tick() < 3_612 {

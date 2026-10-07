@@ -641,7 +641,7 @@ fn playing_frame(
         next = Some(open_pause(&mut app.game, PauseCause::Suspension));
     }
     if let Some(t) = app.tutorial.as_mut()
-        && !t.advance(&app.game.demo)
+        && !t.advance(app.game.demo)
     {
         app.tutorial = None;
     }

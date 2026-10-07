@@ -37,3 +37,8 @@ pub const TICKS_PER_SECOND: u32 = 20;
 
 /// Simulation time in ticks, re-exported from chassis.
 pub type Tick = chassis::Tick;
+
+/// Serde skip predicate: omits a field that still holds its default value.
+pub(crate) fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
+}

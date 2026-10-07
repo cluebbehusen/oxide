@@ -20,7 +20,7 @@ pub const MAX_PLAYERS: usize = 16;
 #[serde(deny_unknown_fields)]
 pub struct Scenario {
     /// Match victory rules, or an open-ended sandbox with optional Foundries.
-    #[serde(default, skip_serializing_if = "ScenarioMode::is_match")]
+    #[serde(default, skip_serializing_if = "crate::is_default")]
     pub mode: ScenarioMode,
     /// Display name.
     pub name: String,
@@ -58,8 +58,8 @@ pub enum ScenarioMode {
 }
 
 impl ScenarioMode {
-    pub(crate) fn is_match(&self) -> bool {
-        *self == Self::Match
+    pub(crate) fn is_match(self) -> bool {
+        self == Self::Match
     }
 }
 
@@ -129,13 +129,13 @@ pub struct PlayerSpec {
 #[serde(deny_unknown_fields)]
 pub struct BotConfig {
     /// How accurately and promptly the bot reasons.
-    #[serde(default, skip_serializing_if = "is_standard_difficulty")]
+    #[serde(default, skip_serializing_if = "crate::is_default")]
     pub difficulty: BotDifficulty,
     /// The broad tempo and risk posture selected by the player.
-    #[serde(default, skip_serializing_if = "is_balanced_stance")]
+    #[serde(default, skip_serializing_if = "crate::is_default")]
     pub stance: BotStance,
     /// Seed for the bot's hidden, deterministic personality.
-    #[serde(default, skip_serializing_if = "is_zero_seed")]
+    #[serde(default, skip_serializing_if = "crate::is_default")]
     pub personality_seed: u64,
 }
 
@@ -250,18 +250,6 @@ impl std::str::FromStr for BotStance {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("unknown bot stance `{0}`; expected turtle, balanced, or aggressive")]
 pub struct ParseBotStanceError(String);
-
-fn is_standard_difficulty(value: &BotDifficulty) -> bool {
-    *value == BotDifficulty::Standard
-}
-
-fn is_balanced_stance(value: &BotStance) -> bool {
-    *value == BotStance::Balanced
-}
-
-fn is_zero_seed(value: &u64) -> bool {
-    *value == 0
-}
 
 fn default_scrap() -> u32 {
     100

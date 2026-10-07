@@ -5,6 +5,7 @@
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
+use std::fmt::Write as _;
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -176,11 +177,11 @@ pub fn choose(devices: &[Device], answer: &str, default: usize) -> Result<usize>
 
 /// The numbered device list the picker shows.
 pub fn listing(devices: &[Device]) -> String {
-    devices
-        .iter()
-        .enumerate()
-        .map(|(i, device)| format!("  {}) {device}\n", i + 1))
-        .collect()
+    let mut out = String::new();
+    for (i, device) in devices.iter().enumerate() {
+        let _ = writeln!(out, "  {}) {device}", i + 1);
+    }
+    out
 }
 
 /// Builds, installs, and launches the app. `device` skips the picker;

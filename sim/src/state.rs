@@ -54,12 +54,12 @@ pub struct Player {
     /// Emergency scrap still available in the current stranded-economy
     /// cycle. The allowance is finite: spending the credited package
     /// cannot make the Foundry mint it a second time.
-    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    #[serde(default, skip_serializing_if = "crate::is_default")]
     pub recovery_allowance: u16,
     /// Bank target captured when the current recovery cycle began. It is
     /// fixed for the cycle so selling, queueing, or losing a screen cannot
     /// expand the entitlement after the fact.
-    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    #[serde(default, skip_serializing_if = "crate::is_default")]
     pub recovery_target: u16,
     /// Whether one new recovery cycle may begin. A real Harvester deposit
     /// re-arms it; merely training, cancelling, or losing a worker does not.
@@ -280,17 +280,13 @@ pub struct Leash {
     /// past the radius. A bait that never comes in reach never grants
     /// any: its chaser breaks at the radius line exactly. Inside the
     /// radius the guard fights freely — that ground is its zone.
-    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    #[serde(default, skip_serializing_if = "crate::is_default")]
     pub patience: u16,
     /// Ticks left standing at the post before the guard looks for the
     /// next fight; the leash clears when it reaches zero. Nonzero only
     /// while idle — the answer to an enemy dancing at the aggro edge.
-    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    #[serde(default, skip_serializing_if = "crate::is_default")]
     pub cooldown: u16,
-}
-
-fn is_zero_u16(v: &u16) -> bool {
-    *v == 0
 }
 
 /// An in-progress walk along an A* path.
@@ -341,7 +337,7 @@ pub struct Unit {
     /// `kind.stats().weapons` (unused slots stay zero).
     pub cooldowns: [u32; crate::stats::MAX_WEAPONS],
     /// Bombard spade deployment, from stowed zero to fully planted.
-    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    #[serde(default, skip_serializing_if = "crate::is_default")]
     pub brace_ticks: u8,
     /// Order-specific counter (extraction progress).
     pub progress: u32,
@@ -367,20 +363,20 @@ pub struct Unit {
     /// idle mid-battle re-acquires unleashed, which is what keeps the
     /// tether from deciding army fights; leashing every idle machine
     /// once collapsed the scripted tier ladder to a seat-parity coin.
-    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    #[serde(default, skip_serializing_if = "crate::is_default")]
     pub settled: u16,
     /// Compass step (of 256, see [`chassis::compass`]) this body faces,
     /// or Buzzard's turret bearing. Ground chassis and turn-limited aircraft
     /// steer by it. Every `u8` is a valid compass heading.
-    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    #[serde(default, skip_serializing_if = "crate::is_default")]
     pub heading: u8,
     /// Ground motor speed; overlap corrections do not contribute to it.
-    #[serde(default, skip_serializing_if = "is_zero_fx")]
+    #[serde(default, skip_serializing_if = "crate::is_default")]
     pub drive_speed: Fx,
     /// Running ticks in which contact cancelled most of this body's intended
     /// progress along its route; reaching [`crate::stats::STALL_REPLAN_TICKS`]
     /// drops the route for a fresh plan.
-    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    #[serde(default, skip_serializing_if = "crate::is_default")]
     pub stall_ticks: u8,
     /// While this Harvester is held by danger, the tick from which it searches
     /// again. See [`crate::stats::HARVEST_DANGER_RETRY_TICKS`].
@@ -581,19 +577,19 @@ pub struct Building {
     /// [`crate::Command::UpgradeBuilding`] advances it immediately while
     /// setting `built` false; every stats read follows the committed tier
     /// through [`Building::stats`].
-    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    #[serde(default, skip_serializing_if = "crate::is_default")]
     pub tier: u8,
     /// Ticks until this building may fire again (turrets).
-    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    #[serde(default, skip_serializing_if = "crate::is_default")]
     pub cooldown: u32,
     /// Total hp drained from this building by salvage work — the
     /// cumulative ledger refund crediting reads, so truncation never
     /// drifts across intervals. (Skipped at zero: a building never
     /// salvaged serializes exactly as it did before the field existed.)
-    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    #[serde(default, skip_serializing_if = "crate::is_default")]
     pub salvage_drained: u32,
     /// Scrap already credited against `salvage_drained`'s target.
-    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    #[serde(default, skip_serializing_if = "crate::is_default")]
     pub salvage_credited: u32,
     /// Set when salvage — not fire — took the last hp: cleanup removes
     /// the building without wreck or a destruction event.
@@ -634,18 +630,6 @@ impl ExtractorIncome {
 
 fn default_true() -> bool {
     true
-}
-
-fn is_zero_u32(n: &u32) -> bool {
-    *n == 0
-}
-
-fn is_zero_fx(value: &Fx) -> bool {
-    *value == Fx::ZERO
-}
-
-fn is_zero_u8(n: &u8) -> bool {
-    *n == 0
 }
 
 impl Building {
@@ -696,10 +680,7 @@ impl Building {
 /// below.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct State {
-    #[serde(
-        default,
-        skip_serializing_if = "crate::scenario::ScenarioMode::is_match"
-    )]
+    #[serde(default, skip_serializing_if = "crate::is_default")]
     pub(crate) mode: crate::scenario::ScenarioMode,
     pub(crate) tick: Tick,
     pub(crate) rng: Pcg32,

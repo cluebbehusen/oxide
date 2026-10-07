@@ -190,9 +190,9 @@ impl Action {
             Self::Upgrade => 4 | 8,
             Self::StopOrScrap => UNITS | 4,
             Self::Patrol => UNITS,
-            Self::Salvage | Self::Run | Self::Hunt | Self::RepairUnit => UNITS | 496,
+            Self::Salvage | Self::Run | Self::Hunt | Self::RepairUnit => UNITS | 0b1_1111_0000,
             Self::Unload => 2,
-            Self::ReturnCargo => 4096 | 496,
+            Self::ReturnCargo => 4096 | 0b1_1111_0000,
             Self::BuildCategory(_) => 16,
             Self::Build(kind) => Context::BuildCategory(building_category(kind)).bit(),
             Self::ReplayPause

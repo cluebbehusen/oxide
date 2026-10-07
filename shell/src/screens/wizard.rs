@@ -741,7 +741,7 @@ impl Wizard {
         let entries = discover_scenarios();
         let mut browser = Browser::new();
         if draft.scenario.is_some() {
-            browser.select_path(&entries, &draft.scenario_path);
+            browser.select_path(&entries, draft.scenario_path.as_deref());
         }
         Self {
             step: Step::Map,
@@ -771,7 +771,7 @@ impl Wizard {
             Step::Map => {
                 self.entries = discover_scenarios();
                 self.browser
-                    .select_path(&self.entries, &draft.scenario_path);
+                    .select_path(&self.entries, draft.scenario_path.as_deref());
             }
             Step::Setup => {
                 // Start preselected: Enter-Enter from the grid plays

@@ -165,11 +165,11 @@ pub struct BuildingView {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub provisional: bool,
     /// Construction or training progress ticks.
-    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub progress: u32,
     /// Upgrade-ladder rung (0 = base). Visible in every view: a
     /// building's tier shows in its silhouette on the ground.
-    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub tier: u8,
 }
 
@@ -338,12 +338,9 @@ fn default_true() -> bool {
     true
 }
 
-fn is_zero_u8(n: &u8) -> bool {
-    *n == 0
-}
-
-fn is_zero_u32(n: &u32) -> bool {
-    *n == 0
+/// Serde skip predicate: omits a field that still holds its default value.
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
 }
 
 /// Shell status summary.

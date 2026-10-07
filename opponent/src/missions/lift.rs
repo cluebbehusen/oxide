@@ -456,12 +456,12 @@ impl Missions {
         for carrier in loaded.iter().filter(|unit| unit.idle) {
             if map.component(carrier.tile) == Some(lifting.home) {
                 ledger.order(unload(carrier.id, carrier.tile, false));
-            } else if late {
-                continue;
-            } else if carrier.tile.chebyshev(flight.landing) <= SPREAD {
-                ledger.order(unload(carrier.id, flight.landing, false));
-            } else {
-                ledger.order(run(vec![carrier.id], flight.landing));
+            } else if !late {
+                if carrier.tile.chebyshev(flight.landing) <= SPREAD {
+                    ledger.order(unload(carrier.id, flight.landing, false));
+                } else {
+                    ledger.order(run(vec![carrier.id], flight.landing));
+                }
             }
         }
         let away: Vec<UnitId> = loaded
