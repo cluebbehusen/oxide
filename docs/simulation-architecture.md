@@ -1,15 +1,13 @@
 # Simulation architecture
 
 This document describes the current architectural contracts of `oxide-sim`. It
-maps responsibilities and invariants, not tuning or history. Scripted-bot
-procedures belong in the scripted-bot skill; balance lives in
+maps responsibilities and invariants, not tuning or history. Balance lives in
 `sim/src/stats.rs`.
 
-`oxide-sim` does not depend on `oxide-bot`. It owns serializable player
-knowledge and its fog filtering in `observation`; bot policy and derived
-navigation caches live in `oxide-bot`. Pure command and production geometry
-shared with predictors lives in `geometry`, outside the private tick
-implementation.
+`oxide-sim` does not depend on `oxide-opponent`. It owns serializable player
+knowledge and its fog filtering in `observation`; bot policy lives in
+`oxide-opponent`. Pure command and production geometry shared with predictors
+lives in `geometry`, outside the private tick implementation.
 
 ## Authority and reproducibility
 
@@ -23,8 +21,8 @@ needed to begin a match. It may also carry browser metadata that the simulation
 deliberately ignores. The complete scenario is embedded in a replay, so
 reconstruction does not depend on the original scenario file. Its seed
 initializes the simulation RNG. Each player-facing bot seat carries a separate
-personality seed in its configuration; `Brain::scripted` derives its profile
-from that seed, not the scenario seed.
+personality seed in its configuration; the bot derives its profile from that
+seed, not the scenario seed.
 
 All outcome-relevant arithmetic uses fixed point or integers. Fixed-point vector
 scaling computes unsigned magnitudes before restoring the sign, preserving exact
@@ -736,28 +734,24 @@ cannot target one another, and win or lose as a team. Resignation makes a seat
 command-ineligible and removes its Foundries from victory accounting; its
 remaining machines continue as autonomous remnants.
 
-Bot knowledge, admission, planner ownership and command lowering are described
-in [Bot architecture](bot-architecture.md). The simulation enforces the same
-command, cost and visibility rules for human and bot command sources.
+The [opponent specification](oxide-opponent.md) describes how bots decide. The
+simulation enforces the same command, cost and visibility rules for human and
+bot command sources.
 
 ## Maintained entry points
 
 This table names the first source and focused suites to inspect. It is a routing
 map rather than an exhaustive test inventory.
 
-| Contract                                           | Primary source                                                                                                                                                         | Focused evidence                                                                                                                                                                                |
-| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Scenario build and authored map                    | `sim/src/scenario.rs`, `sim/src/map.rs`                                                                                                                                | `sim/tests/integration/pits.rs`, `sim/tests/integration/extractors.rs`                                                                                                                          |
-| State, hashing, validation, and teams              | `sim/src/state.rs`, `chassis/src/hash.rs`                                                                                                                              | `sim/tests/integration/state_integrity.rs`, `sim/tests/integration/determinism.rs`, `sim/tests/integration/teams.rs`                                                                            |
-| Placement, deferred founding, and upgrades         | `sim/src/state/placement.rs`, `sim/src/tick/commands.rs`, `sim/src/tick/brain.rs`, `sim/src/tick/brain/economy.rs`                                                     | `sim/tests/integration/behavior_construction.rs`, `sim/tests/integration/extractors.rs`, `sim/tests/integration/upgrades.rs`, `sim/tests/integration/foundries.rs`                              |
-| Tick scheduling, production, cleanup, and charges  | `sim/src/tick/mod.rs`, `sim/src/tick/production.rs`                                                                                                                    | `sim/tests/integration/behavior_rules.rs`, `sim/tests/integration/behavior_economy.rs`, `sim/tests/integration/field_kit.rs`                                                                    |
-| Command vocabulary and set semantics               | `sim/src/command.rs`, `sim/src/tick/commands.rs`                                                                                                                       | `sim/tests/integration/command_canonicalization.rs`, `sim/tests/integration/cancel_order.rs`, `sim/tests/integration/fuzz.rs`                                                                   |
-| Unit programs, routing, movement, and collision    | `sim/src/tick/brain.rs`, `sim/src/tick/brain/locomotion.rs`, `sim/src/tick/reach.rs`, `sim/src/tick/movement.rs`, `chassis/src/path.rs`                                | `sim/tests/integration/behavior_movement.rs`, `sim/tests/integration/movement_lab.rs`, `sim/tests/integration/peaks.rs`, `sim/tests/integration/pits.rs`                                        |
-| Boarding and unloading                             | `sim/src/tick/brain/logistics.rs`                                                                                                                                      | `sim/tests/integration/transports.rs`                                                                                                                                                           |
-| Harvesting, income, salvage, and repair            | `sim/src/tick/brain/economy.rs`, `sim/src/tick/production.rs`                                                                                                          | `sim/tests/integration/harvest_zones.rs`, `sim/tests/integration/salvage.rs`, `sim/tests/integration/repair_unit.rs`, `sim/tests/integration/repair_bay.rs`, `sim/tests/integration/smelter.rs` |
-| Weapons and simultaneous resolution                | `sim/src/stats.rs`, `sim/src/tick/brain/combat.rs`                                                                                                                     | `sim/tests/integration/behavior_combat.rs`, `sim/tests/integration/combat_edges.rs`, `sim/tests/integration/shells.rs`, `sim/tests/integration/peaks.rs`                                        |
-| Fog, memory, radar, and stealth                    | `sim/src/vision.rs`, `sim/src/state.rs`                                                                                                                                | `bot/tests/integration/bot_brain.rs`, `sim/tests/integration/bastion_acquisition.rs`, `sim/tests/integration/field_kit.rs`                                                                      |
-| Bot knowledge, profiles, and fair difficulty       | `bot/src/briefing.rs`, `sim/src/observation.rs`, `bot/src/intelligence.rs`, `bot/src/orient.rs`, `bot/src/profile.rs`, `bot/src/difficulty.rs`                         | `bot/tests/integration/bot_brain.rs`                                                                                                                                                            |
-| Bot resource evidence and planning commitments     | `bot/src/resources.rs`, `bot/src/resources/site.rs`, `bot/src/allocation.rs`, `bot/src/resources/production.rs`, `bot/src/utility.rs`, `bot/src/executive/lowering.rs` | `bot/src/utility/policy_tests.rs`, `bot/tests/integration/scripted_bot.rs`                                                                                                                      |
-| Bot cross-domain investment allocation             | `bot/src/resources/planning.rs`, `bot/src/allocation.rs`, `bot/src/allocation/`                                                                                        |                                                                                                                                                                                                 |
-| Bot playbooks, routing, reservations, and lowering | `bot/src/strategy.rs`, `bot/src/strategy/`, `bot/src/lift.rs`, `bot/src/raid.rs`, `bot/src/team.rs`, `bot/src/navigation/commands.rs`, `bot/src/executive.rs`          | `bot/src/strategy/tests.rs`, `bot/src/utility/policy_tests.rs`, `bot/tests/integration/scripted_bot.rs`                                                                                         |
+| Contract                                          | Primary source                                                                                                                          | Focused evidence                                                                                                                                                                                |
+| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Scenario build and authored map                   | `sim/src/scenario.rs`, `sim/src/map.rs`                                                                                                 | `sim/tests/integration/pits.rs`, `sim/tests/integration/extractors.rs`                                                                                                                          |
+| State, hashing, validation, and teams             | `sim/src/state.rs`, `chassis/src/hash.rs`                                                                                               | `sim/tests/integration/state_integrity.rs`, `sim/tests/integration/determinism.rs`, `sim/tests/integration/teams.rs`                                                                            |
+| Placement, deferred founding, and upgrades        | `sim/src/state/placement.rs`, `sim/src/tick/commands.rs`, `sim/src/tick/brain.rs`, `sim/src/tick/brain/economy.rs`                      | `sim/tests/integration/behavior_construction.rs`, `sim/tests/integration/extractors.rs`, `sim/tests/integration/upgrades.rs`, `sim/tests/integration/foundries.rs`                              |
+| Tick scheduling, production, cleanup, and charges | `sim/src/tick/mod.rs`, `sim/src/tick/production.rs`                                                                                     | `sim/tests/integration/behavior_rules.rs`, `sim/tests/integration/behavior_economy.rs`, `sim/tests/integration/field_kit.rs`                                                                    |
+| Command vocabulary and set semantics              | `sim/src/command.rs`, `sim/src/tick/commands.rs`                                                                                        | `sim/tests/integration/command_canonicalization.rs`, `sim/tests/integration/cancel_order.rs`, `sim/tests/integration/fuzz.rs`                                                                   |
+| Unit programs, routing, movement, and collision   | `sim/src/tick/brain.rs`, `sim/src/tick/brain/locomotion.rs`, `sim/src/tick/reach.rs`, `sim/src/tick/movement.rs`, `chassis/src/path.rs` | `sim/tests/integration/behavior_movement.rs`, `sim/tests/integration/movement_lab.rs`, `sim/tests/integration/peaks.rs`, `sim/tests/integration/pits.rs`                                        |
+| Boarding and unloading                            | `sim/src/tick/brain/logistics.rs`                                                                                                       | `sim/tests/integration/transports.rs`                                                                                                                                                           |
+| Harvesting, income, salvage, and repair           | `sim/src/tick/brain/economy.rs`, `sim/src/tick/production.rs`                                                                           | `sim/tests/integration/harvest_zones.rs`, `sim/tests/integration/salvage.rs`, `sim/tests/integration/repair_unit.rs`, `sim/tests/integration/repair_bay.rs`, `sim/tests/integration/smelter.rs` |
+| Weapons and simultaneous resolution               | `sim/src/stats.rs`, `sim/src/tick/brain/combat.rs`                                                                                      | `sim/tests/integration/behavior_combat.rs`, `sim/tests/integration/combat_edges.rs`, `sim/tests/integration/shells.rs`, `sim/tests/integration/peaks.rs`                                        |
+| Fog, memory, radar, and stealth                   | `sim/src/vision.rs`, `sim/src/state.rs`                                                                                                 | `sim/tests/integration/bastion_acquisition.rs`, `sim/tests/integration/field_kit.rs`                                                                                                            |

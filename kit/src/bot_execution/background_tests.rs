@@ -11,7 +11,7 @@ fn checkpoint(bots: &[SeatController]) -> Vec<u8> {
     serde_json::to_vec(
         &bots
             .iter()
-            .map(|b| b.checkpoint().unwrap())
+            .map(SeatController::checkpoint)
             .collect::<Vec<_>>(),
     )
     .unwrap()
@@ -125,16 +125,13 @@ fn mixed_controllers_background_and_serial_continue_identically() {
     for seat in &mut scenario.players {
         seat.bot = true;
     }
-    scenario.players[0].bot_config = Some(BotConfig::opponent(
+    scenario.players[0].bot_config = Some(BotConfig::new(
         BotDifficulty::Scrapheap,
         BotStance::Balanced,
         0,
     ));
-    scenario.players[1].bot_config = Some(BotConfig::scripted(
-        BotDifficulty::Prime,
-        BotStance::Balanced,
-        1,
-    ));
+    scenario.players[1].bot_config =
+        Some(BotConfig::new(BotDifficulty::Prime, BotStance::Balanced, 1));
     let executor = BotExecutor::new(4);
     let mut state = Arc::new(scenario.build().unwrap());
     let mut bots = seat_controllers(&scenario).unwrap();
@@ -180,7 +177,7 @@ fn own_events_are_consumed_only_when_a_decision_is_installed() {
     }
     let events = |bots: &[SeatController]| {
         let saved: serde_json::Value = serde_json::from_slice(&checkpoint(bots)).unwrap();
-        saved[0]["opponent"]["events"].clone()
+        saved[0]["events"].clone()
     };
     let rejected = serde_json::json!([{"event": "command_rejected", "reason": "no_valid_units"}]);
     let before = checkpoint(&bots);
@@ -193,7 +190,7 @@ fn own_events_are_consumed_only_when_a_decision_is_installed() {
     assert_eq!(checkpoint(&bots), before);
 
     let (_, trace) = bots.clone()[0].act_traced(&state);
-    let Some(crate::controller::SeatTrace::Opponent(trace)) = trace else {
+    let Some(trace) = trace else {
         panic!("the opponent seat decides at tick 12");
     };
     assert_eq!(serde_json::to_value(trace.events).unwrap(), rejected);

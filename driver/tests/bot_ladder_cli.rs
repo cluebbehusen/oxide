@@ -92,7 +92,6 @@ fn a_ladder_writes_paired_rows_and_reports_them_against_the_gate() {
         assert_eq!(row["ladder"]["higher"], "prime");
         assert_eq!(row["ladder"]["gate"], 800);
         for (seat, rung) in rungs.iter().enumerate() {
-            assert_eq!(row["seats"][seat]["controller"], "opponent");
             assert_eq!(row["seats"][seat]["profile"]["difficulty"], *rung);
             assert_eq!(row["seats"][seat]["profile"]["personality_seed"], 9000);
         }

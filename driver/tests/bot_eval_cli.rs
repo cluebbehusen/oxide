@@ -76,29 +76,15 @@ fn controlled_matrix_keeps_controller_faction_and_geometry_provenance_separate()
             assert_eq!(row["seats"][1]["faction"], expected_factions[1]);
         }
 
-        for (row, scripted_seat) in [(&legs[0], 0), (&legs[1], 1)] {
-            let opponent_seat = 1 - scripted_seat;
-            assert_eq!(row["seats"][scripted_seat]["controller"], "opponent");
-            assert_eq!(row["seats"][opponent_seat]["controller"], "opponent");
-            assert_eq!(
-                row["seats"][scripted_seat]["config"]["personality_seed"],
-                40
-            );
-            assert_eq!(row["seats"][scripted_seat]["config"]["difficulty"], "prime");
-            assert_eq!(
-                row["seats"][scripted_seat]["config"]["stance"],
-                "aggressive"
-            );
-            assert!(row["seats"][scripted_seat]["profile"].is_object());
-            assert_eq!(
-                row["seats"][opponent_seat]["config"]["difficulty"],
-                "veteran"
-            );
-            assert!(row["seats"][opponent_seat]["profile"].is_object());
-            assert_eq!(
-                row["seats"][opponent_seat]["config"]["personality_seed"],
-                41
-            );
+        for (row, first_seat) in [(&legs[0], 0), (&legs[1], 1)] {
+            let second_seat = 1 - first_seat;
+            assert_eq!(row["seats"][first_seat]["config"]["personality_seed"], 40);
+            assert_eq!(row["seats"][first_seat]["config"]["difficulty"], "prime");
+            assert_eq!(row["seats"][first_seat]["config"]["stance"], "aggressive");
+            assert!(row["seats"][first_seat]["profile"].is_object());
+            assert_eq!(row["seats"][second_seat]["config"]["difficulty"], "veteran");
+            assert!(row["seats"][second_seat]["profile"].is_object());
+            assert_eq!(row["seats"][second_seat]["config"]["personality_seed"], 41);
         }
     }
 
@@ -147,8 +133,6 @@ fn controlled_seed_lists_form_a_cartesian_product() {
             assert_eq!(row["leg"], "single");
             assert_eq!(row["geometry"], "authored");
             assert_eq!(row["faction_cell"], "authored");
-            assert_eq!(row["seats"][0]["controller"], "opponent");
-            assert_eq!(row["seats"][1]["controller"], "opponent");
             (
                 row["scenario_seed"].as_u64().unwrap(),
                 row["seats"][0]["config"]["personality_seed"]
@@ -165,50 +149,13 @@ fn controlled_seed_lists_form_a_cartesian_product() {
 
 #[test]
 fn retired_controller_flags_are_rejected() {
-    for flag in ["--against-overseer", "--overseer-policy-seed"] {
+    for flag in [
+        "--against-overseer",
+        "--overseer-policy-seed",
+        "--controller",
+        "--opponent-controller",
+    ] {
         assert_skirmish_bot_eval_refuses(&[flag], &["unexpected argument", flag]);
-    }
-}
-
-#[test]
-fn an_opponent_controller_duels_the_scripted_bot() {
-    let output = Command::new(env!("CARGO_BIN_EXE_oxide-driver"))
-        .args([
-            "bot-eval",
-            "skirmish",
-            "--controller",
-            "opponent",
-            "--opponent-controller",
-            "scripted",
-            "--ticks",
-            "600",
-        ])
-        .output()
-        .expect("run a mixed-controller evaluation");
-    assert!(
-        output.status.success(),
-        "bot-eval failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8(output.stdout).expect("JSONL is UTF-8");
-    let rows: Vec<Value> = stdout
-        .lines()
-        .map(|line| serde_json::from_str(line).expect("each line is one JSON object"))
-        .collect();
-    assert_eq!(rows.len(), 1);
-    let row = &rows[0];
-    for (seat, controller) in [(0, "opponent"), (1, "scripted")] {
-        assert_eq!(row["seats"][seat]["controller"], controller);
-        assert_eq!(row["seats"][seat]["config"]["controller"], controller);
-        assert!(row["seats"][seat]["profile"].is_object());
-        assert!(row["evidence"][seat]["commands"].as_u64().unwrap() > 0);
-    }
-}
-
-#[test]
-fn an_unknown_controller_is_refused() {
-    for flag in ["--controller", "--opponent-controller"] {
-        assert_skirmish_bot_eval_refuses(&[flag, "oracle"], &["expected scripted or opponent"]);
     }
 }
 
@@ -638,7 +585,6 @@ fn controlled_replay_and_sidecar_preserve_exact_controller_identity() {
             .as_bytes(),
     )
     .unwrap();
-    assert_eq!(row["seats"][1]["controller"], "opponent");
     assert_eq!(row["seats"][1]["config"]["difficulty"], "veteran");
     assert!(
         row["execution_fingerprint"]
@@ -656,7 +602,6 @@ fn controlled_replay_and_sidecar_preserve_exact_controller_identity() {
     let replay_path = std::path::PathBuf::from(row["replay"].as_str().unwrap());
     let replay = oxide_kit::load_replay(&replay_path).unwrap();
     let description = replay.meta.description.as_deref().unwrap();
-    assert!(description.contains("\"kind\":\"opponent\""));
     assert!(description.contains("\"difficulty\":\"veteran\""));
     assert_eq!(
         oxide_driver::bot_eval::command_hash(&replay).unwrap(),

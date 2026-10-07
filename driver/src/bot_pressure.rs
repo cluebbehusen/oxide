@@ -8,7 +8,7 @@
 use anyhow::{Context, Result, bail, ensure};
 use oxide_kit::GameReplay;
 use oxide_kit::controller::{record_events, seat_controllers};
-use oxide_sim::scenario::BotController;
+
 use oxide_sim::stats::{Domain, Role};
 use oxide_sim::{BuildingKind, Command, PlayerCommand, PlayerId, Scenario, State, UnitId};
 use serde::{Deserialize, Serialize};
@@ -72,8 +72,6 @@ pub enum Check {
 pub struct PressureOutcome {
     /// Scenario name.
     pub name: String,
-    /// The defender's controller.
-    pub controller: BotController,
     /// The check applied.
     pub check: Check,
     /// Whether the defender answered.
@@ -105,26 +103,22 @@ pub fn load_all(dir: &Path) -> Result<Vec<PressureScenario>> {
         .collect()
 }
 
-/// Runs one scenario with `controller` in the defender seat, recording a
-/// replay when asked.
+/// Runs one scenario, recording a replay when asked.
 pub fn run(
     pressure: &PressureScenario,
-    controller: BotController,
     record: bool,
 ) -> Result<(PressureOutcome, Option<GameReplay>)> {
-    let mut scenario = pressure.scenario.clone();
+    let scenario = pressure.scenario.clone();
     let defender = PlayerId(pressure.defender);
     let attacker = PlayerId(pressure.attacker);
     let seat = scenario
         .players
-        .get_mut(usize::from(pressure.defender))
+        .get(usize::from(pressure.defender))
         .context("defender seat is not in the scenario")?;
-    let config = seat
-        .bot_config
-        .as_mut()
-        .filter(|_| seat.bot)
-        .context("defender seat is not a configured bot")?;
-    config.controller = controller;
+    ensure!(
+        seat.bot && seat.bot_config.is_some(),
+        "defender seat is not a configured bot"
+    );
     ensure!(
         scenario
             .players
@@ -159,7 +153,6 @@ pub fn run(
     }
     let outcome = PressureOutcome {
         name: pressure.name.clone(),
-        controller,
         check: pressure.check,
         passed,
         detail,
@@ -360,8 +353,7 @@ pub(crate) fn owns_anti_air(state: &State, player: PlayerId) -> bool {
 
 /// A plain-text table of outcomes.
 pub fn report(outcomes: &[PressureOutcome]) -> String {
-    let mut text =
-        String::from("scenario           controller check              result  ticks  detail\n");
+    let mut text = String::from("scenario           check              result  ticks  detail\n");
     for outcome in outcomes {
         let check = match outcome.check {
             Check::KeepsFoundry => "keeps_foundry",
@@ -370,12 +362,8 @@ pub fn report(outcomes: &[PressureOutcome]) -> String {
             Check::ClearsLanding => "clears_landing",
         };
         text.push_str(&format!(
-            "{:<18} {:<10} {:<18} {:<7} {:>5}  {}\n",
+            "{:<18} {:<18} {:<7} {:>5}  {}\n",
             outcome.name,
-            match outcome.controller {
-                BotController::Scripted => "scripted",
-                BotController::Opponent => "opponent",
-            },
             check,
             if outcome.passed { "pass" } else { "FAIL" },
             outcome.ticks,
@@ -510,7 +498,7 @@ mod tests {
     fn a_recorded_replay_lasts_until_the_run_stopped() {
         let mut pressure = named("early rush");
         pressure.deadline = 36;
-        let (outcome, replay) = run(&pressure, BotController::Opponent, true).unwrap();
+        let (outcome, replay) = run(&pressure, true).unwrap();
         assert_eq!(outcome.ticks, 36);
         assert_eq!(replay.unwrap().meta.ticks, Some(36));
     }
@@ -519,9 +507,9 @@ mod tests {
     fn a_bot_attacker_or_a_defender_without_a_bot_is_refused() {
         let mut pressure = named("early rush");
         pressure.scenario.players[usize::from(pressure.attacker)].bot = true;
-        assert!(run(&pressure, BotController::Opponent, false).is_err());
+        assert!(run(&pressure, false).is_err());
         let mut pressure = named("early rush");
         pressure.scenario.players[usize::from(pressure.defender)].bot_config = None;
-        assert!(run(&pressure, BotController::Opponent, false).is_err());
+        assert!(run(&pressure, false).is_err());
     }
 }

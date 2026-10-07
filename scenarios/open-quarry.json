@@ -35,9 +35,7 @@
    "team": 0,
    "scrap": 100,
    "bot": true,
-   "bot_config": {
-    "controller": "opponent"
-   }
+   "bot_config": {}
   },
   {
    "name": "East Ferrous",
@@ -45,9 +43,7 @@
    "team": 1,
    "scrap": 100,
    "bot": true,
-   "bot_config": {
-    "controller": "opponent"
-   }
+   "bot_config": {}
   },
   {
    "name": "East Cupric",
@@ -55,9 +51,7 @@
    "team": 1,
    "scrap": 100,
    "bot": true,
-   "bot_config": {
-    "controller": "opponent"
-   }
+   "bot_config": {}
   }
  ],
  "units": [

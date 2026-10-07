@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["chassis", "sim", "bot", "opponent", "protocol", "kit", "net", "shell", "driver"]
+members = ["chassis", "sim", "opponent", "protocol", "kit", "net", "shell", "driver"]
 
 [workspace.package]
 version = "0.17.0"
@@ -18,7 +18,6 @@ thiserror = "2"
 
 chassis = { path = "chassis" }
 oxide-sim = { path = "sim" }
-oxide-bot = { path = "bot" }
 oxide-opponent = { path = "opponent" }
 oxide-protocol = { path = "protocol" }
 oxide-kit = { path = "kit" }
@@ -57,9 +56,6 @@ opt-level = 3
 opt-level = 3
 
 [profile.dev.package.chassis]
-opt-level = 3
-
-[profile.dev.package.oxide-bot]
 opt-level = 3
 
 [profile.dev.package.oxide-opponent]

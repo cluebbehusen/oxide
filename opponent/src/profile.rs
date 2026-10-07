@@ -298,12 +298,12 @@ mod tests {
 
     #[test]
     fn resolution_is_repeatable_and_difficulty_does_not_change_personality() {
-        let config = BotConfig::scripted(BotDifficulty::Prime, BotStance::Aggressive, 0xC0FFEE);
+        let config = BotConfig::new(BotDifficulty::Prime, BotStance::Aggressive, 0xC0FFEE);
         let first = ResolvedProfile::resolve(config);
         let second = ResolvedProfile::resolve(config);
         assert_eq!(first, second);
 
-        let lower = ResolvedProfile::resolve(BotConfig::scripted(
+        let lower = ResolvedProfile::resolve(BotConfig::new(
             BotDifficulty::Scrapheap,
             config.stance,
             config.personality_seed,
@@ -322,11 +322,8 @@ mod tests {
         ] {
             let bounds = envelope(stance);
             for seed in 0..2_000 {
-                let profile = ResolvedProfile::resolve(BotConfig::scripted(
-                    BotDifficulty::Standard,
-                    stance,
-                    seed,
-                ));
+                let profile =
+                    ResolvedProfile::resolve(BotConfig::new(BotDifficulty::Standard, stance, seed));
                 assert_ne!(profile.primary, profile.secondary);
                 for specialty in Specialty::ALL {
                     let value = profile.traits.get(specialty);
@@ -346,7 +343,7 @@ mod tests {
     fn stance_preserves_its_promised_identity_without_collapsing_guile() {
         let mut guile_ranges = [(u8::MAX, u8::MIN); 3];
         for seed in 0..2_000 {
-            let turtle = ResolvedProfile::resolve(BotConfig::scripted(
+            let turtle = ResolvedProfile::resolve(BotConfig::new(
                 BotDifficulty::Prime,
                 BotStance::Turtle,
                 seed,
@@ -356,7 +353,7 @@ mod tests {
             guile_ranges[0].0 = guile_ranges[0].0.min(turtle.traits.guile);
             guile_ranges[0].1 = guile_ranges[0].1.max(turtle.traits.guile);
 
-            let balanced = ResolvedProfile::resolve(BotConfig::scripted(
+            let balanced = ResolvedProfile::resolve(BotConfig::new(
                 BotDifficulty::Prime,
                 BotStance::Balanced,
                 seed,
@@ -365,7 +362,7 @@ mod tests {
             guile_ranges[1].0 = guile_ranges[1].0.min(balanced.traits.guile);
             guile_ranges[1].1 = guile_ranges[1].1.max(balanced.traits.guile);
 
-            let aggressive = ResolvedProfile::resolve(BotConfig::scripted(
+            let aggressive = ResolvedProfile::resolve(BotConfig::new(
                 BotDifficulty::Prime,
                 BotStance::Aggressive,
                 seed,
@@ -386,11 +383,8 @@ mod tests {
     fn profiles_have_a_fixed_budget_and_truthful_ranked_specialties() {
         for stance in BotStance::ALL {
             for seed in 0..10_000 {
-                let profile = ResolvedProfile::resolve(BotConfig::scripted(
-                    BotDifficulty::Prime,
-                    stance,
-                    seed,
-                ));
+                let profile =
+                    ResolvedProfile::resolve(BotConfig::new(BotDifficulty::Prime, stance, seed));
                 let total: u16 = Specialty::ALL
                     .iter()
                     .map(|specialty| u16::from(profile.traits.get(*specialty)))
@@ -463,7 +457,7 @@ mod tests {
         ];
 
         for (difficulty, stance, seed, primary, secondary, traits) in cases {
-            let profile = ResolvedProfile::resolve(BotConfig::scripted(difficulty, stance, seed));
+            let profile = ResolvedProfile::resolve(BotConfig::new(difficulty, stance, seed));
             assert_eq!(
                 profile,
                 ResolvedProfile {
@@ -477,12 +471,9 @@ mod tests {
             );
         }
 
-        let low = ResolvedProfile::resolve(BotConfig::scripted(
-            BotDifficulty::Prime,
-            BotStance::Balanced,
-            1,
-        ));
-        let high = ResolvedProfile::resolve(BotConfig::scripted(
+        let low =
+            ResolvedProfile::resolve(BotConfig::new(BotDifficulty::Prime, BotStance::Balanced, 1));
+        let high = ResolvedProfile::resolve(BotConfig::new(
             BotDifficulty::Prime,
             BotStance::Balanced,
             (1_u64 << 63) | 1,

@@ -1115,7 +1115,7 @@ mod tests {
     #[test]
     fn results_name_shows_the_scripted_controller() {
         let mut scenario = oxide_sim::Scenario::skirmish();
-        scenario.players[1].bot_config = Some(oxide_sim::scenario::BotConfig::scripted(
+        scenario.players[1].bot_config = Some(oxide_sim::scenario::BotConfig::new(
             oxide_sim::scenario::BotDifficulty::Prime,
             oxide_sim::scenario::BotStance::Aggressive,
             19,
@@ -1136,7 +1136,7 @@ mod tests {
     fn long_names_and_the_longest_bot_profile_stay_inside_the_player_column() {
         let mut scenario = oxide_sim::Scenario::skirmish();
         scenario.players[1].name = "Extremely Long Cupric Commander".to_string();
-        scenario.players[1].bot_config = Some(oxide_sim::scenario::BotConfig::scripted(
+        scenario.players[1].bot_config = Some(oxide_sim::scenario::BotConfig::new(
             oxide_sim::scenario::BotDifficulty::Scrapheap,
             oxide_sim::scenario::BotStance::Aggressive,
             23,

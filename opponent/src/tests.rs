@@ -1,9 +1,7 @@
 use super::*;
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
-use oxide_sim::scenario::{
-    BotController, BotStance, BuildingSpec, PlayerSpec, ScenarioMode, UnitSpec,
-};
+use oxide_sim::scenario::{BotStance, BuildingSpec, PlayerSpec, ScenarioMode, UnitSpec};
 use oxide_sim::{
     AttackTarget, BuildingId, Command, Event, Faction, Scenario, StallReason, UnitId, UnitKind,
 };
@@ -45,18 +43,18 @@ const ARENA: [&str; 12] = [
 ];
 
 fn config() -> BotConfig {
-    BotConfig::opponent(BotDifficulty::Standard, BotStance::Balanced, 11)
+    BotConfig::new(BotDifficulty::Standard, BotStance::Balanced, 11)
 }
 
 /// A seat that seldom builds static defense before it sees a threat, for
 /// stagings about its economy.
 fn thrifty() -> BotConfig {
-    BotConfig::opponent(BotDifficulty::Standard, BotStance::Aggressive, 38)
+    BotConfig::new(BotDifficulty::Standard, BotStance::Aggressive, 38)
 }
 
 /// A seat that fortifies readily.
 fn fortified() -> BotConfig {
-    BotConfig::opponent(BotDifficulty::Standard, BotStance::Turtle, 35)
+    BotConfig::new(BotDifficulty::Standard, BotStance::Turtle, 35)
 }
 
 fn map(scenario: &Scenario) -> Arc<MapModel> {
@@ -637,7 +635,7 @@ fn the_allowance_caps_unit_orders_but_not_purchases() {
                 .any(|(node, _)| *node == TilePos::new(x, y))),
         "premise: four nodes near the west Foundry"
     );
-    let scrapheap = BotConfig::opponent(BotDifficulty::Scrapheap, BotStance::Balanced, 11);
+    let scrapheap = BotConfig::new(BotDifficulty::Scrapheap, BotStance::Balanced, 11);
     let (commands, trace) =
         seat_with(&scenario, 0, scrapheap).act_traced(&state, &mut OwnEvents::default());
     let trace = trace.unwrap();
@@ -658,12 +656,12 @@ fn decisions_follow_the_difficulty_interval_and_stop_after_the_result() {
     let scrapheap = seat_with(
         &scenario,
         0,
-        BotConfig::opponent(BotDifficulty::Scrapheap, BotStance::Balanced, 11),
+        BotConfig::new(BotDifficulty::Scrapheap, BotStance::Balanced, 11),
     );
     let prime = seat_with(
         &scenario,
         0,
-        BotConfig::opponent(BotDifficulty::Prime, BotStance::Balanced, 11),
+        BotConfig::new(BotDifficulty::Prime, BotStance::Balanced, 11),
     );
     assert!(standard.decision_due(&state) && scrapheap.decision_due(&state));
     advance_to(&mut state, 6, &[]);
@@ -930,15 +928,6 @@ fn checkpoints_round_trip_and_restore_only_opponent_seats() {
     assert_eq!(
         rejected(&empty, 1),
         "checkpoint seat is not a configured bot"
-    );
-    let mut scripted = scenario.clone();
-    scripted.players[1].bot_config = Some(BotConfig {
-        controller: BotController::Scripted,
-        ..config()
-    });
-    assert_eq!(
-        rejected(&scripted, 1),
-        "checkpoint seat is not an oxide-opponent seat"
     );
 }
 

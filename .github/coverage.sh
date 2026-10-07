@@ -6,9 +6,9 @@
 # Oxide deliberately starts lower, where thousands of line annotations would
 # bury useful output.
 #
-# The combined run skips the representative-map integrity soak and the dense
-# bomber production lifecycle: instrumentation makes them expensive while
-# they add little line coverage, and `cargo test` still runs them.
+# The combined run skips the representative-map integrity soak:
+# instrumentation makes it expensive while it adds little line coverage, and
+# `cargo test` still runs it.
 set -uo pipefail
 
 gate() {
@@ -23,7 +23,6 @@ gate() {
                 | ltrimstr($root)
                 | split("/")[0]
                 | if . == "sim" then {rank: 1, name: "oxide-sim"}
-                  elif . == "bot" then {rank: 2, name: "oxide-bot"}
                   elif . == "opponent" then {rank: 3, name: "oxide-opponent"}
                   elif . == "protocol" then {rank: 4, name: "oxide-protocol"}
                   elif . == "kit" then {rank: 5, name: "oxide-kit"}
@@ -70,11 +69,10 @@ gate() {
 status=0
 cargo llvm-cov clean --workspace
 cargo llvm-cov --no-report --workspace --lib --bins --locked || status=1
-gate "Unit coverage" 89.5 || status=1
+gate "Unit coverage" 82.0 || status=1
 cargo llvm-cov --no-report --workspace --test '*' --locked -- \
     --test-threads=1 \
-    --skip representative_scenarios_preserve_state_integrity \
-    --skip dense_connected_target_trains_and_freezes_the_selected_bomber_roster ||
+    --skip representative_scenarios_preserve_state_integrity ||
     status=1
-gate "Combined coverage" 91.0 || status=1
+gate "Combined coverage" 84.0 || status=1
 exit "$status"

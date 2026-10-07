@@ -13,18 +13,14 @@
    "faction": "cupric",
    "scrap": 150,
    "bot": true,
-   "bot_config": {
-    "controller": "opponent"
-   }
+   "bot_config": {}
   },
   {
    "name": "Seat 3 Ferrous",
    "faction": "ferrous",
    "scrap": 150,
    "bot": true,
-   "bot_config": {
-    "controller": "opponent"
-   }
+   "bot_config": {}
   }
  ],
  "map": [

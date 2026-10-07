@@ -131,7 +131,7 @@ impl BotExecutor {
                 .then(|| {
                     rayon::ThreadPoolBuilder::new()
                         .num_threads(workers.min(4))
-                        .thread_name(|index| format!("oxide-bot-{index}"))
+                        .thread_name(|index| format!("bot-decision-{index}"))
                         .build()
                         .ok()
                 })
@@ -208,18 +208,18 @@ mod tests {
     };
 
     #[test]
-    fn mixed_controllers_cadences_and_post_result_preserve_commands_and_state() {
+    fn mixed_cadences_and_post_result_preserve_commands_and_state() {
         for workers in [0, 1, 2, 4] {
             let mut scenario = Scenario::skirmish();
             for player in &mut scenario.players {
                 player.bot = true;
             }
-            scenario.players[0].bot_config = Some(BotConfig::opponent(
+            scenario.players[0].bot_config = Some(BotConfig::new(
                 BotDifficulty::Scrapheap,
                 BotStance::Balanced,
                 9000,
             ));
-            scenario.players[1].bot_config = Some(BotConfig::scripted(
+            scenario.players[1].bot_config = Some(BotConfig::new(
                 BotDifficulty::Prime,
                 BotStance::Balanced,
                 9001,
@@ -234,7 +234,7 @@ mod tests {
                 serde_json::to_vec(
                     &bots
                         .iter()
-                        .map(|bot| bot.checkpoint().unwrap())
+                        .map(SeatController::checkpoint)
                         .collect::<Vec<_>>(),
                 )
                 .unwrap()

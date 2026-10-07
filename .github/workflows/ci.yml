@@ -74,10 +74,8 @@ jobs:
           rustup target add aarch64-apple-ios
           cargo clippy -p oxide-shell --target aarch64-apple-ios --locked -- -D warnings
 
-      # oxide-bot's own suites run on Linux only. Its integer-only code still
-      # meets every OS through the driver's hash fixtures and soak.
       - name: Test
-        run: cargo test --workspace --locked ${{ runner.os != 'Linux' && '--exclude oxide-bot' || '' }}
+        run: cargo test --workspace --locked
         env:
           OXIDE_SOAK_TRACE_DIR: ${{ runner.temp }}/soak-trace
 

@@ -196,7 +196,7 @@ fn skirmish(defenders: [(i32, i32); 2], hp: u32) -> (Scenario, State, UnitId) {
 }
 
 fn veteran() -> BotConfig {
-    BotConfig::opponent(BotDifficulty::Veteran, BotStance::Balanced, 11)
+    BotConfig::new(BotDifficulty::Veteran, BotStance::Balanced, 11)
 }
 
 fn attacks(commands: &[PlayerCommand]) -> Vec<(Vec<UnitId>, AttackTarget)> {

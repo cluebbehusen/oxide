@@ -491,17 +491,17 @@ never change the verdict; the simulation re-checks on arrival.
 
 ## Boundary
 
-The crate depends on `oxide-sim` and `chassis`, never on `oxide-bot`. It reads
-only its seat's fog-honest `ObservationData` and its own order events, and emits
-ordinary `PlayerCommand`s. Its seats also share one immutable `MapModel`, built
-once per match from the scenario's public map: ground components, the authored
-starts and teams, ground distance from every start, where building spots may go,
-home scrap, and expansion sites. Distances between buildings and units are
-measured between whole footprints, so they stay equal for mirrored seats. It
-decides on its difficulty's interval and stays silent once the match is decided,
-after its seat surrenders, or while it has no built Foundry. Equal-distance
-choices are broken in a frame anchored on the seat's authored start, so mirrored
-seats make mirrored choices.
+The crate depends on `oxide-sim` and `chassis`. It reads only its seat's
+fog-honest `ObservationData` and its own order events, and emits ordinary
+`PlayerCommand`s. Its seats also share one immutable `MapModel`, built once per
+match from the scenario's public map: ground components, the authored starts and
+teams, ground distance from every start, where building spots may go, home
+scrap, and expansion sites. Distances between buildings and units are measured
+between whole footprints, so they stay equal for mirrored seats. It decides on
+its difficulty's interval and stays silent once the match is decided, after its
+seat surrenders, or while it has no built Foundry. Equal-distance choices are
+broken in a frame anchored on the seat's authored start, so mirrored seats make
+mirrored choices.
 
 ## Own events
 
@@ -518,8 +518,7 @@ stopped or 600 ticks pass. The trace reports the events.
 
 ## Selection
 
-A seat runs this controller when its scenario `bot_config` names
-`"controller": "opponent"`. `oxide-kit` hosts it next to `oxide-bot`, so live,
+Every configured bot seat runs this controller. `oxide-kit` hosts it, so live,
 headless, saved and recovered sessions build it from the same scenario data.
 
 ## Checkpoint and trace

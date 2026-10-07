@@ -102,7 +102,7 @@ fn halved(mut state: State) -> State {
 }
 
 fn turtle(difficulty: BotDifficulty) -> BotConfig {
-    BotConfig::opponent(difficulty, BotStance::Turtle, 11)
+    BotConfig::new(difficulty, BotStance::Turtle, 11)
 }
 
 /// The carriers a take-off sends: the last group run of Skyhooks.
@@ -697,7 +697,7 @@ fn emptied_carriers_short_of_orders_fly_home_before_the_lift_fights() {
     // strait that the flight home must go around, and two idle Harvesters at
     // home taking two of a Scrapheap seat's three orders.
     let mut landed = strait();
-    landed.players[0].bot_config = Some(BotConfig::opponent(
+    landed.players[0].bot_config = Some(BotConfig::new(
         BotDifficulty::Scrapheap,
         BotStance::Balanced,
         11,
@@ -1386,7 +1386,7 @@ fn lifts(mut opponent: Opponent, state: &State) -> bool {
 }
 
 fn rung(difficulty: BotDifficulty) -> BotConfig {
-    BotConfig::opponent(difficulty, BotStance::Balanced, 11)
+    BotConfig::new(difficulty, BotStance::Balanced, 11)
 }
 
 #[test]

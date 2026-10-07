@@ -9,7 +9,6 @@ use crate::memory::Memory;
 use crate::missions::Missions;
 use crate::saving::Saving;
 use crate::{MapModel, Opponent};
-use oxide_sim::scenario::BotController;
 use oxide_sim::{PlayerId, Scenario, State};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -56,9 +55,6 @@ impl Opponent {
             .bot_config
             .filter(|_| spec.bot)
             .ok_or("checkpoint seat is not a configured bot")?;
-        if config.controller != BotController::Opponent {
-            return Err("checkpoint seat is not an oxide-opponent seat".into());
-        }
         let now = state.current_tick();
         let points = crate::missions::points(&map, checkpoint.player).len();
         let (width, height) = (state.map().width(), state.map().height());

@@ -22,8 +22,7 @@ fn crews(
     let observation = ObservationData::fog_honest(state, PlayerId(0));
     let model = map(scenario);
     let frame = HomeFrame::of(&observation, &model).unwrap();
-    let mut profile =
-        ResolvedProfile::resolve(BotConfig::opponent(BotDifficulty::Standard, stance, 11));
+    let mut profile = ResolvedProfile::resolve(BotConfig::new(BotDifficulty::Standard, stance, 11));
     profile.traits.greed = greed;
     let foundries: Vec<Producer<'_>> = observation
         .my_buildings

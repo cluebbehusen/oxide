@@ -75,9 +75,7 @@
    "team": 0,
    "scrap": 150,
    "bot": true,
-   "bot_config": {
-    "controller": "opponent"
-   }
+   "bot_config": {}
   },
   {
    "name": "West Bench Mid South Ferrous",
@@ -85,9 +83,7 @@
    "team": 0,
    "scrap": 150,
    "bot": true,
-   "bot_config": {
-    "controller": "opponent"
-   }
+   "bot_config": {}
   },
   {
    "name": "West Bench South Cupric",
@@ -95,9 +91,7 @@
    "team": 0,
    "scrap": 150,
    "bot": true,
-   "bot_config": {
-    "controller": "opponent"
-   }
+   "bot_config": {}
   },
   {
    "name": "East Bench North Ferrous",
@@ -105,9 +99,7 @@
    "team": 1,
    "scrap": 150,
    "bot": true,
-   "bot_config": {
-    "controller": "opponent"
-   }
+   "bot_config": {}
   },
   {
    "name": "East Bench Mid North Cupric",
@@ -115,9 +107,7 @@
    "team": 1,
    "scrap": 150,
    "bot": true,
-   "bot_config": {
-    "controller": "opponent"
-   }
+   "bot_config": {}
   },
   {
    "name": "East Bench Mid South Ferrous",
@@ -125,9 +115,7 @@
    "team": 1,
    "scrap": 150,
    "bot": true,
-   "bot_config": {
-    "controller": "opponent"
-   }
+   "bot_config": {}
   },
   {
    "name": "East Bench South Cupric",
@@ -135,9 +123,7 @@
    "team": 1,
    "scrap": 150,
    "bot": true,
-   "bot_config": {
-    "controller": "opponent"
-   }
+   "bot_config": {}
   }
  ],
  "units": [

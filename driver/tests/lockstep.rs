@@ -28,7 +28,7 @@ fn ms(millis: u64) -> Duration {
 }
 
 fn player_config() -> BotConfig {
-    BotConfig::opponent(BotDifficulty::Standard, BotStance::Balanced, 0)
+    BotConfig::new(BotDifficulty::Standard, BotStance::Balanced, 0)
 }
 
 /// Twin Forges with seats 0 to 2 played by people and seat 3 a host bot.

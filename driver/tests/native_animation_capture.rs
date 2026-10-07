@@ -1031,14 +1031,14 @@ fn scenario(name: &str, scrap: &[TilePos], units: Vec<Value>, buildings: Vec<Val
                 "faction": "cupric",
                 "scrap": 0,
                 "bot": true,
-                "bot_config": { "controller": "opponent" }
+                "bot_config": {}
             },
             {
                 "name": "Cupric Observer",
                 "faction": "cupric",
                 "scrap": 0,
                 "bot": true,
-                "bot_config": { "controller": "opponent" }
+                "bot_config": {}
             }
         ],
         "map": empty_map(scrap),

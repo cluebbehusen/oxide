@@ -1741,7 +1741,7 @@ mod tests {
     #[test]
     fn scripted_opponents_show_their_difficulty_and_stance() {
         let mut game = game();
-        game.scenario.players[1].bot_config = Some(oxide_sim::scenario::BotConfig::scripted(
+        game.scenario.players[1].bot_config = Some(oxide_sim::scenario::BotConfig::new(
             oxide_sim::scenario::BotDifficulty::Prime,
             oxide_sim::scenario::BotStance::Aggressive,
             91,

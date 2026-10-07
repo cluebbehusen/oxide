@@ -285,7 +285,7 @@ fn draft_scenario(draft: &NewMatchDraft, personality_seed_base: u64) -> Result<S
         let plan = draft.seats[i];
         player.bot = i != seat_choice && !plan.remote;
         player.bot_config = player.bot.then(|| {
-            oxide_sim::scenario::BotConfig::opponent(
+            oxide_sim::scenario::BotConfig::new(
                 plan.difficulty,
                 plan.stance,
                 personality_seed_base.wrapping_add(i as u64),
@@ -2093,7 +2093,7 @@ mod tests {
             assert!(p.bot, "every other seat is a bot");
             assert_eq!(
                 p.bot_config,
-                Some(oxide_sim::scenario::BotConfig::opponent(
+                Some(oxide_sim::scenario::BotConfig::new(
                     draft.seats[i].difficulty,
                     draft.seats[i].stance,
                     0x1000 + i as u64,

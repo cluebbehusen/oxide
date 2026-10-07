@@ -7,18 +7,14 @@
    "faction": "ferrous",
    "scrap": 1000,
    "bot": true,
-   "bot_config": {
-    "controller": "opponent"
-   }
+   "bot_config": {}
   },
   {
    "name": "Cupric",
    "faction": "cupric",
    "scrap": 1000,
    "bot": true,
-   "bot_config": {
-    "controller": "opponent"
-   }
+   "bot_config": {}
   }
  ],
  "map": [

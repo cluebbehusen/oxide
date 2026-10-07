@@ -20,7 +20,7 @@ use crate::ledger::{PairShares, SeatLedger, WorthShare, render_shares, team_shar
 use crate::seat_summary::{SeatEvidence, SeatSummary, SeatSummaryBuilder, rank};
 use anyhow::{Context, Result, bail, ensure};
 use oxide_sim::Scenario;
-use oxide_sim::scenario::{BotConfig, BotController, BotDifficulty, BotStance};
+use oxide_sim::scenario::{BotConfig, BotDifficulty, BotStance};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -193,11 +193,8 @@ pub fn expand(manifest: &LadderManifest, scenarios: &[Scenario]) -> Result<Vec<L
                         stance,
                         run,
                     };
-                    let seat = |difficulty| BotConfig {
-                        controller: BotController::Opponent,
-                        difficulty,
-                        stance,
-                        personality_seed: manifest.personality_seed_base + run,
+                    let seat = |difficulty| {
+                        BotConfig::new(difficulty, stance, manifest.personality_seed_base + run)
                     };
                     let seed = manifest.scenario_seed_base + run;
                     for (leg, rungs) in [
@@ -474,11 +471,7 @@ fn winner(row: &ScoredLadderRow) -> Result<Won> {
     let rungs: Vec<Option<BotDifficulty>> = row
         .seats
         .iter()
-        .map(|seat| {
-            seat.config
-                .filter(|config| config.controller == BotController::Opponent)
-                .map(|config| config.difficulty)
-        })
+        .map(|seat| seat.config.map(|config| config.difficulty))
         .collect();
     let expected = match row.leg {
         EvaluationLeg::Forward => [label.higher, label.lower],
@@ -804,7 +797,6 @@ mod tests {
             .iter()
             .map(|controller| {
                 let config = controller.unwrap().config();
-                assert_eq!(config.controller, BotController::Opponent);
                 (config.difficulty, config.stance, config.personality_seed)
             })
             .collect()
@@ -960,7 +952,7 @@ mod tests {
                 .enumerate()
                 .map(|(seat, &difficulty)| LadderSeat {
                     seat: u8::try_from(seat).unwrap(),
-                    config: Some(BotConfig::opponent(difficulty, BotStance::Balanced, 9000)),
+                    config: Some(BotConfig::new(difficulty, BotStance::Balanced, 9000)),
                 })
                 .collect(),
             evidence: Vec::new(),
