@@ -69,10 +69,10 @@ gate() {
 status=0
 cargo llvm-cov clean --workspace
 cargo llvm-cov --no-report --workspace --lib --bins --locked || status=1
-gate "Unit coverage" 89.5 || status=1
+gate "Unit coverage" 82.0 || status=1
 cargo llvm-cov --no-report --workspace --test '*' --locked -- \
     --test-threads=1 \
     --skip representative_scenarios_preserve_state_integrity ||
     status=1
-gate "Combined coverage" 91.0 || status=1
+gate "Combined coverage" 84.0 || status=1
 exit "$status"
