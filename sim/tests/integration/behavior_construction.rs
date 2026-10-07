@@ -1687,9 +1687,9 @@ fn an_allied_machine_makes_way_like_your_own() {
             "players": [
                 {"name": "West", "faction": "ferrous", "team": 1, "scrap": 300, "bot": false},
                 {"name": "East", "faction": "cupric", "team": 1, "scrap": 0, "bot": true,
-                 "bot_config": {"controller": "scripted"}},
+                 "bot_config": {"controller": "opponent"}},
                 {"name": "Foe", "faction": "cupric", "scrap": 0, "bot": true,
-                 "bot_config": {"controller": "scripted"}}
+                 "bot_config": {"controller": "opponent"}}
             ],
             "map": [
                 "####################",

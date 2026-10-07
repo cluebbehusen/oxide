@@ -288,7 +288,11 @@ mod tests {
     fn seating_does_not_invent_a_controller_for_an_empty_or_human_chair() {
         let mut scenario = Scenario::skirmish();
         scenario.players[0].bot = false;
-        scenario.players[0].bot_config = Some(BotConfig::default());
+        scenario.players[0].bot_config = Some(BotConfig::scripted(
+            Default::default(),
+            Default::default(),
+            0,
+        ));
         scenario.players[1].bot = true;
         scenario.players[1].bot_config = None;
 

@@ -1426,8 +1426,8 @@ fn clock(ticks: u64) -> String {
 fn controller_label(seat: &SeatLine) -> String {
     let configured = |config: BotConfig| {
         format!(
-            "scripted, {} / {}, personality seed {}",
-            config.difficulty, config.stance, config.personality_seed
+            "{}, {} / {}, personality seed {}",
+            config.controller, config.difficulty, config.stance, config.personality_seed
         )
     };
     match (seat.bot, seat.bot_config) {

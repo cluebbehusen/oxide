@@ -35,7 +35,7 @@ struct MeasurementBotArgs {
 
 impl MeasurementBotArgs {
     fn config(&self) -> oxide_sim::scenario::BotConfig {
-        oxide_sim::scenario::BotConfig::scripted(
+        oxide_sim::scenario::BotConfig::opponent(
             self.difficulty,
             self.stance,
             self.personality_seed,
@@ -63,7 +63,7 @@ enum Cmd {
         /// Let scenario-configured bots play.
         #[arg(long)]
         bots: bool,
-        /// Hand every seat to the scripted Balanced AI. This is the
+        /// Hand every seat to the Standard, Balanced bot. This is the
         /// complete-match evaluation path for shipped scenarios whose
         /// first chair is normally human.
         #[arg(long, conflicts_with = "bots")]
@@ -116,9 +116,9 @@ enum Cmd {
         /// simulation seed in a controlled comparison.
         #[arg(long, value_delimiter = ',', conflicts_with = "personality_seed_base")]
         personality_seeds: Vec<u64>,
-        /// Controller implementation: `scripted` (oxide-bot) or `opponent`
-        /// (oxide-opponent).
-        #[arg(long, default_value_t = oxide_sim::scenario::BotController::Scripted)]
+        /// Controller implementation: `opponent` (oxide-opponent) or
+        /// `scripted` (oxide-bot).
+        #[arg(long, default_value_t = oxide_sim::scenario::BotController::Opponent)]
         controller: oxide_sim::scenario::BotController,
         /// Controller for seat one. Supplying this requires a two-seat
         /// scenario; omit it to use `--controller` for both seats.
@@ -267,7 +267,7 @@ enum Cmd {
     /// answered by its deadline.
     BotPressure {
         /// Controller for the defending seat.
-        #[arg(long, default_value = "scripted")]
+        #[arg(long, default_value = "opponent")]
         controller: oxide_sim::scenario::BotController,
         /// Directory of pressure scenarios.
         #[arg(long, default_value = "driver/evaluation/pressure")]
@@ -303,7 +303,7 @@ enum Cmd {
         #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
         ticks: Option<u64>,
         /// Controller for every bot seat. Named workloads default to
-        /// `scripted`; a custom scenario keeps its authored controllers unless
+        /// `opponent`; a custom scenario keeps its authored controllers unless
         /// this is given.
         #[arg(long)]
         controller: Option<oxide_sim::scenario::BotController>,
@@ -441,7 +441,7 @@ enum Cmd {
         /// Let scenario-configured bots play during those ticks.
         #[arg(long)]
         bots: bool,
-        /// Hand every seat to the scripted Balanced AI before rendering.
+        /// Hand every seat to the Standard, Balanced bot before rendering.
         #[arg(long, conflicts_with = "bots")]
         all_bots: bool,
         /// Output PNG path.
@@ -533,7 +533,7 @@ enum Cmd {
         ticks: u32,
         /// Bench a shipped scenario with the current controller thinking in every
         /// chair instead of the synthetic mass battle (e.g.
-        /// "scenarios/compass-grand.json" — eight scripted minds).
+        /// "scenarios/compass-grand.json" — eight bots).
         #[arg(long)]
         scenario: Option<String>,
         /// Controller difficulty for a scenario benchmark.
@@ -1372,7 +1372,7 @@ fn main() -> Result<()> {
             personality_seed,
         } => {
             if let Some(path) = scenario {
-                let config = oxide_sim::scenario::BotConfig::scripted(
+                let config = oxide_sim::scenario::BotConfig::opponent(
                     difficulty.unwrap_or(oxide_sim::scenario::BotDifficulty::Standard),
                     stance.unwrap_or(oxide_sim::scenario::BotStance::Balanced),
                     personality_seed.unwrap_or(0),
@@ -1380,7 +1380,7 @@ fn main() -> Result<()> {
                 let mut sc = runner::load_scenario(&path)?;
                 oxide_kit::bench::all_bots_with_config(&mut sc, config);
                 let mut state = sc.build()?;
-                let mut bots = oxide_bot::seat_bots(&sc)?;
+                let mut bots = oxide_kit::controller::seat_controllers(&sc)?;
                 println!(
                     "controller: {config:?}; sim {}; simulation seed {}",
                     oxide_sim::SIM_VERSION,
@@ -1405,7 +1405,8 @@ fn main() -> Result<()> {
                         commands.extend(bot.act(&state));
                     }
                     let bots_done = std::time::Instant::now();
-                    state.tick(&commands);
+                    let report = state.tick(&commands);
+                    oxide_kit::controller::record_events(&mut bots, &report);
                     sim_ns.push(bots_done.elapsed().as_nanos() as u64);
                     bot_ns.push((bots_done - tick_start).as_nanos() as u64);
                     tick_ns.push(tick_start.elapsed().as_nanos() as u64);
@@ -1680,7 +1681,7 @@ mod tests {
         assert_eq!(scenarios, ["skirmish", "scenarios/powder-keg.json"]);
         assert_eq!(
             (controller, opponent_controller),
-            (oxide_sim::scenario::BotController::Scripted, None)
+            (oxide_sim::scenario::BotController::Opponent, None)
         );
         assert_eq!((ticks, runs), (50_000, 1));
         assert_eq!(scenario_seed_base, Some(71));
@@ -1774,7 +1775,7 @@ mod tests {
     }
 
     #[test]
-    fn bot_pressure_defaults_to_oxide_bot_and_the_shipped_scenarios() {
+    fn bot_pressure_defaults_to_oxide_opponent_and_the_shipped_scenarios() {
         let cli = Cli::try_parse_from(["oxide-driver", "bot-pressure"]).expect("parses");
         let Cmd::BotPressure {
             controller,
@@ -1785,15 +1786,15 @@ mod tests {
         else {
             panic!("bot-pressure parsed as another command")
         };
-        assert_eq!(controller, oxide_sim::scenario::BotController::Scripted);
+        assert_eq!(controller, oxide_sim::scenario::BotController::Opponent);
         assert_eq!(dir, PathBuf::from("driver/evaluation/pressure"));
         assert_eq!((json, replay_dir), (false, None));
-        let cli = Cli::try_parse_from(["oxide-driver", "bot-pressure", "--controller", "opponent"])
+        let cli = Cli::try_parse_from(["oxide-driver", "bot-pressure", "--controller", "scripted"])
             .expect("parses");
         assert!(matches!(
             cli.cmd,
             Cmd::BotPressure {
-                controller: oxide_sim::scenario::BotController::Opponent,
+                controller: oxide_sim::scenario::BotController::Scripted,
                 ..
             }
         ));

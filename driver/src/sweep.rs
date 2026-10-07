@@ -7,7 +7,7 @@
 //! seating does not isolate engine or map fairness.
 
 use anyhow::{Context, Result};
-use oxide_bot::seat_bots;
+use oxide_kit::controller::{record_events, seat_controllers};
 use oxide_sim::scenario::Scenario;
 use oxide_sim::{GameResult, State};
 use serde::Serialize;
@@ -231,13 +231,14 @@ pub(crate) fn play_mirror(
 ) -> Result<State> {
     oxide_kit::bench::all_bots_with_config(&mut scenario, config);
     let mut state = scenario.build().context("building scenario")?;
-    let mut bots = seat_bots(&scenario)?;
+    let mut bots = seat_controllers(&scenario)?;
     for _ in 0..max_ticks {
         let mut commands = Vec::new();
         for seat in command_order {
             commands.extend(bots[seat].act(&state));
         }
-        state.tick(&commands);
+        let report = state.tick(&commands);
+        record_events(&mut bots, &report);
         if state.result().is_some() {
             break;
         }

@@ -78,8 +78,8 @@ fn controlled_matrix_keeps_controller_faction_and_geometry_provenance_separate()
 
         for (row, scripted_seat) in [(&legs[0], 0), (&legs[1], 1)] {
             let opponent_seat = 1 - scripted_seat;
-            assert_eq!(row["seats"][scripted_seat]["controller"], "scripted");
-            assert_eq!(row["seats"][opponent_seat]["controller"], "scripted");
+            assert_eq!(row["seats"][scripted_seat]["controller"], "opponent");
+            assert_eq!(row["seats"][opponent_seat]["controller"], "opponent");
             assert_eq!(
                 row["seats"][scripted_seat]["config"]["personality_seed"],
                 40
@@ -147,8 +147,8 @@ fn controlled_seed_lists_form_a_cartesian_product() {
             assert_eq!(row["leg"], "single");
             assert_eq!(row["geometry"], "authored");
             assert_eq!(row["faction_cell"], "authored");
-            assert_eq!(row["seats"][0]["controller"], "scripted");
-            assert_eq!(row["seats"][1]["controller"], "scripted");
+            assert_eq!(row["seats"][0]["controller"], "opponent");
+            assert_eq!(row["seats"][1]["controller"], "opponent");
             (
                 row["scenario_seed"].as_u64().unwrap(),
                 row["seats"][0]["config"]["personality_seed"]
@@ -638,7 +638,7 @@ fn controlled_replay_and_sidecar_preserve_exact_controller_identity() {
             .as_bytes(),
     )
     .unwrap();
-    assert_eq!(row["seats"][1]["controller"], "scripted");
+    assert_eq!(row["seats"][1]["controller"], "opponent");
     assert_eq!(row["seats"][1]["config"]["difficulty"], "veteran");
     assert!(
         row["execution_fingerprint"]
@@ -656,7 +656,7 @@ fn controlled_replay_and_sidecar_preserve_exact_controller_identity() {
     let replay_path = std::path::PathBuf::from(row["replay"].as_str().unwrap());
     let replay = oxide_kit::load_replay(&replay_path).unwrap();
     let description = replay.meta.description.as_deref().unwrap();
-    assert!(description.contains("\"kind\":\"scripted\""));
+    assert!(description.contains("\"kind\":\"opponent\""));
     assert!(description.contains("\"difficulty\":\"veteran\""));
     assert_eq!(
         oxide_driver::bot_eval::command_hash(&replay).unwrap(),

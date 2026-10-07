@@ -405,7 +405,8 @@ fn expansion_economy(
 
 impl Default for Dials {
     fn default() -> Self {
-        let config = oxide_sim::scenario::BotConfig::default();
+        let config =
+            oxide_sim::scenario::BotConfig::scripted(Default::default(), Default::default(), 0);
         Self::scripted(
             &ResolvedProfile::resolve(config),
             DifficultyTuning::for_level(config.difficulty),

@@ -96,7 +96,7 @@
    "bot": true,
    "team": 1,
    "bot_config": {
-    "controller": "scripted"
+    "controller": "opponent"
    }
   },
   {
@@ -106,7 +106,7 @@
    "bot": true,
    "team": 0,
    "bot_config": {
-    "controller": "scripted"
+    "controller": "opponent"
    }
   },
   {
@@ -116,7 +116,7 @@
    "bot": true,
    "team": 1,
    "bot_config": {
-    "controller": "scripted"
+    "controller": "opponent"
    }
   }
  ],

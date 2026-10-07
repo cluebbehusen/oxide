@@ -397,7 +397,7 @@ mod tests {
 
     #[test]
     fn foreign_replay_still_accepts_the_current_bot_shape() {
-        let fixture = replay_with("0.0.0-legacy", json!({"controller": "scripted"}));
+        let fixture = replay_with("0.0.0-legacy", json!({"controller": "opponent"}));
         let replay = load_replay(&fixture.0).expect("current setup shape remains readable");
 
         assert_eq!(
@@ -440,10 +440,10 @@ mod tests {
     fn current_replay_rejects_duplicate_bot_config_fields() {
         let json = serde_json::to_string(&GameReplay::new(SIM_VERSION, Scenario::skirmish()))
             .expect("current replay serializes");
-        let needle = r#""bot_config":{"controller":"scripted"}"#;
+        let needle = r#""bot_config":{"controller":"opponent"}"#;
         let replacement = concat!(
-            r#""bot_config":{"controller":"scripted"},"#,
-            r#""bot_config":{"controller":"scripted"}"#
+            r#""bot_config":{"controller":"opponent"},"#,
+            r#""bot_config":{"controller":"opponent"}"#
         );
         let duplicate = json.replacen(needle, replacement, 1);
         assert_ne!(duplicate, json, "fixture must duplicate a real field");

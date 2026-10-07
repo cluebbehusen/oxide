@@ -4885,7 +4885,11 @@ mod tests {
         let builders = policy.construction_builders(&obs, &[], &[]);
         let proposal = policy
             .fresh_defense_proposals(
-                &ResolvedProfile::resolve(BotConfig::default()),
+                &ResolvedProfile::resolve(BotConfig::scripted(
+                    Default::default(),
+                    Default::default(),
+                    0,
+                )),
                 &obs,
                 &resources,
                 &public_map,

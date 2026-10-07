@@ -69,7 +69,7 @@
    "scrap": 150,
    "bot": true,
    "bot_config": {
-    "controller": "scripted"
+    "controller": "opponent"
    }
   },
   {
@@ -79,7 +79,7 @@
    "scrap": 150,
    "bot": true,
    "bot_config": {
-    "controller": "scripted"
+    "controller": "opponent"
    }
   },
   {
@@ -89,7 +89,7 @@
    "scrap": 150,
    "bot": true,
    "bot_config": {
-    "controller": "scripted"
+    "controller": "opponent"
    }
   },
   {
@@ -99,7 +99,7 @@
    "scrap": 150,
    "bot": true,
    "bot_config": {
-    "controller": "scripted"
+    "controller": "opponent"
    }
   },
   {
@@ -109,7 +109,7 @@
    "scrap": 150,
    "bot": true,
    "bot_config": {
-    "controller": "scripted"
+    "controller": "opponent"
    }
   }
  ],

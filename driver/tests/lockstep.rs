@@ -1,11 +1,10 @@
 //! In-process lockstep: a host and two clients exchange `oxide-net` lines
 //! through delayed links on a virtual clock. Every seat's "player" is a
-//! scripted controller running on that seat's own machine, so real orders
-//! cross the wire. Every machine must execute identical batches.
+//! bot controller running on that seat's own machine, so real orders cross
+//! the wire. Every machine must execute identical batches.
 
 use chassis::rng::Pcg32;
-use oxide_bot::{PublicMapBriefing, SeatBot};
-use oxide_kit::controller::{SeatController, seat_controllers};
+use oxide_kit::controller::{SeatController, record_events, seat_controllers};
 use oxide_kit::{GameReplay, bot_execution, runner};
 use oxide_net::{
     ClientEnd, ClientSession, Connection, DropReason, HostEvent, HostSession, JoinMessage,
@@ -16,7 +15,6 @@ use oxide_sim::scenario::{BotConfig, BotDifficulty, BotStance};
 use oxide_sim::{Command, PlayerCommand, PlayerId, SIM_VERSION, Scenario, State, Tick};
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -30,7 +28,7 @@ fn ms(millis: u64) -> Duration {
 }
 
 fn player_config() -> BotConfig {
-    BotConfig::scripted(BotDifficulty::Standard, BotStance::Balanced, 0)
+    BotConfig::opponent(BotDifficulty::Standard, BotStance::Balanced, 0)
 }
 
 /// Twin Forges with seats 0 to 2 played by people and seat 3 a host bot.
@@ -96,19 +94,24 @@ struct Machine {
     seat: PlayerId,
     state: State,
     replay: GameReplay,
-    player: SeatBot,
+    player: SeatController,
     acted: Option<Tick>,
     hashes: Vec<(Tick, u64)>,
 }
 
 impl Machine {
     fn new(scenario: &Scenario, seat: PlayerId) -> Self {
-        let briefing = Arc::new(PublicMapBriefing::from_scenario(scenario).unwrap());
+        // The seat's player, as if it alone were a bot.
+        let mut alone = scenario.clone();
+        for (index, player) in alone.players.iter_mut().enumerate() {
+            player.bot = index == usize::from(seat.0);
+            player.bot_config = player.bot.then(player_config);
+        }
         Self {
             seat,
             state: scenario.build().unwrap(),
             replay: GameReplay::new(SIM_VERSION, scenario.clone()),
-            player: SeatBot::scripted(seat, player_config(), briefing),
+            player: seat_controllers(&alone).unwrap().remove(0),
             acted: None,
             hashes: Vec::new(),
         }
@@ -131,7 +134,8 @@ impl Machine {
     }
 
     fn execute(&mut self, batch: Vec<PlayerCommand>) {
-        runner::record_and_tick(&mut self.state, batch, Some(&mut self.replay));
+        let report = runner::record_and_tick(&mut self.state, batch, Some(&mut self.replay));
+        record_events(std::slice::from_mut(&mut self.player), &report);
         let tick = self.state.current_tick();
         if reports_hash(tick) {
             self.hashes.push((tick, self.state.hash()));

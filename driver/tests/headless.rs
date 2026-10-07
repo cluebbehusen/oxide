@@ -69,7 +69,7 @@ fn play_and_check_integrity(
     trace: Option<&Path>,
 ) -> anyhow::Result<()> {
     let mut state = scenario.build()?;
-    let mut bots = oxide_bot::seat_bots(scenario)?;
+    let mut bots = oxide_kit::controller::seat_controllers(scenario)?;
     let mut trace = trace.map(|stem| SoakTrace::new(stem, scenario));
     assert_state_round_trip(&state)?;
     for _ in 0..ticks {
@@ -77,7 +77,8 @@ fn play_and_check_integrity(
         if let Some(trace) = &mut trace {
             trace.record(&state, &commands);
         }
-        state.tick(&commands);
+        let report = state.tick(&commands);
+        oxide_kit::controller::record_events(&mut bots, &report);
         let tick = state.current_tick();
         if let Some(trace) = &mut trace
             && tick.is_multiple_of(TRACE_HASH_INTERVAL)
@@ -127,11 +128,7 @@ fn all_bots(path: &std::path::Path) -> Scenario {
         Scenario::load(path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
     for player in &mut scenario.players {
         player.bot = true;
-        player.bot_config = Some(oxide_sim::scenario::BotConfig::scripted(
-            oxide_sim::scenario::BotDifficulty::Standard,
-            oxide_sim::scenario::BotStance::Balanced,
-            0,
-        ));
+        player.bot_config = Some(oxide_sim::scenario::BotConfig::default());
     }
     scenario
 }
@@ -153,7 +150,7 @@ fn recorded_scenario_run_reproduces_from_its_replay() {
 
     let scenario = bot_skirmish();
     let mut state = scenario.build().unwrap();
-    let mut bots = oxide_bot::seat_bots(&scenario).unwrap();
+    let mut bots = oxide_kit::controller::seat_controllers(&scenario).unwrap();
     let mut replay: oxide_kit::GameReplay = Replay::new(SIM_VERSION, scenario);
     for _ in 0..900 {
         let mut commands = Vec::new();
@@ -163,7 +160,8 @@ fn recorded_scenario_run_reproduces_from_its_replay() {
         for command in &commands {
             replay.record(state.current_tick(), command.clone());
         }
-        state.tick(&commands);
+        let report = state.tick(&commands);
+        oxide_kit::controller::record_events(&mut bots, &report);
     }
     replay.meta.ticks = Some(state.current_tick());
     assert_eq!(replay.meta.ticks, Some(900));

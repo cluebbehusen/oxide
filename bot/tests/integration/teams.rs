@@ -4,7 +4,14 @@ use oxide_sim::Scenario;
 
 #[test]
 fn a_2v2_scenario_reproduces_bit_identically() {
-    let scenario = Scenario::load("../scenarios/twin-forges.json").unwrap();
+    let mut scenario = Scenario::load("../scenarios/twin-forges.json").unwrap();
+    for config in scenario
+        .players
+        .iter_mut()
+        .filter_map(|player| player.bot_config.as_mut())
+    {
+        config.controller = oxide_sim::scenario::BotController::Scripted;
+    }
     let run = || {
         let mut state = scenario.build().unwrap();
         let mut bots = oxide_bot::seat_bots(&scenario).unwrap();

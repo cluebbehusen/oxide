@@ -712,7 +712,7 @@ pub fn factorial_report(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxide_bot::seat_bots;
+    use oxide_kit::controller::{record_events, seat_controllers};
     use oxide_sim::State;
 
     fn synthetic(factions: [&str; 2], outcome: SweepOutcome, ticks: u64) -> FactorialMatch {
@@ -907,24 +907,25 @@ mod tests {
     }
 
     /// The all-baseline cell must reproduce, bit for bit, a reference
-    /// run that seats [`seat_bots`] per seat and steps the sim
+    /// run that seats [`seat_controllers`] per seat and steps the sim
     /// directly — proof that the harness transforms are neutral when
     /// every lever sits at its baseline.
     #[test]
-    fn the_baseline_cell_reproduces_a_direct_scripted_run() {
+    fn the_baseline_cell_reproduces_a_direct_controller_run() {
         let base = crate::runner::load_scenario("skirmish").unwrap();
         for seed in [0u64, 17, 4_242] {
             let mut sc = base.clone();
             sc.seed = seed;
             oxide_kit::bench::all_bots(&mut sc);
             let mut state = sc.build().unwrap();
-            let mut bots = seat_bots(&sc).unwrap();
+            let mut bots = seat_controllers(&sc).unwrap();
             for _ in 0..200 {
                 let mut commands = Vec::new();
                 for bot in &mut bots {
                     commands.extend(bot.act(&state));
                 }
-                state.tick(&commands);
+                let report = state.tick(&commands);
+                record_events(&mut bots, &report);
                 if state.result().is_some() {
                     break;
                 }

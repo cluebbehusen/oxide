@@ -14,8 +14,9 @@ impl UtilityPolicy {
         intents: &mut Vec<Intent>,
     ) {
         let map = super::tests::public_map(obs);
-        let profile =
-            crate::profile::ResolvedProfile::resolve(oxide_sim::scenario::BotConfig::default());
+        let profile = crate::profile::ResolvedProfile::resolve(
+            oxide_sim::scenario::BotConfig::scripted(Default::default(), Default::default(), 0),
+        );
         let resources = ResourceSnapshot::from_observation(obs);
         let mut unavailable = self.worker_safety_reservations().to_vec();
         for intent in intents.iter() {
