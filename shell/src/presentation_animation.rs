@@ -1765,9 +1765,15 @@ mod tests {
         let unit = state.unit(excavator).expect("Excavator survives");
         let mut controller = AnimationController::default();
         controller.observe_workers(&state);
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the fold lasts a whole number of ticks"
+        )]
+        let fold_ticks = WELD_ARM_FOLD_TICKS as u64;
         let animation = controller.unit_state(
             UnitAnimationFacts::capture(&state, unit, false),
-            AnimationClock::new(state.current_tick() + WELD_ARM_FOLD_TICKS as u64, 0.0),
+            AnimationClock::new(state.current_tick() + fold_ticks, 0.0),
             AnimationOptions::default(),
         );
         assert!(matches!(

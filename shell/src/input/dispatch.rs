@@ -7,6 +7,7 @@ use super::orders::digit_action;
 use super::select::{cycle_idle_worker, idle_harvesters};
 use crate::action::Action;
 use crate::game::Game;
+use crate::numeric;
 use macroquad::prelude::{Vec2, vec2};
 use oxide_sim::Command;
 
@@ -154,8 +155,8 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                 // stays put; the machine walks to wherever the player
                 // places.
                 let idle = idle_harvesters(&game.view());
-                let cx = game.presentation.camera.center.x.floor() as i32;
-                let cy = game.presentation.camera.center.y.floor() as i32;
+                let cx = numeric::to_i32(game.presentation.camera.center.x.floor());
+                let cy = numeric::to_i32(game.presentation.camera.center.y.floor());
                 let pick = game
                     .state
                     .units()

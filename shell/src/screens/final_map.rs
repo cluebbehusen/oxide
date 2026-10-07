@@ -2,6 +2,7 @@
 
 use crate::action::{Action, ActionEvent, ActionResolver, BindingMap, Context};
 use crate::game::Game;
+use crate::numeric;
 use crate::press::{Fed, Press};
 use crate::{render, theme};
 use macroquad::prelude::*;
@@ -190,7 +191,7 @@ impl FinalMapScreen {
                 self.bindings.label(Action::Back)
             )
         };
-        let width = measure_text(&line, None, size as u16, 1.0).width;
+        let width = measure_text(&line, None, numeric::font_size(size), 1.0).width;
         let x = (screen_width() - width) * 0.5;
         let y = screen_height() - 14.0 * scale;
         draw_rectangle(

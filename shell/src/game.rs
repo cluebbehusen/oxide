@@ -1,6 +1,8 @@
 //! Live simulation, bot execution, command recording, and session bookkeeping.
 //! Shared presentation borrows the active world and never advances it.
 
+use crate::numeric;
+use crate::numeric::Fit;
 use anyhow::Result;
 use chassis::replay::Replay;
 use macroquad::prelude::{Vec2, vec2};
@@ -225,11 +227,12 @@ impl Game {
 
     fn local_seat(scenario: &Scenario) -> PlayerId {
         PlayerId(
-            scenario
+            (scenario
                 .players
                 .iter()
                 .position(|player| !player.bot)
-                .unwrap_or(0) as u8,
+                .unwrap_or(0))
+            .fit::<u8>(),
         )
     }
 
@@ -605,7 +608,7 @@ impl Game {
             return false;
         }
         let stopped = |game: &Self| stop_tick.is_some_and(|tick| game.state.current_tick() >= tick);
-        self.pace(dt * self.presentation.speed as f32, |game| {
+        self.pace(dt * numeric::to_f32(self.presentation.speed), |game| {
             if stopped(game) {
                 return false;
             }

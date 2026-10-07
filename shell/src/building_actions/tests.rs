@@ -1,4 +1,5 @@
 use super::*;
+use crate::numeric::Fit;
 use macroquad::prelude::vec2;
 use oxide_sim::Scenario;
 
@@ -20,7 +21,7 @@ pub(crate) fn fixture(kind: BuildingKind, tiers: &[u8], scrap: u32) -> Game {
         scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
             player: 0,
             kind,
-            x: 8 + 3 * i as i32,
+            x: 8 + 3 * i.fit::<i32>(),
             y: 5,
         });
     }
@@ -31,7 +32,7 @@ pub(crate) fn fixture(kind: BuildingKind, tiers: &[u8], scrap: u32) -> Game {
         scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
             player: 0,
             kind,
-            x: 3 + 4 * i as i32,
+            x: 3 + 4 * i.fit::<i32>(),
             y: 8,
         });
     }
@@ -103,7 +104,7 @@ fn mixed_tiers_advance_once_and_skip_max_tier_with_pending_input() {
         assert_accepted(&mut game);
         for (id, tier) in ids.iter().zip(tiers) {
             let b = game.state.building(*id).unwrap();
-            assert_eq!(b.tier, (tier + 1).min(kind.tiers().len() as u8 - 1));
+            assert_eq!(b.tier, (tier + 1).min(kind.tiers().len().fit::<u8>() - 1));
             assert_eq!(b.built, !expected.contains(id));
         }
     }

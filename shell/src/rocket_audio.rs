@@ -1,7 +1,7 @@
 //! Motor loops driven by the currently presented missile state.
 
+use crate::numeric;
 use chassis::fx::Vec2Fx;
-use chassis::grid::TilePos;
 use macroquad::audio::{PlaySoundParams, Sound, play_sound, set_sound_volume, stop_sound};
 use macroquad::prelude::Vec2;
 use oxide_sim::{ProjectileKind, Target};
@@ -63,9 +63,7 @@ fn audible_motors(game: &Scene<'_>) -> Vec<Motor> {
         let at = from.lerp(impact, progress);
         if game.state.hostile(game.presentation.human, shell.player)
             && !game.presentation.all_seeing()
-            && !game
-                .my_vision()
-                .visible(TilePos::new(at.x.floor() as i32, at.y.floor() as i32))
+            && !game.my_vision().visible(numeric::tile_at(at))
         {
             continue;
         }

@@ -131,6 +131,7 @@ impl BoundaryFog {
 mod tests {
     use super::*;
     use crate::game::Game;
+    use chassis::grid::as_index;
     use macroquad::prelude::vec2;
     use oxide_kit::recovery::BuildIdentity;
     use oxide_sim::{Command, PlayerCommand, Scenario};
@@ -153,7 +154,7 @@ mod tests {
             let fog = BoundaryFog::new(&state, PlayerId(0));
             let width = state.map().width();
             let height = state.map().height();
-            let blank = ".".repeat((width + PAD * 2) as usize);
+            let blank = ".".repeat(as_index(width + PAD * 2));
             let padding = ".".repeat(PAD as usize);
             let mut rows = vec![blank.clone(); PAD as usize];
             rows.extend(

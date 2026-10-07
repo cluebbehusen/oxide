@@ -92,6 +92,8 @@ impl SpriteContact {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::numeric;
+    use crate::numeric::Fit;
 
     #[test]
     fn cropped_outline_extends_the_shot_through_padding_and_cut_corners() {
@@ -167,15 +169,15 @@ mod tests {
                 let pixel = contact / 2. * vec2(width as f32, height as f32);
                 let on_solid = (-1..=0).any(|dy| {
                     (-1..=0).any(|dx| {
-                        let px = pixel.x.floor() as i32 + dx;
-                        let py = pixel.y.floor() as i32 + dy;
+                        let px = numeric::to_i32(pixel.x.floor()) + dx;
+                        let py = numeric::to_i32(pixel.y.floor()) + dy;
                         px >= 0
                             && py >= 0
-                            && px < width as i32
-                            && py < height as i32
-                            && image.bytes[(((top + py as u32) * u32::from(image.width)
+                            && px < width.fit::<i32>()
+                            && py < height.fit::<i32>()
+                            && image.bytes[(((top + py.fit::<u32>()) * u32::from(image.width)
                                 + x
-                                + px as u32)
+                                + px.fit::<u32>())
                                 * 4
                                 + 3) as usize]
                                 >= 128

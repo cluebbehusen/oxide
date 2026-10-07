@@ -22,6 +22,8 @@ use crate::frame_profile::{FrameObservation, FrameProfiler};
 use crate::frame_time::FrameTime;
 use crate::game::{Game, SoundKind};
 use crate::menu::{Menu, PreviewCache};
+use crate::numeric;
+use crate::numeric::Fit;
 use crate::screens::codex::CodexScreen;
 use crate::screens::final_map::FinalMapScreen;
 use crate::screens::home::HomeScreen;
@@ -210,7 +212,7 @@ impl PersonalitySeedSource {
             Ok(duration) => duration.as_nanos(),
             Err(error) => error.duration().as_nanos(),
         };
-        let folded_time = nanos as u64 ^ (nanos >> 64) as u64;
+        let folded_time = (nanos & 0xFFFF_FFFF_FFFF_FFFF) as u64 ^ (nanos >> 64) as u64;
         let process = u64::from(std::process::id()).rotate_left(32);
         Self::from_seed(folded_time ^ process)
     }
@@ -260,7 +262,12 @@ fn start_new_match(
         )?)));
     }
     let scenario = draft_scenario(draft, personality_seed_base)?;
-    let host = oxide_sim::PlayerId(draft.seat_choice.min(scenario.players.len() - 1) as u8);
+    let host = oxide_sim::PlayerId(
+        draft
+            .seat_choice
+            .min(scenario.players.len() - 1)
+            .fit::<u8>(),
+    );
     let lobby =
         crate::netplay::HostLobby::new(bind, scenario, host, &crate::build_identity().revision)?;
     Ok(NewMatch::Hosted(Box::new(lobby)))
@@ -690,7 +697,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         // The clock flags drive whichever session is visible: a viewer
         // launch applies them to the transport, not the hidden match.
         session.paused = args.paused;
-        session.speed = args.speed as f32;
+        session.speed = numeric::to_f32(args.speed);
         Screen::Playback(Box::new(session))
     } else if purposeful {
         Screen::Playing
@@ -783,8 +790,8 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             units: diagnostic_units,
             buildings: diagnostic_buildings,
             speed: visible_speed(&screen, &app.game),
-            width: screen_width() as u32,
-            height: screen_height() as u32,
+            width: numeric::to_u32(screen_width()),
+            height: numeric::to_u32(screen_height()),
             dpi: f64::from(macroquad::miniquad::window::dpi_scale()),
             paused: match &screen {
                 Screen::Playback(playback) => playback.paused,
@@ -939,7 +946,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         {
             if get_time() < *until {
                 let s = render::ui_scale();
-                let width = measure_text(msg, None, (16.0 * s) as u16, 1.0).width;
+                let width = measure_text(msg, None, numeric::font_size(16.0 * s), 1.0).width;
                 let y = if matches!(screen, Screen::Results(_)) {
                     screens::results::action_rects(vec2(screen_width(), screen_height()), s)[0].y
                         - 10.0 * s
@@ -1048,7 +1055,10 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         // Persist the window size once it has settled: the config
         // documents window persistence, and only settings writes ever
         // saved it before.
-        let live = (screen_width() as u32, screen_height() as u32);
+        let live = (
+            numeric::to_u32(screen_width()),
+            numeric::to_u32(screen_height()),
+        );
         // Explicit --window runs (the UX matrix) and automation must
         // not overwrite the human's remembered size.
         let persist_size = app.args.window.is_none() && !app.args.automation;
@@ -2036,7 +2046,7 @@ mod tests {
                 .find(|entry| entry["name"] == name)
                 .unwrap();
             assert_eq!(
-                entry["mixer_volume"].as_f64().unwrap() as f32,
+                numeric::to_f32(entry["mixer_volume"].as_f64().unwrap()),
                 Mixer::base_volume(kind)
             );
             assert_eq!(entry["min_gap"].as_f64().unwrap(), Mixer::min_gap(kind));
@@ -2375,7 +2385,7 @@ mod tests {
         let alone = game.state.player(oxide_sim::PlayerId(0)).team;
         assert!(
             (1..players.len())
-                .all(|i| game.state.player(oxide_sim::PlayerId(i as u8)).team != alone),
+                .all(|i| game.state.player(oxide_sim::PlayerId(i.fit::<u8>())).team != alone),
             "an FFA seat shares a team with no one"
         );
     }

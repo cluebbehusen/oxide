@@ -1,6 +1,7 @@
 //! Measured selection contents and the regions shared by drawing and input.
 
 use super::*;
+use crate::numeric;
 use crate::panel::info::StatIcon;
 
 pub(super) struct InfoLine {
@@ -93,9 +94,10 @@ pub(super) fn measure_info(
         }
     }
     let roster_size = if compact { 44.0 } else { 64.0 } * scale;
-    let roster_columns = (((width - 16.0 * scale + 4.0 * scale) / (roster_size + 4.0 * scale))
-        .floor() as usize)
-        .max(1);
+    let roster_columns = numeric::to_usize(
+        ((width - 16.0 * scale + 4.0 * scale) / (roster_size + 4.0 * scale)).floor(),
+    )
+    .max(1);
     let roster_y = y + 18.0 * scale;
     if !panel.roster.is_empty() {
         y = roster_y

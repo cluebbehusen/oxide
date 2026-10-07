@@ -4,6 +4,7 @@
 //! facts. This module maps those facts onto the approved atlas rows without
 //! consulting wall time or changing gameplay state.
 
+use crate::numeric;
 use oxide_sim::{BuildingKind, UnitKind};
 
 use crate::presentation_animation::{
@@ -280,7 +281,7 @@ pub(crate) fn building_frame(kind: BuildingKind, state: BuildingAnimationState) 
 }
 
 fn cargo_bucket(cargo: CargoState) -> usize {
-    ((cargo.fill.clamp(0.0, 1.0) * 4.0).round() as usize).min(4)
+    numeric::to_usize((cargo.fill.clamp(0.0, 1.0) * 4.0).round()).min(4)
 }
 
 fn harvester_work_frame(cycle: f32) -> HarvesterPose {
@@ -467,7 +468,7 @@ fn defense_attack_frame(kind: BuildingKind, attack: AttackPhase) -> usize {
 
 fn cycle_index(progress: f32, count: usize) -> usize {
     debug_assert!(count > 0);
-    ((progress.clamp(0.0, 1.0) * count as f32).floor() as usize).min(count - 1)
+    numeric::to_usize((progress.clamp(0.0, 1.0) * count as f32).floor()).min(count - 1)
 }
 
 #[cfg(test)]

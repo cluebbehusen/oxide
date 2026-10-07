@@ -93,6 +93,7 @@ pub(super) fn draw(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::numeric;
 
     fn idle_body(kind: UnitKind) -> Image {
         let sprites = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/sprites");
@@ -117,8 +118,8 @@ mod tests {
             let body = idle_body(kind);
             let width = usize::from(body.width);
             for &[x0, y0, x1, y1] in runs(kind) {
-                for y in y0 as usize..y1 as usize {
-                    for x in x0 as usize..x1 as usize {
+                for y in numeric::to_usize(y0)..numeric::to_usize(y1) {
+                    for x in numeric::to_usize(x0)..numeric::to_usize(x1) {
                         assert_eq!(
                             body.bytes[(y * width + x) * 4 + 3],
                             u8::MAX,

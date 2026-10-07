@@ -3,6 +3,7 @@
 use crate::action::{Action, BindingMap};
 use crate::building_actions::SelectedBuildings;
 use crate::game::{Game, Scene};
+use crate::numeric::Fit;
 use crate::panel::{Card, CardAction, CardIcon, unit_flavor, unit_stat_line, weapon_lines};
 use crate::typography::entity_name;
 use oxide_sim::{Building, BuildingId, Command, UnitKind};
@@ -162,7 +163,7 @@ impl Production {
                     desc.push(format!(
                         "{} scrap each; {} scrap total.",
                         kind.stats().cost,
-                        kind.stats().cost * count as u32
+                        kind.stats().cost * count.fit::<u32>()
                     ));
                     if let Some(reason) = &batch.reason {
                         desc.push(reason.clone());
@@ -172,8 +173,8 @@ impl Production {
                     icon: CardIcon::Unit(kind),
                     title: entity_name(kind.name()),
                     cost: Some(kind.stats().cost),
-                    hotkey: bindings.labels(Action::TrainSlot(slot as u8)),
-                    action: CardAction::Dispatch(Action::TrainSlot(slot as u8)),
+                    hotkey: bindings.labels(Action::TrainSlot(slot.fit::<u8>())),
+                    action: CardAction::Dispatch(Action::TrainSlot(slot.fit::<u8>())),
                     enabled: count > 0,
                     why: (count == 0).then_some(batch.reason).flatten(),
                     desc,
@@ -202,7 +203,7 @@ impl Production {
                                 b.id,
                                 std::cmp::Reverse(index),
                             ),
-                            (b.id, index as u8),
+                            (b.id, index.fit::<u8>()),
                         )
                     })
             })
@@ -328,7 +329,7 @@ pub(crate) fn cancel_all(game: &mut Game) {
         .flat_map(|b| {
             (0..b.queue.len())
                 .rev()
-                .map(move |index| (b.id, index as u8))
+                .map(move |index| (b.id, index.fit::<u8>()))
         })
         .collect();
     for (building, index) in jobs {

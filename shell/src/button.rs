@@ -1,6 +1,7 @@
 //! The labeled action button full-screen surfaces share, so every screen's
 //! buttons read, highlight, and hit the same way.
 
+use crate::numeric;
 use crate::press::{Fed, Press};
 use crate::theme;
 use macroquad::prelude::{
@@ -46,7 +47,7 @@ pub(crate) fn draw(rect: Rect, label: &str, active: bool, s: f32) {
         },
     );
     let size = 16.0 * s;
-    let dims = measure_text(label, None, size as u16, 1.0);
+    let dims = measure_text(label, None, numeric::font_size(size), 1.0);
     draw_text(
         label,
         rect.x + (rect.w - dims.width) * 0.5,

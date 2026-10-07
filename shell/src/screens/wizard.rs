@@ -11,6 +11,8 @@
 use crate::bot_label::{difficulty_name, stance_name};
 use crate::game::SoundKind;
 use crate::menu::{PreviewCache, ScenarioEntry, discover_scenarios};
+use crate::numeric;
+use crate::numeric::Fit;
 use crate::press::{Fed, Press};
 use crate::screens::browser::{Browser, Out as BrowserOut};
 use anyhow::{Context, Result};
@@ -63,7 +65,7 @@ pub fn faction_override(choice: usize) -> Option<oxide_sim::Faction> {
 /// puts the seat on its own team; `Team k` becomes the 0-based id the
 /// sim densifies by first appearance at build.
 pub fn team_override(choice: usize) -> Option<u8> {
-    choice.checked_sub(1).map(|team| team as u8)
+    choice.checked_sub(1).map(|team| team.fit::<u8>())
 }
 
 /// The team chip's display label, aligned with [`team_override`].
@@ -299,7 +301,7 @@ fn seat_team_keys(scenario: &Scenario) -> Vec<u16> {
         .players
         .iter()
         .enumerate()
-        .map(|(i, p)| p.team.map_or(256 + i as u16, u16::from))
+        .map(|(i, p)| p.team.map_or(256 + i.fit::<u16>(), u16::from))
         .collect()
 }
 
@@ -688,7 +690,7 @@ pub fn seat_anchors(map: &[String]) -> Vec<(usize, (i32, i32))> {
                 _ => None,
             };
             if let Some(seat) = seat {
-                anchors.push((seat, (x as i32, y as i32)));
+                anchors.push((seat, (x.fit::<i32>(), y.fit::<i32>())));
             }
         }
     }
@@ -724,7 +726,7 @@ pub fn draw_seat_markers(
         }
         draw_circle(px, py, 7.5 * ui, accent);
         let label = format!("{}", seat + 1);
-        let tw = measure_text(&label, None, (13.0 * ui) as u16, 1.0).width;
+        let tw = measure_text(&label, None, numeric::font_size(13.0 * ui), 1.0).width;
         draw_text(
             &label,
             px - tw * 0.5,
@@ -1085,7 +1087,7 @@ impl Wizard {
         } else {
             56.0 * ui
         };
-        let tdims = measure_text(title, None, tsize as u16, 1.0);
+        let tdims = measure_text(title, None, numeric::font_size(tsize), 1.0);
         draw_text(
             title,
             (view.x - tdims.width) * 0.5,
@@ -1102,7 +1104,7 @@ impl Wizard {
             } else {
                 scenario.name.clone()
             };
-            let sdims = measure_text(&sub, None, (18.0 * ui) as u16, 1.0);
+            let sdims = measure_text(&sub, None, numeric::font_size(18.0 * ui), 1.0);
             draw_text(
                 &sub,
                 (view.x - sdims.width) * 0.5,
@@ -1114,7 +1116,7 @@ impl Wizard {
 
         for (label, rect) in &layout.headings {
             draw_text(label, rect.x, rect.y + rect.h * 0.7, 17.0 * ui, TEXT_TITLE);
-            let dims = measure_text(label, None, (17.0 * ui) as u16, 1.0);
+            let dims = measure_text(label, None, numeric::font_size(17.0 * ui), 1.0);
             draw_rectangle(
                 rect.x + dims.width + 12.0 * ui,
                 rect.y + rect.h * 0.55,
@@ -1158,7 +1160,7 @@ impl Wizard {
             draw_circle(chip_x, cy, disc, accent);
             let num = format!("{}", seat + 1);
             let num_font = (14.0 * ui).min(rect.h * 0.55);
-            let ndims = measure_text(&num, None, num_font as u16, 1.0);
+            let ndims = measure_text(&num, None, numeric::font_size(num_font), 1.0);
             draw_text(
                 &num,
                 chip_x - ndims.width * 0.5,
@@ -1173,7 +1175,7 @@ impl Wizard {
                 layout.cells[pos][0].x + layout.cells[pos][0].w
             };
             let name_room = (text_right - rect.x - 48.0 * ui).max(20.0);
-            let nw = measure_text(&display, None, name_font as u16, 1.0).width;
+            let nw = measure_text(&display, None, numeric::font_size(name_font), 1.0).width;
             if nw > name_room {
                 name_font = (name_font * name_room / nw).max(8.0);
             }
@@ -1187,7 +1189,7 @@ impl Wizard {
             if is_you {
                 let tag = "your seat";
                 let tag_font = (14.0 * ui).min(rect.h * 0.55);
-                let tdims = measure_text(tag, None, tag_font as u16, 1.0);
+                let tdims = measure_text(tag, None, numeric::font_size(tag_font), 1.0);
                 let fac = layout.cells[pos][1];
                 draw_text(
                     tag,
@@ -1225,10 +1227,10 @@ impl Wizard {
                     if on_cell { TEXT_TITLE } else { accent },
                 );
                 let mut font = 13.0 * ui;
-                let mut dims = measure_text(label, None, font as u16, 1.0);
+                let mut dims = measure_text(label, None, numeric::font_size(font), 1.0);
                 if dims.width > control.w - 6.0 {
                     font = (font * (control.w - 6.0) / dims.width).max(8.0);
-                    dims = measure_text(label, None, font as u16, 1.0);
+                    dims = measure_text(label, None, numeric::font_size(font), 1.0);
                 }
                 draw_text(
                     label,
@@ -1269,10 +1271,10 @@ impl Wizard {
                 // The label fits ITS chip: squeezed cards shrink the
                 // type instead of spilling text across neighbors.
                 let mut font = 13.0 * ui;
-                let mut ldims = measure_text(label, None, font as u16, 1.0);
+                let mut ldims = measure_text(label, None, numeric::font_size(font), 1.0);
                 if ldims.width > chip.w - 6.0 {
                     font = (font * (chip.w - 6.0) / ldims.width).max(8.0);
-                    ldims = measure_text(label, None, font as u16, 1.0);
+                    ldims = measure_text(label, None, numeric::font_size(font), 1.0);
                 }
                 draw_text(
                     label,
@@ -1293,7 +1295,7 @@ impl Wizard {
                 draw_rectangle(
                     zone.x + 44.0 * ui,
                     cy + name_font * 0.55,
-                    measure_text(&display, None, name_font as u16, 1.0).width,
+                    measure_text(&display, None, numeric::font_size(name_font), 1.0).width,
                     1.5,
                     TEXT_TITLE,
                 );
@@ -1326,7 +1328,7 @@ impl Wizard {
                 },
             );
             let label = start_label(draft);
-            let ldims = measure_text(label, None, (20.0 * ui) as u16, 1.0);
+            let ldims = measure_text(label, None, numeric::font_size(20.0 * ui), 1.0);
             draw_text(
                 label,
                 layout.start.x + (layout.start.w - ldims.width) * 0.5,
@@ -1356,10 +1358,10 @@ impl Wizard {
             draw_rectangle(rect.x, rect.y, rect.w, rect.h, SURFACE_MENU);
             draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.5, TEXT_SECONDARY);
             let mut size = 16.0 * ui;
-            let mut dims = measure_text(&label, None, size as u16, 1.0);
+            let mut dims = measure_text(&label, None, numeric::font_size(size), 1.0);
             if dims.width > rect.w - 8.0 {
                 size = (size * (rect.w - 8.0) / dims.width).max(8.0);
-                dims = measure_text(&label, None, size as u16, 1.0);
+                dims = measure_text(&label, None, numeric::font_size(size), 1.0);
             }
             draw_text(
                 &label,
@@ -1413,7 +1415,7 @@ impl Wizard {
                 crate::platform::TOUCH_ONLY,
             );
             let hint = crate::menu::binding_hint(hint);
-            let hdims = measure_text(&hint, None, (16.0 * ui) as u16, 1.0);
+            let hdims = measure_text(&hint, None, numeric::font_size(16.0 * ui), 1.0);
             draw_text(
                 &hint,
                 (view.x - hdims.width) * 0.5,

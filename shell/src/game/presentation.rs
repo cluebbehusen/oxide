@@ -5,6 +5,7 @@ use super::{
 };
 use super::{EffectKind, Selection};
 use crate::camera::Camera;
+use crate::numeric;
 use macroquad::prelude::{Vec2, vec2};
 use oxide_sim::{
     Building, Event, PlayerCommand, PlayerId, Scenario, State, Target, UnitId, UnitKind,
@@ -355,7 +356,10 @@ impl Presentation {
     /// Raises an under-attack alert, rate-limited per 8-tile region —
     /// a running battle nags once, not once per hit.
     pub(super) fn raise_alert(&mut self, world: Vec2) {
-        let cell = ((world.x / 8.0) as i32, (world.y / 8.0) as i32);
+        let cell = (
+            numeric::to_i32(world.x / 8.0),
+            numeric::to_i32(world.y / 8.0),
+        );
         let now = self.fx_clock;
         if self
             .alert_gate

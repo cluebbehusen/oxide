@@ -15,6 +15,8 @@ use crate::action::{Action, BindingMap};
 use crate::bot_label::{BotLabelStyle, bot_label};
 use crate::game::Scene;
 use crate::game::projection::{Program, Projection};
+use crate::numeric;
+use crate::numeric::Fit;
 use crate::typography::entity_name;
 use oxide_sim::stats::{BuildingKind, UnitKind, WeaponStats};
 use oxide_sim::{BuildingId, Order};
@@ -365,7 +367,7 @@ pub(crate) fn building_income(game: &Scene<'_>, building: &oxide_sim::state::Bui
         }
         _ => return 0,
     };
-    (60 * u64::from(oxide_sim::TICKS_PER_SECOND) / period) as u32
+    (60 * u64::from(oxide_sim::TICKS_PER_SECOND) / period).fit::<u32>()
 }
 
 fn weapon_line(weapon: &WeaponStats) -> String {
@@ -788,7 +790,7 @@ fn own_order_card(
 /// The concrete second tooltip line for a subject-bearing order: how
 /// far the job has come, in the units the verb is actually measured in.
 fn subject_detail(game: &Scene<'_>, order: &Order, progress: Option<f32>) -> Option<String> {
-    let pct = |f: f32| (f * 100.0).round() as u32;
+    let pct = |f: f32| numeric::to_u32((f * 100.0).round());
     match order {
         Order::Build { .. } => Some(format!("{}% raised", pct(progress?))),
         Order::Repair { building } => {
@@ -1047,7 +1049,7 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
                     title: entity_name(kind.name()),
                     cost: None,
                     hotkey: String::new(),
-                    action: CardAction::CancelQueue(building.id, i as u8),
+                    action: CardAction::CancelQueue(building.id, i.fit::<u8>()),
                     enabled: true,
                     why: None,
                     desc: vec![format!(
@@ -1514,7 +1516,7 @@ mod tests {
             .flat_map(|(y, row)| {
                 row.char_indices()
                     .filter(|(_, tile)| *tile == 'E')
-                    .map(move |(x, _)| (x as i32, y as i32))
+                    .map(move |(x, _)| (x.fit::<i32>(), y.fit::<i32>()))
             })
             .collect();
         assert!(frames.len() >= 3, "fixture needs home and remote frames");

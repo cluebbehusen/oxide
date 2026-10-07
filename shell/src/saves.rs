@@ -1,6 +1,7 @@
 //! The shelf classifies resumable checkpoints and watchable recordings.
 //! Unavailable revisions stay visible with a reason; malformed files are skipped.
 
+use crate::numeric::Fit;
 #[cfg(test)]
 use oxide_sim::SIM_VERSION;
 use std::path::PathBuf;
@@ -76,7 +77,7 @@ fn entry_hint(action: Option<(&str, &str)>, touch_only: bool) -> String {
 /// Days-since-epoch to a civil date (Howard Hinnant's algorithm) —
 /// enough calendar for a browser row without pulling a time crate.
 fn civil_date(secs: u64) -> String {
-    let days = (secs / 86_400) as i64;
+    let days = (secs / 86_400).fit::<i64>();
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);

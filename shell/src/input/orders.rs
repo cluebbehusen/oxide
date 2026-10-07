@@ -5,6 +5,7 @@
 
 use super::{InputState, ground_tile, tile_center, unit_pick_radius};
 use crate::game::{Game, PingKind};
+use crate::numeric;
 use chassis::grid::TilePos;
 use macroquad::prelude::{Vec2, vec2};
 use oxide_sim::{Command, Target, UnitId};
@@ -174,7 +175,7 @@ fn group_action(game: &mut Game, input: &mut InputState, slot: usize) {
 /// this is only intent.
 pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
     let world = game.presentation.camera.to_world(screen);
-    let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+    let tile = numeric::tile_at(world);
     if game.presentation.selection.units.is_empty() {
         if let Some((target, at, domain)) = known_hostile_target_at(game, world, tile) {
             let defenses =

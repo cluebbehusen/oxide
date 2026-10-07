@@ -82,7 +82,7 @@ fn noise(seed: u32, i: u32) -> f32 {
 }
 
 pub(super) fn seed(at: Vec2, tick: u64) -> u32 {
-    at.x.to_bits() ^ at.y.to_bits().rotate_left(17) ^ tick as u32
+    at.x.to_bits() ^ at.y.to_bits().rotate_left(17) ^ (tick & 0xFFFF_FFFF) as u32
 }
 
 pub(super) fn draw(contact: Contact, zoom: f32) {
