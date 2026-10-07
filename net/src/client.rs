@@ -75,7 +75,7 @@ impl ClientSession {
 
     /// Sends an order for this client's seat.
     pub fn send(&mut self, command: Command) {
-        self.say(ClientMessage::Command { command });
+        self.say(&ClientMessage::Command { command });
     }
 
     /// The next batch to execute, if it has arrived. Execute it on the
@@ -99,7 +99,7 @@ impl ClientSession {
         );
         self.executed += 1;
         let tick = self.executed;
-        self.say(ClientMessage::Ack {
+        self.say(&ClientMessage::Ack {
             tick,
             hash: reports_hash(tick).then(hash),
         });
@@ -131,7 +131,7 @@ impl ClientSession {
         std::mem::take(&mut self.outgoing)
     }
 
-    fn say(&mut self, message: ClientMessage) {
+    fn say(&mut self, message: &ClientMessage) {
         if self.end.is_none() {
             self.spoke = true;
             self.outgoing.push(message.encode());

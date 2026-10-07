@@ -187,7 +187,7 @@ impl AttackFollower {
                 .collect();
             for id in relaunched {
                 let open = attacks.open.remove(&id).expect("listed as open");
-                close(&mut attacks.done, open, ledger);
+                close(&mut attacks.done, &open, ledger);
             }
             let (dealt, taken) = totals(ledger, &launch.units);
             attacks.open.insert(
@@ -239,7 +239,7 @@ impl AttackFollower {
             .collect();
         for id in closing {
             let open = attacks.open.remove(&id).expect("listed as open");
-            close(&mut attacks.done, open, ledger);
+            close(&mut attacks.done, &open, ledger);
         }
     }
 
@@ -251,7 +251,7 @@ impl AttackFollower {
             .map(|seat| {
                 seat.map(|mut attacks| {
                     for open in std::mem::take(&mut attacks.open).into_values() {
-                        close(&mut attacks.done, open, ledger);
+                        close(&mut attacks.done, &open, ledger);
                     }
                     attacks.done
                 })
@@ -260,7 +260,7 @@ impl AttackFollower {
     }
 }
 
-fn close(done: &mut AttackCalibration, open: Open, ledger: &ImpactLedger) {
+fn close(done: &mut AttackCalibration, open: &Open, ledger: &ImpactLedger) {
     let (dealt, taken) = totals(ledger, &open.units);
     let bucket = done.bucket(open.defense, open.sent);
     bucket.attacks += 1;

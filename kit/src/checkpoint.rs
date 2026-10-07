@@ -480,7 +480,7 @@ mod tests {
             player: PlayerId(seat),
             command: Command::Stop { units: vec![] },
         }));
-        let report = crate::runner::record_and_tick(&mut state, commands, Some(&mut suffix));
+        let report = crate::runner::record_and_tick(&mut state, &commands, Some(&mut suffix));
         record_events(&mut bots, &report);
         suffix.meta.ticks = Some(state.current_tick());
 

@@ -289,7 +289,7 @@ pub(super) fn run(
     // (flight is at least one tick), so ordering here cannot matter.
     land_shells(state, &mut hits, events);
     state.shells.extend(launches);
-    resolve_hits(state, hits, builds, heals, drains, events);
+    resolve_hits(state, &hits, &builds, &heals, &drains, events);
     logistics_pending
 }
 
@@ -314,10 +314,10 @@ use locomotion::{hunt, idle, land, land_at_destination, walk};
 /// living shooter keep firing unopposed.
 fn resolve_hits(
     state: &mut State,
-    hits: Vec<PendingHit>,
-    builds: Vec<PendingHpGain>,
-    heals: Vec<PendingUnitHeal>,
-    drains: Vec<PendingHpDrain>,
+    hits: &[PendingHit],
+    builds: &[PendingHpGain],
+    heals: &[PendingUnitHeal],
+    drains: &[PendingHpDrain],
     events: &mut Vec<Event>,
 ) {
     struct Work {
@@ -327,7 +327,7 @@ fn resolve_hits(
         completes: Option<(crate::ids::PlayerId, crate::stats::BuildingKind)>,
     }
     let mut incidents = Vec::new();
-    for hit in &hits {
+    for hit in hits {
         match hit.victim {
             Target::Unit(uid) => {
                 if let Some(v) = state.unit_mut(uid) {
@@ -400,7 +400,7 @@ fn resolve_hits(
     // fire wins and the crew's coin forfeits with its work.
     {
         let mut rooms: Vec<(crate::ids::BuildingId, i64)> = Vec::new();
-        for gain in &builds {
+        for gain in builds {
             let Some(b) = state.building(gain.site).filter(|b| b.hp > 0) else {
                 continue;
             };
@@ -460,7 +460,7 @@ fn resolve_hits(
             v.len() - 1
         }
     };
-    for gain in &builds {
+    for gain in builds {
         let i = slot(&mut work, gain.site);
         work[i].gain += i64::from(gain.step);
         if gain.completes && work[i].completes.is_none() {
@@ -469,7 +469,7 @@ fn resolve_hits(
             work[i].completes = Some((gain.player, gain.kind));
         }
     }
-    for drain in &drains {
+    for drain in drains {
         let i = slot(&mut work, drain.building);
         work[i].drain += i64::from(drain.step);
     }
@@ -516,7 +516,7 @@ fn resolve_hits(
         }
     }
     resolve_unit_heals(state, heals, events);
-    for hit in &hits {
+    for hit in hits {
         if let Target::Unit(uid) = hit.victim
             && target_standing(state, hit.attacker)
         {
@@ -536,9 +536,9 @@ fn resolve_hits(
 /// gets its prepaid coin back (the marginal welder's partially
 /// accepted step keeps its ceil-billed fraction); and per unit the
 /// gains net into one delta clamped once to `max_hp`.
-fn resolve_unit_heals(state: &mut State, heals: Vec<PendingUnitHeal>, events: &mut Vec<Event>) {
+fn resolve_unit_heals(state: &mut State, heals: &[PendingUnitHeal], events: &mut Vec<Event>) {
     let mut rooms: Vec<(UnitId, i64)> = Vec::new();
-    for heal in &heals {
+    for heal in heals {
         let Some(u) = state.unit(heal.unit).filter(|u| u.hp > 0) else {
             continue;
         };
@@ -571,7 +571,7 @@ fn resolve_unit_heals(state: &mut State, heals: Vec<PendingUnitHeal>, events: &m
         }
     }
     let mut sums: Vec<(UnitId, i64)> = Vec::new();
-    for heal in &heals {
+    for heal in heals {
         match sums.iter_mut().find(|(id, _)| *id == heal.unit) {
             Some((_, gain)) => *gain += i64::from(heal.step),
             None => sums.push((heal.unit, i64::from(heal.step))),
@@ -924,14 +924,7 @@ mod damage_tests {
                 repair_bay: None,
             };
             let mut events = Vec::new();
-            resolve_hits(
-                &mut state,
-                vec![hit],
-                vec![gain],
-                vec![],
-                vec![],
-                &mut events,
-            );
+            resolve_hits(&mut state, &[hit], &[gain], &[], &[], &mut events);
             assert!(
                 !events
                     .iter()
@@ -968,14 +961,7 @@ mod damage_tests {
             source: crate::event::UnitRepairSource::FieldWelder { unit: victim },
         };
         let mut events = Vec::new();
-        resolve_hits(
-            &mut state,
-            vec![hit],
-            vec![],
-            vec![heal],
-            vec![],
-            &mut events,
-        );
+        resolve_hits(&mut state, &[hit], &[], &[heal], &[], &mut events);
         assert_eq!(state.unit(victim).unwrap().hp, hp);
         assert!(
             matches!(events.first(), Some(Event::DamageTaken { player: owner, pos: at }) if *owner == player && *at == pos)
@@ -993,7 +979,7 @@ mod damage_tests {
             pos,
         );
         events.clear();
-        resolve_hits(&mut state, vec![hit], vec![], vec![], vec![], &mut events);
+        resolve_hits(&mut state, &[hit], &[], &[], &[], &mut events);
         assert!(events.is_empty());
 
         let building = &state.buildings[0];
@@ -1006,7 +992,7 @@ mod damage_tests {
             pos,
             pos,
         );
-        resolve_hits(&mut state, vec![hit], vec![], vec![], vec![], &mut events);
+        resolve_hits(&mut state, &[hit], &[], &[], &[], &mut events);
         assert_eq!(state.building(id).unwrap().hp, hp - 4);
         assert_eq!(events, vec![Event::DamageTaken { player, pos }]);
     }

@@ -37,7 +37,7 @@ pub fn step(
     replay: Option<&mut GameReplay>,
 ) -> oxide_sim::TickReport {
     let commands = crate::bot_execution::commands(state, bots);
-    let report = record_and_tick(state, commands, replay);
+    let report = record_and_tick(state, &commands, replay);
     record_events(bots, &report);
     report
 }
@@ -62,7 +62,7 @@ pub fn step_traced(
             traces.push(trace);
         }
     }
-    let report = record_and_tick(state, commands, replay);
+    let report = record_and_tick(state, &commands, replay);
     record_events(bots, &report);
     TracedStep { report, traces }
 }
@@ -70,15 +70,15 @@ pub fn step_traced(
 /// Records `commands` at the current tick, then executes them as one tick.
 pub fn record_and_tick(
     state: &mut State,
-    commands: Vec<PlayerCommand>,
+    commands: &[PlayerCommand],
     replay: Option<&mut GameReplay>,
 ) -> oxide_sim::TickReport {
     if let Some(replay) = replay {
-        for command in &commands {
+        for command in commands {
             replay.record(state.current_tick(), command.clone());
         }
     }
-    state.tick(&commands)
+    state.tick(commands)
 }
 
 /// Runs `scenario` for `ticks` ticks (frozen post-victory ticks included, so

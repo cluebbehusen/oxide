@@ -831,7 +831,7 @@ fn nowhere_to_stand(bank: u32) -> (Vec<PlayerCommand>, Trace, BuildingId) {
     let mut scenario = saturated(bank);
     let model = map(&scenario);
     let start = model.start(PlayerId(0)).unwrap();
-    fill(&mut scenario, &model, vec![start], |_| true);
+    fill(&mut scenario, &model, &[start], |_| true);
     let state = scenario.build().unwrap();
     let (commands, trace) =
         seat_with(&scenario, 0, thrifty()).act_traced(&state, &mut OwnEvents::default());
@@ -843,12 +843,12 @@ fn nowhere_to_stand(bank: u32) -> (Vec<PlayerCommand>, Trace, BuildingId) {
 fn fill(
     scenario: &mut Scenario,
     model: &MapModel,
-    foundries: Vec<TilePos>,
+    foundries: &[TilePos],
     keep: impl Fn(TilePos) -> bool,
 ) {
     let spots: Vec<TilePos> = [BuildingKind::Fabricator, BuildingKind::Reclaimer]
         .into_iter()
-        .flat_map(|kind| model.spots(PlayerId(0), foundries.clone(), kind))
+        .flat_map(|kind| model.spots(PlayerId(0), foundries.to_vec(), kind))
         .filter(|anchor| keep(*anchor))
         .collect();
     for anchor in spots {
@@ -891,7 +891,7 @@ fn a_seat_whose_home_is_full_builds_beside_its_other_foundry() {
     let model = map(&scenario);
     let start = model.start(PlayerId(0)).unwrap();
     let distance = |a: TilePos, b: TilePos| (a.x - b.x).abs().max((a.y - b.y).abs());
-    fill(&mut scenario, &model, vec![start, expansion], |anchor| {
+    fill(&mut scenario, &model, &[start, expansion], |anchor| {
         distance(anchor, start) < distance(anchor, expansion)
     });
     let state = scenario.build().unwrap();

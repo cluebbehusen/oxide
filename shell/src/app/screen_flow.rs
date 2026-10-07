@@ -901,7 +901,7 @@ fn pause_frame(app: &mut App, mut ps: PauseScreen, events: &[RawEvent]) -> Resul
                 app.game.scenario.name,
                 app.game.state.current_tick()
             );
-            ps.begin_naming(suggested);
+            ps.begin_naming(&suggested);
             Screen::Pause(ps)
         }
         screens::pause::Out::Save(name) => {

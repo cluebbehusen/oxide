@@ -1838,7 +1838,7 @@ mod tests {
     fn keyboard_is_wanted_only_while_naming() {
         let mut pause = PauseScreen::open(false, true);
         assert!(!text_entry(&Screen::Pause(PauseScreen::open(false, true))));
-        pause.begin_naming("Skirmish | t40".to_string());
+        pause.begin_naming("Skirmish | t40");
         assert!(text_entry(&Screen::Pause(pause)));
         assert!(!text_entry(&Screen::Playing));
     }

@@ -1017,7 +1017,7 @@ fn advanced(difficulty: BotDifficulty, east: &[(UnitKind, i32, i32)]) -> Scenari
 /// `ADVANCED`.
 fn under_way(
     state: &State,
-    phase: serde_json::Value,
+    phase: &serde_json::Value,
     since: u64,
 ) -> (Vec<UnitId>, serde_json::Value) {
     let mut members: Vec<UnitId> = ADVANCED.iter().map(|(x, y)| at(state, *x, *y)).collect();
@@ -1048,7 +1048,7 @@ fn the_upper_rungs_send_new_units_after_an_attack_under_way() {
     ] {
         let scenario = advanced(difficulty, &[]);
         let mut state = scenario.build().unwrap();
-        let (members, missions) = under_way(&state, "travel".into(), 0);
+        let (members, missions) = under_way(&state, &"travel".into(), 0);
         advance_to(&mut state, 12, &[run(0, members.clone(), 30, 11)]);
         let mut opponent = restaged(&scenario, &state, missions);
         let (commands, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
@@ -1084,7 +1084,7 @@ fn the_upper_rungs_press_a_fight_past_its_time() {
         let mut state = scenario.build().unwrap();
         advance_to(&mut state, 3_588, &[]);
         let (members, missions) =
-            under_way(&state, serde_json::json!({"engage": {"focus": null}}), 0);
+            under_way(&state, &serde_json::json!({"engage": {"focus": null}}), 0);
         advance_to(&mut state, 3_600, &[run(0, members.clone(), 30, 11)]);
         let mut opponent = restaged(&scenario, &state, missions);
         let (commands, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
@@ -1124,7 +1124,7 @@ fn the_upper_rungs_hold_a_fight_they_are_only_slightly_outweighed_in() {
     ] {
         let scenario = advanced(difficulty, &east);
         let mut state = scenario.build().unwrap();
-        let (_, missions) = under_way(&state, serde_json::json!({"engage": {"focus": null}}), 0);
+        let (_, missions) = under_way(&state, &serde_json::json!({"engage": {"focus": null}}), 0);
         advance_to(&mut state, 12, &[]);
         let mut opponent = restaged(&scenario, &state, missions);
         let (_, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
@@ -1181,7 +1181,7 @@ fn an_attack_pulling_back_sends_no_reinforcements_after_it() {
         11,
     ));
     let mut state = scenario.build().unwrap();
-    let (members, missions) = under_way(&state, serde_json::json!({"engage": {"focus": null}}), 0);
+    let (members, missions) = under_way(&state, &serde_json::json!({"engage": {"focus": null}}), 0);
     advance_to(&mut state, 12, &[]);
     let mut opponent = restaged(&scenario, &state, missions);
     let (commands, trace) = opponent.act_traced(&state, &mut OwnEvents::default());

@@ -234,6 +234,7 @@ fn siege_share(stance: BotStance) -> i64 {
 const SIEGE_SHARE_PER_TRAIT: i64 = 3;
 
 /// Where the seat's army can go.
+#[derive(Clone, Copy)]
 pub(crate) struct Outlet {
     /// Ground units can reach an enemy building or start: by ground, or by
     /// lift once an Airworks stands.

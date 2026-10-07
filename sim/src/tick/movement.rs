@@ -2023,7 +2023,7 @@ mod tests {
         }
     }
 
-    fn assert_collision_half_turn(mut original: State, travel: Vec<Vec2Fx>) {
+    fn assert_collision_half_turn(mut original: State, travel: &[Vec2Fx]) {
         let width = Fx::from_num(original.map.width());
         let height = Fx::from_num(original.map.height());
         let mut rotated = original.clone();
@@ -2034,7 +2034,7 @@ mod tests {
 
         let mut original_index = UnitIndex::new();
         let mut rotated_index = UnitIndex::new();
-        resolve_collisions(&mut original, &travel, &mut original_index);
+        resolve_collisions(&mut original, travel, &mut original_index);
         resolve_collisions(&mut rotated, &rotated_travel, &mut rotated_index);
 
         for (unit, rotated_unit) in original.units.iter().zip(&rotated.units) {
@@ -2060,7 +2060,7 @@ mod tests {
             Vec2Fx::new(Fx::lit("-0.05"), Fx::lit("-0.01")),
         ];
 
-        assert_collision_half_turn(state, travel);
+        assert_collision_half_turn(state, &travel);
     }
 
     #[test]
@@ -2084,7 +2084,7 @@ mod tests {
             unit.pos = stack;
         }
 
-        assert_collision_half_turn(state, vec![Vec2Fx::ZERO; 3]);
+        assert_collision_half_turn(state, &[Vec2Fx::ZERO; 3]);
     }
 
     #[test]
@@ -2253,7 +2253,7 @@ mod tests {
             Vec2Fx::new(Fx::lit("-0.12"), Fx::lit("-0.03")),
         ];
 
-        assert_collision_half_turn(state, travel);
+        assert_collision_half_turn(state, &travel);
     }
 
     /// A seat's light body meeting the other seat's heavy one, and the

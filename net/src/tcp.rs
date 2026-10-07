@@ -87,7 +87,7 @@ impl Connection {
         let (read, incoming) = mpsc::sync_channel(INCOMING_LINES);
         thread::Builder::new()
             .name("oxide-net-read".into())
-            .spawn(move || read_lines(reader, read))?;
+            .spawn(move || read_lines(reader, &read))?;
         let writer = thread::Builder::new()
             .name("oxide-net-write".into())
             .spawn(move || write_lines(writer, to_write))
@@ -144,7 +144,7 @@ impl Drop for Connection {
     }
 }
 
-fn read_lines(socket: TcpStream, lines: SyncSender<String>) {
+fn read_lines(socket: TcpStream, lines: &SyncSender<String>) {
     let mut reader = BufReader::new(socket);
     let mut buffer = Vec::new();
     loop {

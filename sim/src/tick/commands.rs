@@ -1188,6 +1188,7 @@ fn apply_unload(
 /// never share a building, or a welder and a stripper would feed the
 /// resolver an oscillator (and the bot's deepest-wound repair pick
 /// would re-crew every salvage it sees).
+#[derive(Clone, Copy)]
 enum Verb {
     Repair,
     Salvage,

@@ -139,7 +139,7 @@ impl Machine {
     /// Executes `batch`, returning its report for any other bots this
     /// machine hosts.
     fn execute(&mut self, batch: Vec<PlayerCommand>) -> TickReport {
-        let report = runner::record_and_tick(&mut self.state, batch, Some(&mut self.replay));
+        let report = runner::record_and_tick(&mut self.state, &batch, Some(&mut self.replay));
         record_events(std::slice::from_mut(&mut self.player), &report);
         let tick = self.state.current_tick();
         if reports_hash(tick) {

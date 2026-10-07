@@ -18,6 +18,7 @@ struct FrameSample {
 }
 
 /// Input captured at the native frame boundary.
+#[derive(Clone, Copy)]
 pub(crate) struct FrameObservation<'a> {
     pub(crate) mode: &'a str,
     pub(crate) active_playing: bool,

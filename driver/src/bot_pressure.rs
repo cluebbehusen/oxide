@@ -143,7 +143,7 @@ pub fn run(
             });
         }
         commands.extend(oxide_kit::bot_execution::commands(&state, &mut bots));
-        let report = oxide_kit::runner::record_and_tick(&mut state, commands, replay.as_mut());
+        let report = oxide_kit::runner::record_and_tick(&mut state, &commands, replay.as_mut());
         record_events(&mut bots, &report);
         watch.observe(&state, defender, attacker);
     }

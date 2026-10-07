@@ -92,7 +92,8 @@ pub fn run(options: &ProfileOptions<'_>) -> Result<ProfileReport> {
 
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
     let executable = build_shell_executable_for(!options.dev)?;
-    let workspace = ProfileWorkspace::create(&root, options.port, prefix_at(record, options.from))?;
+    let workspace =
+        ProfileWorkspace::create(&root, options.port, &prefix_at(record, options.from))?;
     let mut command = std::process::Command::new(executable);
     command
         .args([
@@ -126,7 +127,7 @@ pub fn run(options: &ProfileOptions<'_>) -> Result<ProfileReport> {
         ui.mode
     );
     expect_ok(
-        client.call(Request::SetSpeed {
+        &client.call(Request::SetSpeed {
             multiplier: options.speed,
         })?,
         "set live speed",
@@ -136,14 +137,14 @@ pub fn run(options: &ProfileOptions<'_>) -> Result<ProfileReport> {
         "reset frame profile",
     )?;
     expect_ok(
-        client.call(Request::BeginPerformanceWindow {
+        &client.call(Request::BeginPerformanceWindow {
             from_tick: options.from,
             to_tick: options.to,
         })?,
         "arm exact frame profile",
     )?;
 
-    expect_ok(client.call(Request::Resume)?, "resume live match")?;
+    expect_ok(&client.call(Request::Resume)?, "resume live match")?;
     let started = Instant::now();
     let target_rate = f64::from(TICKS_PER_SECOND) * options.speed;
     let expected = Duration::from_secs_f64((options.to - options.from) as f64 / target_rate);
@@ -266,7 +267,7 @@ struct ProfileWorkspace {
 }
 
 impl ProfileWorkspace {
-    fn create(root: &Path, port: u16, replay: GameReplay) -> Result<Self> {
+    fn create(root: &Path, port: u16, replay: &GameReplay) -> Result<Self> {
         let parent = root.join("target/oxide-profile");
         std::fs::create_dir_all(&parent).context("creating profile scratch directory")?;
         let directory = parent.join(format!(
@@ -305,7 +306,7 @@ fn connect(port: u16) -> Result<Client> {
     bail!("profiled shell never came up on {address}")
 }
 
-fn expect_ok(reply: Reply, operation: &str) -> Result<()> {
+fn expect_ok(reply: &Reply, operation: &str) -> Result<()> {
     if matches!(reply, Reply::Ok) {
         Ok(())
     } else {

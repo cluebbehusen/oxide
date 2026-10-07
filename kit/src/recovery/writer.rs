@@ -38,12 +38,12 @@ struct Shared {
     error: Mutex<Option<String>>,
 }
 impl Shared {
-    fn fail(&self, error: impl ToString) {
+    fn fail(&self, error: &str) {
         self.stopped.store(true, Ordering::Release);
         if let Ok(mut slot) = self.error.lock()
             && slot.is_none()
         {
-            *slot = Some(error.to_string());
+            *slot = Some(error.to_owned());
         }
     }
 }
@@ -187,13 +187,13 @@ impl RecoveryWriter {
                 if let Err(error) = run(
                     &root,
                     &worker_directory,
-                    header,
-                    receiver,
+                    &header,
+                    &receiver,
                     &worker_shared,
                     &mut lease,
                     source,
                 ) {
-                    worker_shared.fail(format!("{error:#}"));
+                    worker_shared.fail(&format!("{error:#}"));
                 }
                 let status = snapshot(&worker_shared);
                 if lease.is_some() {
@@ -336,8 +336,8 @@ fn command_bytes(command: &Command) -> usize {
 fn run(
     root: &Path,
     directory: &Path,
-    header: Header,
-    receiver: mpsc::Receiver<Queued>,
+    header: &Header,
+    receiver: &mpsc::Receiver<Queued>,
     shared: &Shared,
     lease_guard: &mut Option<File>,
     source: Option<PathBuf>,

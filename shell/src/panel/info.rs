@@ -27,10 +27,10 @@ pub(crate) struct SelectionInfo {
 }
 
 impl SelectionInfo {
-    fn row(&mut self, label: &str, value: impl ToString, icon: Option<StatIcon>) {
+    fn row(&mut self, label: &str, value: String, icon: Option<StatIcon>) {
         self.rows.push(StatRow {
             label: label.into(),
-            value: value.to_string(),
+            value,
             icon,
             section: false,
         });
@@ -99,7 +99,7 @@ pub(crate) fn selection_info(game: &Scene<'_>, panel: &Panel) -> SelectionInfo {
         if let Some(salvage) = game.known_salvage(tile) {
             info.row(
                 "Scrap left",
-                salvage.amount(),
+                salvage.amount().to_string(),
                 Some(Verb(VerbIcon::Harvest)),
             );
             // Own harvesters only: another player's orders are intent
@@ -113,7 +113,7 @@ pub(crate) fn selection_info(game: &Scene<'_>, panel: &Panel) -> SelectionInfo {
                         && matches!(u.order, oxide_sim::Order::Harvest { node, .. } if node == tile)
                 })
                 .count();
-            info.row("Harvesters", harvesters, None);
+            info.row("Harvesters", harvesters.to_string(), None);
         }
         return info;
     }
@@ -155,9 +155,9 @@ pub(crate) fn selection_info(game: &Scene<'_>, panel: &Panel) -> SelectionInfo {
                 info.row(
                     "Support",
                     if income.is_supported() {
-                        "Foundry"
+                        "Foundry".to_string()
                     } else {
-                        "Remote"
+                        "Remote".to_string()
                     },
                     Some(Cap(CapabilityIcon::EconomySupport)),
                 );
