@@ -1043,7 +1043,7 @@ mod tests {
             UnitSpec {
                 player: 1,
                 kind: UnitKind::Sentinel,
-                x: 14,
+                x: 27,
                 y: 12,
             },
         ];

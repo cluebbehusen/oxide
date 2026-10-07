@@ -2056,20 +2056,15 @@ impl State {
             path: None,
             leash: None,
             settled: 0,
-            heading: if kind.stats().domain == crate::stats::Domain::Ground
-                || kind.cruise_turn_rate() > 0
-            {
-                chassis::compass::heading_of(
-                    Vec2Fx::new(
-                        Fx::from_num(self.map.width()) / 2,
-                        Fx::from_num(self.map.height()) / 2,
-                    ) - pos,
-                )
-            } else if kind == UnitKind::Skyhook {
-                192
-            } else {
-                (TilePos::containing(pos).x as u8).wrapping_mul(64)
-            },
+            // Every unit starts facing the map centre, so mirrored seats'
+            // units start mirrored, aircraft included: a turning flyer's
+            // first heading decides how long it takes to come about.
+            heading: chassis::compass::heading_of(
+                Vec2Fx::new(
+                    Fx::from_num(self.map.width()) / 2,
+                    Fx::from_num(self.map.height()) / 2,
+                ) - pos,
+            ),
             landed: false,
             cargo: Vec::new(),
         });
@@ -2417,6 +2412,26 @@ mod tests {
         assert_eq!(state.unit(a).unwrap().kind, UnitKind::Harvester);
         assert_eq!(state.unit(b).unwrap().kind, UnitKind::Sentinel);
         assert_eq!(state.unit(UnitId(99)), None);
+    }
+
+    #[test]
+    fn mirrored_spawns_face_mirrored_headings() {
+        let mut state = tiny_state();
+        let (width, height) = (state.map().width(), state.map().height());
+        for kind in UnitKind::ALL {
+            for (x, y) in [(0, 0), (0, 1), (1, 3), (2, 0)] {
+                let tile = TilePos::new(x, y);
+                let turned = TilePos::new(width - 1 - x, height - 1 - y);
+                let a = state.spawn_unit(PlayerId(0), kind, tile.center());
+                let b = state.spawn_unit(PlayerId(0), kind, turned.center());
+                let heading = |id| state.unit(id).unwrap().heading;
+                assert_eq!(
+                    heading(b),
+                    heading(a).wrapping_add(128),
+                    "{kind:?} at {tile:?}"
+                );
+            }
+        }
     }
 
     #[test]

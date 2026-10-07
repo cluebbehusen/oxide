@@ -1146,8 +1146,10 @@ fn unit_duel_scenario(attacker: UnitKind) -> Value {
     };
     let units = vec![
         unit(0, attacker, 15, 10),
+        // A bomber spawns facing the map centre, down the diagonal from
+        // here, and releases only into its forward cone.
         if matches!(attacker, UnitKind::Condor | UnitKind::Moth) {
-            unit(1, target, 15, 10 - distance)
+            unit(1, target, 15 + distance, 10 + distance)
         } else {
             unit(1, target, 15 + distance, 10)
         },
