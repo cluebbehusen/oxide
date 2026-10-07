@@ -55,6 +55,43 @@ impl TilePos {
     pub fn manhattan(self, other: Self) -> i32 {
         (self.x - other.x).abs() + (self.y - other.y).abs()
     }
+
+    /// This tile's row-major index in a grid `width` tiles wide. The tile
+    /// must lie inside the grid.
+    #[inline]
+    pub fn row_major(self, width: i32) -> usize {
+        debug_assert!(
+            self.x >= 0 && self.y >= 0 && self.x < width,
+            "{self} lies outside a grid {width} tiles wide"
+        );
+        as_index(self.y) * as_index(width) + as_index(self.x)
+    }
+
+    /// The tile at row-major `index` in a grid `width` tiles wide.
+    #[inline]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "an index into a grid of i32 extents yields i32 coordinates"
+    )]
+    pub fn from_row_major(index: usize, width: i32) -> Self {
+        debug_assert!(width > 0, "a grid {width} tiles wide has no cells");
+        let width = as_index(width);
+        Self::new((index % width) as i32, (index / width) as i32)
+    }
+}
+
+/// The number of cells in a `width` x `height` grid; zero when either extent
+/// is not positive.
+pub fn cell_count(width: i32, height: i32) -> usize {
+    as_index(width.max(0)) * as_index(height.max(0))
+}
+
+/// A coordinate, extent or distance known to be non-negative, as an index.
+#[inline]
+pub fn as_index(value: i32) -> usize {
+    debug_assert!(value >= 0, "negative index {value}");
+    value.cast_unsigned() as usize
 }
 
 impl core::fmt::Display for TilePos {
@@ -76,9 +113,7 @@ impl<T> Grid<T> {
     /// and a cell vector of exactly `width x height`. Derived `Deserialize`
     /// can't check this — anything loading grids from untrusted bytes must.
     pub fn is_consistent(&self) -> bool {
-        self.width > 0
-            && self.height > 0
-            && self.cells.len() == (self.width as usize) * (self.height as usize)
+        self.width > 0 && self.height > 0 && self.cells.len() == cell_count(self.width, self.height)
     }
 
     /// Builds a grid filled with clones of `fill`.
@@ -90,7 +125,7 @@ impl<T> Grid<T> {
         Self {
             width,
             height,
-            cells: vec![fill; (width as usize) * (height as usize)],
+            cells: vec![fill; cell_count(width, height)],
         }
     }
 
@@ -100,7 +135,7 @@ impl<T> Grid<T> {
         assert!(width > 0 && height > 0, "grid dimensions must be positive");
         assert_eq!(
             cells.len(),
-            (width as usize) * (height as usize),
+            cell_count(width, height),
             "cell count must equal width * height"
         );
         Self {
@@ -126,7 +161,7 @@ impl<T> Grid<T> {
     }
 
     fn index(&self, pos: TilePos) -> usize {
-        (pos.y as usize) * (self.width as usize) + (pos.x as usize)
+        pos.row_major(self.width)
     }
 
     /// The cell at `pos`, or `None` when out of bounds.
@@ -157,8 +192,9 @@ impl<T> Grid<T> {
         if x0 > x1 {
             return;
         }
-        let base = (y as usize) * (self.width as usize);
-        self.cells[base + x0 as usize..=base + x1 as usize].fill(value);
+        let first = self.index(TilePos::new(x0, y));
+        let last = self.index(TilePos::new(x1, y));
+        self.cells[first..=last].fill(value);
     }
 
     /// Copies `other` into `self`, reusing this grid's allocation when
@@ -179,8 +215,9 @@ impl<T> Grid<T> {
         if y < 0 || y >= self.height {
             return None;
         }
-        let base = (y as usize) * (self.width as usize);
-        Some(&self.cells[base..base + self.width as usize])
+        let first = self.index(TilePos::new(0, y));
+        let last = self.index(TilePos::new(self.width - 1, y));
+        Some(&self.cells[first..=last])
     }
 
     /// Row `y` as a mutable slice, or `None` out of range.
@@ -188,8 +225,9 @@ impl<T> Grid<T> {
         if y < 0 || y >= self.height {
             return None;
         }
-        let base = (y as usize) * (self.width as usize);
-        Some(&mut self.cells[base..base + self.width as usize])
+        let first = self.index(TilePos::new(0, y));
+        let last = self.index(TilePos::new(self.width - 1, y));
+        Some(&mut self.cells[first..=last])
     }
 
     /// Sets every cell to `value`.
@@ -203,21 +241,19 @@ impl<T> Grid<T> {
     /// Iterates all cells with their positions, row-major (a deterministic
     /// order).
     pub fn iter(&self) -> impl Iterator<Item = (TilePos, &T)> {
-        self.cells.iter().enumerate().map(|(i, cell)| {
-            let x = (i % (self.width as usize)) as i32;
-            let y = (i / (self.width as usize)) as i32;
-            (TilePos::new(x, y), cell)
-        })
+        self.cells
+            .iter()
+            .enumerate()
+            .map(|(i, cell)| (TilePos::from_row_major(i, self.width), cell))
     }
 
     /// Iterates all cells mutably with their positions, row-major.
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (TilePos, &mut T)> {
-        let width = self.width as usize;
-        self.cells.iter_mut().enumerate().map(move |(i, cell)| {
-            let x = (i % width) as i32;
-            let y = (i / width) as i32;
-            (TilePos::new(x, y), cell)
-        })
+        let width = self.width;
+        self.cells
+            .iter_mut()
+            .enumerate()
+            .map(move |(i, cell)| (TilePos::from_row_major(i, width), cell))
     }
 }
 

@@ -238,6 +238,10 @@ impl DialQueue {
         self.cursor = f;
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "grid cell indices and ranks fit u32, as asserted below"
+    )]
     fn push(&mut self, f: u32, h: u32, rank: usize, index: usize) {
         debug_assert!(f.is_multiple_of(2), "octile keys are even by construction");
         debug_assert!(
@@ -307,7 +311,7 @@ impl AstarScratch {
         {
             return false;
         }
-        let index = (tile.y as usize) * (self.last_width as usize) + tile.x as usize;
+        let index = tile.row_major(self.last_width);
         self.stamp
             .get(index)
             .is_some_and(|stamp| *stamp == self.generation)
@@ -465,7 +469,7 @@ pub fn cardinal_components(
     let mut labels = vec![0u32; w * h];
     let mut closed = vec![false; w * h];
     for (index, closed) in closed.iter_mut().enumerate() {
-        *closed = !open(TilePos::new((index % w) as i32, (index / w) as i32));
+        *closed = !open(TilePos::from_row_major(index, width));
     }
     let mut next_label = 0u32;
     let mut frontier = Vec::new();
@@ -477,13 +481,13 @@ pub fn cardinal_components(
         labels[start] = next_label;
         frontier.push(start);
         while let Some(index) = frontier.pop() {
-            let tile = TilePos::new((index % w) as i32, (index / w) as i32);
+            let tile = TilePos::from_row_major(index, width);
             for (dx, dy) in CARDINALS {
                 let next = tile.offset(dx, dy);
                 if next.x < 0 || next.y < 0 || next.x >= width || next.y >= height {
                     continue;
                 }
-                let next_index = (next.y as usize) * w + next.x as usize;
+                let next_index = next.row_major(width);
                 if !closed[next_index] && labels[next_index] == 0 {
                     labels[next_index] = next_label;
                     frontier.push(next_index);
@@ -511,14 +515,14 @@ fn astar_inner<const PRUNE: bool>(
     if !in_bounds(start) || !in_bounds(goal) {
         return None;
     }
-    let index = |p: TilePos| (p.y as usize) * (width as usize) + (p.x as usize);
+    let index = |p: TilePos| p.row_major(width);
     if start == goal {
         return Some(Vec::new());
     }
     if !passable(goal) {
         return None;
     }
-    let cell_count = (width as usize).checked_mul(height as usize)?;
+    let cell_count = crate::grid::cell_count(width, height);
     // A half-turn maps row-major index `i` to `cell_count - 1 - i` and
     // reverses the start/goal lexicographic order. Orienting the tie rank by
     // that order therefore gives corresponding cells identical ranks in the
@@ -563,10 +567,7 @@ fn astar_inner<const PRUNE: bool>(
     );
 
     while let Some((f, _h, current_idx)) = open.pop() {
-        let current = TilePos::new(
-            (current_idx % (width as usize)) as i32,
-            (current_idx / (width as usize)) as i32,
-        );
+        let current = TilePos::from_row_major(current_idx, width);
         let g = best_g[current_idx];
         // Stale heap entry: a shorter route to this tile was already expanded.
         if f > g.saturating_add(heuristic(current, goal)) {
@@ -576,10 +577,7 @@ fn astar_inner<const PRUNE: bool>(
             let mut path = Vec::new();
             let mut idx = current_idx;
             while idx != index(start) {
-                path.push(TilePos::new(
-                    (idx % (width as usize)) as i32,
-                    (idx / (width as usize)) as i32,
-                ));
+                path.push(TilePos::from_row_major(idx, width));
                 idx = came_from[idx];
             }
             path.reverse();
@@ -649,6 +647,12 @@ fn astar_inner<const PRUNE: bool>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::grid::cell_count;
+    use crate::rng::Pcg32;
+
+    fn below(rng: &mut Pcg32, bound: i32) -> i32 {
+        i32::try_from(rng.next_below(u32::try_from(bound).unwrap())).unwrap()
+    }
 
     #[test]
     fn expansion_count_tracks_success_exhaustion_caps_and_early_exits() {
@@ -690,14 +694,14 @@ mod tests {
         if !in_bounds(start) || !in_bounds(goal) {
             return None;
         }
-        let index = |p: TilePos| (p.y as usize) * (width as usize) + (p.x as usize);
+        let index = |p: TilePos| p.row_major(width);
         if start == goal {
             return Some(Vec::new());
         }
         if !passable(goal) {
             return None;
         }
-        let cells = (width as usize) * (height as usize);
+        let cells = crate::grid::cell_count(width, height);
         let reverse_ties = (goal.y, goal.x) < (start.y, start.x);
         let tie_rank = |cell_index: usize| {
             if reverse_ties {
@@ -718,10 +722,7 @@ mod tests {
         )));
         let mut expansions = 0;
         while let Some(Reverse((f, _h, _rank, current_idx))) = open.pop() {
-            let current = TilePos::new(
-                (current_idx % (width as usize)) as i32,
-                (current_idx / (width as usize)) as i32,
-            );
+            let current = TilePos::from_row_major(current_idx, width);
             let g = best_g[current_idx];
             if f > g.saturating_add(heuristic(current, goal)) {
                 continue;
@@ -730,10 +731,7 @@ mod tests {
                 let mut path = Vec::new();
                 let mut idx = current_idx;
                 while idx != index(start) {
-                    path.push(TilePos::new(
-                        (idx % (width as usize)) as i32,
-                        (idx / (width as usize)) as i32,
-                    ));
+                    path.push(TilePos::from_row_major(idx, width));
                     idx = came_from[idx];
                 }
                 path.reverse();
@@ -787,28 +785,22 @@ mod tests {
         let mut rng = crate::rng::Pcg32::new(90210, 7);
         let mut scratch = AstarScratch::default();
         for case in 0..300u32 {
-            let width = 4 + rng.next_below(40) as i32;
-            let height = 4 + rng.next_below(28) as i32;
+            let width = 4 + below(&mut rng, 40);
+            let height = 4 + below(&mut rng, 28);
             let density = rng.next_below(45);
-            let cells = (width * height) as usize;
+            let cells = cell_count(width, height);
             let mut walls = vec![false; cells];
             for wall in &mut walls {
                 *wall = rng.next_below(100) < density;
             }
-            let start = TilePos::new(
-                rng.next_below(width as u32) as i32,
-                rng.next_below(height as u32) as i32,
-            );
-            let goal = TilePos::new(
-                rng.next_below(width as u32) as i32,
-                rng.next_below(height as u32) as i32,
-            );
+            let start = TilePos::new(below(&mut rng, width), below(&mut rng, height));
+            let goal = TilePos::new(below(&mut rng, width), below(&mut rng, height));
             let max_expansions = if rng.next_below(5) == 0 {
                 1 + rng.next_below(30)
             } else {
                 10_000
             };
-            let passable = |p: TilePos| !walls[(p.y * width + p.x) as usize] || p == start;
+            let passable = |p: TilePos| !walls[p.row_major(width)] || p == start;
             let expected = reference_astar(width, height, start, goal, passable, max_expansions);
             let actual = astar_with_scratch(
                 width,
@@ -834,16 +826,16 @@ mod tests {
     fn cardinal_components_match_astar_reachability() {
         let mut rng = crate::rng::Pcg32::new(0x00C0_FFEE, 3);
         for case in 0..120u32 {
-            let width = 1 + rng.next_below(9) as i32;
-            let height = 1 + rng.next_below(7) as i32;
+            let width = 1 + below(&mut rng, 9);
+            let height = 1 + below(&mut rng, 7);
             let density = rng.next_below(60);
             let walls: Vec<bool> = (0..width * height)
                 .map(|_| rng.next_below(100) < density)
                 .collect();
-            let open = |p: TilePos| !walls[(p.y * width + p.x) as usize];
+            let open = |p: TilePos| !walls[p.row_major(width)];
             let labels = cardinal_components(width, height, open);
-            assert_eq!(labels.len(), (width * height) as usize);
-            let label = |p: TilePos| labels[(p.y * width + p.x) as usize];
+            assert_eq!(labels.len(), cell_count(width, height));
+            let label = |p: TilePos| labels[p.row_major(width)];
             let tiles: Vec<TilePos> = (0..height)
                 .flat_map(|y| (0..width).map(move |x| TilePos::new(x, y)))
                 .collect();
@@ -883,8 +875,8 @@ mod tests {
 
     /// Builds a passability closure from ASCII rows ('#' blocked).
     fn arena(rows: &[&str]) -> (Grid<bool>, i32, i32) {
-        let height = rows.len() as i32;
-        let width = rows[0].len() as i32;
+        let height = i32::try_from(rows.len()).unwrap();
+        let width = i32::try_from(rows[0].len()).unwrap();
         let cells = rows
             .iter()
             .flat_map(|r| r.chars())
@@ -969,7 +961,7 @@ mod tests {
             goal: TilePos,
         ) {
             let rotate = |tile: TilePos| TilePos::new(width - 1 - tile.x, height - 1 - tile.y);
-            let open = |tile: TilePos| !blocked[(tile.y * width + tile.x) as usize];
+            let open = |tile: TilePos| !blocked[tile.row_major(width)];
             let rotated_open = |tile: TilePos| open(rotate(tile));
             let path = astar(width, height, start, goal, open, 10_000);
             let rotated = astar(
@@ -989,7 +981,7 @@ mod tests {
 
         let width = 7;
         let height = 7;
-        let mut counterexample = vec![false; (width * height) as usize];
+        let mut counterexample = vec![false; cell_count(width, height)];
         for (x, y) in [
             (0, 5),
             (1, 0),
@@ -1004,7 +996,7 @@ mod tests {
             (5, 6),
             (6, 1),
         ] {
-            counterexample[(y * width + x) as usize] = true;
+            counterexample[TilePos::new(x, y).row_major(width)] = true;
         }
         assert_mirror_path(
             width,
@@ -1019,19 +1011,13 @@ mod tests {
             let mut blocked = (0..width * height)
                 .map(|_| rng.next_below(100) < 24)
                 .collect::<Vec<_>>();
-            let start = TilePos::new(
-                rng.next_below(width as u32) as i32,
-                rng.next_below(height as u32) as i32,
-            );
-            let mut goal = TilePos::new(
-                rng.next_below(width as u32) as i32,
-                rng.next_below(height as u32) as i32,
-            );
+            let start = TilePos::new(below(&mut rng, width), below(&mut rng, height));
+            let mut goal = TilePos::new(below(&mut rng, width), below(&mut rng, height));
             if goal == start {
                 goal.x = (goal.x + 1) % width;
             }
-            blocked[(start.y * width + start.x) as usize] = false;
-            blocked[(goal.y * width + goal.x) as usize] = false;
+            blocked[start.row_major(width)] = false;
+            blocked[goal.row_major(width)] = false;
             assert_mirror_path(width, height, &blocked, start, goal);
         }
     }

@@ -299,14 +299,14 @@ impl<S, C, O: RecordingOrigin<S>> Replay<S, C, O> {
         decoder: impl FnOnce(&[u8]) -> Result<Self, ReplayError>,
     ) -> Result<Self, ReplayError> {
         let file = std::fs::File::open(path)?;
-        let length = file.metadata()?.len();
-        if length > max_bytes as u64 {
+        let length = usize::try_from(file.metadata()?.len()).unwrap_or(usize::MAX);
+        if length > max_bytes {
             return Err(ReplayError::Invalid(format!(
                 "file is {length} bytes, beyond the {max_bytes}-byte limit"
             )));
         }
 
-        let mut bytes = Vec::with_capacity(length as usize);
+        let mut bytes = Vec::with_capacity(length);
         file.take(max_bytes as u64 + 1).read_to_end(&mut bytes)?;
         if bytes.len() > max_bytes {
             return Err(ReplayError::Invalid(format!(

@@ -22,8 +22,8 @@ pub const HALF: Fx = Fx::lit("0.5");
 /// `isqrt(r << 32)`, which is `floor(sqrt(x))` in Q32.32.
 pub fn sqrt(x: Fx) -> Fx {
     assert!(x >= Fx::ZERO, "sqrt of negative fixed-point value: {x}");
-    let wide = (x.to_bits() as u128) << 32;
-    Fx::from_bits(wide.isqrt() as i64)
+    let wide = u128::from(x.to_bits().cast_unsigned()) << 32;
+    Fx::from_bits(i64::try_from(wide.isqrt()).expect("the root of a 96-bit value fits in 48 bits"))
 }
 
 /// A 2D vector of [`Fx`] components.
@@ -136,11 +136,8 @@ impl core::ops::Div<Fx> for Vec2Fx {
 /// Restores a signed raw result when it fits. The magnitude is wider than an
 /// `i64`, so `Fx::MIN` is representable without ever negating it.
 fn signed_magnitude(magnitude: u128, negative: bool) -> Option<Fx> {
-    let signed = if negative {
-        -(magnitude as i128)
-    } else {
-        magnitude as i128
-    };
+    let magnitude = i128::try_from(magnitude).ok()?;
+    let signed = if negative { -magnitude } else { magnitude };
     i64::try_from(signed).ok().map(Fx::from_bits)
 }
 

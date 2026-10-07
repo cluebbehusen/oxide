@@ -51,7 +51,7 @@ impl Pcg32 {
     pub fn next_u32(&mut self) -> u32 {
         let old = self.state;
         self.state = old.wrapping_mul(MULTIPLIER).wrapping_add(self.inc);
-        let xorshifted = (((old >> 18) ^ old) >> 27) as u32;
+        let xorshifted = ((((old >> 18) ^ old) >> 27) & 0xFFFF_FFFF) as u32;
         let rot = (old >> 59) as u32;
         xorshifted.rotate_right(rot)
     }
@@ -74,6 +74,12 @@ impl Pcg32 {
                 return r % bound;
             }
         }
+    }
+
+    /// Uniform index into a collection of `len` items, drawn exactly as
+    /// [`Pcg32::next_below`] draws `len`.
+    pub fn next_index(&mut self, len: usize) -> usize {
+        self.next_below(u32::try_from(len).expect("collection lengths fit in u32")) as usize
     }
 }
 

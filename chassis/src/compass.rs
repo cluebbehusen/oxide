@@ -384,9 +384,9 @@ mod tests {
     fn adjacent_steps_stay_adjacent() {
         // One step is about 1.4 degrees; consecutive directions must
         // never jump. Catches a shuffled or truncated table.
-        for k in 0u16..256 {
-            let a = dir(k as u8);
-            let b = dir((k as u8).wrapping_add(1));
+        for k in 0..=u8::MAX {
+            let a = dir(k);
+            let b = dir(k.wrapping_add(1));
             let dot = a.x * b.x + a.y * b.y;
             assert!(dot > Fx::lit("0.999"), "step {k} breaks continuity");
         }
