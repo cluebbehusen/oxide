@@ -946,9 +946,9 @@ fn armed_ground_verbs_ping_at_the_tile_centre() {
         let (fighter, at) = own_fighter(&game);
         game.presentation.selection.units = vec![fighter];
         if attack {
-            input.hunting = true;
+            input.click_verb = Some(ClickVerb::Hunt);
         } else {
-            input.running = true;
+            input.click_verb = Some(ClickVerb::Run);
         }
         let tile = TilePos::new(numeric::to_i32(at.x) + 3, numeric::to_i32(at.y) - 2);
         let screen = game.presentation.camera.to_screen(off_centre(tile));
@@ -1291,7 +1291,7 @@ fn a_ribbon_tap_cancels_the_mode_and_keeps_the_selection() {
         .expect("a starting combat unit")
         .id;
     game.presentation.selection.units = vec![fighter];
-    input.hunting = true;
+    input.click_verb = Some(ClickVerb::Hunt);
     let ribbon = macroquad::math::Rect::new(220.0, 620.0, 280.0, 44.0);
     let mut layout = bare_layout(f32::INFINITY, 0.0);
     layout.mode_ribbon = ribbon;
@@ -1301,7 +1301,7 @@ fn a_ribbon_tap_cancels_the_mode_and_keeps_the_selection() {
     assert_eq!(game.presentation.selection.units, vec![fighter]);
     assert!(game.pending.is_empty(), "cancel emits no gameplay command");
 
-    input.running = true;
+    input.click_verb = Some(ClickVerb::Run);
     apply_events(
         &mut game,
         &mut input,
@@ -1355,16 +1355,16 @@ fn every_targeting_mode_has_persistent_human_copy() {
     input.rallying = vec![oxide_sim::BuildingId(0)];
     assert_eq!(input.armed_mode().unwrap().label(), "Set rally");
     input.disarm_click_verbs();
-    input.salvaging = true;
+    input.click_verb = Some(ClickVerb::Salvage);
     assert_eq!(input.armed_mode().unwrap().label(), "Salvage");
     input.disarm_click_verbs();
-    input.repairing = true;
+    input.click_verb = Some(ClickVerb::Weld);
     assert_eq!(input.armed_mode().unwrap().label(), "Weld");
     input.disarm_click_verbs();
-    input.running = true;
+    input.click_verb = Some(ClickVerb::Run);
     assert_eq!(input.armed_mode().unwrap().label(), "Run");
     input.disarm_click_verbs();
-    input.hunting = true;
+    input.click_verb = Some(ClickVerb::Hunt);
     assert_eq!(input.armed_mode().unwrap().label(), "Hunt");
     input.disarm_click_verbs();
     input.patrol_route = Some(vec![TilePos::new(1, 1), TilePos::new(2, 2)]);
@@ -1718,7 +1718,7 @@ fn the_armed_salvage_verb_strips_by_click_and_refuses_the_foundry() {
     game.presentation.selection.units = vec![harvester];
     // Arm with the hotkey, exactly as a player would.
     apply_events(&mut game, &mut input, &[key_down(Key::V), key_up(Key::V)]);
-    assert!(input.salvaging, "V arms the wrecking crew");
+    assert!(input.armed(ClickVerb::Salvage), "V arms the wrecking crew");
 
     // A click on the Foundry refuses and stays armed.
     let foundry = game.state.buildings()[0].anchor;
@@ -1728,7 +1728,10 @@ fn the_armed_salvage_verb_strips_by_click_and_refuses_the_foundry() {
         .to_screen(vec2(foundry.x as f32 + 0.5, foundry.y as f32 + 0.5));
     apply_events(&mut game, &mut input, &[left_down(on_foundry)]);
     assert!(game.pending.is_empty(), "the victory token refuses");
-    assert!(input.salvaging, "a misclick keeps the mode armed");
+    assert!(
+        input.armed(ClickVerb::Salvage),
+        "a misclick keeps the mode armed"
+    );
 
     // A click on the turret stages the teardown and stands down.
     let on_turret = game.presentation.camera.to_screen(vec2(9.5, 5.5));
@@ -1741,7 +1744,10 @@ fn the_armed_salvage_verb_strips_by_click_and_refuses_the_foundry() {
         "the click sends the crew: {:?}",
         game.pending
     );
-    assert!(!input.salvaging, "a plain click finishes the job");
+    assert!(
+        !input.armed(ClickVerb::Salvage),
+        "a plain click finishes the job"
+    );
 }
 
 #[test]
@@ -1758,7 +1764,7 @@ fn the_armed_run_verb_issues_an_oblivious_move() {
     game.presentation.selection.units = vec![fighter];
     // Arm with the classic hotkey, exactly as a player would.
     apply_events(&mut game, &mut input, &[key_down(Key::G), key_up(Key::G)]);
-    assert!(input.running, "G arms Run");
+    assert!(input.armed(ClickVerb::Run), "G arms Run");
 
     // The click sends a Run order — the OBLIVIOUS walk, not the
     // explicit fighting march armed with F — and stands down.
@@ -1777,7 +1783,10 @@ fn the_armed_run_verb_issues_an_oblivious_move() {
         "the armed click issues Command::Run: {:?}",
         game.pending
     );
-    assert!(!input.running, "a plain click finishes the recall");
+    assert!(
+        !input.armed(ClickVerb::Run),
+        "a plain click finishes the recall"
+    );
     assert!(
         !game
             .pending
@@ -1804,7 +1813,7 @@ fn arming_run_stands_the_other_verbs_down() {
     // would stamp a building under a "run" toast.
     input.placing = Some(oxide_sim::BuildingKind::Turret);
     apply_events(&mut game, &mut input, &[key_down(Key::G), key_up(Key::G)]);
-    assert!(input.running, "G arms Run");
+    assert!(input.armed(ClickVerb::Run), "G arms Run");
     assert!(input.placing.is_none(), "and placement stood down");
     let home = game.state.unit(harvester).unwrap().tile();
     let p = game
@@ -1836,8 +1845,8 @@ fn arming_run_stands_the_other_verbs_down() {
             key_up(Key::V),
         ],
     );
-    assert!(input.salvaging, "V arms salvage");
-    assert!(!input.running, "and the run stood down");
+    assert!(input.armed(ClickVerb::Salvage), "V arms salvage");
+    assert!(!input.armed(ClickVerb::Run), "and the run stood down");
 }
 
 #[test]
@@ -1853,8 +1862,11 @@ fn f_arms_explicit_hunt_and_the_click_consumes_it() {
         .id;
     game.presentation.selection.units = vec![fighter];
     apply_events(&mut game, &mut input, &[key_down(Key::F), key_up(Key::F)]);
-    assert!(input.hunting, "F arms the fighting march");
-    assert!(!input.running, "hunt and run are mutually exclusive");
+    assert!(input.armed(ClickVerb::Hunt), "F arms the fighting march");
+    assert!(
+        !input.armed(ClickVerb::Run),
+        "hunt and run are mutually exclusive"
+    );
 
     let goal = game.state.unit(fighter).unwrap().tile().offset(4, 1);
     let p = game
@@ -1871,7 +1883,10 @@ fn f_arms_explicit_hunt_and_the_click_consumes_it() {
             ..
         } if staged == goal
     )));
-    assert!(!input.hunting, "a plain click consumes the armed verb");
+    assert!(
+        !input.armed(ClickVerb::Hunt),
+        "a plain click consumes the armed verb"
+    );
 }
 
 #[test]
@@ -1905,7 +1920,10 @@ fn the_hunt_card_is_touchable_and_arms_the_same_world_tap() {
         &mut input,
         &[touch_up(1, vec2(card.x + 20.0, card.y + 20.0))],
     );
-    assert!(input.hunting, "the fingertip arms the panel verb");
+    assert!(
+        input.armed(ClickVerb::Hunt),
+        "the fingertip arms the panel verb"
+    );
 
     let goal = game.state.unit(fighter).unwrap().tile().offset(4, 1);
     let point = game
@@ -1925,7 +1943,10 @@ fn the_hunt_card_is_touchable_and_arms_the_same_world_tap() {
             ..
         } if staged == goal
     )));
-    assert!(!input.hunting, "the world tap consumes the armed verb");
+    assert!(
+        !input.armed(ClickVerb::Hunt),
+        "the world tap consumes the armed verb"
+    );
 }
 
 #[test]
@@ -2846,7 +2867,10 @@ fn a_resting_finger_previews_a_card_and_lifting_in_place_activates_it() {
         "the preview outlasts the long-press"
     );
     apply_events(&mut game, &mut input, &[touch_up(1, at)]);
-    assert!(input.hunting, "lifting in place activates the card");
+    assert!(
+        input.armed(ClickVerb::Hunt),
+        "lifting in place activates the card"
+    );
 
     // World ground never previews.
     let ground = vec2(400.0, 300.0);
@@ -2883,7 +2907,10 @@ fn a_finger_that_leaves_its_card_activates_nothing() {
         &[touch_move(2, over), touch_up(2, over)],
     );
 
-    assert!(!input.hunting && !input.running, "neither card arms");
+    assert!(
+        !input.armed(ClickVerb::Hunt) && !input.armed(ClickVerb::Run),
+        "neither card arms"
+    );
     assert!(game.pending.is_empty());
 }
 
@@ -2946,7 +2973,7 @@ fn a_card_that_changes_under_a_resting_finger_activates_nothing() {
     input.now = 4.0;
     apply_events(&mut game, &mut input, &[touch_up(1, attack.center())]);
     assert!(
-        !input.hunting,
+        !input.armed(ClickVerb::Hunt),
         "the lift never arms what the press never saw"
     );
 
@@ -3454,10 +3481,10 @@ fn a_long_press_honors_the_armed_mode() {
     // Any other armed verb stands down, as for a right-click, and the
     // long-press issues its own order.
     input.patrol_route = None;
-    input.hunting = true;
+    input.click_verb = Some(ClickVerb::Hunt);
     game.presentation.selection.units = vec![fighter];
     long_press_world(&mut game, &mut input, vec2(12.5, 8.5));
-    assert!(!input.hunting, "the armed verb stood down");
+    assert!(!input.armed(ClickVerb::Hunt), "the armed verb stood down");
     assert!(
         game.pending
             .iter()
@@ -3471,10 +3498,13 @@ fn a_long_press_honors_the_armed_mode() {
 fn patrol_is_exclusive_with_the_other_armed_verbs() {
     let (mut game, mut input, _) = armed_patrol();
     dispatch_action(&mut game, &mut input, Action::Hunt);
-    assert!(input.hunting);
+    assert!(input.armed(ClickVerb::Hunt));
     assert_eq!(input.patrol_route, None, "arming hunt drops the route");
     dispatch_action(&mut game, &mut input, Action::Patrol);
-    assert!(!input.hunting, "arming patrol stands hunt down");
+    assert!(
+        !input.armed(ClickVerb::Hunt),
+        "arming patrol stands hunt down"
+    );
     assert_eq!(input.patrol_route, Some(Vec::new()));
 }
 
@@ -7976,7 +8006,7 @@ fn mixed_workers_use_the_cargo_shortcut_and_keep_other_unit_bindings() {
     ));
     game.pending.clear();
     controls_key(&mut game, &mut input, Key::G);
-    assert!(input.running);
+    assert!(input.armed(ClickVerb::Run));
     controls_key(&mut game, &mut input, Key::X);
     assert!(matches!(
         game.pending.last().unwrap().command,

@@ -4,6 +4,7 @@
 //! here is sim-relevant; dropping it all is always safe.
 
 use super::{Presentation, world_vec};
+use crate::seat_style::AllegianceCue;
 use oxide_sim::State;
 
 use macroquad::prelude::Vec2;
@@ -537,14 +538,13 @@ enum ShellSoundAnchor {
 
 fn shell_launch_audio(
     shooter: oxide_sim::Target,
-    own: bool,
-    hostile: bool,
+    allegiance: AllegianceCue,
     muzzle_seen: bool,
     impact_seen: bool,
 ) -> Option<(SoundKind, ShellSoundAnchor)> {
-    if muzzle_seen || own {
+    if muzzle_seen || allegiance == AllegianceCue::Mine {
         Some((shell_fire_sound(shooter), ShellSoundAnchor::Muzzle))
-    } else if hostile && impact_seen {
+    } else if allegiance == AllegianceCue::Hostile && impact_seen {
         Some((SoundKind::ArtilleryLaunch, ShellSoundAnchor::Impact))
     } else {
         None
@@ -1374,12 +1374,9 @@ impl Presentation {
                     // the same information the sim's incoming-shell
                     // sense grants (impact tile visible), loudest when
                     // it is falling on you, and nothing tracks the gun.
-                    let own = *player == self.human;
-                    let hostile = state.hostile(self.human, *player);
                     if let Some((sound, anchor)) = shell_launch_audio(
                         *shooter,
-                        own,
-                        hostile,
+                        AllegianceCue::of(state, self.human, *player),
                         sees(self, *from),
                         sees(self, *to),
                     ) {
@@ -3048,21 +3045,24 @@ mod tests {
     fn artillery_launch_audio_respects_sight_and_allegiance() {
         let bombard = Target::Unit(UnitId(4));
         assert_eq!(
-            shell_launch_audio(bombard, false, true, true, true),
+            shell_launch_audio(bombard, AllegianceCue::Hostile, true, true),
             Some((SoundKind::BombardFire, ShellSoundAnchor::Muzzle))
         );
         assert_eq!(
-            shell_launch_audio(bombard, false, true, false, true),
+            shell_launch_audio(bombard, AllegianceCue::Hostile, false, true),
             Some((SoundKind::ArtilleryLaunch, ShellSoundAnchor::Impact))
         );
-        assert_eq!(shell_launch_audio(bombard, false, true, false, false), None);
         assert_eq!(
-            shell_launch_audio(bombard, false, false, false, true),
+            shell_launch_audio(bombard, AllegianceCue::Hostile, false, false),
+            None
+        );
+        assert_eq!(
+            shell_launch_audio(bombard, AllegianceCue::Ally, false, true),
             None,
             "a fogged allied shell must not sound like an incoming threat"
         );
         assert_eq!(
-            shell_launch_audio(bombard, true, false, false, false),
+            shell_launch_audio(bombard, AllegianceCue::Mine, false, false),
             Some((SoundKind::BombardFire, ShellSoundAnchor::Muzzle)),
             "the local gun remains audible without revealing another seat"
         );

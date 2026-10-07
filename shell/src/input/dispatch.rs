@@ -2,9 +2,9 @@
 //! lands here exactly once, whether it came from a key, a panel card,
 //! or an injected event.
 
-use super::InputState;
 use super::orders::digit_action;
 use super::select::{cycle_idle_worker, idle_harvesters};
+use super::{ClickVerb, InputState};
 use crate::action::Action;
 use crate::game::Game;
 use crate::numeric;
@@ -220,20 +220,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                 input.close_construction();
                 return;
             }
-            if input.salvaging {
-                input.salvaging = false;
-                return;
-            }
-            if input.repairing {
-                input.repairing = false;
-                return;
-            }
-            if input.running {
-                input.running = false;
-                return;
-            }
-            if input.hunting {
-                input.hunting = false;
+            if input.click_verb.take().is_some() {
                 return;
             }
             if !input.rallying.is_empty() {
@@ -260,8 +247,8 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
         }
         Action::Salvage => {
             // A toggle, like the palette: pressing again stands down.
-            if input.salvaging {
-                input.salvaging = false;
+            if input.armed(ClickVerb::Salvage) {
+                input.click_verb = None;
                 return;
             }
             let has_worker = game.presentation.selection.units.iter().any(|id| {
@@ -271,15 +258,15 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             });
             if has_worker {
                 input.disarm_click_verbs();
-                input.salvaging = true;
+                input.click_verb = Some(ClickVerb::Salvage);
             } else {
                 game.presentation.toast("No worker to salvage with");
             }
         }
         Action::RepairUnit => {
             // A toggle, like salvage: pressing again stands down.
-            if input.repairing {
-                input.repairing = false;
+            if input.armed(ClickVerb::Weld) {
+                input.click_verb = None;
                 return;
             }
             let has_welder = game.presentation.selection.units.iter().any(|id| {
@@ -289,15 +276,15 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             });
             if has_welder {
                 input.disarm_click_verbs();
-                input.repairing = true;
+                input.click_verb = Some(ClickVerb::Weld);
             } else {
                 game.presentation.toast("No welder in hand");
             }
         }
         Action::Run => {
             // A toggle, like salvage: pressing again stands down.
-            if input.running {
-                input.running = false;
+            if input.armed(ClickVerb::Run) {
+                input.click_verb = None;
                 return;
             }
             let has_own_unit = game.presentation.selection.units.iter().any(|id| {
@@ -307,14 +294,14 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             });
             if has_own_unit {
                 input.disarm_click_verbs();
-                input.running = true;
+                input.click_verb = Some(ClickVerb::Run);
             } else {
                 game.presentation.toast("No machines selected to run");
             }
         }
         Action::Hunt => {
-            if input.hunting {
-                input.hunting = false;
+            if input.armed(ClickVerb::Hunt) {
+                input.click_verb = None;
                 return;
             }
             let has_own_unit = game.presentation.selection.units.iter().any(|id| {
@@ -324,7 +311,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             });
             if has_own_unit {
                 input.disarm_click_verbs();
-                input.hunting = true;
+                input.click_verb = Some(ClickVerb::Hunt);
             } else {
                 game.presentation.toast("No machines selected to hunt");
             }

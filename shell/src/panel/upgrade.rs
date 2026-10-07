@@ -1,7 +1,13 @@
 //! Completed-tier comparisons for upgrade previews.
 
 use super::info::SelectionInfo;
-use oxide_sim::{BuildingKind, stats::*};
+use oxide_sim::{
+    BuildingKind,
+    stats::{
+        CHARGE_ARRAY_DETECT_RADIUS, CHARGE_BASE_ARRAY_DETECT_RADIUS, RECLAIMER_PERIOD,
+        REFINERY_PERIOD,
+    },
+};
 
 #[derive(Debug)]
 pub(crate) struct UpgradeRow {

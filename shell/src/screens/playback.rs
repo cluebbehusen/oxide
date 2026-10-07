@@ -28,6 +28,15 @@ pub enum ReturnTo {
     Results,
 }
 
+/// What a held left press is dragging in playback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackDrag {
+    /// The timeline, seeking as it moves.
+    Timeline,
+    /// The minimap, steering the camera like live play.
+    Minimap,
+}
+
 /// Replay engine, presentation, and viewer transport controls.
 pub struct PlaybackSession {
     pub engine: oxide_kit::playback::Playback,
@@ -38,8 +47,8 @@ pub struct PlaybackSession {
     pub bindings: BindingMap,
     resolver: ActionResolver,
     middle_anchor: Option<Vec2>,
-    /// A held minimap press steers the camera, like live play.
-    pub minimap_drag: bool,
+    /// What a held left press is dragging, if anything.
+    pub drag: Option<PlaybackDrag>,
     /// Explicit return destination. A tick-count heuristic resurrected
     /// matches Main Menu had already discarded, while a boolean origin
     /// could not distinguish the replay shelf from a match report.
@@ -47,8 +56,6 @@ pub struct PlaybackSession {
     /// A seek in flight: the target tick, chipped away a budget per
     /// frame so the render thread never freezes on a long jump.
     pub seeking: Option<u64>,
-    /// A held press is scrubbing the timeline.
-    pub scrubbing: bool,
     /// The corner transport buttons' press.
     buttons: Press<Transport>,
     /// The finger scrubbing the timeline, if one landed on the bar.
@@ -110,10 +117,9 @@ impl PlaybackSession {
             bindings: BindingMap::classic(),
             resolver: ActionResolver::default(),
             middle_anchor: None,
-            minimap_drag: false,
+            drag: None,
             return_to: ReturnTo::Home,
             seeking: None,
-            scrubbing: false,
             buttons: Press::default(),
             scrub_finger: None,
             minimap_finger: None,
@@ -506,12 +512,13 @@ impl PlaybackSession {
                         .pan((anchor - *mouse) / self.presentation.camera.zoom);
                     self.middle_anchor = Some(*mouse);
                 }
-                if self.scrubbing {
-                    let bar = scrub_rect(&self.view(), viewport);
-                    *seek_to = Some(self.tick_at(bar, mouse.x));
-                }
-                if self.minimap_drag {
-                    self.steer_minimap(*mouse);
+                match self.drag {
+                    Some(PlaybackDrag::Timeline) => {
+                        let bar = scrub_rect(&self.view(), viewport);
+                        *seek_to = Some(self.tick_at(bar, mouse.x));
+                    }
+                    Some(PlaybackDrag::Minimap) => self.steer_minimap(*mouse),
+                    None => {}
                 }
             }
             RawEvent::MouseDown {
@@ -522,20 +529,19 @@ impl PlaybackSession {
                 *mouse = vec2(x, y);
                 let bar = scrub_rect(&self.view(), viewport);
                 if bar.contains(*mouse) {
-                    self.scrubbing = true;
+                    self.drag = Some(PlaybackDrag::Timeline);
                     *seek_to = Some(self.tick_at(bar, mouse.x));
                 } else if let Some(world) = render::minimap_world_at(&self.view(), *mouse) {
                     self.presentation.camera.center = world;
                     self.presentation.camera.pan(vec2(0.0, 0.0));
-                    self.minimap_drag = true;
+                    self.drag = Some(PlaybackDrag::Minimap);
                 }
             }
             RawEvent::MouseUp {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.minimap_drag = false;
-                self.scrubbing = false;
+                self.drag = None;
             }
             RawEvent::Wheel { delta } => {
                 let delta = if zoom_inverted { -delta } else { delta };
@@ -1103,7 +1109,11 @@ mod tests {
             1.0,
             &mut mouse,
         );
-        assert!(pb.scrubbing, "the press grabs the timeline");
+        assert_eq!(
+            pb.drag,
+            Some(PlaybackDrag::Timeline),
+            "the press grabs the timeline"
+        );
         // A 60-tick record fits one frame's budget, so the seek has
         // already landed; the position is the proof.
         let landed = pb.engine.position();
@@ -1133,7 +1143,7 @@ mod tests {
             1.0,
             &mut mouse,
         );
-        assert!(!pb.scrubbing, "release lets go");
+        assert_eq!(pb.drag, None, "release lets go");
     }
 
     #[test]

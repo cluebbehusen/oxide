@@ -14,6 +14,10 @@ use serde::{Deserialize, Serialize};
 /// far the largest section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag selects an independent section"
+)]
 pub struct StateFilter {
     /// Include player rows.
     pub players: bool,

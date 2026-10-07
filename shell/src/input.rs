@@ -132,7 +132,28 @@ pub(crate) struct PlacementGhost {
     grab: Option<(TilePos, Vec2)>,
 }
 
+/// A command verb armed for the next world click.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClickVerb {
+    /// The next left-click on an own built building sends the selected
+    /// harvesters to strip it.
+    Salvage,
+    /// The next left-click on a damaged own ground unit sends the
+    /// selected harvesters to weld it.
+    Weld,
+    /// The next ground click sends the selection walking obliviously —
+    /// no engaging, no auto-acquire en route.
+    Run,
+    /// The next ground click sends the selection on a fighting march
+    /// that chases enemies along its route.
+    Hunt,
+}
+
 /// Cross-frame input state (cursor, held keys, drag origin).
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "a minimap drag, the palette, the queue toggle and a menu request are independent"
+)]
 pub struct InputState {
     /// Last known cursor position, window pixels.
     pub mouse: Vec2,
@@ -164,18 +185,8 @@ pub struct InputState {
     /// The pointer that pressed last: the mouse's hover preview only
     /// means something while the mouse is the one in use.
     pub(crate) last_pointer: Pointer,
-    /// Armed salvage: the next left-click on an own built building
-    /// sends the selected harvesters to strip it.
-    pub(crate) salvaging: bool,
-    /// Armed unit weld: the next left-click on a damaged own ground
-    /// unit sends the selected harvesters to weld it.
-    pub(crate) repairing: bool,
-    /// Armed run: the next ground click sends the selection walking
-    /// obliviously — no engaging, no auto-acquire en route.
-    pub(crate) running: bool,
-    /// Armed hunt: the next ground click sends the selection on
-    /// a fighting march that chases enemies along its route.
-    pub(crate) hunting: bool,
+    /// The verb the next world click issues, if one is armed.
+    pub(crate) click_verb: Option<ClickVerb>,
     /// Producers whose rally point the next world/minimap click sets.
     pub(crate) rallying: Vec<oxide_sim::BuildingId>,
     /// Whether the build palette is open (`B`; digits pick a structure).
@@ -425,10 +436,7 @@ impl InputState {
             } else {
                 Pointer::Mouse
             },
-            salvaging: false,
-            repairing: false,
-            running: false,
-            hunting: false,
+            click_verb: None,
             rallying: Vec::new(),
             build_menu: false,
             build_category: None,
@@ -510,10 +518,7 @@ impl InputState {
     pub(crate) fn disarm_click_verbs(&mut self) {
         self.stop_placing();
         self.patrol_route = None;
-        self.salvaging = false;
-        self.repairing = false;
-        self.running = false;
-        self.hunting = false;
+        self.click_verb = None;
         self.rallying.clear();
     }
 
@@ -530,16 +535,25 @@ impl InputState {
         self.placing.and(self.touch_ghost).map(|ghost| ghost.anchor)
     }
 
+    /// Whether `verb` is the armed click verb.
+    pub(crate) fn armed(&self, verb: ClickVerb) -> bool {
+        self.click_verb == Some(verb)
+    }
+
     /// Current persistent mode, in the same priority order the world
     /// click resolver uses.
     pub(crate) fn armed_mode(&self) -> Option<ArmedMode> {
         (!self.rallying.is_empty())
             .then_some(ArmedMode::Rally)
             .or_else(|| self.placing.map(ArmedMode::Build))
-            .or_else(|| self.salvaging.then_some(ArmedMode::Salvage))
-            .or_else(|| self.repairing.then_some(ArmedMode::Weld))
-            .or_else(|| self.running.then_some(ArmedMode::Run))
-            .or_else(|| self.hunting.then_some(ArmedMode::Hunt))
+            .or_else(|| {
+                self.click_verb.map(|verb| match verb {
+                    ClickVerb::Salvage => ArmedMode::Salvage,
+                    ClickVerb::Weld => ArmedMode::Weld,
+                    ClickVerb::Run => ArmedMode::Run,
+                    ClickVerb::Hunt => ArmedMode::Hunt,
+                })
+            })
             .or_else(|| {
                 self.patrol_route
                     .as_ref()
@@ -562,10 +576,7 @@ impl InputState {
         self.mmb_anchor = None;
         self.patrol_route = None;
         self.stop_placing();
-        self.salvaging = false;
-        self.repairing = false;
-        self.running = false;
-        self.hunting = false;
+        self.click_verb = None;
         self.rallying.clear();
         self.build_menu = false;
         self.build_category = None;
@@ -1079,10 +1090,7 @@ pub fn desired_cursor(game: &Game, input: &InputState) -> macroquad::miniquad::C
     }
     if input.placing.is_some()
         || input.patrol_route.is_some()
-        || input.salvaging
-        || input.repairing
-        || input.running
-        || input.hunting
+        || input.click_verb.is_some()
         || !input.rallying.is_empty()
     {
         return CursorIcon::Crosshair;
@@ -1662,7 +1670,7 @@ fn place_at(
 /// The armed left-click verbs after placement: salvage, weld, run, and
 /// hunt.
 fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
-    if input.salvaging {
+    if input.armed(ClickVerb::Salvage) {
         // The same manners placement keeps: minimap jumps the camera,
         // a misclick keeps the mode armed, and Shift chains teardowns
         // behind the crew's program.
@@ -1694,12 +1702,12 @@ fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             game.presentation
                 .ping_order(world, PingKind::Harvest, input.queue_held());
             if !input.queue_held() {
-                input.salvaging = false;
+                input.click_verb = None;
             }
         }
         return true;
     }
-    if input.repairing {
+    if input.armed(ClickVerb::Weld) {
         // Same manners as salvage: minimap jumps the camera, a
         // misclick keeps the mode armed, Shift chains welds behind the
         // crew's program.
@@ -1757,12 +1765,12 @@ fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             game.presentation
                 .ping_order(world, PingKind::Harvest, input.queue_held());
             if !input.queue_held() {
-                input.repairing = false;
+                input.click_verb = None;
             }
         }
         return true;
     }
-    if input.running {
+    if input.armed(ClickVerb::Run) {
         // Same manners again: minimap jumps the camera, HUD swallows,
         // Shift chains legs and keeps the verb armed.
         if let Some(world) = crate::render::minimap_world_at(&game.view(), p) {
@@ -1780,12 +1788,12 @@ fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             game.presentation
                 .ping_order(tile_center(goal), PingKind::Move, input.queue_held());
             if !input.queue_held() {
-                input.running = false;
+                input.click_verb = None;
             }
         }
         return true;
     }
-    if input.hunting {
+    if input.armed(ClickVerb::Hunt) {
         // Explicit fighting march: minimap jumps the camera, HUD
         // swallows, and Shift chains legs while keeping the verb armed.
         if let Some(world) = crate::render::minimap_world_at(&game.view(), p) {
@@ -1803,7 +1811,7 @@ fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             game.presentation
                 .ping_order(tile_center(goal), PingKind::Attack, input.queue_held());
             if !input.queue_held() {
-                input.hunting = false;
+                input.click_verb = None;
             }
         }
         return true;

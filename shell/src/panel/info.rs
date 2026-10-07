@@ -2,7 +2,13 @@
 
 use super::*;
 use crate::game::Scene;
-use oxide_sim::stats::*;
+use oxide_sim::stats::{
+    BuildingKind, CHARGE_ARRAY_DETECT_RADIUS, CHARGE_BASE_ARRAY_DETECT_RADIUS, CHARGE_BLAST_RADIUS,
+    CHARGE_DAMAGE, CHARGE_SCOUT_DETECT_RADIUS, CHARGE_TRIGGER_RADIUS, CRUCIBLE_SMELT_RADIUS,
+    Domain, FOUNDRY_DRIP_START_TICK, RADAR_DETECT_RADIUS, REPAIR_BAY_PERIOD, REPAIR_BAY_RADIUS,
+    REPAIR_BAY_STEP, SAPPER_BLAST_RADIUS, SAPPER_SPLASH_DAMAGE, SAPPER_STRUCTURE_DAMAGE, UnitKind,
+    WeaponStats,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StatIcon {
