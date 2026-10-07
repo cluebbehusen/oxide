@@ -269,7 +269,7 @@ fn defense_outranks_workers_under_a_small_allowance() {
     let trace = trace.unwrap();
     assert_eq!(hunts(&commands).len(), 1);
     assert_eq!(
-        harvests(&commands).len() as u32,
+        u32::try_from(harvests(&commands).len()).unwrap(),
         trace.allowance - 1,
         "workers take what is left"
     );

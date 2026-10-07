@@ -301,7 +301,10 @@ const GARRISON: [(i32, i32); 4] = [(2, 11), (2, 12), (2, 13), (4, 14)];
 /// The field tile, on its southern rows clear of both starts and the
 /// garrison, for the `index`th unit of a full staged mission list.
 fn cap_spot(index: usize) -> (i32, i32) {
-    (2 + (index % 32) as i32, 17 + (index / 32) as i32)
+    (
+        2 + i32::try_from(index % 32).unwrap(),
+        17 + i32::try_from(index / 32).unwrap(),
+    )
 }
 
 /// Adds West's garrison to the field.
@@ -643,7 +646,10 @@ fn the_allowance_caps_unit_orders_but_not_purchases() {
         trace.allowance < 4,
         "premise: fewer orders than idle workers"
     );
-    assert_eq!(harvests(&commands).len() as u32, trace.allowance);
+    assert_eq!(
+        u32::try_from(harvests(&commands).len()).unwrap(),
+        trace.allowance
+    );
     assert_eq!(trains(&commands).len(), 1, "a purchase still happens");
     assert_eq!(trace.unit_orders, trace.allowance);
 }

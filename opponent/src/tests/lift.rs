@@ -1,4 +1,5 @@
 use super::*;
+use chassis::grid::as_index;
 
 /// Two islands across a pit no ground unit crosses and neither side sees
 /// over, half-turn symmetric.
@@ -777,10 +778,12 @@ fn a_lift_at_the_member_cap_boards_no_more_and_still_restores() {
                 crate::frame::gap(building.anchor, (width, height), tile, (1, 1)) < 2
             })
     };
-    let first = state.units().len() as u32;
+    let first = u32::try_from(state.units().len()).unwrap();
     let members: Vec<UnitSpec> = (1..23)
         .flat_map(|y| (1..39).map(move |x| TilePos::new(x, y)))
-        .filter(|tile| STRAIT[tile.y as usize].as_bytes()[tile.x as usize] == b'.' && !taken(*tile))
+        .filter(|tile| {
+            STRAIT[as_index(tile.y)].as_bytes()[as_index(tile.x)] == b'.' && !taken(*tile)
+        })
         .take(255)
         .map(|tile| harvester(0, tile.x, tile.y))
         .collect();

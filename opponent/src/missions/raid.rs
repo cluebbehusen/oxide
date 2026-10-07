@@ -179,7 +179,8 @@ impl Missions {
         foray
             .target(Raider::Scuttler, u64::MAX)
             .map_or(0, |(_, _, need)| {
-                need.div_ceil(u64::from(UnitKind::Scuttler.stats().cost)) as usize
+                usize::try_from(need.div_ceil(u64::from(UnitKind::Scuttler.stats().cost)))
+                    .unwrap_or(usize::MAX)
             })
     }
 

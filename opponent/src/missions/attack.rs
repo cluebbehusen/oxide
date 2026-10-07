@@ -482,7 +482,8 @@ impl Missions {
                         .count();
                     let wanted =
                         (super::support::wounds(members.iter().copied()) / plan.per_tender).max(1);
-                    let room = (wanted as usize)
+                    let room = usize::try_from(wanted)
+                        .unwrap_or(usize::MAX)
                         .saturating_sub(tending)
                         .min(UNIT_CAP.saturating_sub(mission.units.len()));
                     let tenders = plan.nearest_tenders(rally, component, room);

@@ -95,8 +95,11 @@ impl Missions {
                                 | BuildingKind::Reclaimer
                         )
                 })
-                .count() as i64;
-            let distance = nearest(owner).map_or(0, |centre| centre_distance(home, centre) as i64);
+                .count();
+            let economy = i64::try_from(economy).expect("building counts fit in i64");
+            let distance = nearest(owner).map_or(0, |centre| {
+                i64::try_from(centre_distance(home, centre)).unwrap_or(i64::MAX)
+            });
             let steady = if current == Some(owner) { STEADY } else { 0 };
             4 * pressure - presence - TILE * distance - ECONOMY * economy * i64::from(traits.guile)
                 + steady

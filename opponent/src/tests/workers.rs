@@ -2,12 +2,13 @@ use super::*;
 use crate::decision::Producer;
 use crate::frame::HomeFrame;
 use crate::profile::ResolvedProfile;
+use chassis::grid::as_index;
 
 /// The field with a scrap node beside West's Foundry and another at `far`.
 fn fielded(far: (i32, i32)) -> Scenario {
     let mut scenario = field();
     for (x, y) in [(6, 11), far] {
-        scenario.map[y as usize].replace_range((x as usize)..=(x as usize), "s");
+        scenario.map[as_index(y)].replace_range(as_index(x)..=as_index(x), "s");
     }
     scenario
 }

@@ -58,7 +58,8 @@ impl Staffing {
         if wanted == 0 {
             return 1_000;
         }
-        (self.crew.min(wanted) * 1_000 / wanted) as u32
+        u32::try_from(self.crew.min(wanted) * 1_000 / wanted)
+            .expect("a per-mille share fits in u32")
     }
 }
 
@@ -456,7 +457,10 @@ fn worked_nodes(
             let room = room(observation, map, *node, component) as u64;
             let repaid = u64::from(*amount) / price;
             let places = room.min(repaid);
-            (places > 0).then(|| (*node, (places * fill).div_ceil(1_000).max(1) as usize))
+            (places > 0).then(|| {
+                let crew = (places * fill).div_ceil(1_000).max(1);
+                (*node, usize::try_from(crew).expect("crews fit in usize"))
+            })
         })
         .collect()
 }
@@ -573,7 +577,9 @@ pub(crate) fn fill(profile: &ResolvedProfile) -> u64 {
         BotStance::Balanced => 750,
         BotStance::Aggressive => 500,
     };
-    (base + (i64::from(profile.traits.greed) - 50) * 5).clamp(250, 1_000) as u64
+    (base + (i64::from(profile.traits.greed) - 50) * 5)
+        .clamp(250, 1_000)
+        .cast_unsigned()
 }
 
 /// Free tiles a worker could stand on to work `node`: its neighbours on
@@ -630,7 +636,11 @@ fn assign_idle(
                 .iter()
                 .filter(|unit| unit.harvesting == Some(*node))
                 .count();
-            (*node, *crew as i64 - working as i64)
+            (
+                *node,
+                i64::try_from(*crew).expect("crews fit in i64")
+                    - i64::try_from(working).expect("unit counts fit in i64"),
+            )
         })
         .collect();
     let stale = |unit: &UnitObs| {

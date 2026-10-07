@@ -43,7 +43,10 @@ pub(crate) fn candidates(
         }
         let score =
             (300 + 4 * i64::from(greed)) * value / 1_000 + 400 * i64::from(depletion) / 1_000;
-        list.push((Investment::Expansion(index as u16), score.max(0) as u32));
+        list.push((
+            Investment::Expansion(u16::try_from(index).expect("site counts fit in u16")),
+            u32::try_from(score.max(0)).unwrap_or(u32::MAX),
+        ));
     }
     let home = map
         .start(observation.me)
@@ -68,7 +71,10 @@ pub(crate) fn candidates(
             250 + 2 * greed
         };
         let score = base * 1_000 / (1_000 + danger(observation, memory, *frame));
-        list.push((Investment::Extractor(*frame), score as u32));
+        list.push((
+            Investment::Extractor(*frame),
+            u32::try_from(score).unwrap_or(u32::MAX),
+        ));
     }
     list
 }
@@ -126,11 +132,14 @@ pub(crate) fn value(
         .frames
         .iter()
         .filter(|frame| observation.known_frames.contains(frame) && !held(observation, **frame, -1))
-        .count() as i64;
+        .count();
+    let frames = i64::try_from(frames).expect("frame counts fit in i64");
     let resource = scrap.min(3_200) / 4 + 150 * frames;
     let distance = i64::from(distance);
     let contested = (distance - i64::from(map.hostile_distance(me, anchor)) + 100).max(0);
-    let penalty = 8 * distance / 10 + contested + danger(observation, memory, anchor) as i64;
+    let penalty = 8 * distance / 10
+        + contested
+        + i64::try_from(danger(observation, memory, anchor)).unwrap_or(i64::MAX);
     let weight = 750 + 5 * i64::from(greed);
     Some(resource * weight / 1_000 - penalty * (2_000 - weight) / 1_000)
 }
