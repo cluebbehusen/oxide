@@ -451,17 +451,17 @@ impl StateView {
                         .collect()
                 }
             } else {
-                Default::default()
+                Vec::default()
             },
             units: if filter.units {
                 state.units().iter().map(unit_view).collect()
             } else {
-                Default::default()
+                Vec::default()
             },
             buildings: if filter.buildings {
                 state.buildings().iter().map(building_view).collect()
             } else {
-                Default::default()
+                Vec::default()
             },
             map: filter.map.then(|| ascii_with_entities(state)),
         }
@@ -588,6 +588,7 @@ fn ascii_with_entities(state: &State) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxide_sim::scenario::ScenarioMode;
 
     #[test]
     fn capture_respects_filters_and_overlays_entities() {
@@ -781,7 +782,7 @@ mod tests {
             bot_config: None,
         };
         let scenario = oxide_sim::Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "landing-fog".into(),
             seed: 11,
             map: vec![

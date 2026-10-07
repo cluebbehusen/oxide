@@ -151,13 +151,13 @@ impl RecoveryWriter {
         checkpoint: Option<crate::checkpoint::SessionCheckpoint>,
         build: BuildIdentity,
     ) -> Result<Self> {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
         ensure!(
             source
                 .as_ref()
                 .is_none_or(|source| source.parent() == Some(root.as_path())),
             "recovered source is outside the recording root"
         );
-        static NEXT: AtomicU64 = AtomicU64::new(0);
         let session = format!(
             "session-{:020}-{}-{}",
             SystemTime::now()

@@ -7,6 +7,7 @@ use crate::game::{self, GameReplay, Presentation, Scene};
 use crate::press::{Fed, Press};
 use crate::render;
 use crate::render::prim::{fill_rect, stroke_rect};
+use crate::viewer_touch::ViewerTouch;
 use anyhow::{Context, Result};
 use macroquad::prelude::*;
 #[cfg(test)]
@@ -114,7 +115,7 @@ impl PlaybackSession {
             buttons: Press::default(),
             scrub_finger: None,
             minimap_finger: None,
-            viewer_touch: Default::default(),
+            viewer_touch: ViewerTouch::default(),
             show_stats: false,
             stats: None,
             replay: record,
@@ -1315,6 +1316,7 @@ mod tests {
 
     #[test]
     fn long_seeks_are_budgeted_and_a_new_transport_command_replaces_them() {
+        use oxide_protocol::DebugSession;
         let mut pb = long_session(5_000);
         let viewport = vec2(1280.0, 800.0);
         let mut mouse = Vec2::ZERO;
@@ -1345,7 +1347,6 @@ mod tests {
         assert_eq!(pb.engine.position(), 1_500);
         assert_eq!(pb.seeking, None, "the replacement target settled");
 
-        use oxide_protocol::DebugSession;
         pb.seeking = Some(5_000);
         pb.accum = game::TICK_DT * 0.75;
         let advanced = DebugSession::advance(&mut pb, 10);

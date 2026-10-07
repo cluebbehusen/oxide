@@ -513,9 +513,9 @@ fn winner(row: &ScoredLadderRow) -> Result<Won> {
 /// Scores rows into pairs by comparison, refusing incomplete or repeated
 /// pairs and rows that disagree on a comparison's gate.
 pub fn build_report(rows: &[ScoredLadderRow]) -> Result<LadderReport> {
+    type ComparisonKey = (String, String, String);
     type PairKey = (String, String, String, String, String, u64);
     let mut pairs: BTreeMap<PairKey, PairLegs> = BTreeMap::new();
-    type ComparisonKey = (String, String, String);
     let mut worth: BTreeMap<ComparisonKey, PairShares> = BTreeMap::new();
     let mut rungs: BTreeMap<(String, usize), (BotDifficulty, SeatSummaryBuilder)> = BTreeMap::new();
     for (index, row) in rows.iter().enumerate() {

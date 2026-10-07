@@ -126,7 +126,7 @@ fn checkpoint_recovery_rejects_missing_pending_inputs_and_truncated_completion()
         &Header {
             kind: RecordingKind::LiveMatch,
             session: "origin".into(),
-            build: Default::default(),
+            build: BuildIdentity::default(),
             base: checkpoint.recording().unwrap(),
             checkpoint: Some(checkpoint.clone()),
         },

@@ -971,10 +971,10 @@ fn write_config(home: &Path) -> Result<()> {
 }
 
 fn write_sheet(frames: &[PathBuf], path: &Path) -> Result<()> {
+    const SCALE: f32 = 0.25;
     let first_path = frames.first().context("contact sheet has no frames")?;
     let first = tiny_skia::Pixmap::decode_png(&std::fs::read(first_path)?)
         .context("decoding first animation frame")?;
-    const SCALE: f32 = 0.25;
     let tile_w = (first.width() as f32 * SCALE).ceil() as u32;
     let tile_h = (first.height() as f32 * SCALE).ceil() as u32;
     let columns = (frames.len() as f32).sqrt().ceil() as u32;
@@ -1024,7 +1024,7 @@ fn empty_map(scrap: &[TilePos]) -> Vec<String> {
 fn scenario(name: &str, scrap: &[TilePos], units: Vec<Value>, buildings: Vec<Value>) -> Value {
     json!({
         "name": name,
-        "seed": 20260802,
+        "seed": 20_260_802,
         "players": [
             { "name": "Ferrous", "faction": "ferrous", "scrap": 5000, "bot": false },
             {

@@ -922,6 +922,13 @@ fn collision_pairs(
     index: &mut super::spatial::UnitIndex,
     owner_ranks: &[usize],
 ) -> Option<Vec<(usize, usize)>> {
+    fn root(group: &mut [usize], mut i: usize) -> usize {
+        while group[i] != i {
+            group[i] = group[group[i]];
+            i = group[i];
+        }
+        i
+    }
     index.rebuild(&state.units);
     let mut pairs = Vec::new();
     let mut pressed = Vec::new();
@@ -973,13 +980,6 @@ fn collision_pairs(
         return Some(sort_collision_pairs(state, owner_ranks, reversed, pairs));
     }
     let mut group: Vec<usize> = (0..bodies.len()).collect();
-    fn root(group: &mut [usize], mut i: usize) -> usize {
-        while group[i] != i {
-            group[i] = group[group[i]];
-            i = group[i];
-        }
-        i
-    }
     for &(i, j) in &pairs {
         let (a, b) = (root(&mut group, i), root(&mut group, j));
         group[a.max(b)] = a.min(b);
@@ -1159,7 +1159,7 @@ fn relaxation_pass(
 mod tests {
     use super::super::spatial::UnitIndex;
     use super::*;
-    use crate::scenario::{PlayerSpec, Scenario, UnitSpec};
+    use crate::scenario::{PlayerSpec, Scenario, ScenarioMode, UnitSpec};
     use crate::state::Faction;
     use crate::stats::UnitKind;
 
@@ -1539,7 +1539,7 @@ mod tests {
 
     fn boundary_pair() -> State {
         Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "boundary-pair".into(),
             seed: 1,
             map: vec![
@@ -1626,7 +1626,7 @@ mod tests {
         );
 
         let mut state = Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: name.into(),
             seed: 24_722,
             map,
@@ -1729,7 +1729,7 @@ mod tests {
         let anchor = TilePos::new(6, 6);
         let mirrored_anchor = TilePos::new(width - 2 - anchor.x, height - 2 - anchor.y);
         let mut state = Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "corner-hugging-pair".into(),
             seed: 7_002,
             map,
@@ -1872,7 +1872,7 @@ mod tests {
 
     fn collision_trio() -> State {
         Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "collision-trio".into(),
             seed: 3,
             map: vec![
@@ -1921,7 +1921,7 @@ mod tests {
         map[5].replace_range(5..6, "1");
         map[24].replace_range(42..43, "2");
         let mut state = Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "replay-center-crossing".into(),
             seed: 1_616_101,
             map,
@@ -2090,7 +2090,7 @@ mod tests {
     #[test]
     fn mirrored_seat_stacks_ignore_global_id_blocks() {
         let mut state = Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "mirrored-seat-stacks".into(),
             seed: 4,
             map: vec![
@@ -2362,7 +2362,7 @@ mod tests {
     #[test]
     fn passed_waypoint_still_rejects_a_blocked_next_step() {
         let mut state = Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "blocked-next-waypoint".into(),
             seed: 2,
             map: vec![

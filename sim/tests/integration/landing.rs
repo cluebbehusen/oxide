@@ -6,7 +6,7 @@ use crate::common;
 use common::{building, cmd, players, unit};
 
 use oxide_sim::command::RejectReason;
-use oxide_sim::scenario::{BuildingSpec, UnitSpec};
+use oxide_sim::scenario::{BuildingSpec, ScenarioMode, UnitSpec};
 use oxide_sim::state::Order;
 use oxide_sim::stats::{AUTO_LAND_IDLE_TICKS, BuildingKind};
 use oxide_sim::{Command, Event, PlayerCommand, PlayerId, Scenario, State, Target, UnitKind};
@@ -20,7 +20,7 @@ use chassis::grid::TilePos;
 /// Foundry on the west wall is a live target for any run-in that passes it.
 fn hostile_arena(units: Vec<UnitSpec>, buildings: Vec<BuildingSpec>) -> Scenario {
     Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "landing-arena".into(),
         seed: 11,
         // Both Foundries hug the west wall, well clear of the pads around

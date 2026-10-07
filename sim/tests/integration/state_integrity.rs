@@ -15,7 +15,7 @@
 use crate::common;
 use common::cmd;
 
-use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
+use oxide_sim::scenario::{BuildingSpec, PlayerSpec, ScenarioMode, UnitSpec};
 use oxide_sim::stats::{BuildingKind, QUEUE_CAP};
 use oxide_sim::{
     BuildingId, Command, Faction, PlayerCommand, PlayerId, Scenario, State, StateIntegrityError,
@@ -46,7 +46,7 @@ fn sandbox_cannot_restore_a_match_result_or_elimination_stamp() {
 /// spans both factions) and enough open ground for siege.
 fn arena() -> Scenario {
     Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "integrity-arena".into(),
         seed: 11,
         map: vec![
@@ -216,7 +216,7 @@ fn shell(shooter: Value, player: u32, impact_bits: i64) -> Value {
         "arrival": 40,
         "damage": 40,
         "targets": {"ground": true, "air": false},
-        "splash": {"bits": 4294967296i64},
+        "splash": {"bits": 4_294_967_296_i64},
     })
 }
 
@@ -257,7 +257,7 @@ fn projectile_kind_checks_include_shooters_inside_transports() {
         },
     ];
     let mut base = doc(&scenario.build().unwrap());
-    base["shells"] = json!([shell(json!({"kind": "unit", "id": 0}), 0, 4294967296)]);
+    base["shells"] = json!([shell(json!({"kind": "unit", "id": 0}), 0, 4_294_967_296)]);
     let mut rider = base["units"].as_array_mut().unwrap().remove(0);
     rider["pos"] = base["units"][0]["pos"].clone();
     base["units"][0]["cargo"] = json!([rider]);
@@ -284,7 +284,7 @@ fn well_formed_additions_are_accepted() {
     base["shells"].as_array_mut().unwrap().push(shell(
         json!({"kind": "unit", "id": 1}),
         0,
-        4294967296,
+        4_294_967_296,
     ));
     base["vision"][0]["ghosts"]
         .as_array_mut()
@@ -1283,7 +1283,7 @@ fn every_checklist_row_refuses_its_forgery() {
                 d["shells"]
                     .as_array_mut()
                     .unwrap()
-                    .insert(0, shell(json!({"kind": "unit", "id": 1}), 9, 4294967296));
+                    .insert(0, shell(json!({"kind": "unit", "id": 1}), 9, 4_294_967_296));
             },
             "shell 0 is owned by a player outside the table",
         ),
@@ -1302,7 +1302,7 @@ fn every_checklist_row_refuses_its_forgery() {
             |d| {
                 d["shells"].as_array_mut().unwrap().insert(
                     0,
-                    shell(json!({"kind": "building", "id": 9_999}), 0, 4294967296),
+                    shell(json!({"kind": "building", "id": 9_999}), 0, 4_294_967_296),
                 );
             },
             "shell 0 was fired by an id the run never minted",
@@ -1310,7 +1310,7 @@ fn every_checklist_row_refuses_its_forgery() {
         (
             "a shell carrying a payload its shooter cannot launch",
             |d| {
-                let mut projectile = shell(json!({"kind": "unit", "id": 1}), 0, 4294967296);
+                let mut projectile = shell(json!({"kind": "unit", "id": 1}), 0, 4_294_967_296);
                 projectile["kind"] = json!("bomb");
                 d["shells"].as_array_mut().unwrap().insert(0, projectile);
             },

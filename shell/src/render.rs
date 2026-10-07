@@ -970,12 +970,12 @@ fn draw_unit_pass(
     alpha: f32,
     domain: oxide_sim::stats::Domain,
 ) {
+    const CULL_MARGIN: f32 = 2.5;
     let zoom = game.presentation.camera.zoom;
     let airborne = domain == oxide_sim::stats::Domain::Air;
     // Frustum cull with a margin covering the sprite, its shadow, rings,
     // and bars — off-camera machines cost nothing on grand maps.
     let (view_lo, view_hi) = game.presentation.camera.world_rect();
-    const CULL_MARGIN: f32 = 2.5;
     for unit in game.state.units() {
         // The body's current layer, not its kind's: a parked airframe
         // draws among ground bodies with no shadow or lift.

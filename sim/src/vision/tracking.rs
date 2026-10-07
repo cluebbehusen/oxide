@@ -272,6 +272,7 @@ impl Tracking {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scenario::ScenarioMode;
 
     /// The previous refresh, kept verbatim as the reference: every
     /// candidate pairing generated and sorted.
@@ -430,7 +431,7 @@ mod tests {
             })
         };
         let mut state = Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "converging-armies".into(),
             seed: 11,
             map: (0..13)

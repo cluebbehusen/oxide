@@ -396,6 +396,8 @@ pub fn serve_listener(listener: TcpListener, limits: Limits, mut session: Sessio
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxide_sim::scenario::BotDifficulty;
+    use oxide_sim::scenario::BotStance;
     use oxide_sim::{Command, PlayerId};
 
     #[test]
@@ -406,8 +408,8 @@ mod tests {
             seat.bot_config = Some(oxide_sim::scenario::BotConfig::default());
         }
         scenario.players[0].bot_config = Some(oxide_sim::scenario::BotConfig::new(
-            Default::default(),
-            Default::default(),
+            BotDifficulty::default(),
+            BotStance::default(),
             0,
         ));
         let mut original = Session::new(scenario).unwrap();

@@ -1,6 +1,7 @@
 //! Self-contained shell continuation; historical commands belong to recordings.
 
 use super::*;
+use crate::tutorial::Demo;
 use oxide_kit::checkpoint::SessionCheckpoint;
 use serde::{Deserialize, Serialize};
 
@@ -199,7 +200,7 @@ impl RestoredGame {
             core,
             recorder: record.replay,
             human,
-            demo: Default::default(),
+            demo: Demo::default(),
             concede_stats: None,
             boundary_fog,
             recovery: None,
@@ -290,6 +291,9 @@ impl RestoredGame {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tutorial::Demo;
+    use oxide_kit::recovery::BuildIdentity;
+    use oxide_sim::scenario::BotConfig;
 
     #[test]
     fn checkpoint_recovery_restores_the_shell_without_replaying_the_opening() {
@@ -313,7 +317,7 @@ mod tests {
         replay.meta.ticks = Some(original.state.current_tick());
         let record = oxide_kit::recovery::Inspection {
             kind: oxide_kit::recovery::RecordingKind::LiveMatch,
-            build: Default::default(),
+            build: BuildIdentity::default(),
             session: "test".into(),
             replay,
             checkpoint: Some(checkpoint),
@@ -466,7 +470,7 @@ mod tests {
         let recovered = RestoredGame::recover(
             oxide_kit::recovery::Inspection {
                 kind: oxide_kit::recovery::RecordingKind::LiveMatch,
-                build: Default::default(),
+                build: BuildIdentity::default(),
                 session: "opponent".into(),
                 replay: replay.clone(),
                 checkpoint: None,
@@ -528,7 +532,7 @@ mod tests {
             let mut scenario = Scenario::skirmish();
             for (seat, player) in scenario.players.iter_mut().enumerate() {
                 player.bot = seat != human;
-                player.bot_config = player.bot.then_some(Default::default());
+                player.bot_config = player.bot.then_some(BotConfig::default());
             }
             let game = Game::with_viewport(scenario, vec2(1280.0, 720.0)).unwrap();
             let original = serde_json::to_value(&game).unwrap();
@@ -553,7 +557,7 @@ mod tests {
                 version: 2,
                 session,
                 human: PlayerId(0),
-                demo: Default::default(),
+                demo: Demo::default(),
                 concede_stats: None,
                 boundary_fog: crate::boundary_fog::BoundaryFog::new(&state, PlayerId(0)),
             };

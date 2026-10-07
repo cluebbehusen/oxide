@@ -316,6 +316,10 @@ fn every_map_offers_a_home_extractor_and_expansion_value() {
 
     let support_radius = oxide_sim::stats::EXTRACTOR_SUPPORT_RADIUS;
     for (name, scenario) in shipped() {
+        // Pace describes contact timing, not total acreage. Large FFA basins
+        // can legitimately retain a standard pace while still needing value
+        // beyond their starting pockets.
+        const REMOTE_VALUE_AREA_FLOOR: i32 = 7_000;
         let (map, foundries) =
             Map::parse(&scenario.map).unwrap_or_else(|error| panic!("{name}: {error}"));
         let frames = map.extractor_frames();
@@ -504,10 +508,6 @@ fn every_map_offers_a_home_extractor_and_expansion_value() {
             );
         }
 
-        // Pace describes contact timing, not total acreage. Large FFA basins
-        // can legitimately retain a standard pace while still needing value
-        // beyond their starting pockets.
-        const REMOTE_VALUE_AREA_FLOOR: i32 = 7_000;
         let physically_large = map.width() * map.height() >= REMOTE_VALUE_AREA_FLOOR;
         if physically_large || matches!(pace, "large" | "vast" | "grand") {
             let remote: Vec<_> = frames

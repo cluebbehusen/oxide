@@ -73,7 +73,7 @@ pub(super) fn advance(unit: &mut Unit, map: &Map) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scenario::{PlayerSpec, Scenario, UnitSpec};
+    use crate::scenario::{PlayerSpec, Scenario, ScenarioMode, UnitSpec};
     use crate::state::PathFollow;
     use crate::{Faction, UnitKind};
 
@@ -81,7 +81,7 @@ mod tests {
     /// toward `waypoint`.
     fn against_ridge(waypoint: TilePos) -> (Unit, Map) {
         let state = Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "ridge".into(),
             seed: 1,
             map: vec![

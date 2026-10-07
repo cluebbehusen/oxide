@@ -1,6 +1,7 @@
 //! Movement, routing, collision, and order programs — behavior suite, public API only.
 
 use crate::common;
+use oxide_sim::scenario::ScenarioMode;
 
 use chassis::grid::TilePos;
 use oxide_sim::scenario::PlayerSpec;
@@ -249,7 +250,7 @@ fn congestion_survives_nonconsecutive_unit_ids() {
     // survivors (ids 0, 1, 4, 6, 7) crowd one node — the economy must keep
     // flowing exactly as it does with dense ids.
     let scenario = Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "id-gaps".into(),
         seed: 42,
         map: vec![
@@ -613,7 +614,7 @@ fn an_unreachable_leg_ends_short_and_the_program_continues() {
     // The queued second leg targets a sealed pocket. The walker gets as
     // close as it can, reports that once, and runs the third leg.
     let scenario = Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "sealed-pocket".into(),
         seed: 42,
         map: vec![

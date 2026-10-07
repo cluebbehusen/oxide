@@ -1363,6 +1363,7 @@ pub(crate) fn draw_panel(
 /// hotkey, cost, description, weapon lines, and why a disabled card
 /// refuses. Rebuilt from the same panel model the frame drew.
 pub(crate) fn draw_panel_tooltip(game: &crate::game::Scene<'_>, input: &InputState) {
+    use crate::layout::TooltipSide;
     let panel = game.presentation.panel_model.borrow();
     let Some(panel) = panel.as_ref() else {
         return;
@@ -1371,7 +1372,6 @@ pub(crate) fn draw_panel_tooltip(game: &crate::game::Scene<'_>, input: &InputSta
     if !layout.panel_top.is_finite() {
         return;
     }
-    use crate::layout::TooltipSide;
     let s = ui_scale();
     // A resting finger previews the card it covers; a touch-only build
     // has no hover, so its stale mouse point never does.

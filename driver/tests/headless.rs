@@ -3,6 +3,7 @@
 //! without a window.
 
 use oxide_driver::{pool, runner};
+use oxide_sim::scenario::ScenarioMode;
 use oxide_sim::{PlayerCommand, Scenario, State};
 use std::path::{Path, PathBuf};
 
@@ -322,7 +323,7 @@ fn a_decided_match_latches_its_result_and_keeps_ticking() {
         }
     }
     let scenario = Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "firing-squad".into(),
         seed: 7,
         map,

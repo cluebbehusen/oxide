@@ -19,7 +19,7 @@
 
 use anyhow::{Context, Result, bail};
 use chassis::grid::TilePos;
-use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
+use oxide_sim::scenario::{BuildingSpec, PlayerSpec, ScenarioMode, UnitSpec};
 use oxide_sim::{BuildingKind, Command, Faction, PlayerCommand, PlayerId, Scenario, UnitKind};
 use std::fmt;
 
@@ -390,6 +390,17 @@ fn siege_leg(
     arena: &Arena,
     a_player: u8,
 ) -> Result<DuelLegOutcome> {
+    // The garrison fills a fixed band — rows y 4 to 19, columns x 27
+    // back to 21, walking toward side A — chosen to clear the east unit
+    // columns at x 30-31 and the east foundry at (36,20). Changing the
+    // pitch refills that band more or less densely; it never reaches
+    // new ground, so no pitch can collide with either deployment. Each
+    // structure's west orientation is the exact 180-degree image,
+    // adjusted for its own footprint.
+    const FIRST_ROW: i32 = 4;
+    const LAST_ROW: i32 = 19;
+    const FIRST_COLUMN: i32 = 27;
+    const LAST_COLUMN: i32 = 21;
     anyhow::ensure!(a_player <= 1, "arena has only players 0 and 1");
     let max_ticks = arena.max_ticks;
     anyhow::ensure!(max_ticks > 0, "tick cap must be greater than zero");
@@ -458,17 +469,6 @@ fn siege_leg(
         place(b, 0, false);
         place(a, 1, true);
     }
-    // The garrison fills a fixed band — rows y 4 to 19, columns x 27
-    // back to 21, walking toward side A — chosen to clear the east unit
-    // columns at x 30-31 and the east foundry at (36,20). Changing the
-    // pitch refills that band more or less densely; it never reaches
-    // new ground, so no pitch can collide with either deployment. Each
-    // structure's west orientation is the exact 180-degree image,
-    // adjusted for its own footprint.
-    const FIRST_ROW: i32 = 4;
-    const LAST_ROW: i32 = 19;
-    const FIRST_COLUMN: i32 = 27;
-    const LAST_COLUMN: i32 = 21;
     let pitch = arena.garrison_pitch;
     let widest = garrison
         .iter()
@@ -514,7 +514,7 @@ fn siege_leg(
         }
     }
     let scenario = Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "arena-duel".into(),
         seed: arena.seed,
         map,

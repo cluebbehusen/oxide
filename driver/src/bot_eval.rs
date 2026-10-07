@@ -1131,6 +1131,7 @@ impl EvidenceBatch {
     }
 
     fn reserve_stage(&mut self, destination: &Path) -> Result<PathBuf> {
+        static NEXT_STAGE: AtomicU64 = AtomicU64::new(0);
         ensure!(
             !self
                 .staged
@@ -1150,7 +1151,6 @@ impl EvidenceBatch {
             )
         })?;
 
-        static NEXT_STAGE: AtomicU64 = AtomicU64::new(0);
         let name = destination
             .file_name()
             .and_then(|name| name.to_str())
@@ -1395,7 +1395,7 @@ fn increment(counts: &mut BTreeMap<String, u64>, key: String) {
 mod tests {
     use super::*;
     use oxide_sim::command::{Command, PlayerCommand, RejectReason};
-    use oxide_sim::scenario::{PlayerSpec, UnitSpec};
+    use oxide_sim::scenario::{PlayerSpec, ScenarioMode, UnitSpec};
     use oxide_sim::{Faction, StallReason, UnitKind};
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1418,7 +1418,7 @@ mod tests {
             }
         }
         Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "firing-squad".into(),
             seed: 7,
             map: vec![

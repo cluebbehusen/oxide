@@ -2,7 +2,7 @@
 
 use chassis::grid::TilePos;
 use oxide_kit::GameReplay;
-use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
+use oxide_sim::scenario::{BuildingSpec, PlayerSpec, ScenarioMode, UnitSpec};
 use oxide_sim::{
     AttackTarget, BuildingId, BuildingKind, Command, Event, Faction, GameResult, Order,
     PlayerCommand, PlayerId, Scenario, State, Target, UnitId, UnitKind,
@@ -18,7 +18,7 @@ fn arena(name: &str, units: Vec<UnitSpec>) -> Scenario {
     rows[1][1] = '1';
     rows[27][37] = '2';
     Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: name.into(),
         seed: 42,
         map: rows

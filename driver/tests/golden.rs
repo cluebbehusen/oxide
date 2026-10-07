@@ -10,7 +10,7 @@
 
 use chassis::grid::TilePos;
 use oxide_driver::render;
-use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
+use oxide_sim::scenario::{BuildingSpec, PlayerSpec, ScenarioMode, UnitSpec};
 use oxide_sim::{
     BuildingKind, Command, Faction, PlayerCommand, PlayerId, Scenario, State, Target, UnitId,
     UnitKind,
@@ -333,7 +333,7 @@ fn showcase_scenario() -> (Scenario, Cast) {
     ];
 
     let scenario = Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "renderer showcase".into(),
         seed: 20_130,
         map: SHOWCASE_MAP.iter().map(|r| (*r).to_string()).collect(),

@@ -2,6 +2,7 @@
 //! resolver against a real (headless) sim.
 
 use super::*;
+use oxide_sim::scenario::ScenarioMode;
 use oxide_sim::{PlayerCommand, UnitKind};
 
 mod double_click;
@@ -3743,7 +3744,7 @@ fn an_allied_site_under_fog_refuses_selection() {
         bot_config: None,
     };
     let mut scenario = oxide_sim::Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "ally-site-arena".into(),
         seed: 7,
         map: vec![

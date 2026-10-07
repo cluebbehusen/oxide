@@ -11,7 +11,7 @@
 
 use serde::{Deserialize, Serialize};
 
-const MULTIPLIER: u64 = 6364136223846793005;
+const MULTIPLIER: u64 = 6_364_136_223_846_793_005;
 
 /// A PCG32 generator. Cheap to copy, trivial to serialize.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -610,7 +610,7 @@ mod tests {
     }
     #[test]
     fn levels_change_continuously_at_every_boundary() {
-        for width in 8000..129000 {
+        for width in 8000..129_000 {
             let weights = |w| {
                 let (a, b, t) = lod_mix(vec2(128.0, 128.0), vec2(w, w));
                 let mut out = [0.0; 4];

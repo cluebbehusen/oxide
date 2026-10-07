@@ -132,6 +132,7 @@ mod tests {
     use super::*;
     use crate::game::Game;
     use macroquad::prelude::vec2;
+    use oxide_kit::recovery::BuildIdentity;
     use oxide_sim::{Command, PlayerCommand, Scenario};
 
     #[test]
@@ -241,7 +242,7 @@ mod tests {
         let recovered = crate::game::checkpoint::RestoredGame::recover(
             oxide_kit::recovery::Inspection {
                 kind: oxide_kit::recovery::RecordingKind::LiveMatch,
-                build: Default::default(),
+                build: BuildIdentity::default(),
                 session: "boundary-exploration".into(),
                 replay: replay.clone(),
                 checkpoint: None,

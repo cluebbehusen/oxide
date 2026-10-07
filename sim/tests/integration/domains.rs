@@ -5,6 +5,7 @@
 
 use crate::common;
 use common::{arena, cmd, run_until, unit};
+use oxide_sim::scenario::ScenarioMode;
 
 use chassis::grid::TilePos;
 use oxide_sim::stats::{BuildingKind, Domain, Role};
@@ -446,7 +447,7 @@ fn long_guns_fire_on_a_spotters_eyes_and_go_quiet_without_them() {
     // at (10,3) holds the sight line; no other friendly eye reaches (the
     // Foundry's 8 falls short).
     let scenario = Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "spotter-wall".into(),
         seed: 42,
         map: vec![

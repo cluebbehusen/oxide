@@ -2462,6 +2462,21 @@ mod tests {
 
     #[test]
     fn the_progress_ceiling_keeps_the_construction_ramp_in_u32() {
+        // Unit welds ramp over the full max_hp — same product, same
+        // ceiling, same obligation for every machine on the roster.
+        const UNIT_KINDS: [UnitKind; 11] = [
+            UnitKind::Harvester,
+            UnitKind::Sentinel,
+            UnitKind::Scuttler,
+            UnitKind::Lancer,
+            UnitKind::Bombard,
+            UnitKind::Flakhound,
+            UnitKind::Stinger,
+            UnitKind::Buzzard,
+            UnitKind::Darter,
+            UnitKind::Talon,
+            UnitKind::Wisp,
+        ];
         // Construction, repair, and salvage all price one tick of work as
         // `ramp * (meter + 1) / ramp_ticks` in u32. The ceiling is only
         // worth anything if that product still fits at the ceiling.
@@ -2483,21 +2498,6 @@ mod tests {
                 kind.name()
             );
         }
-        // Unit welds ramp over the full max_hp — same product, same
-        // ceiling, same obligation for every machine on the roster.
-        const UNIT_KINDS: [UnitKind; 11] = [
-            UnitKind::Harvester,
-            UnitKind::Sentinel,
-            UnitKind::Scuttler,
-            UnitKind::Lancer,
-            UnitKind::Bombard,
-            UnitKind::Flakhound,
-            UnitKind::Stinger,
-            UnitKind::Buzzard,
-            UnitKind::Darter,
-            UnitKind::Talon,
-            UnitKind::Wisp,
-        ];
         for kind in UNIT_KINDS {
             let ramp = u64::from(kind.stats().max_hp);
             assert!(

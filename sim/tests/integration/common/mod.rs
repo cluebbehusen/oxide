@@ -1,7 +1,7 @@
 //! Shared scaffolding used by the focused behavior suites.
 #![allow(dead_code)]
 
-use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
+use oxide_sim::scenario::{BuildingSpec, PlayerSpec, ScenarioMode, UnitSpec};
 use oxide_sim::{
     BuildingKind, Command, Event, Faction, Goal, Order, PlayerCommand, PlayerId, Scenario, State,
     UnitKind,
@@ -10,7 +10,7 @@ use oxide_sim::{
 /// A small arena: two Foundries in opposite corners, open ground between.
 pub fn arena(units: Vec<UnitSpec>) -> Scenario {
     Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "test-arena".into(),
         seed: 42,
         map: vec![
@@ -81,7 +81,7 @@ pub fn open_arena_with(
     rows[1][1] = '1';
     rows[height - 3][width - 3] = '2';
     Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "open-arena".into(),
         seed: 42,
         map: rows.into_iter().map(|r| r.into_iter().collect()).collect(),

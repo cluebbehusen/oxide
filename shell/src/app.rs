@@ -741,7 +741,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         mixer: Mixer::default(),
         soundtrack,
         frame_profiler: FrameProfiler::new(profile_frames),
-        report_job: Default::default(),
+        report_job: crate::diagnostic_report::ReportJob::default(),
         persistence: persistence::Worker::new()?,
         persistence_result: None,
         catalog_id: None,

@@ -950,12 +950,12 @@ pub fn arm_hardware() {
 }
 
 pub fn poll_events(text_entry: bool) -> Vec<RawEvent> {
+    static FIRST_POLL: std::sync::Once = std::sync::Once::new();
     TOUCH_SETUP.call_once(|| mq::simulate_mouse_with_touch(false));
     let mut events = Vec::new();
     // Pointer and touch events in true arrival order, each with its own
     // position.
     let sub = *POINTER_SUB.get_or_init(mq::utils::register_input_subscriber);
-    static FIRST_POLL: std::sync::Once = std::sync::Once::new();
     FIRST_POLL.call_once(|| {
         // However early the subscriber was armed, a stationary cursor
         // never queues a baseline: seed the stream with the position

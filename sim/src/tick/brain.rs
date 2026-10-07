@@ -320,6 +320,12 @@ fn resolve_hits(
     drains: Vec<PendingHpDrain>,
     events: &mut Vec<Event>,
 ) {
+    struct Work {
+        building: crate::ids::BuildingId,
+        gain: i64,
+        drain: i64,
+        completes: Option<(crate::ids::PlayerId, crate::stats::BuildingKind)>,
+    }
     let mut incidents = Vec::new();
     for hit in &hits {
         match hit.victim {
@@ -440,12 +446,6 @@ fn resolve_hits(
     // !built, salvage wants built, repair and salvage evict each
     // other), but the resolution is stated so the day they do has one
     // answer.
-    struct Work {
-        building: crate::ids::BuildingId,
-        gain: i64,
-        drain: i64,
-        completes: Option<(crate::ids::PlayerId, crate::stats::BuildingKind)>,
-    }
     let mut work: Vec<Work> = Vec::new();
     let slot = |v: &mut Vec<Work>, building| {
         if let Some(i) = v.iter_mut().position(|w| w.building == building) {
@@ -821,6 +821,7 @@ fn crucible_smelter(state: &mut State) {
         .collect();
     let radius = crate::stats::CRUCIBLE_SMELT_RADIUS;
     for id in crucibles {
+        type FuelKey = (chassis::fx::Fx, std::cmp::Reverse<u32>, (i32, i32));
         let Some(b) = state.building(id) else {
             continue;
         };
@@ -857,7 +858,6 @@ fn crucible_smelter(state: &mut State) {
             hearth
         };
         let rotated = super::movement::uses_rotated_map_frame(state, frame);
-        type FuelKey = (chassis::fx::Fx, std::cmp::Reverse<u32>, (i32, i32));
         let mut fuel: Option<(FuelKey, TilePos)> = None;
         for y in (anchor.y - reach)..(anchor.y + h + reach) {
             for x in (anchor.x - reach)..(anchor.x + w + reach) {

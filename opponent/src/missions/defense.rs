@@ -809,7 +809,7 @@ fn ground_reach(enemy: &UnitObs) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxide_sim::scenario::{PlayerSpec, UnitSpec};
+    use oxide_sim::scenario::{PlayerSpec, ScenarioMode, UnitSpec};
     use oxide_sim::{Faction, PlayerId, Scenario};
 
     /// West's view of a 20 by 9 field, starts at (2, 1) and (17, 1), with
@@ -826,7 +826,7 @@ mod tests {
             })
             .collect();
         let scenario = Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "defense".into(),
             seed: 1,
             map,

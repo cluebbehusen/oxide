@@ -315,6 +315,7 @@ mod tests {
     use super::*;
     use crate::runner;
     use oxide_sim::Scenario;
+    use oxide_sim::scenario::ScenarioMode;
 
     fn record_activity(ticks: u64) -> GameReplay {
         use chassis::grid::TilePos;
@@ -325,7 +326,7 @@ mod tests {
         map[17][27] = '2';
         map[3][5] = 's';
         let scenario = Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "statistics activity".into(),
             seed: 42,
             map: map

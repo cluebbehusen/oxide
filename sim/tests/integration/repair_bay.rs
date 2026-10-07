@@ -9,7 +9,7 @@ use crate::common;
 use common::{cmd, run_until, unit};
 
 use chassis::grid::TilePos;
-use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
+use oxide_sim::scenario::{BuildingSpec, PlayerSpec, ScenarioMode, UnitSpec};
 use oxide_sim::stats::FOUNDRY_RECOVERY_RESERVE;
 use oxide_sim::{
     BuildingId, BuildingKind, Command, Event, Faction, PlayerCommand, PlayerId, Scenario, State,
@@ -40,7 +40,7 @@ fn arena(units: Vec<UnitSpec>, factions: [Faction; 2], scrap: u32, bay: bool) ->
         Vec::new()
     };
     Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "bay-arena".into(),
         seed: 42,
         map: vec![

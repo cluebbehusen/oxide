@@ -50,14 +50,14 @@ impl Playback {
     /// Validates and opens a replay at its origin. Cross-version records are
     /// refused — replays reproduce only on the sim that wrote them.
     pub fn load(replay: GameReplay) -> Result<Self> {
+        // Seeking is synchronous: a structurally valid file claiming an
+        // absurd length would hang the viewer at the first End press.
+        const MAX_INTERACTIVE_TICKS: u64 = 2_000_000;
         replay
             .validate(Some(SIM_VERSION))
             .map_err(|err| anyhow::anyhow!("{err}"))?;
         let state = crate::recording::initial_state(&replay)?;
         let total = crate::replay_duration(&replay);
-        // Seeking is synchronous: a structurally valid file claiming an
-        // absurd length would hang the viewer at the first End press.
-        const MAX_INTERACTIVE_TICKS: u64 = 2_000_000;
         anyhow::ensure!(
             total <= MAX_INTERACTIVE_TICKS,
             "replay spans {total} ticks, beyond the {MAX_INTERACTIVE_TICKS}-tick interactive limit"

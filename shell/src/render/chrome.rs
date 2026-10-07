@@ -495,6 +495,7 @@ pub(crate) fn draw_hud(
     let mut pause_status = Rect::new(0.0, 0.0, 0.0, 0.0);
     let mut status_space = None;
     if !game.presentation.spectate {
+        use crate::action::{Action, BindingMap};
         // Top bar.
         draw_rectangle(
             0.0,
@@ -503,7 +504,6 @@ pub(crate) fn draw_hud(
             crate::layout::TOP_BAR_H * s,
             PANEL,
         );
-        use crate::action::{Action, BindingMap};
         let label = |action| {
             input
                 .bindings

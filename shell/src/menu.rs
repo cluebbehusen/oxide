@@ -8,6 +8,7 @@
 use macroquad::prelude::*;
 use oxide_protocol::{Key, MouseButton, RawEvent};
 use oxide_sim::Scenario;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::press::Press;
@@ -649,7 +650,7 @@ pub struct PreviewCache {
 impl Default for PreviewCache {
     fn default() -> Self {
         Self {
-            slots: Default::default(),
+            slots: HashMap::default(),
             worker: PreviewWorker::spawn(),
         }
     }

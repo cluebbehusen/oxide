@@ -810,11 +810,11 @@ mod tests {
 
     #[test]
     fn a_reachable_routed_walk_serializes_exactly_like_the_legacy_tile_order() {
+        type Issue = fn(Vec<crate::UnitId>) -> Command;
         use crate::{Command, Order, PlayerCommand, PlayerId, UnitKind};
         use chassis::grid::TilePos;
         let map = [".............."; 8];
         let goal = TilePos::new(6, 4);
-        type Issue = fn(Vec<crate::UnitId>) -> Command;
         let commands: [(Issue, LegacyOrder); 3] = [
             (
                 |units| Command::Run {

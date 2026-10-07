@@ -321,6 +321,7 @@ impl RecordedCheckpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxide_sim::scenario::BotConfig;
     use oxide_sim::{Command, PlayerId};
 
     fn checkpoint() -> RecordedCheckpoint {
@@ -411,7 +412,7 @@ mod tests {
         assert!(bad.restore().is_err());
         let mut bad = original.clone();
         bad.session.scenario.players[0].bot = true;
-        bad.session.scenario.players[0].bot_config = Some(Default::default());
+        bad.session.scenario.players[0].bot_config = Some(BotConfig::default());
         assert!(bad.session.restore().is_err());
         let json = serde_json::to_value(original).unwrap();
         for (field, value) in [

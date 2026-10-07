@@ -5,6 +5,7 @@
 
 use crate::common;
 use common::{cmd, players};
+use oxide_sim::scenario::ScenarioMode;
 
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
@@ -18,7 +19,7 @@ fn arena(scrap: u32, fabricator: bool, units: Vec<UnitSpec>) -> Scenario {
         buildings.push(common::building(0, BuildingKind::Fabricator, 3, 6));
     }
     Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "foundry-arena".into(),
         seed: 5,
         map: vec![

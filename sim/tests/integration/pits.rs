@@ -9,7 +9,7 @@ use common::{cmd, players, run, unit};
 
 use chassis::grid::TilePos;
 use oxide_sim::map::Terrain;
-use oxide_sim::scenario::{ScenarioError, UnitSpec};
+use oxide_sim::scenario::{ScenarioError, ScenarioMode, UnitSpec};
 use oxide_sim::stats::Domain;
 use oxide_sim::{Command, Event, PlayerId, Scenario, State, Target, UnitKind};
 
@@ -34,7 +34,7 @@ fn chasm(width: i32, units: Vec<UnitSpec>) -> Scenario {
     }
     map.push("#".repeat(24));
     Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "chasm".into(),
         seed: 9,
         map,
@@ -343,7 +343,7 @@ fn a_chasm_severs_ground_but_the_sky_keeps_the_map_legal() {
     }
     map.push("#".repeat(24));
     let scenario = Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "severed".into(),
         seed: 9,
         map,
@@ -379,7 +379,7 @@ fn a_mesa_seal_still_refuses_to_build() {
     }
     map.push(border);
     let scenario = Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "sealed".into(),
         seed: 9,
         map,

@@ -298,7 +298,7 @@ mod tests {
 
     #[test]
     fn resolution_is_repeatable_and_difficulty_does_not_change_personality() {
-        let config = BotConfig::new(BotDifficulty::Prime, BotStance::Aggressive, 0xC0FFEE);
+        let config = BotConfig::new(BotDifficulty::Prime, BotStance::Aggressive, 0xC0_FF_EE);
         let first = ResolvedProfile::resolve(config);
         let second = ResolvedProfile::resolve(config);
         assert_eq!(first, second);

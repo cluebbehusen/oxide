@@ -10,7 +10,7 @@ use common::{cmd, players};
 
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
-use oxide_sim::scenario::{BuildingSpec, UnitSpec};
+use oxide_sim::scenario::{BuildingSpec, ScenarioMode, UnitSpec};
 use oxide_sim::stats::{BuildingKind, RECLAIMER_PERIOD, SITE_DECAY_PERIOD};
 use oxide_sim::{Command, Event, PlayerCommand, PlayerId, Scenario, State, UnitKind};
 
@@ -38,7 +38,7 @@ fn arena(scrap: u32, crucible: bool, reclaimer: bool) -> Scenario {
         buildings.push(common::building(0, BuildingKind::Crucible, 11, 5));
     }
     Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "upgrade-arena".into(),
         seed: 3,
         map: vec![

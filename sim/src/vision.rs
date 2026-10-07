@@ -1462,7 +1462,7 @@ mod sight_tests {
 #[cfg(test)]
 mod danger_tests {
     use super::*;
-    use crate::scenario::{PlayerSpec, UnitSpec};
+    use crate::scenario::{PlayerSpec, ScenarioMode, UnitSpec};
     use crate::{Faction, Scenario, UnitKind};
 
     fn player(name: &str, faction: Faction, team: Option<u8>) -> PlayerSpec {
@@ -1478,7 +1478,7 @@ mod danger_tests {
 
     fn allied_incident_state() -> State {
         Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "allied-incidents".into(),
             seed: 5,
             map: vec![
@@ -1534,7 +1534,7 @@ mod danger_tests {
             });
         }
         let state = Scenario {
-            mode: Default::default(),
+            mode: ScenarioMode::Match,
             name: "screened-salvage".into(),
             seed: 4,
             map: vec![

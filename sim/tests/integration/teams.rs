@@ -6,7 +6,7 @@ use common::{cmd, run_until, unit};
 
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
-use oxide_sim::scenario::{PlayerSpec, ScenarioError, UnitSpec};
+use oxide_sim::scenario::{PlayerSpec, ScenarioError, ScenarioMode, UnitSpec};
 use oxide_sim::{Command, Event, Faction, GameResult, Order, PlayerId, Scenario, Target, UnitKind};
 
 /// A 2v2 arena: west team (seats 0, 1) against east team (seats 2, 3).
@@ -20,7 +20,7 @@ fn arena4(units: Vec<UnitSpec>) -> Scenario {
         bot_config: None,
     };
     Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "team-arena".into(),
         seed: 42,
         map: vec![

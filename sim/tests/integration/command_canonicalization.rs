@@ -6,7 +6,7 @@ use crate::common;
 
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
-use oxide_sim::scenario::{BuildingSpec, PlayerSpec};
+use oxide_sim::scenario::{BuildingSpec, PlayerSpec, ScenarioMode};
 use oxide_sim::stats::BuildingKind;
 use oxide_sim::{
     BuildingId, Command, Event, Faction, Order, OrderKey, PlayerId, Scenario, State, Target,
@@ -113,7 +113,7 @@ fn stage() -> Stage {
         bot_config: None,
     };
     let mut state = Scenario {
-        mode: Default::default(),
+        mode: ScenarioMode::Match,
         name: "canonicalization-arena".into(),
         seed: 42,
         map: map(),
