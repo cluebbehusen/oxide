@@ -114,8 +114,9 @@ cargo run --release -p oxide-driver -- bot-eval scenarios/open-quarry.json scena
 cargo run --release -p oxide-driver -- bot-summary <rows.jsonl>
 ```
 
-`bot-summary` pools the seats of any evaluation rows by match mode and
-difficulty; `--json` prints the same summary as JSON.
+`bot-summary` pools the seats of any evaluation rows by team layout (`duel`,
+`teams`, `free-for-all`, or team sizes such as `2v1`) and difficulty; `--json`
+prints the same summary as JSON.
 
 Read the ladder report per comparison, overall and by stance and map family:
 
@@ -129,7 +130,7 @@ Read the ladder report per comparison, overall and by stance and map family:
   share and shows when a game turns; a match that ended sooner carries its final
   worth.
 
-Then each rung's seats, and in `bot-summary` each mode and rung's:
+Then each rung's seats, and in `bot-summary` each team layout and rung's:
 
 - **Failure incidents** and **income**, with seat-legs for scale. Rows recorded
   before a detector existed do not count toward it, and the report shows how
@@ -210,8 +211,8 @@ answered when the response shows in time, moot when the situation ends first,
 missed at its deadline. Situations a seat must see count only what it sees. A
 seat that has lost its last Foundry opens and answers no more cases, and a
 building's repair case opens once per spell under 75% health. `bot-ladder`
-prints each rung's cases and `bot-summary` each mode and rung's. Missed cases
-keep their ticks for replay review with `--replay-dir`.
+prints each rung's cases and `bot-summary` each team layout and rung's. Missed
+cases keep their ticks for replay review with `--replay-dir`.
 
 - **Anti-air:** the first armed enemy aircraft seen; the seat owns a dedicated
   anti-air unit or a built Flak Turret within 3,600 ticks.
