@@ -124,27 +124,28 @@ movement, combat, and economy. Never hide bot-only income, vision, stats, legal
 actions, or construction privileges behind controller code.
 
 [`docs/bot-strategy.md`](docs/bot-strategy.md) is the normative design model for
-`oxide-bot`, the current player-facing opponent. It defines the observe,
-remember, forecast, allocate, plan, commit, and evaluate loop. Personality
-influences both cross-domain investment and execution within a funded domain,
-but never access to information, strategies, units, commands, or rules.
+`oxide-bot`, the retired opponent kept only until it is removed. It defines the
+observe, remember, forecast, allocate, plan, commit, and evaluate loop.
+Personality influences both cross-domain investment and execution within a
+funded domain, but never access to information, strategies, units, commands, or
+rules.
 
 [`docs/oxide-opponent.md`](docs/oxide-opponent.md) is normative for
-`oxide-opponent`, a reactive best-effort controller alongside `oxide-bot`. Work
-on that crate follows its specification and the oxide-opponent skill, not
+`oxide-opponent`, the reactive best-effort player-facing opponent. Work on that
+crate follows its specification and the oxide-opponent skill, not
 `docs/bot-strategy.md` or `docs/bot/`. It must not reintroduce exact
 cross-domain allocation, production forecasts, plan search or planning state
 that spans decisions. Its counts come from need: a constant may bound
 computation or model a difficulty, stance or personality limit, never what the
 bot owns or sends.
 
-Normal matches default to `oxide-bot`, a configurable rules-based controller;
-`oxide-opponent` can be selected per seat. Scrapheap, Standard, Veteran, and
-Prime alter fair macro competence plus cognitive and execution limits such as
-opening army commitment, attention, reaction time, memory, estimate accuracy,
-and hesitation. Turtle, Balanced, and Aggressive bound its strategic posture. A
-deterministic per-seat seed varies air, siege, support, fortification, greed,
-and guile priorities; it never changes capabilities or unit strength.
+Every bot seat of a normal match runs `oxide-opponent`. Scrapheap, Standard,
+Veteran, and Prime alter fair macro competence plus cognitive and execution
+limits such as opening army commitment, attention, reaction time, memory,
+estimate accuracy, and hesitation. Turtle, Balanced, and Aggressive bound its
+strategic posture. A deterministic per-seat seed varies air, siege, support,
+fortification, greed, and guile priorities; it never changes capabilities or
+unit strength.
 
 Every difficulty retains the complete strategic repertoire. Automated metrics
 surface candidates and failures; human play and replay judgment decide whether
@@ -243,9 +244,9 @@ correctness and replay compatibility.
   to approve a version bump or a same-version bless. Do not choose either path
   autonomously.
 - Exception: fixtures driven only by `oxide-opponent` live in their own file,
-  separate from simulation-only and `oxide-bot`-driven hashes. Its behavior is
-  expected to change, so the implementing agent reblesses them with a
-  smoke-matrix comparison in the PR, without a version decision.
+  separate from simulation-only hashes. Its behavior is expected to change, so
+  the implementing agent reblesses them with a ladder-smoke comparison in the
+  PR, without a version decision.
 - Regenerate driver fixtures with `BLESS=1 cargo test -p oxide-driver --locked`
   only after that compatibility decision. `BLESS_SAME_VERSION=1` also requires
   explicit approval from the human user.

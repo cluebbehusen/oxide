@@ -44,9 +44,8 @@ exact-allocation, forecasting or planning-progress requirements.
    diagnostic, not a gate.
 7. **Behavior may change.** Simplifying code or improving play justifies a
    behavior change. Fixtures driven by this bot live in their own file, separate
-   from simulation-only hashes. Rebless them yourself after checking the
-   smoke-matrix comparison. Simulation rule changes still need Connor's
-   approval.
+   from simulation-only hashes. Rebless them yourself after checking the ladder
+   smoke. Simulation rule changes still need Connor's approval.
 8. **Tests check what the bot does.** Every reactive behavior gets a
    command-level acceptance test in a staged scenario. Focused tests of memory,
    ranking, geometry, symmetry and bookkeeping are welcome. Do not pin tuning
@@ -67,15 +66,13 @@ exact-allocation, forecasting or planning-progress requirements.
 
 ## Run it
 
-- **Shell:** Settings > **Opponent AI: New** seats `oxide-opponent` in every bot
-  seat of the next New Match; **Classic** keeps `oxide-bot`. Rematches, saves
-  and replays keep the choice recorded in their scenario.
+- **Shell:** every bot seat of a New Match runs this bot. Rematches, saves and
+  replays keep the configuration recorded in their scenario.
 - **Evaluation:**
-  `cargo run --release -p oxide-driver -- bot-eval skirmish --controller opponent --opponent-controller scripted --ticks 6000`
-  duels this bot against `oxide-bot`; `--controller` sets every seat and
-  `--opponent-controller` overrides seat one. Add `--paired` for a second leg
-  with the two configurations exchanged. The stub never attacks, so
-  opponent-only runs end at `--ticks`.
+  `cargo run --release -p oxide-driver -- bot-eval skirmish --ticks 6000` plays
+  this bot in every seat; `--difficulty` and `--stance` set every seat and
+  `--opponent-difficulty` and `--opponent-stance` override seat one. Add
+  `--paired` for a second leg with the two configurations exchanged.
 - **Traces:** `--decision-trace-out <file>`, with `--out` and `--candidate`,
   writes one JSONL row per decision. Opponent seats' rows carry this crate's
   `Trace`: tick, player, bank, received own events, spent, purchases, unit-order
@@ -85,78 +82,63 @@ exact-allocation, forecasting or planning-progress requirements.
 ## Report at handoff
 
 When handing off a PR, tell Connor its net production and test line change,
-average and p99 time per decision with total CPU, the smoke-matrix comparison,
-and the pressure scenarios that pass, including when they are unfavorable. Keep
-them out of the PR description.
+average and p99 time per decision with total CPU, the ladder smoke against the
+base, and the pressure scenarios that pass, including when they are unfavorable.
+Keep them out of the PR description.
 
 - **Lines:** `uv run tools/line_report.py <base>` prints the net production and
   test line change per top-level directory from the merge base; `--help` defines
   what counts. `--working-tree` includes uncommitted files.
-- **CPU:**
-  `cargo run --release --locked -p oxide-driver -- bot-cost <workload> --controller opponent`
+- **CPU:** `cargo run --release --locked -p oxide-driver -- bot-cost <workload>`
   for each of `duel`, `skyhook` and `mature-armies` reports average and p99 time
-  per decision and total CPU per seat and controller, with the observation build
-  beside them. Run it on the branch and on its base, on one machine with no
-  competing builds or benchmarks. `--controller scripted` gives `oxide-bot`'s
-  figures for reference; `--json` gives the same report as data. The budget:
-  `skyhook` at most 250 µs average and 1 ms p99 per decision; `duel` and
-  `mature-armies` no worse than the base beyond noise.
+  per decision and total CPU per seat, with the observation build beside them.
+  Run it on the branch and on its base, on one machine with no competing builds
+  or benchmarks; `--json` gives the same report as data. The budget: `skyhook`
+  at most 250 µs average and 1 ms p99 per decision; `duel` and `mature-armies`
+  no worse than the base beyond noise.
 
-Run the smoke matrix locally before handoff; CI does not run it:
+Run the ladder smoke locally on the branch and on its base before handoff; CI
+does not run it:
 
 ```sh
-cargo run --release -p oxide-driver -- bot-matrix driver/evaluation/smoke.json --out <new directory>
+cargo run --release -p oxide-driver -- bot-ladder driver/evaluation/ladder/ladder-smoke.json --out <new directory>
 ```
 
-It plays Skirmish, The Deep Cut and Severance at Standard and Prime, Balanced
-and Aggressive, three seed runs each. Each cell is a head-to-head pair, this bot
-in seat zero and then seat one with one personality seed on both sides, plus one
-`oxide-bot` mirror leg. Mirror rows are cached per user under the reference
-digest of the `bot/`, `sim/` and `chassis/` sources, the `kit` code that hosts
-`oxide-bot`, and `Cargo.lock` (`--baseline-cache` moves the cache), so they
-rerun only when those inputs, a map, a seed or the tick limit change.
-`bot-matrix-report <rows.jsonl>...` re-reads published rows; `--json` prints the
-same report as JSON. `--replay-dir <dir>` saves a replay of every evaluated leg
-with their compact rows in `legs.jsonl`; cached mirror legs have none.
+It plays every comparison of the ladder on Skirmish, The Deep Cut, Subsidence
+and Severance, Balanced, two seed runs each. A PR that touches team or
+free-for-all play also plays every seat of those maps at one rung and reads the
+seats:
 
-A PR that touches a map family or mode also runs the matching subset:
-`severed.json` (Severance and The Scattering at Scrapheap, Standard and Prime),
-`free-for-all-smoke.json` (Salvage Triangle and Scramble Basin at Standard) and
-`teams-smoke.json` (Open Quarry at Standard), each a few minutes to about ten.
+```sh
+cargo run --release -p oxide-driver -- bot-eval scenarios/open-quarry.json scenarios/salvage-triangle.json scenarios/scramble-basin.json --runs 3 --candidate <name> --out <rows.jsonl>
+cargo run --release -p oxide-driver -- bot-summary <rows.jsonl>
+```
 
-Stage checkpoints also run `driver/evaluation/duels.json`, the full two-seat
-matrix, `teams.json` and `free-for-all.json`. A team map adds a mixed pair to
-its head-to-head pair: both bots on each team, alternating along its front so
-that facing enemies run different bots, then every seat flipped. A free-for-all
-is a mixed pair on alternating seats. Every seat is controlled, including the
-authored human chair.
+`bot-summary` pools the seats of any evaluation rows by match mode and
+difficulty; `--json` prints the same summary as JSON.
 
-Read the report by match mode, overall and by difficulty, stance and map family:
+Read the ladder report per comparison, overall and by stance and map family:
 
-- **Pairs**: this bot wins both legs, split, `oxide-bot` wins both, or undecided
-  (at least one leg without a winner). A head-to-head leg goes to the winning
-  side. A mixed leg goes to the bot whose seats outlast the other's more often:
-  survivors tie for first and seats that fall on one tick tie; a leg where
-  neither bot does better, or that a stall loop stopped, has no winner.
-- **New share**: this bot's share of legs that had a winner, with a 95% Wilson
-  interval. Small matrices give wide intervals; compare runs, not single cells.
-- **Decided new-old** against **decided old-old**: compared legs should decide
-  at least as often as the mirror.
-- **Placement**: mean place (1 is last standing) and median survival tick of
-  each bot's seats in mixed legs. It is a diagnostic: surviving longer can be
-  passive play, so review replays before reading it as strength.
-- **Failure incidents** and **income**, per controller with seat-legs for scale.
-  `oxide-bot` numbers are the reference, not a target. Rows recorded before a
-  detector existed do not count toward it, and the report shows how many
-  seat-legs did; mirror rows cached before then stay unmeasured until the
-  baseline cache is cleared.
+- **Pairs**: the higher rung wins both legs, split, the lower rung wins both, or
+  undecided (at least one leg without a winner).
+- **Share**: the higher rung's share of decided legs, with a 95% Wilson
+  interval, against the comparison's gate. Small runs give wide intervals;
+  compare runs, not single cells.
+- **Net worth share**: the higher rung's share of army, buildings and bank by
+  pair at 6k, 12k, 18k and 24k ticks. It moves with far fewer legs than win
+  share and shows when a game turns; a match that ended sooner carries its final
+  worth.
+
+Then each rung's seats, and in `bot-summary` each mode and rung's:
+
+- **Failure incidents** and **income**, with seat-legs for scale. Rows recorded
+  before a detector existed do not count toward it, and the report shows how
+  many seat-legs did.
 - **Deliveries**, shown when any seat trained armed ground units on severed
   ground: their scrap delivered, lost and left at home.
-- **Ledger**, per controller over each mode:
-  - **Net worth share**: its side's share of army, buildings and bank in
-    head-to-head pairs at 6k, 12k, 18k and 24k ticks. It moves with far fewer
-    legs than win share and shows when a game turns; a match that ended sooner
-    carries its final worth.
+- **Reactivity**: the situations below, how many arose, the share answered in
+  time, missed and moot, and the mean ticks to an answer.
+- **Ledger**:
   - **Attacks**, grouped by strength sent against the known defense at launch:
     how many withdrew, fought on or never met the enemy, and value dealt over
     value lost. A withdrawal rate that does not fall as the sent-to-known ratio
@@ -169,12 +151,12 @@ Read the report by match mode, overall and by difficulty, stance and map family:
     returns understate them; upgraded buildings survived to be upgraded, so
     compare tiers with care.
 
-`replay-ledger <replay>...` gives the same tables for any replay or match
+`replay-ledger <replay>...` gives the same ledger tables for any replay or match
 recording, including human games.
 
 ## Difficulty ladder
 
-The ladder measures the rungs against each other, not against `oxide-bot`:
+The ladder measures the rungs against each other:
 
 ```sh
 cargo run --release -p oxide-driver -- bot-ladder driver/evaluation/ladder/ladder.json --out <new directory>
@@ -186,12 +168,10 @@ seed. A comparison passes when the higher rung wins at least its gate of decided
 legs over at least the manifest's number of decided pairs: each rung against the
 one two below it at 65%, and Prime against Scrapheap at 80%, over 40 decided
 pairs. `ladder.json` covers the nine duel maps, every stance and four runs,
-about 650 legs; run it for a lever's final numbers. `ladder-smoke.json`,
-Balanced on three maps with two runs, is the quick check while a difficulty
-lever is in progress. `bot-ladder-report <rows.jsonl>...` re-reads published
-rows, and `--replay-dir` saves a replay of every leg. The report adds the higher
-rung's share of net worth by pair, which separates rungs with fewer legs than
-win share, and each rung's ledger and attack calibration.
+about 650 legs; run it for a lever's final numbers. `ladder-smoke.json` is the
+quick check at handoff and while a difficulty lever is in progress.
+`bot-ladder-report <rows.jsonl>...` re-reads published rows, and `--replay-dir`
+saves a replay of every leg with their compact rows in `legs.jsonl`.
 
 ## Failure detectors
 
@@ -229,10 +209,9 @@ answered them. A case opens when a situation first holds and closes once:
 answered when the response shows in time, moot when the situation ends first,
 missed at its deadline. Situations a seat must see count only what it sees. A
 seat that has lost its last Foundry opens and answers no more cases, and a
-building's repair case opens once per spell under 75% health.
-`bot-matrix-report` prints each controller's cases per mode, with `oxide-bot`'s
-as the reference. Missed cases keep their ticks for replay review with
-`--replay-dir`.
+building's repair case opens once per spell under 75% health. `bot-ladder`
+prints each rung's cases and `bot-summary` each mode and rung's. Missed cases
+keep their ticks for replay review with `--replay-dir`.
 
 - **Anti-air:** the first armed enemy aircraft seen; the seat owns a dedicated
   anti-air unit or a built Flak Turret within 3,600 ticks.
@@ -296,10 +275,8 @@ since the drop must come by air.
   early enough for the flight to land then. Every landed unit must be destroyed,
   unless the Skyhook falls before setting anyone down.
 
-`--controller scripted` reports `oxide-bot`'s results as a reference only; it is
-not tuned to pass them. Scenario files are JSON: the staged scenario, the
-defender and attacker seats, a deadline, the script (unit ids follow scenario
-order) and the check.
+Scenario files are JSON: the staged scenario, the defender and attacker seats, a
+deadline, the script (unit ids follow scenario order) and the check.
 
 ## Review play
 
