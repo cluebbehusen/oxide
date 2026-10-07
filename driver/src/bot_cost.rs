@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 /// The profile every bot seat of a named workload plays, apart from its
 /// controller.
-const PROFILE: BotConfig = BotConfig::scripted(BotDifficulty::Standard, BotStance::Balanced, 0);
+const PROFILE: BotConfig = BotConfig::opponent(BotDifficulty::Standard, BotStance::Balanced, 0);
 
 /// A named timing workload: one map, its bot seats and their profile, and a
 /// tick window from the scenario start. Every bot seat plays Standard,

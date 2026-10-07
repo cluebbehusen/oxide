@@ -63,7 +63,7 @@ tiles.
 
 An omitted team means a one-seat team. Never place everyone on one team. Shipped
 content keeps seat 0 human with no bot config; every other seat has `bot: true`
-and `bot_config: {"controller": "scripted"}`. Default factions alternate Ferrous
+and `bot_config: {"controller": "opponent"}`. Default factions alternate Ferrous
 and Cupric; launch-time retinting handles player choices.
 
 ## Design for decisions

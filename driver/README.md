@@ -51,18 +51,18 @@ records as the frozen reference it compares against.
 - `bot_eval` runs the player-facing controllers to a decision, tick ceiling, or
   stall-loop anomaly, and emits compact JSONL with candidate, scenario,
   tick-ceiling, exact-profile, and anomaly provenance. `--controller` selects
-  `scripted` (`oxide-bot`, the default) or `opponent` (`oxide-opponent`), and
-  `--opponent-controller` overrides seat one of a two-seat scenario. It can
-  exchange complete controller configurations between seats for paired
-  controller, personality or difficulty comparisons, including crossed exact
-  simulation seeds, personality seeds, faction assignments, and geometry cells.
-  Persisted batches are staged and never replace earlier evidence. Optional
-  decision traces stream fog-honest controller diagnostics to a separate JSONL
-  sidecar without entering compact rows or replays. A returned publication error
-  rolls back files created by that invocation. Abrupt process termination can
-  leave hidden staging files or a partial replay set because arbitrary final
-  paths cannot be published atomically; inspect and remove that incomplete
-  batch, then rerun it under a fresh candidate.
+  `opponent` (`oxide-opponent`, the default) or `scripted` (`oxide-bot`, until
+  its removal), and `--opponent-controller` overrides seat one of a two-seat
+  scenario. It can exchange complete controller configurations between seats for
+  paired controller, personality or difficulty comparisons, including crossed
+  exact simulation seeds, personality seeds, faction assignments, and geometry
+  cells. Persisted batches are staged and never replace earlier evidence.
+  Optional decision traces stream fog-honest controller diagnostics to a
+  separate JSONL sidecar without entering compact rows or replays. A returned
+  publication error rolls back files created by that invocation. Abrupt process
+  termination can leave hidden staging files or a partial replay set because
+  arbitrary final paths cannot be published atomically; inspect and remove that
+  incomplete batch, then rerun it under a fresh candidate.
 - Evaluation rows also record each seat's team and elimination tick, the
   producing build and reference digest, omniscient failure detectors (repeated
   impossible orders, abandoned paid construction, starved production,
@@ -75,25 +75,12 @@ records as the frozen reference it compares against.
   followed through its mission to how it ended and what its units dealt and
   lost. These are QA evidence computed from authoritative state and what a
   controller reports; they never reach a controller.
-- `bot_matrix` expands a manifest from `evaluation/` into cells of
-  `oxide-opponent` against `oxide-bot`, every seat sharing one personality seed,
-  plus one `oxide-bot` mirror leg per cell. A duel is a head-to-head pair with
-  the seats exchanged. A team map has a head-to-head pair, one team of each bot
-  and then the sides swapped, and a mixed pair: both bots on each team,
-  alternating along its front so that facing enemies run different bots, then
-  every seat flipped. A free-for-all is a mixed pair on alternating seats. Every
-  seat is controlled, including a map's authored human chair. A mixed leg goes
-  to the bot whose seats outlast the other's more often. Mirror rows are cached
-  under the reference digest and reused while it is unchanged. `bot-matrix`
-  publishes labelled rows and prints pair outcomes, the new bot's share of won
-  legs with Wilson intervals, decided rates, placement, failure incidents and
-  income by match mode, overall and by difficulty, stance and map family, then
-  each controller's ledger over each mode: its side's share of net worth in
-  head-to-head pairs, its attack calibration and its most-bought units and
-  buildings; `bot-matrix-report` re-reads published rows. `--replay-dir` saves a
-  replay of every evaluated leg. Evaluation inputs live in `evaluation/`, not
-  `scenarios/`, whose every file the shell menu, map gates and golden sweeps
-  read.
+- `seat_summary` pools the seats of evaluation rows: failure incidents,
+  deliveries, reactivity, income, the impact ledger and attack calibration, with
+  their tables. `bot-summary <rows.jsonl>...` pools any `bot-eval` or
+  `bot-ladder` rows by team layout and difficulty. Evaluation inputs live in
+  `evaluation/`, not `scenarios/`, whose every file the shell menu, map gates
+  and golden sweeps read.
 - `bot_ladder` expands a manifest from `evaluation/ladder/` into pairs of
   `oxide-opponent` against itself at two difficulty rungs, the higher rung in
   seat zero and then in seat one, both seats sharing one personality seed so the
@@ -101,8 +88,8 @@ records as the frozen reference it compares against.
   prints, for each comparison, the higher rung's share of decided legs with a
   Wilson interval, pairs by result, and whether it reaches the comparison's gate
   over enough decided pairs, overall and by stance and map family, with the
-  higher rung's share of net worth by pair, then each rung's ledger and attack
-  calibration; `bot-ladder-report` re-reads published rows, keeping each
+  higher rung's share of net worth by pair, then each rung's seats through
+  `seat_summary`; `bot-ladder-report` re-reads published rows, keeping each
   manifest's comparisons apart.
 - `bot_pressure` runs the staged scenarios in `evaluation/pressure/`: a scripted
   attacker seat presses one situation (an early rush, air harassment, an
@@ -179,7 +166,7 @@ and reconstruction of the recorded command stream are checked throughout.
 matrix.
 
 `tests/lockstep.rs` runs an `oxide-net` host and two clients in one process over
-delayed links on a virtual clock. Each human seat's orders come from a scripted
+delayed links on a virtual clock. Each human seat's orders come from a bot
 controller on that seat's own machine and cross the wire. It checks that every
 machine executes identical batches under latency and jitter, and covers a
 stalled client, a stuck client, a closed connection, a silent host, and a

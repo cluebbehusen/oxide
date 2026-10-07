@@ -169,15 +169,13 @@ mod tests {
                 .all(|p| p.bot && p.bot_config.is_some()),
             "a scenario bench must field a mind in every chair"
         );
+        let mut bots = crate::controller::seat_controllers(&scenario)
+            .expect("the valid bench scenario has a public map briefing");
         assert_eq!(
-            oxide_bot::seat_bots(&scenario)
-                .expect("the valid bench scenario has a public map briefing")
-                .len(),
-            scenario.players.iter().filter(|p| p.bot).count(),
+            bots.len(),
+            scenario.players.len(),
             "every configured bot seat gets a command source"
         );
-        let mut bots = oxide_bot::seat_bots(&scenario).unwrap();
-        assert_eq!(bots.len(), scenario.players.len());
         let mut state = scenario.build().expect("skirmish builds");
         let mut issued = 0usize;
         for _ in 0..200 {
@@ -186,7 +184,8 @@ mod tests {
                 commands.extend(bot.act(&state));
             }
             issued += commands.len();
-            state.tick(&commands);
+            let report = state.tick(&commands);
+            crate::controller::record_events(&mut bots, &report);
         }
         assert!(
             issued > 0,

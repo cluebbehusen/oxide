@@ -264,7 +264,11 @@ fn traced_act_marks_recovery_and_omits_non_decisions() {
         .units
         .retain(|unit| unit.player != 0 || unit.kind.stats().harvest.is_none());
     let mut state = scenario.build().expect("the stranded skirmish builds");
-    let mut scripted = scripted_brain(&scenario, PlayerId(0), BotConfig::default());
+    let mut scripted = scripted_brain(
+        &scenario,
+        PlayerId(0),
+        BotConfig::scripted(Default::default(), Default::default(), 0),
+    );
 
     let recovery = scripted.act_traced(&state);
     let trace = recovery

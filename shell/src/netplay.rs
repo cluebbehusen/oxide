@@ -740,7 +740,7 @@ mod tests {
         for (seat, player) in scenario.players.iter_mut().enumerate() {
             player.bot = seat >= 2;
             player.bot_config = player.bot.then(|| {
-                BotConfig::scripted(BotDifficulty::Standard, BotStance::Balanced, seat as u64)
+                BotConfig::opponent(BotDifficulty::Standard, BotStance::Balanced, seat as u64)
             });
         }
         scenario

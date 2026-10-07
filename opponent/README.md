@@ -1,8 +1,7 @@
 # oxide-opponent
 
-`oxide-opponent` is a reactive, best-effort opponent controller alongside
-`oxide-bot`. The [specification](../docs/oxide-opponent.md) is normative for
-this crate, and the
+`oxide-opponent` is the reactive, best-effort opponent every bot seat runs. The
+[specification](../docs/oxide-opponent.md) is normative for this crate, and the
 [oxide-opponent skill](../.agents/skills/oxide-opponent/SKILL.md) holds its
 working rules.
 

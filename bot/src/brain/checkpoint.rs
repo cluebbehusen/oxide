@@ -213,7 +213,7 @@ mod tests {
     #[test]
     fn checkpoint_continues_an_active_controller() {
         for config in [
-            oxide_sim::scenario::BotConfig::default(),
+            oxide_sim::scenario::BotConfig::scripted(Default::default(), Default::default(), 0),
             oxide_sim::scenario::BotConfig::scripted(
                 oxide_sim::scenario::BotDifficulty::Prime,
                 oxide_sim::scenario::BotStance::Aggressive,
@@ -257,7 +257,11 @@ mod tests {
     fn checkpoint_rejects_wrong_identity_versions_and_corruption() {
         let mut scenario = oxide_sim::Scenario::skirmish();
         scenario.players[1].bot = true;
-        scenario.players[1].bot_config = Some(oxide_sim::scenario::BotConfig::default());
+        scenario.players[1].bot_config = Some(oxide_sim::scenario::BotConfig::scripted(
+            Default::default(),
+            Default::default(),
+            0,
+        ));
         let state = scenario.build().unwrap();
         let checkpoint = seat_bots(&scenario).unwrap()[0].checkpoint().unwrap();
         let mut bad = checkpoint.clone();
@@ -288,7 +292,11 @@ mod tests {
     fn checkpoint_rejects_a_forged_strategy() {
         let mut scenario = oxide_sim::Scenario::skirmish();
         scenario.players[1].bot = true;
-        scenario.players[1].bot_config = Some(oxide_sim::scenario::BotConfig::default());
+        scenario.players[1].bot_config = Some(oxide_sim::scenario::BotConfig::scripted(
+            Default::default(),
+            Default::default(),
+            0,
+        ));
         let state = scenario.build().unwrap();
         let checkpoint = seat_bots(&scenario).unwrap()[0].checkpoint().unwrap();
         let (width, height) = (state.map().width(), state.map().height());

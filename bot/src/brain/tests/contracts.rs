@@ -72,7 +72,11 @@ fn home_orientation_uses_a_physical_foundry_instead_of_an_older_plan() {
     ));
     obs.my_queues.push(Vec::new());
     obs.my_queue_progress.push(0);
-    let mut brain = scripted_brain(&scenario, PlayerId(0), BotConfig::default());
+    let mut brain = scripted_brain(
+        &scenario,
+        PlayerId(0),
+        BotConfig::scripted(Default::default(), Default::default(), 0),
+    );
     assert!(crate::Brain::act_traced(&mut brain, &obs).trace.is_some());
     assert_eq!(brain.orientation, Some(Orientation::for_home(&obs, home)));
 }
@@ -81,7 +85,11 @@ fn home_orientation_uses_a_physical_foundry_instead_of_an_older_plan() {
 fn the_brain_receives_the_public_map_briefing() {
     let scenario = Scenario::skirmish();
     let public_map = public_map(&scenario);
-    let scripted = SeatBot::scripted(PlayerId(0), BotConfig::default(), Arc::clone(&public_map));
+    let scripted = SeatBot::scripted(
+        PlayerId(0),
+        BotConfig::scripted(Default::default(), Default::default(), 0),
+        Arc::clone(&public_map),
+    );
 
     assert!(Arc::ptr_eq(&scripted.mind().public_map, &public_map));
     assert!(scripted.mind().oriented_public_map.is_none());

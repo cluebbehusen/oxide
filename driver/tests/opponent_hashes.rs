@@ -1,11 +1,12 @@
-//! Focused controller contracts with cross-platform state and command hashes.
+//! Focused `oxide-opponent` contracts with cross-platform state and command
+//! hashes.
 //! Behavioral assertions must pass before a checkpoint can be blessed.
 
 mod support;
 
 use chassis::grid::TilePos;
-use oxide_bot::{SeatBot, seat_bots};
 use oxide_kit::GameReplay;
+use oxide_kit::controller::{SeatController, record_events, seat_controllers};
 use oxide_sim::scenario::{BotConfig, PlayerSpec, UnitSpec};
 use oxide_sim::{
     Command, Event, Faction, Order, PlayerCommand, PlayerId, Scenario, State, TickReport, UnitKind,
@@ -62,8 +63,8 @@ fn scenario(name: &str, scrap: u32, worker: bool) -> Scenario {
 struct Probe {
     state: State,
     twin: State,
-    bots: Vec<SeatBot>,
-    twin_bots: Vec<SeatBot>,
+    bots: Vec<SeatController>,
+    twin_bots: Vec<SeatController>,
     replay: GameReplay,
     history: Vec<(u64, TickReport)>,
     command_fold: u64,
@@ -73,13 +74,13 @@ impl Probe {
     fn new(scenario: Scenario) -> Self {
         let state = scenario.build().unwrap();
         state.validate_invariants().unwrap();
-        let bots = seat_bots(&scenario).unwrap();
+        let bots = seat_controllers(&scenario).unwrap();
         assert_eq!(bots.len(), 1);
         Self {
             twin: scenario.build().unwrap(),
             state,
             bots,
-            twin_bots: seat_bots(&scenario).unwrap(),
+            twin_bots: seat_controllers(&scenario).unwrap(),
             replay: GameReplay::new(oxide_sim::SIM_VERSION, scenario),
             history: Vec::new(),
             command_fold: 0,
@@ -106,11 +107,10 @@ impl Probe {
         let mut restored: State =
             serde_json::from_slice(&serde_json::to_vec(&self.state).unwrap()).unwrap();
         let report = self.state.tick(&commands);
-        assert_eq!(
-            report,
-            self.twin.tick(&commands),
-            "independent events at {tick}"
-        );
+        let twin_report = self.twin.tick(&commands);
+        assert_eq!(report, twin_report, "independent events at {tick}");
+        record_events(&mut self.bots, &report);
+        record_events(&mut self.twin_bots, &twin_report);
         assert_eq!(
             report,
             restored.tick(&commands),
@@ -265,6 +265,6 @@ fn focused_controller_contracts_match_hash_fixtures() {
         .flatten()
         .collect();
     let fixture =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/goldens/player-facing-hashes.json");
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/goldens/opponent-hashes.json");
     support::check_or_bless(&fixture, actual);
 }

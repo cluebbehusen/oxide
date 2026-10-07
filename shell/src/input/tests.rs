@@ -646,7 +646,7 @@ fn extractor_input_game() -> Game {
         \"players\": [
             {\"name\": \"F\", \"faction\": \"ferrous\", \"scrap\": 500, \"bot\": false},
             {\"name\": \"C\", \"faction\": \"cupric\", \"scrap\": 500, \"bot\": true,
-             \"bot_config\": {\"controller\": \"scripted\"}}
+             \"bot_config\": {\"controller\": \"opponent\"}}
         ],
         \"map\": [
             \"################\",
@@ -1056,7 +1056,7 @@ fn edge_scrap_game() -> Game {
         \"players\": [
             {\"name\": \"F\", \"faction\": \"ferrous\", \"scrap\": 500, \"bot\": false},
             {\"name\": \"C\", \"faction\": \"cupric\", \"scrap\": 500, \"bot\": true,
-             \"bot_config\": {\"controller\": \"scripted\"}}
+             \"bot_config\": {\"controller\": \"opponent\"}}
         ],
         \"map\": [
             \"................\",
@@ -2141,9 +2141,9 @@ fn team_game() -> Game {
         \"players\": [
             {\"name\": \"me\", \"faction\": \"ferrous\", \"scrap\": 100, \"bot\": false, \"team\": 1},
             {\"name\": \"pal\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": true, \"team\": 1,
-             \"bot_config\": {\"controller\": \"scripted\"}},
+             \"bot_config\": {\"controller\": \"opponent\"}},
             {\"name\": \"foe\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": true,
-             \"bot_config\": {\"controller\": \"scripted\"}}
+             \"bot_config\": {\"controller\": \"opponent\"}}
         ],
         \"map\": [
             \"########################\",

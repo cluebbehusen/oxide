@@ -53,9 +53,17 @@ fn write_scenario(json: &str) -> TempScenario {
 fn seating_keeps_scripted_and_empty_chairs_distinct() {
     let mut scenario = Scenario::skirmish();
     scenario.players[0].bot = true;
-    scenario.players[0].bot_config = Some(BotConfig::default());
+    scenario.players[0].bot_config = Some(BotConfig::scripted(
+        Default::default(),
+        Default::default(),
+        0,
+    ));
     scenario.players[1].bot = true;
-    scenario.players[1].bot_config = Some(BotConfig::default());
+    scenario.players[1].bot_config = Some(BotConfig::scripted(
+        Default::default(),
+        Default::default(),
+        0,
+    ));
 
     let bots = seat_bots(&scenario).expect("the skirmish has a briefing");
     assert_eq!(bots.len(), 2);
@@ -74,11 +82,16 @@ fn seating_keeps_scripted_and_empty_chairs_distinct() {
 
 #[test]
 fn bot_config_writes_and_reads_only_the_current_shape() {
-    let json = serde_json::to_string(&BotConfig::default()).expect("scripted config serializes");
+    let json = serde_json::to_string(&BotConfig::scripted(
+        Default::default(),
+        Default::default(),
+        0,
+    ))
+    .expect("scripted config serializes");
     assert_eq!(json, r#"{"controller":"scripted"}"#);
     assert_eq!(
         serde_json::from_str::<BotConfig>(&json).expect("scripted config round-trips"),
-        BotConfig::default()
+        BotConfig::scripted(Default::default(), Default::default(), 0)
     );
     assert!(
         serde_json::from_str::<BotConfig>(r#"{"controller":"scripted","level":"hard"}"#).is_err(),

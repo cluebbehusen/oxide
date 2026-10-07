@@ -9,7 +9,6 @@
 //! the game from starting.
 
 use crate::action::BindingMap;
-use oxide_sim::scenario::BotController;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -239,9 +238,6 @@ pub struct Config {
     /// The host address the last LAN join used.
     #[serde(default)]
     pub last_join_address: Option<String>,
-    /// The controller every bot seat of a new match runs.
-    #[serde(default)]
-    pub opponent_ai: BotController,
 }
 
 impl Default for Config {
@@ -261,7 +257,6 @@ impl Default for Config {
             touch: TouchPrefs::default(),
             unbound: Vec::new(),
             last_join_address: None,
-            opponent_ai: BotController::Scripted,
         }
     }
 }
@@ -647,24 +642,6 @@ mod tests {
             TouchPrefs::default().long_press_ms
         );
         std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn the_opponent_ai_persists_and_old_configs_keep_the_classic_bot() {
-        let config = Config {
-            opponent_ai: BotController::Opponent,
-            ..Config::default()
-        };
-        let mut saved = serde_json::to_value(&config).unwrap();
-        assert_eq!(saved["opponent_ai"], "opponent");
-        assert_eq!(
-            serde_json::from_value::<Config>(saved.clone()).unwrap(),
-            config
-        );
-        saved.as_object_mut().unwrap().remove("opponent_ai");
-        let loaded: Config = serde_json::from_value(saved).unwrap();
-        assert_eq!(loaded.opponent_ai, BotController::Scripted);
-        assert_eq!(loaded.ui_scale, config.ui_scale);
     }
 
     #[test]

@@ -363,7 +363,7 @@ impl ProfileMatchup {
     /// A uniform matchup with distinct consecutive personality seeds.
     pub const fn uniform(difficulty: BotDifficulty, stance: BotStance) -> Self {
         Self {
-            controller: BotController::Scripted,
+            controller: BotController::Opponent,
             opponent_controller: None,
             difficulty,
             stance,
@@ -2264,7 +2264,6 @@ mod tests {
                 INCOME_CHECKPOINTS[0] / crate::ledger::WORTH_PERIOD
             );
             assert!(ledger.units["harvester"].harvested > 0);
-            assert!(seat.attacks.is_none(), "oxide-bot reports no launches");
         }
 
         let mut plan = plan;

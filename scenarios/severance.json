@@ -60,7 +60,7 @@
    "scrap": 260,
    "bot": true,
    "bot_config": {
-    "controller": "scripted"
+    "controller": "opponent"
    }
   }
  ],

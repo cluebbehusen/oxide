@@ -35,7 +35,11 @@ fn fixed_facing_economies_and_attack_followups_replay_identically() {
         .collect();
     for player in &mut scenario.players {
         player.bot = true;
-        player.bot_config = Some(BotConfig::default());
+        player.bot_config = Some(BotConfig::scripted(
+            Default::default(),
+            Default::default(),
+            0,
+        ));
     }
     // Rosters differ by faction in price and kind, so only same-faction
     // seats can keep mirrored banks and rosters.

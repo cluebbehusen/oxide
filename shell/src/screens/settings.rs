@@ -11,7 +11,6 @@ use crate::menu::Menu;
 use crate::render;
 use macroquad::prelude::{Vec2, draw_text, measure_text};
 use oxide_protocol::{Key, RawEvent};
-use oxide_sim::scenario::BotController;
 
 /// Which face is up.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -170,7 +169,6 @@ enum Row {
     ControlGroups,
     MarkerTiming,
     MarkerSize,
-    OpponentAi,
     LeftHandedPreset,
     Controls,
     OpenDiagnostics,
@@ -179,7 +177,7 @@ enum Row {
 
 impl Row {
     /// Every row, in the order the menu shows them.
-    const ALL: [Row; 18] = [
+    const ALL: [Row; 17] = [
         Row::MasterVolume,
         Row::EffectsVolume,
         Row::UiVolume,
@@ -193,7 +191,6 @@ impl Row {
         Row::ControlGroups,
         Row::MarkerTiming,
         Row::MarkerSize,
-        Row::OpponentAi,
         Row::LeftHandedPreset,
         Row::Controls,
         Row::OpenDiagnostics,
@@ -240,13 +237,6 @@ impl Row {
                 format!("Show strategic markers: {}", config.markers.timing_label())
             }
             Row::MarkerSize => format!("Strategic marker size: {}", pct(config.markers.scale)),
-            Row::OpponentAi => format!(
-                "Opponent AI: {}",
-                match config.opponent_ai {
-                    BotController::Scripted => "Classic",
-                    BotController::Opponent => "New",
-                }
-            ),
             Row::LeftHandedPreset => "Apply left-handed bindings".to_string(),
             Row::Controls => "Controls...".to_string(),
             Row::OpenDiagnostics => "Open diagnostics folder".to_string(),
@@ -330,12 +320,6 @@ fn cycle_setting(config: &mut Config, row: Row) -> bool {
         Row::MarkerSize => {
             config.markers.scale = scale_step(config.markers.scale);
             crate::strategic_markers::set_prefs(config.markers);
-        }
-        Row::OpponentAi => {
-            config.opponent_ai = match config.opponent_ai {
-                BotController::Scripted => BotController::Opponent,
-                BotController::Opponent => BotController::Scripted,
-            };
         }
         Row::LeftHandedPreset | Row::Controls | Row::OpenDiagnostics | Row::ExportDiagnostics => {
             return false;
@@ -1283,33 +1267,6 @@ mod tests {
         assert!(drive(&mut screen, &mut config, &mut live, &press(Key::I), false).dirty);
         assert_eq!(live.chord_at(Action::PanUp, 0), Some(Chord::bare(Key::W)));
         assert_eq!(live.chord_at(Action::PanUp, 1), Some(Chord::bare(Key::I)));
-    }
-
-    #[test]
-    fn the_opponent_ai_row_toggles_between_classic_and_new_on_every_build() {
-        assert!(rows(true).contains(&Row::OpponentAi));
-        let mut config = Config::default();
-        let mut live = config.bindings.clone();
-        let mut screen = SettingsScreen::open(&config);
-        let row = Row::OpponentAi.index();
-        assert_eq!(screen.menu.items[row], "Opponent AI: Classic");
-        screen.menu.select(row);
-        for (controller, label) in [
-            (BotController::Opponent, "Opponent AI: New"),
-            (BotController::Scripted, "Opponent AI: Classic"),
-        ] {
-            let update = drive(
-                &mut screen,
-                &mut config,
-                &mut live,
-                &press(Key::Enter),
-                false,
-            );
-            assert!(update.dirty);
-            assert_eq!(config.opponent_ai, controller);
-            assert_eq!(screen.menu.items[row], label);
-            assert_eq!(screen.menu.selected, row);
-        }
     }
 
     #[test]

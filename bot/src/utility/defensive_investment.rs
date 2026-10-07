@@ -1588,7 +1588,11 @@ mod tests {
                 evidence: DefenseOpportunityEvidence::CurrentArmed,
                 evidence_count: 1,
             },
-            &ResolvedProfile::resolve(BotConfig::default()),
+            &ResolvedProfile::resolve(BotConfig::scripted(
+                Default::default(),
+                Default::default(),
+                0,
+            )),
             &obs,
             &builders,
             90,

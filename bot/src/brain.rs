@@ -72,7 +72,11 @@ pub struct Brain {
 impl Brain {
     /// The default Standard, Balanced, seed-zero player-facing profile.
     pub fn balanced(player: PlayerId, public_map: Arc<PublicMapBriefing>) -> Self {
-        Self::scripted(player, BotConfig::default(), public_map)
+        Self::scripted(
+            player,
+            BotConfig::scripted(Default::default(), Default::default(), 0),
+            public_map,
+        )
     }
 
     /// Creates the player-facing opponent for an exact authored configuration.

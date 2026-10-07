@@ -171,10 +171,10 @@ impl BotConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum BotController {
-    /// `oxide-bot`, the default player-facing opponent.
-    #[default]
+    /// `oxide-bot`, the retired scripted opponent.
     Scripted,
-    /// `oxide-opponent`, the reactive best-effort opponent.
+    /// `oxide-opponent`, the player-facing opponent.
+    #[default]
     Opponent,
 }
 
@@ -215,7 +215,7 @@ pub struct ParseBotControllerError(String);
 
 impl Default for BotConfig {
     fn default() -> Self {
-        Self::scripted(BotDifficulty::Standard, BotStance::Balanced, 0)
+        Self::opponent(BotDifficulty::Standard, BotStance::Balanced, 0)
     }
 }
 
@@ -864,7 +864,7 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_string(&BotConfig::default()).unwrap(),
-            r#"{"controller":"scripted"}"#
+            r#"{"controller":"opponent"}"#
         );
 
         for rejected in [
@@ -890,7 +890,7 @@ mod tests {
             );
         }
         assert_eq!("OPPONENT".parse(), Ok(BotController::Opponent));
-        assert_eq!(BotController::default(), BotController::Scripted);
+        assert_eq!(BotController::default(), BotController::Opponent);
         let error = "oracle".parse::<BotController>().unwrap_err();
         assert!(error.to_string().contains("oracle"));
     }
