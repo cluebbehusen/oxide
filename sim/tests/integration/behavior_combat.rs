@@ -361,7 +361,8 @@ fn advancing_buzzard_traverses_independently_and_does_not_track_hidden_charges()
         let mut state = scenario.build().unwrap();
         let id = state.units()[0].id;
         let initial = state.unit(id).unwrap().pos;
-        let mut previous = state.unit(id).unwrap().heading;
+        let spawned = state.unit(id).unwrap().heading;
+        let mut previous = spawned;
         let mut fired = false;
         let mut firing_heading = None;
         for tick in 0..20 {
@@ -398,7 +399,10 @@ fn advancing_buzzard_traverses_independently_and_does_not_track_hidden_charges()
                 fired = true;
             }
             if target_kind == BuildingKind::ScuttleCharge {
-                assert_eq!(unit.heading, 192, "hidden charge must not steer the turret");
+                assert_eq!(
+                    unit.heading, spawned,
+                    "hidden charge must not steer the turret"
+                );
                 assert_eq!(unit.cooldowns[0], 0);
             }
         }
