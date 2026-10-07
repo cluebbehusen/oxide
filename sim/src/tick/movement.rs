@@ -67,9 +67,10 @@ fn steer_bearing(heading: &mut u8, direction: Vec2Fx, rate: u8) -> bool {
         return true;
     }
     let desired = chassis::compass::heading_of(direction);
-    let delta = i16::from(desired.wrapping_sub(*heading) as i8);
+    let delta = i16::from(desired.wrapping_sub(*heading).cast_signed());
     let step = delta.clamp(-i16::from(rate), i16::from(rate));
-    *heading = heading.wrapping_add_signed(step as i8);
+    *heading = heading
+        .wrapping_add_signed(i8::try_from(step).expect("clamping an i8 delta keeps it an i8"));
     heading_aligned(*heading, desired)
 }
 
@@ -328,7 +329,7 @@ pub(super) fn run(state: &mut State) -> (Vec<Vec2Fx>, Vec<bool>) {
     // Friendly bodies at rest, per side: a ground follower will not admit
     // a lookahead leg through one, though it still walks its planned tiles.
     let parked: Vec<ParkedBodies> = (0..state.players.len())
-        .map(|player| state.parked_bodies(crate::ids::PlayerId(player as u8)))
+        .map(|player| state.parked_bodies(crate::ids::PlayerId::from_index(player)))
         .collect();
     // Disjoint field borrows: units move, terrain is read-only.
     let State {
@@ -1162,6 +1163,7 @@ mod tests {
     use crate::scenario::{PlayerSpec, Scenario, ScenarioMode, UnitSpec};
     use crate::state::Faction;
     use crate::stats::UnitKind;
+    use chassis::grid::as_index;
 
     /// A resting row of bodies has no pair to correct and is dropped; a
     /// touching neighbor of a pressing pair stays, since the pair's push can
@@ -1615,13 +1617,13 @@ mod tests {
         let width = 20;
         let height = 14;
         let mirror_tile = |tile: TilePos| TilePos::new(width - 1 - tile.x, height - 1 - tile.y);
-        let mut map = vec![".".repeat(width as usize); height as usize];
+        let mut map = vec![".".repeat(as_index(width)); as_index(height)];
         map[1].replace_range(1..2, "1");
-        map[height as usize - 2].replace_range(width as usize - 2..width as usize - 1, "2");
-        map[blocked.y as usize].replace_range((blocked.x as usize)..=(blocked.x as usize), "#");
+        map[as_index(height) - 2].replace_range(as_index(width) - 2..as_index(width) - 1, "2");
+        map[as_index(blocked.y)].replace_range(as_index(blocked.x)..=as_index(blocked.x), "#");
         let mirrored_blocked = mirror_tile(blocked);
-        map[mirrored_blocked.y as usize].replace_range(
-            (mirrored_blocked.x as usize)..=(mirrored_blocked.x as usize),
+        map[as_index(mirrored_blocked.y)].replace_range(
+            as_index(mirrored_blocked.x)..=as_index(mirrored_blocked.x),
             "#",
         );
 
@@ -1723,9 +1725,9 @@ mod tests {
         let width = 32;
         let height = 14;
         let mirror_tile = |tile: TilePos| TilePos::new(width - 1 - tile.x, height - 1 - tile.y);
-        let mut map = vec![".".repeat(width as usize); height as usize];
+        let mut map = vec![".".repeat(as_index(width)); as_index(height)];
         map[1].replace_range(1..2, "1");
-        map[height as usize - 3].replace_range(width as usize - 3..width as usize - 2, "2");
+        map[as_index(height) - 3].replace_range(as_index(width) - 3..as_index(width) - 2, "2");
         let anchor = TilePos::new(6, 6);
         let mirrored_anchor = TilePos::new(width - 2 - anchor.x, height - 2 - anchor.y);
         let mut state = Scenario {
@@ -1931,11 +1933,11 @@ mod tests {
             ],
             units: [0, 1, 0, 1]
                 .into_iter()
-                .enumerate()
-                .map(|(slot, player)| UnitSpec {
+                .zip(10..)
+                .map(|(player, x)| UnitSpec {
                     player,
                     kind: UnitKind::Flakhound,
-                    x: 10 + slot as i32,
+                    x,
                     y: 10,
                 })
                 .collect(),

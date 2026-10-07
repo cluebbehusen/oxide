@@ -25,7 +25,7 @@ use crate::map::{MAX_MAP_EDGE, Map};
 use crate::stats::{BuildingKind, UnitKind};
 use chassis::Tick;
 use chassis::fx::{Fx, Vec2Fx};
-use chassis::grid::TilePos;
+use chassis::grid::{TilePos, cell_count};
 use chassis::rng::Pcg32;
 use serde::{Deserialize, Serialize};
 
@@ -721,7 +721,7 @@ pub(crate) struct ParkedBodies {
 impl ParkedBodies {
     fn index(&self, tile: TilePos) -> Option<usize> {
         ((0..self.width).contains(&tile.x) && (0..self.height).contains(&tile.y))
-            .then(|| tile.y as usize * self.width as usize + tile.x as usize)
+            .then(|| tile.row_major(self.width))
     }
 
     /// Whether a friendly body stands still on map tile `tile`.
@@ -804,7 +804,7 @@ impl<'a> GroundTerrain<'a> {
         if tile.x < 0 || tile.y < 0 || tile.x >= width || tile.y >= self.map.height() {
             return false;
         }
-        let idx = (tile.y as usize) * (width as usize) + (tile.x as usize);
+        let idx = tile.row_major(width);
         self.occupancy.get(idx).copied().unwrap_or(0) != 0
     }
 }
@@ -832,7 +832,7 @@ impl State {
             result: None,
             next_unit_id: 0,
             next_building_id: 0,
-            building_occupancy: vec![0; (map_width as usize) * (map_height as usize)],
+            building_occupancy: vec![0; cell_count(map_width, map_height)],
         }
     }
 
@@ -1096,7 +1096,7 @@ impl State {
             .iter()
             .position(|p| usize::from(p.team) >= players)
         {
-            return Err(E::ForeignTeam(PlayerId(i as u8)));
+            return Err(E::ForeignTeam(PlayerId::from_index(i)));
         }
         if let Some(i) = self.players.iter().position(|player| {
             u32::from(player.recovery_allowance) > crate::stats::FOUNDRY_RECOVERY_RESERVE
@@ -1105,7 +1105,7 @@ impl State {
                 || (player.recovery_ready
                     && (player.recovery_allowance != 0 || player.recovery_target != 0))
         }) {
-            return Err(E::InvalidRecoveryLedger(PlayerId(i as u8)));
+            return Err(E::InvalidRecoveryLedger(PlayerId::from_index(i)));
         }
         if self.mode == crate::scenario::ScenarioMode::Sandbox
             && (self.result.is_some()
@@ -1130,7 +1130,7 @@ impl State {
         let (w, h) = (self.map.width(), self.map.height());
         // The parse-time bound, re-applied: the neighborhood scans add
         // unchecked radii to the map dimensions.
-        if w > MAX_MAP_EDGE as i32 || h > MAX_MAP_EDGE as i32 {
+        if w > i32::from(MAX_MAP_EDGE) || h > i32::from(MAX_MAP_EDGE) {
             return Err(E::MapTooLarge {
                 width: w,
                 height: h,
@@ -1167,15 +1167,17 @@ impl State {
         }
         for (index, player) in self.players.iter().enumerate() {
             if player.eliminated_at.is_some_and(|at| at > TICK_ENVELOPE) {
-                return Err(E::EliminationBeyondEnvelope(crate::ids::PlayerId(
-                    index as u8,
-                )));
+                return Err(E::EliminationBeyondEnvelope(
+                    crate::ids::PlayerId::from_index(index),
+                ));
             }
             // Victory treats the stamp as immutable history, so a stamp
             // later than the present would flow to placement and views
             // as an elimination that never happened.
             if player.eliminated_at.is_some_and(|at| at > self.tick) {
-                return Err(E::EliminationInTheFuture(crate::ids::PlayerId(index as u8)));
+                return Err(E::EliminationInTheFuture(crate::ids::PlayerId::from_index(
+                    index,
+                )));
             }
         }
         if self.next_unit_id > ID_COUNTER_ENVELOPE || self.next_building_id > ID_COUNTER_ENVELOPE {
@@ -1603,7 +1605,7 @@ impl State {
         }
 
         for (i, v) in self.vision.iter().enumerate() {
-            let seat = PlayerId(i as u8);
+            let seat = PlayerId::from_index(i);
             for ghost in v.ghosts() {
                 // Renderers index the player table with this to pick a
                 // tint; an owner outside it is a panic, not a wrong color.
@@ -1744,7 +1746,7 @@ impl State {
         match self.result {
             Some(GameResult::Victory { team }) => (0..self.players.len())
                 .filter(|&i| self.players[i].team == team)
-                .map(|i| PlayerId(i as u8))
+                .map(PlayerId::from_index)
                 .collect(),
             _ => Vec::new(),
         }
@@ -1890,7 +1892,7 @@ impl State {
         let mut parked = ParkedBodies {
             width,
             height,
-            bits: vec![0; (width as usize * height as usize).div_ceil(64)],
+            bits: vec![0; cell_count(width, height).div_ceil(64)],
         };
         for unit in self.units.iter().filter(|u| {
             u.hp > 0
@@ -1929,7 +1931,7 @@ impl State {
                 if x < 0 || y < 0 || x >= width || y >= height {
                     continue;
                 }
-                let idx = (y as usize) * (width as usize) + (x as usize);
+                let idx = TilePos::new(x, y).row_major(width);
                 if let Some(cell) = self.building_occupancy.get_mut(idx) {
                     *cell = u8::from(present);
                 }
@@ -1940,7 +1942,7 @@ impl State {
     /// Rebuilds the whole occupancy grid from the building list — the
     /// deserialization path's one-shot recovery of derived state.
     pub(crate) fn rebuild_building_occupancy(&mut self) {
-        let cells = (self.map.width().max(0) as usize) * (self.map.height().max(0) as usize);
+        let cells = cell_count(self.map.width(), self.map.height());
         self.building_occupancy.clear();
         self.building_occupancy.resize(cells, 0);
         for index in 0..self.buildings.len() {
@@ -2341,7 +2343,7 @@ mod tests {
         state.units[0].drive_speed = Fx::ZERO;
         let mut marked = 0;
         for player in 0..state.players.len() {
-            let viewer = PlayerId(player as u8);
+            let viewer = PlayerId::from_index(player);
             let parked = state.parked_bodies(viewer);
             for y in -1..=height {
                 for x in -1..=width {
@@ -2493,14 +2495,14 @@ mod tests {
     #[test]
     fn the_coordinate_envelope_admits_every_legal_map_and_refuses_the_extremes() {
         assert!(tile_inside_envelope(TilePos::new(
-            MAX_MAP_EDGE as i32,
-            MAX_MAP_EDGE as i32
+            i32::from(MAX_MAP_EDGE),
+            i32::from(MAX_MAP_EDGE)
         )));
         assert!(tile_inside_envelope(TilePos::new(-1, -1)));
         assert!(!tile_inside_envelope(TilePos::new(i32::MAX, 0)));
         assert!(!tile_inside_envelope(TilePos::new(0, i32::MIN)));
         assert!(point_inside_envelope(
-            TilePos::new(MAX_MAP_EDGE as i32, 0).center()
+            TilePos::new(i32::from(MAX_MAP_EDGE), 0).center()
         ));
         assert!(!point_inside_envelope(Vec2Fx::new(
             Fx::from_bits(i64::MAX),

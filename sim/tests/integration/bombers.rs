@@ -184,7 +184,7 @@ fn a_condor_replans_when_its_wide_turn_meets_a_peak() {
             oxide_sim::map::Terrain::Peak,
             "the turn never enters the mountain"
         );
-        let delta = i16::from(unit.heading.wrapping_sub(last_heading) as i8).abs();
+        let delta = i16::from(unit.heading.wrapping_sub(last_heading).cast_signed()).abs();
         assert!(
             delta <= rate,
             "obstacle avoidance turned {delta} steps in one tick (rate {rate})"
@@ -443,7 +443,7 @@ fn a_bomber_never_turns_faster_than_its_rate() {
     for _ in 0..600 {
         state.tick(&[]);
         let next = state.unit(condor).unwrap().heading;
-        let delta = i16::from(next.wrapping_sub(heading) as i8).abs();
+        let delta = i16::from(next.wrapping_sub(heading).cast_signed()).abs();
         assert!(
             delta <= rate,
             "heading jumped {delta} steps in one tick (rate {rate})"
@@ -782,7 +782,7 @@ fn an_idle_bomber_orbits_then_lands_itself() {
             "premise: nothing to fight"
         );
         assert_ne!(unit.pos, last_pos, "an idle airframe never hangs in place");
-        let delta = i16::from(unit.heading.wrapping_sub(heading) as i8).abs();
+        let delta = i16::from(unit.heading.wrapping_sub(heading).cast_signed()).abs();
         assert_eq!(delta, i16::from(rate), "an orbit is a constant-rate turn");
         assert!(
             unit.pos.dist(start) <= radius + radius + chassis::fx::HALF,

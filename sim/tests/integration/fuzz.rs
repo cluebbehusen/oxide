@@ -268,14 +268,19 @@ fn building_kind_index(kind: BuildingKind) -> usize {
     }
 }
 
+/// A uniform draw in `0..bound`.
+fn below(rng: &mut Pcg32, bound: i32) -> i32 {
+    i32::try_from(rng.next_below(u32::try_from(bound).unwrap())).unwrap()
+}
+
 /// A coordinate that is usually plausible and occasionally adversarial.
 fn coord(rng: &mut Pcg32, edge: i32) -> i32 {
     match rng.next_below(10) {
         0 => i32::MAX,
         1 => i32::MIN,
-        2 => -(rng.next_below(100) as i32),
-        3 => edge + rng.next_below(100) as i32,
-        _ => rng.next_below(edge as u32) as i32,
+        2 => -below(rng, 100),
+        3 => edge + below(rng, 100),
+        _ => below(rng, edge),
     }
 }
 
@@ -292,8 +297,8 @@ fn tile(rng: &mut Pcg32, state: &State) -> TilePos {
 /// generator that stays on the board.
 fn plausible_tile(rng: &mut Pcg32, state: &State) -> TilePos {
     TilePos::new(
-        rng.next_below(state.map().width() as u32) as i32,
-        rng.next_below(state.map().height() as u32) as i32,
+        below(rng, state.map().width()),
+        below(rng, state.map().height()),
     )
 }
 
@@ -302,7 +307,7 @@ fn plausible_tile(rng: &mut Pcg32, state: &State) -> TilePos {
 /// stay on the board so the long ones actually survive validation.
 fn waypoints(rng: &mut Pcg32, state: &State) -> Vec<TilePos> {
     let plausible = rng.next_below(3) == 0;
-    (0..rng.next_below(ORDER_QUEUE_CAP as u32 + 2))
+    (0..rng.next_index(ORDER_QUEUE_CAP + 2))
         .map(|_| {
             if plausible {
                 plausible_tile(rng, state)
@@ -321,8 +326,8 @@ fn anchor(rng: &mut Pcg32, state: &State) -> TilePos {
     if live.is_empty() || rng.next_below(3) != 0 {
         return tile(rng, state);
     }
-    let near = live[rng.next_below(live.len() as u32) as usize].tile();
-    near.offset(rng.next_below(5) as i32 - 2, rng.next_below(5) as i32 - 2)
+    let near = live[rng.next_index(live.len())].tile();
+    near.offset(below(rng, 5) - 2, below(rng, 5) - 2)
 }
 
 /// One unit id: usually a live one, so the handler bodies are reached
@@ -343,7 +348,7 @@ fn unit_id(rng: &mut Pcg32, state: &State) -> UnitId {
             } else {
                 live.len()
             };
-            live[rng.next_below(span as u32) as usize].id
+            live[rng.next_index(span)].id
         }
     }
 }
@@ -354,7 +359,7 @@ fn building_id(rng: &mut Pcg32, state: &State) -> BuildingId {
         0 => BuildingId(rng.next_u32()),
         1 => BuildingId(rng.next_below(16)),
         _ if live.is_empty() => BuildingId(rng.next_below(16)),
-        _ => live[rng.next_below(live.len() as u32) as usize].id,
+        _ => live[rng.next_index(live.len())].id,
     }
 }
 
@@ -364,7 +369,7 @@ fn units(rng: &mut Pcg32, state: &State) -> Vec<UnitId> {
     let mut ids: Vec<UnitId> = Vec::new();
     for _ in 0..rng.next_below(6) {
         if !ids.is_empty() && rng.next_below(3) == 0 {
-            let repeat = ids[rng.next_below(ids.len() as u32) as usize];
+            let repeat = ids[rng.next_index(ids.len())];
             ids.push(repeat);
         } else {
             ids.push(unit_id(rng, state));
@@ -379,7 +384,7 @@ fn buildings(rng: &mut Pcg32, state: &State) -> Vec<BuildingId> {
     let mut ids = Vec::new();
     for _ in 0..rng.next_below(6) {
         if !ids.is_empty() && rng.next_below(3) == 0 {
-            ids.push(ids[rng.next_below(ids.len() as u32) as usize]);
+            ids.push(ids[rng.next_index(ids.len())]);
         } else {
             ids.push(building_id(rng, state));
         }
@@ -396,7 +401,7 @@ fn target(rng: &mut Pcg32, state: &State) -> oxide_sim::AttackTarget {
             let id = if tracks.is_empty() {
                 oxide_sim::ContactId(rng.next_u32())
             } else {
-                tracks[rng.next_below(tracks.len() as u32) as usize].id
+                tracks[rng.next_index(tracks.len())].id
             };
             oxide_sim::AttackTarget::Contact(id)
         }
@@ -430,13 +435,13 @@ fn cancel_order(rng: &mut Pcg32, state: &State) -> Command {
         let program: Vec<_> = std::iter::once(&subject.order)
             .chain(&subject.queue)
             .collect();
-        let at = rng.next_below(program.len() as u32) as usize;
+        let at = rng.next_index(program.len());
         let key = program[at].key(state, subject.player)?;
         let later = program[at + 1..]
             .iter()
             .filter(|order| order.key(state, subject.player) == Some(key))
             .count();
-        Some((key, later as u8))
+        Some((key, u8::try_from(later).unwrap()))
     });
     let (key, honest) = picked.unwrap_or_else(|| {
         (
@@ -447,7 +452,7 @@ fn cancel_order(rng: &mut Pcg32, state: &State) -> Command {
         )
     });
     let from_end = match rng.next_below(4) {
-        0 => rng.next_below(u32::from(u8::MAX) + 1) as u8,
+        0 => u8::try_from(rng.next_below(u32::from(u8::MAX) + 1)).unwrap(),
         _ => honest,
     };
     Command::CancelOrder {
@@ -510,11 +515,11 @@ fn generate(tag: CommandTag, rng: &mut Pcg32, state: &State) -> Command {
         },
         CommandTag::Train => Command::Train {
             building: building_id(rng, state),
-            kind: UNIT_KINDS[rng.next_below(UNIT_KINDS.len() as u32) as usize],
+            kind: UNIT_KINDS[rng.next_index(UNIT_KINDS.len())],
         },
         CommandTag::Build => Command::Build {
             units: units(rng, state),
-            kind: BUILDING_KINDS[rng.next_below(BUILDING_KINDS.len() as u32) as usize],
+            kind: BUILDING_KINDS[rng.next_index(BUILDING_KINDS.len())],
             anchor: anchor(rng, state),
             queue: queue(rng),
             defer: false,
@@ -534,7 +539,7 @@ fn generate(tag: CommandTag, rng: &mut Pcg32, state: &State) -> Command {
         },
         CommandTag::CancelTrain => Command::CancelTrain {
             building: building_id(rng, state),
-            index: rng.next_below(u32::from(u8::MAX) + 1) as u8,
+            index: u8::try_from(rng.next_below(u32::from(u8::MAX) + 1)).unwrap(),
         },
         CommandTag::SetRally => Command::SetRally {
             building: building_id(rng, state),
@@ -554,7 +559,7 @@ fn generate(tag: CommandTag, rng: &mut Pcg32, state: &State) -> Command {
             target: target(rng, state),
         },
         CommandTag::CancelFound => Command::CancelFound {
-            kind: BUILDING_KINDS[rng.next_below(BUILDING_KINDS.len() as u32) as usize],
+            kind: BUILDING_KINDS[rng.next_index(BUILDING_KINDS.len())],
             anchor: anchor(rng, state),
         },
         CommandTag::UpgradeBuilding => Command::UpgradeBuilding {
@@ -846,7 +851,7 @@ fn fuzz_run(seed: u64) -> Run {
         let commands: Vec<PlayerCommand> = (0..rng.next_below(4))
             .map(|_| {
                 let drawn = loop {
-                    let d = rng.next_below(COMMAND_TAGS.len() as u32) as usize;
+                    let d = rng.next_index(COMMAND_TAGS.len());
                     if COMMAND_TAGS[d] != CommandTag::Surrender
                         || rng.next_below(SURRENDER_KEEP_ODDS) == 0
                     {
@@ -857,7 +862,7 @@ fn fuzz_run(seed: u64) -> Run {
                 PlayerCommand {
                     // Players 0-3 on a two-player map: half the issuers
                     // don't exist.
-                    player: PlayerId(rng.next_below(4) as u8),
+                    player: PlayerId(u8::try_from(rng.next_below(4)).unwrap()),
                     command: generate(COMMAND_TAGS[drawn], &mut rng, &state),
                 }
             })

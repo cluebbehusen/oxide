@@ -20,7 +20,7 @@ fn tick_displacement(state: &mut oxide_sim::State) -> u64 {
             let sq = d.length_sq();
             // Raw Q32.32 bits: zero means EXACTLY stationary, and the
             // probe only compares relative magnitudes.
-            total += sq.to_bits().max(0) as u64;
+            total += u64::try_from(sq.to_bits()).unwrap_or(0);
         }
     }
     total

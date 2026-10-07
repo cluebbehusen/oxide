@@ -1,6 +1,7 @@
 //! Bastion acquisition against live structure footprints under fog.
 
 use crate::common;
+use chassis::grid::as_index;
 
 use chassis::grid::TilePos;
 use oxide_sim::{BuildingId, BuildingKind, Command, Event, PlayerId, Target, UnitKind};
@@ -14,7 +15,7 @@ fn bastion_and_target(
 ) -> oxide_sim::State {
     let mut scenario = open_arena_with(32, 22, Vec::new(), |rows| {
         if let Some(peak) = peak {
-            rows[peak.y as usize][peak.x as usize] = '^';
+            rows[as_index(peak.y)][as_index(peak.x)] = '^';
         }
     });
     scenario.buildings = vec![

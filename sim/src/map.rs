@@ -16,11 +16,17 @@
 
 use crate::ids::PlayerId;
 use crate::stats::{RICH_SCRAP_NODE_AMOUNT, SCRAP_NODE_AMOUNT};
-use chassis::grid::{Grid, TilePos};
+use chassis::grid::{Grid, TilePos, as_index};
 use serde::{Deserialize, Serialize};
 
 /// Largest supported map edge, in tiles.
-pub const MAX_MAP_EDGE: usize = 256;
+pub const MAX_MAP_EDGE: u16 = 256;
+
+/// A position or extent of a parsed map, already checked against
+/// [`MAX_MAP_EDGE`].
+fn edge_coordinate(value: usize) -> i32 {
+    i32::try_from(value).expect("map edges are checked against MAX_MAP_EDGE")
+}
 
 /// Base terrain of a tile.
 ///
@@ -152,7 +158,7 @@ impl Map {
             return Err(MapError::Empty);
         }
         let expected = rows[0].as_ref().chars().count();
-        if rows.len() > MAX_MAP_EDGE || expected > MAX_MAP_EDGE {
+        if rows.len() > usize::from(MAX_MAP_EDGE) || expected > usize::from(MAX_MAP_EDGE) {
             return Err(MapError::TooLarge {
                 width: expected,
                 height: rows.len(),
@@ -173,7 +179,7 @@ impl Map {
                 });
             }
             for (x, c) in row.chars().enumerate() {
-                let pos = TilePos::new(x as i32, y as i32);
+                let pos = TilePos::new(edge_coordinate(x), edge_coordinate(y));
                 let tile = match c {
                     '.' => Tile {
                         terrain: Terrain::Ground,
@@ -258,7 +264,11 @@ impl Map {
         }
         anchors.sort_by_key(|(p, _)| *p);
         let map = Self {
-            grid: Grid::from_cells(expected as i32, rows.len() as i32, cells),
+            grid: Grid::from_cells(
+                edge_coordinate(expected),
+                edge_coordinate(rows.len()),
+                cells,
+            ),
             extractor_frames,
         };
         for &frame in &map.extractor_frames {
@@ -431,7 +441,7 @@ impl Map {
     /// Renders terrain back to the ASCII legend (buildings not included —
     /// callers overlay entities as needed).
     pub fn ascii_rows(&self) -> Vec<String> {
-        let mut rows = vec![String::with_capacity(self.width() as usize); self.height() as usize];
+        let mut rows = vec![String::with_capacity(as_index(self.width())); as_index(self.height())];
         for (pos, tile) in self.grid.iter() {
             let c = if self.extractor_frames.contains(&pos) {
                 'E'
@@ -449,7 +459,7 @@ impl Map {
                     (Terrain::Ground, _) => 's',
                 }
             };
-            rows[pos.y as usize].push(c);
+            rows[as_index(pos.y)].push(c);
         }
         rows
     }

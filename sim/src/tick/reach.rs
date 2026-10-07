@@ -281,10 +281,7 @@ fn label_at(labels: &[u32], width: i32, height: i32, tile: TilePos) -> u32 {
     if tile.x < 0 || tile.y < 0 || tile.x >= width || tile.y >= height {
         return 0;
     }
-    labels
-        .get((tile.y as usize) * (width as usize) + tile.x as usize)
-        .copied()
-        .unwrap_or(0)
+    labels.get(tile.row_major(width)).copied().unwrap_or(0)
 }
 
 /// The components a route from `from` can enter: its own, or, when it stands
@@ -674,7 +671,7 @@ mod tests {
         let step = UnitKind::Sentinel.stats().radius * 2;
         for slot in 0..4 {
             state.units[slot].pos = TilePos::new(1, 1).center()
-                + chassis::fx::Vec2Fx::new(step * Fx::from_num(slot as i32), Fx::ZERO);
+                + chassis::fx::Vec2Fx::new(step * Fx::from_num(slot), Fx::ZERO);
         }
         let end = state.units[3].pos;
         state.units[4].pos = end + chassis::fx::Vec2Fx::new(step, Fx::ZERO);
@@ -731,7 +728,7 @@ mod tests {
             let step = UnitKind::Sentinel.stats().radius * 2;
             for (slot, unit) in state.units.iter_mut().enumerate() {
                 unit.pos = TilePos::new(1, 1).center()
-                    + chassis::fx::Vec2Fx::new(step * Fx::from_num(slot as i32), Fx::ZERO);
+                    + chassis::fx::Vec2Fx::new(step * Fx::from_num(slot), Fx::ZERO);
             }
             let walker = id(&state, 5);
             state.units[5].order = Order::Run {
@@ -782,7 +779,7 @@ mod tests {
             let step = UnitKind::Sentinel.stats().radius * 2;
             for (slot, unit) in state.units.iter_mut().take(LINE + 2).enumerate() {
                 unit.pos = endpoint.center()
-                    + chassis::fx::Vec2Fx::new(step * Fx::from_num(slot as i32), Fx::ZERO);
+                    + chassis::fx::Vec2Fx::new(step * Fx::from_num(slot), Fx::ZERO);
             }
             state.units[LINE + 1].order = Order::Run {
                 goal: TilePos::new(0, 1).into(),

@@ -4,6 +4,7 @@
 //! spend. Fuel beyond the ring is not its to take.
 
 use crate::common;
+use chassis::grid::as_index;
 use common::open_arena;
 
 use chassis::grid::TilePos;
@@ -159,8 +160,8 @@ fn mirrored_crucibles_smelt_mirrored_wreck_tiles() {
     let (cw, ch) = BuildingKind::Crucible.base_stats().size;
     let left_anchor = TilePos::new(6, 4);
     let right_anchor = TilePos::new(
-        width as i32 - cw - left_anchor.x,
-        height as i32 - ch - left_anchor.y,
+        i32::try_from(width).unwrap() - cw - left_anchor.x,
+        i32::try_from(height).unwrap() - ch - left_anchor.y,
     );
     let scenario = Scenario {
         mode: ScenarioMode::Match,
@@ -203,13 +204,17 @@ fn mirrored_crucibles_smelt_mirrored_wreck_tiles() {
         meta: None,
     };
     let state = scenario.build().unwrap();
-    let mirror =
-        |tile: TilePos| TilePos::new(width as i32 - 1 - tile.x, height as i32 - 1 - tile.y);
+    let mirror = |tile: TilePos| {
+        TilePos::new(
+            i32::try_from(width).unwrap() - 1 - tile.x,
+            i32::try_from(height).unwrap() - 1 - tile.y,
+        )
+    };
     let above = TilePos::new(left_anchor.x, left_anchor.y - 2);
     let below = TilePos::new(left_anchor.x, left_anchor.y + ch + 1);
     let mut doc = serde_json::to_value(&state).unwrap();
     for tile in [above, below, mirror(above), mirror(below)] {
-        let index = tile.y as usize * width + tile.x as usize;
+        let index = as_index(tile.y) * width + as_index(tile.x);
         doc["map"]["grid"]["cells"][index]["wreck"] = serde_json::json!(5);
     }
     let mut state: State = serde_json::from_value(doc).unwrap();
@@ -287,12 +292,19 @@ fn a_centered_crucible_smelts_in_its_owners_home_frame() {
         };
         scenario.build().unwrap()
     };
-    let mirror =
-        |tile: TilePos| TilePos::new(width as i32 - 1 - tile.x, height as i32 - 1 - tile.y);
+    let mirror = |tile: TilePos| {
+        TilePos::new(
+            i32::try_from(width).unwrap() - 1 - tile.x,
+            i32::try_from(height).unwrap() - 1 - tile.y,
+        )
+    };
     let (cw, ch) = BuildingKind::Crucible.base_stats().size;
     assert_eq!(
         (anchor.x * 2 + cw, anchor.y * 2 + ch),
-        (width as i32, height as i32)
+        (
+            i32::try_from(width).unwrap(),
+            i32::try_from(height).unwrap()
+        )
     );
     let above = TilePos::new(anchor.x, anchor.y - 2);
     let below = mirror(above);
@@ -300,7 +312,7 @@ fn a_centered_crucible_smelts_in_its_owners_home_frame() {
         let state = build(owner);
         let mut doc = serde_json::to_value(&state).unwrap();
         for tile in [above, below] {
-            let index = tile.y as usize * width + tile.x as usize;
+            let index = as_index(tile.y) * width + as_index(tile.x);
             doc["map"]["grid"]["cells"][index]["wreck"] = serde_json::json!(5);
         }
         let mut state: State = serde_json::from_value(doc).unwrap();

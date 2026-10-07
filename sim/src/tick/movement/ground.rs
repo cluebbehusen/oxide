@@ -180,7 +180,7 @@ pub(super) fn advance(unit: &mut Unit, terrain: &GroundTerrain, parked: &ParkedB
         .filter(|v| *v != Vec2Fx::ZERO)
         .map_or(unit.heading, heading_of);
     let heading_error = |heading: u8| {
-        let delta = i16::from(desired.wrapping_sub(heading) as i8);
+        let delta = i16::from(desired.wrapping_sub(heading).cast_signed());
         (delta, delta.unsigned_abs())
     };
     let (delta, error) = heading_error(unit.heading);
@@ -189,9 +189,9 @@ pub(super) fn advance(unit: &mut Unit, terrain: &GroundTerrain, parked: &ParkedB
     // correction steers while rolling.
     if unit.drive_speed == Fx::ZERO || !pivot {
         let rate = i16::from(turn_rate);
-        unit.heading = unit
-            .heading
-            .wrapping_add_signed(delta.clamp(-rate, rate) as i8);
+        unit.heading = unit.heading.wrapping_add_signed(
+            i8::try_from(delta.clamp(-rate, rate)).expect("clamping an i8 delta keeps it an i8"),
+        );
     }
     let (_, error) = heading_error(unit.heading);
     let aligned = error <= u16::from(GROUND_ALIGNED_STEPS);
@@ -270,7 +270,8 @@ pub(super) fn advance(unit: &mut Unit, terrain: &GroundTerrain, parked: &ParkedB
             // does not pass the waypoint it stood in for.
             && point == path_point(path, index)
         {
-            path.next = (index + 1).min(path.waypoints.len() - 1) as u32;
+            path.next = u32::try_from((index + 1).min(path.waypoints.len() - 1))
+                .expect("waypoint counts fit in u32");
         }
     }
     refused
@@ -693,7 +694,7 @@ mod tests {
             let clear = |tile: TilePos| {
                 (0..16).contains(&tile.x)
                     && (0..16).contains(&tile.y)
-                    && !closed[(tile.y * 16 + tile.x) as usize]
+                    && !closed[tile.row_major(16)]
             };
             for _ in 0..200 {
                 let a = Vec2Fx::new(coordinate(16), coordinate(16));

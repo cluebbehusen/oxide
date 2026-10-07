@@ -132,7 +132,7 @@ fn replacement_spends_the_refund_and_rejection_preserves_the_paid_program() {
 fn visibility_activates_the_same_site_without_another_payment() {
     let (mut state, crew, anchor) = fixture();
     let mut snapshot = serde_json::to_value(&state).unwrap();
-    let tile = (anchor.y * state.map().width() + anchor.x) as usize;
+    let tile = anchor.row_major(state.map().width());
     snapshot["map"]["grid"]["cells"][tile]["wreck"] = serde_json::json!(100);
     state = serde_json::from_value(snapshot).unwrap();
     state.tick(&[cmd(0, plan(crew.clone(), anchor, false))]);

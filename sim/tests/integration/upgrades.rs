@@ -460,7 +460,7 @@ fn a_refinery_grinds_faster_than_its_reclaimer() {
         state.tick(&[]);
     }
     let earned = state.player(PlayerId(0)).scrap - bank;
-    let base_rate = (window / RECLAIMER_PERIOD) as u32;
+    let base_rate = u32::try_from(window / RECLAIMER_PERIOD).unwrap();
     assert!(
         earned > base_rate,
         "a refinery out-earns the reclaimer clock ({earned} vs base {base_rate})"

@@ -2,6 +2,7 @@
 
 use crate::common;
 use chassis::grid::TilePos;
+use chassis::grid::as_index;
 use common::*;
 use oxide_sim::scenario::BuildingSpec;
 use oxide_sim::{AttackTarget, BuildingKind, Command, Event, Order, PlayerId, Target, UnitKind};
@@ -967,7 +968,7 @@ fn building_radar_scene(
             building(player, kind, x, y)
         }
     };
-    let mut scenario = open_arena(width as usize, height as usize, Vec::new());
+    let mut scenario = open_arena(as_index(width), as_index(height), Vec::new());
     scenario.buildings = vec![
         place(me, BuildingKind::Array, masts[0].0, masts[0].1),
         place(me, BuildingKind::Array, masts[1].0, masts[1].1),

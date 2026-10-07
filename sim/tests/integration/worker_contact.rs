@@ -1,5 +1,6 @@
 //! Work requires stationary physical contact; cargo releases only after a full stop.
 use crate::common;
+use chassis::grid::as_index;
 
 use chassis::fx::{Fx, Vec2Fx};
 use chassis::grid::TilePos;
@@ -386,9 +387,9 @@ fn harvester_closes_to_the_footprint_on_every_approach_side_before_gathering() {
                 node.y + dy * 2,
             )],
         );
-        let mut row: Vec<char> = scenario.map[node.y as usize].chars().collect();
-        row[node.x as usize] = 's';
-        scenario.map[node.y as usize] = row.into_iter().collect();
+        let mut row: Vec<char> = scenario.map[as_index(node.y)].chars().collect();
+        row[as_index(node.x)] = 's';
+        scenario.map[as_index(node.y)] = row.into_iter().collect();
         let mut state = scenario.build().unwrap();
         let id = state.units()[0].id;
         state.tick(&[cmd(
@@ -467,10 +468,10 @@ fn a_crowded_crew_delivers_every_last_load_and_clears_the_dropoff() {
             for approach in 0..3 {
                 let node = TilePos::new(8 + gap, 12);
                 let mut rows = vec![vec!['.'; 40]; 26];
-                rows[12][node.x as usize] = 's';
+                rows[12][as_index(node.x)] = 's';
                 if blocked {
                     for row in &mut rows[11..=13] {
-                        row[node.x as usize + 1] = '#';
+                        row[as_index(node.x) + 1] = '#';
                     }
                 }
                 let scenario: oxide_sim::Scenario = serde_json::from_value(json!({

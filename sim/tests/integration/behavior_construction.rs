@@ -599,7 +599,7 @@ fn queue_overflow_is_rejected_not_swallowed() {
                 0,
                 Command::Run {
                     units: vec![mover],
-                    goal: TilePos::new(3 + (i % 10) as i32, 2),
+                    goal: TilePos::new(3 + i32::try_from(i % 10).unwrap(), 2),
                     queue: true,
                 },
             )
@@ -1421,7 +1421,7 @@ fn a_full_order_queue_refuses_placement_with_nothing_spent() {
             0,
             Command::Run {
                 units: vec![builder],
-                goal: TilePos::new(12 + (i % 2) as i32, 6),
+                goal: TilePos::new(12 + i32::try_from(i % 2).unwrap(), 6),
                 queue: true,
             },
         ));
@@ -1879,7 +1879,7 @@ fn a_fresh_placement_commits_the_whole_crew() {
     // Three hands raise the site markedly faster than one.
     let build_time = |crew: usize| {
         let mut units: Vec<_> = (0..crew)
-            .map(|i| unit(0, UnitKind::Harvester, 3 + i as i32, 2))
+            .map(|i| unit(0, UnitKind::Harvester, 3 + i32::try_from(i).unwrap(), 2))
             .collect();
         units.push(unit(0, UnitKind::Sentinel, 8, 2));
         let mut state = arena(units).build().unwrap();

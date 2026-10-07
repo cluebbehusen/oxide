@@ -787,10 +787,10 @@ fn every_checklist_row_refuses_its_forgery() {
                 // one tile. Plant scrap under the first frame anchor.
                 let frame = d["map"]["extractor_frames"][0].clone();
                 let (x, y) = (
-                    frame["x"].as_i64().unwrap() as usize,
-                    frame["y"].as_i64().unwrap() as usize,
+                    usize::try_from(frame["x"].as_i64().unwrap()).unwrap(),
+                    usize::try_from(frame["y"].as_i64().unwrap()).unwrap(),
                 );
-                let width = d["map"]["grid"]["width"].as_u64().unwrap() as usize;
+                let width = usize::try_from(d["map"]["grid"]["width"].as_u64().unwrap()).unwrap();
                 d["map"]["grid"]["cells"][y * width + x]["scrap"] = json!(40);
             },
             "map grid dimensions disagree with its cells",
@@ -1357,7 +1357,7 @@ fn every_checklist_row_refuses_its_forgery() {
             |d| {
                 d["vision"][0]["salvage_incidents"] = json!(
                     (0..=oxide_sim::stats::HARVEST_INCIDENT_CAP)
-                        .map(|x| incident(x as i32, 3, 100))
+                        .map(|x| incident(i32::try_from(x).unwrap(), 3, 100))
                         .collect::<Vec<_>>()
                 );
             },
@@ -1837,8 +1837,8 @@ fn a_dangling_order_target_is_not_a_forgery() {
     // its victim by a tick is ordinary play, and refusing it would refuse
     // a state the sim produces every time something dies mid-chase.
     let mut base = snapshot();
-    let live = base["units"][0]["id"].as_u64().unwrap() as u32;
-    let minted = base["next_unit_id"].as_u64().unwrap() as u32;
+    let live = u32::try_from(base["units"][0]["id"].as_u64().unwrap()).unwrap();
+    let minted = u32::try_from(base["next_unit_id"].as_u64().unwrap()).unwrap();
     assert!(live < minted, "premise: the counter is ahead of the roster");
     base["units"][0]["order"] =
         json!({"order": "attack", "target": {"kind": "unit", "id": minted - 1}});
@@ -1854,20 +1854,21 @@ fn a_dangling_order_target_is_not_a_forgery() {
 #[test]
 fn parse_refuses_a_map_beyond_the_edge_bound() {
     use oxide_sim::map::{MAX_MAP_EDGE, Map, MapError};
+    let edge = usize::from(MAX_MAP_EDGE);
 
-    let wide = vec!["#".repeat(MAX_MAP_EDGE + 1)];
+    let wide = vec!["#".repeat(edge + 1)];
     assert!(matches!(
         Map::parse(&wide),
-        Err(MapError::TooLarge { width, height: 1 }) if width == MAX_MAP_EDGE + 1
+        Err(MapError::TooLarge { width, height: 1 }) if width == edge + 1
     ));
 
-    let tall: Vec<String> = std::iter::repeat_n("#".to_string(), MAX_MAP_EDGE + 1).collect();
+    let tall: Vec<String> = std::iter::repeat_n("#".to_string(), edge + 1).collect();
     assert!(matches!(
         Map::parse(&tall),
-        Err(MapError::TooLarge { width: 1, height }) if height == MAX_MAP_EDGE + 1
+        Err(MapError::TooLarge { width: 1, height }) if height == edge + 1
     ));
 
-    let square: Vec<String> = std::iter::repeat_n("#".repeat(MAX_MAP_EDGE), MAX_MAP_EDGE).collect();
+    let square: Vec<String> = std::iter::repeat_n("#".repeat(edge), edge).collect();
     assert!(
         Map::parse(&square).is_ok(),
         "the bound is inclusive: exactly the maximum still parses"

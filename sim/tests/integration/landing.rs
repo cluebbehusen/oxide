@@ -126,7 +126,7 @@ fn fly_and_watch(
             unit.pos,
             state.current_tick()
         );
-        let delta = i16::from(unit.heading.wrapping_sub(last_heading) as i8).abs();
+        let delta = i16::from(unit.heading.wrapping_sub(last_heading).cast_signed()).abs();
         assert!(
             delta <= rate,
             "heading jumped {delta} steps in one tick (rate {rate}) at tick {}",
@@ -221,7 +221,7 @@ fn takeoff_resumes_flight_from_the_parked_heading() {
     )]);
     let unit = state.unit(condor).unwrap();
     assert!(!unit.landed, "the move order lifts the airframe off");
-    let delta = i16::from(unit.heading.wrapping_sub(parked_heading) as i8).abs();
+    let delta = i16::from(unit.heading.wrapping_sub(parked_heading).cast_signed()).abs();
     assert!(delta <= 2, "takeoff turned {delta} steps in its first tick");
     let mut pinned = 0;
     let mut landed = false;
@@ -843,7 +843,7 @@ fn a_tile_ahead_on_a_diagonal_is_landed_straight_in() {
     );
     let parked = state.unit(condor).unwrap();
     assert_eq!(parked.tile(), TilePos::new(17, 12));
-    let bearing = i16::from(parked.heading.wrapping_sub(24) as i8).abs();
+    let bearing = i16::from(parked.heading.wrapping_sub(24).cast_signed()).abs();
     assert!(
         bearing <= 12,
         "parked on heading {}, not along the approach",

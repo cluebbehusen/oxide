@@ -15,7 +15,7 @@ use crate::ids::PlayerId;
 use crate::state::State;
 use crate::stats::{BuildingKind, Domain};
 use chassis::fx::{Fx, HALF, Vec2Fx};
-use chassis::grid::{CARDINALS, Grid, TilePos};
+use chassis::grid::{CARDINALS, Grid, TilePos, as_index};
 use chassis::path::AstarScratch;
 use serde::{Deserialize, Serialize};
 use std::cell::{Cell, OnceCell, RefCell};
@@ -324,7 +324,7 @@ impl Vision {
         let spans = disc_spans(radius);
         for dy in -radius..(h + radius) {
             let vdist = (-dy).max(dy - (h - 1)).max(0);
-            let span = spans[vdist as usize];
+            let span = spans[as_index(vdist)];
             let y = anchor.y + dy;
             self.visible
                 .fill_row_span(y, anchor.x - span, anchor.x + (w - 1) + span, true);
@@ -348,7 +348,7 @@ struct RowCoverage {
 impl RowCoverage {
     fn new(width: i32, height: i32) -> Self {
         Self {
-            bounds: vec![(i32::MAX, i32::MIN); height.max(0) as usize],
+            bounds: vec![(i32::MAX, i32::MIN); as_index(height.max(0))],
             width,
         }
     }
@@ -493,7 +493,7 @@ impl GroundSalvageDanger {
                 })
             })
             .collect();
-        let mut building_blocks = vec![Vec::new(); state.map.height() as usize];
+        let mut building_blocks = vec![Vec::new(); as_index(state.map.height())];
         let viewer_team = state.player(viewer).team;
         for building in state
             .buildings
@@ -539,7 +539,7 @@ impl GroundSalvageDanger {
         for row in &mut building_blocks {
             merge_spans(row);
         }
-        let cell_count = (state.map.width() as usize) * (state.map.height() as usize);
+        let cell_count = chassis::grid::cell_count(state.map.width(), state.map.height());
         let incidents: Vec<TilePos> = vision
             .salvage_incidents()
             .iter()
@@ -554,7 +554,7 @@ impl GroundSalvageDanger {
         for incident in &incidents {
             for y in (incident.y - radius).max(0)..=(incident.y + radius).min(height - 1) {
                 for x in (incident.x - radius).max(0)..=(incident.x + radius).min(width - 1) {
-                    let cell = &lanes[(y * width + x) as usize];
+                    let cell = &lanes[TilePos::new(x, y).row_major(width)];
                     cell.set(cell.get() | lane::INCIDENT_NEAR);
                 }
             }
@@ -634,7 +634,7 @@ impl GroundSalvageDanger {
             .y
             .div_euclid(DANGER_CELL)
             .clamp(0, danger_cells(self.height) - 1);
-        (row * columns + column) as usize
+        as_index(row * columns + column)
     }
 
     /// Whether this snapshot marks one tile as too dangerous for
@@ -779,11 +779,11 @@ impl GroundSalvageDanger {
     /// once.
     pub(crate) fn record_safe_failure(&self, may_drain: impl Fn(TilePos) -> bool) {
         let scratch = self.path_scratch.borrow();
-        let area = self.width as usize * self.height as usize;
+        let area = chassis::grid::cell_count(self.width, self.height);
         if !scratch.last_search_exhausted() || (scratch.last_expansions() as usize) * 8 < area {
             return;
         }
-        let mut reached = vec![0u64; (self.width as usize * self.height as usize).div_ceil(64)];
+        let mut reached = vec![0u64; area.div_ceil(64)];
         let mut watched = Vec::new();
         for y in 0..self.height {
             for x in 0..self.width {
@@ -954,7 +954,7 @@ impl GroundSalvageDanger {
     /// The packed index of an in-bounds tile.
     fn lane_index(&self, tile: TilePos) -> Option<usize> {
         ((0..self.width).contains(&tile.x) && (0..self.height).contains(&tile.y))
-            .then(|| (tile.y as usize) * (self.width as usize) + tile.x as usize)
+            .then(|| tile.row_major(self.width))
     }
 
     /// Serves one boolean verdict through its memo lane pair; out of
@@ -1029,10 +1029,10 @@ impl CellLists {
             let clamp_row = |y: i32| y.div_euclid(DANGER_CELL).clamp(0, rows - 1);
             (clamp_row(low.y)..=clamp_row(high.y)).flat_map(move |row| {
                 (clamp_column(low.x)..=clamp_column(high.x))
-                    .map(move |column| (row * columns + column) as usize)
+                    .map(move |column| as_index(row * columns + column))
             })
         };
-        let mut starts = vec![0u32; (columns * rows) as usize + 1];
+        let mut starts = vec![0u32; as_index(columns * rows) + 1];
         for cell in boxes.clone().flat_map(cells) {
             starts[cell + 1] += 1;
         }
@@ -1043,7 +1043,8 @@ impl CellLists {
         let mut items = vec![0u32; starts[starts.len() - 1] as usize];
         for (record, bounds) in boxes.enumerate() {
             for cell in cells(bounds) {
-                items[cursors[cell] as usize] = record as u32;
+                items[cursors[cell] as usize] =
+                    u32::try_from(record).expect("record counts fit in u32");
                 cursors[cell] += 1;
             }
         }
@@ -1127,7 +1128,7 @@ fn disc_spans(radius: i32) -> &'static [i32] {
             })
             .collect()
     });
-    &table[radius as usize]
+    &table[as_index(radius)]
 }
 
 /// Forget a building only when its removal itself was observable.
@@ -1138,7 +1139,7 @@ pub(crate) fn forget_observed_building(state: &mut State, id: crate::BuildingId,
     let (owner, kind, anchor) = (b.player, b.kind, b.anchor);
     let viewers: Vec<_> = (0..state.players.len())
         .filter(|&index| {
-            let viewer = PlayerId(index as u8);
+            let viewer = PlayerId::from_index(index);
             b.tiles().any(|t| state.vision(viewer).visible(t))
                 && (detonated || state.building_apparent(viewer, b))
         })
@@ -1218,18 +1219,18 @@ pub(crate) fn refresh(state: &mut State) {
             // that team cannot place over its own charge. Hostile scaffolds
             // can overlap a concealed mine and do not disprove the memory.
             ghost.kind.is_stealthy()
-                && !state.charge_detected_at(PlayerId(index as u8), ghost.anchor)
+                && !state.charge_detected_at(PlayerId::from_index(index), ghost.anchor)
                 && !state.buildings.iter().any(|b| {
                     b.contains(ghost.anchor)
                         && !state.hostile(ghost.owner, b.player)
-                        && state.building_apparent(PlayerId(index as u8), b)
+                        && state.building_apparent(PlayerId::from_index(index), b)
                 })
         });
         for building in state.buildings.iter().filter(|b| !allied(b.player)) {
             // An undetected buried charge never enters memory: sight of
             // its tile alone is not knowledge of it (the one stealth
             // rule; see `State::building_apparent`).
-            if !state.building_apparent(PlayerId(index as u8), building) {
+            if !state.building_apparent(PlayerId::from_index(index), building) {
                 continue;
             }
             if building.tiles().any(|t| view.visible(t)) {
@@ -1253,11 +1254,11 @@ pub(crate) fn refresh(state: &mut State) {
         // The per-cell `seen` check still decides; the coverage bounds
         // only shrink the walk.
         for y in 0..state.map.height() {
-            let (x0, x1) = coverage.bounds[y as usize];
+            let (x0, x1) = coverage.bounds[as_index(y)];
             if x0 > x1 {
                 continue;
             }
-            let (x0, x1) = (x0 as usize, x1 as usize);
+            let (x0, x1) = (as_index(x0), as_index(x1));
             let visible = &view.visible.row(y).expect("row in range")[x0..=x1];
             let tiles = &state.map.grid().row(y).expect("row in range")[x0..=x1];
             let scrap = &mut view.remembered_scrap.row_mut(y).expect("row in range")[x0..=x1];
@@ -1308,7 +1309,7 @@ pub(crate) fn refresh(state: &mut State) {
             // A building returns one blip, like a unit of any size. An
             // undetected charge or hostile provisional site is not apparent
             // and returns nothing.
-            let viewer = PlayerId(index as u8);
+            let viewer = PlayerId::from_index(index);
             for b in state
                 .buildings
                 .iter()
@@ -1325,7 +1326,7 @@ pub(crate) fn refresh(state: &mut State) {
             view.contacts.dedup();
         }
         let mut tracking = std::mem::take(&mut view.tracking);
-        tracking.refresh(view, state, PlayerId(index as u8), &sightings);
+        tracking.refresh(view, state, PlayerId::from_index(index), &sightings);
         view.tracking = tracking;
     }
     state.vision = vision;
@@ -1424,7 +1425,7 @@ pub(crate) fn initialize_legacy_tracking(state: &mut State) -> bool {
     for (index, view) in vision.iter_mut().enumerate() {
         if view.tracking.next_id == 0 && view.tracking.tracks.is_empty() {
             let mut tracking = std::mem::take(&mut view.tracking);
-            tracking.refresh(view, state, PlayerId(index as u8), &sightings);
+            tracking.refresh(view, state, PlayerId::from_index(index), &sightings);
             initialized |= tracking.next_id != 0;
             view.tracking = tracking;
         }
@@ -1710,7 +1711,7 @@ mod danger_tests {
 
         let mut state = allied_incident_state();
         for x in 0..=crate::stats::HARVEST_INCIDENT_CAP {
-            state.record_salvage_incident(PlayerId(0), TilePos::new(x as i32, 3));
+            state.record_salvage_incident(PlayerId(0), TilePos::new(i32::try_from(x).unwrap(), 3));
         }
         let incidents = state.vision(PlayerId(0)).salvage_incidents();
         assert_eq!(incidents.len(), crate::stats::HARVEST_INCIDENT_CAP);
@@ -1913,7 +1914,9 @@ mod danger_tests {
         assert!(danger.incidents.is_empty());
         let (width, height) = (state.map.width(), state.map.height());
         let mut rng = chassis::rng::Pcg32::new(17, 3);
-        let mut coordinate = |span: i32| (rng.next_u32() % (span as u32 + 8)) as i32 - 4;
+        let mut coordinate = |span: i32| {
+            i32::try_from(rng.next_u32() % u32::try_from(span + 8).unwrap()).unwrap() - 4
+        };
         for _ in 0..160 {
             let (x, y) = (coordinate(width), coordinate(height));
             let reach = Fx::from_num(x.rem_euclid(9) + 1) + Fx::lit("0.3");

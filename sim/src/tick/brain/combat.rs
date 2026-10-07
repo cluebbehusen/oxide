@@ -2323,8 +2323,8 @@ mod tests {
             UnitKind::Harvester,
         ];
         let mut units = Vec::new();
-        for (i, &kind) in west.iter().enumerate() {
-            let (dx, dy) = ((i as i32) % 4, (i as i32) / 4);
+        for (&kind, i) in west.iter().zip(0_i32..) {
+            let (dx, dy) = (i % 4, i / 4);
             units.push(UnitSpec {
                 player: 0,
                 kind,
@@ -2332,8 +2332,8 @@ mod tests {
                 y: 4 + dy * 2,
             });
         }
-        for (i, &kind) in east.iter().enumerate() {
-            let (dx, dy) = ((i as i32) % 4, (i as i32) / 4);
+        for (&kind, i) in east.iter().zip(0_i32..) {
+            let (dx, dy) = (i % 4, i / 4);
             units.push(UnitSpec {
                 player: 1,
                 kind,
@@ -2462,8 +2462,8 @@ mod tests {
             UnitKind::Scuttler,
         ];
         let mut units = Vec::new();
-        for (i, &kind) in west.iter().enumerate() {
-            let (dx, dy) = ((i as i32) % 3, (i as i32) / 3);
+        for (&kind, i) in west.iter().zip(0_i32..) {
+            let (dx, dy) = (i % 3, i / 3);
             units.push(UnitSpec {
                 player: 0,
                 kind,
@@ -2471,8 +2471,8 @@ mod tests {
                 y: 4 + dy * 2,
             });
         }
-        for (i, &kind) in east.iter().enumerate() {
-            let (dx, dy) = ((i as i32) % 3, (i as i32) / 3);
+        for (&kind, i) in east.iter().zip(0_i32..) {
+            let (dx, dy) = (i % 3, i / 3);
             units.push(UnitSpec {
                 player: 1,
                 kind,
