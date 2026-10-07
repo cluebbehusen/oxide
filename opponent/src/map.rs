@@ -339,13 +339,14 @@ impl MapModel {
                         .flat_map(|gate| gate.tiles.iter().copied())
                         .collect();
                     tiles.sort_unstable();
-                    let home = match flooded.iter().find(|(closed, _)| *closed == tiles) {
-                        Some((_, home)) => home.clone(),
-                        None => {
-                            let home = self.reach_without(start, &tiles);
-                            flooded.push((tiles, home.clone()));
-                            home
-                        }
+                    let home = if let Some((_, home)) =
+                        flooded.iter().find(|(closed, _)| *closed == tiles)
+                    {
+                        home.clone()
+                    } else {
+                        let home = self.reach_without(start, &tiles);
+                        flooded.push((tiles, home.clone()));
+                        home
                     };
                     let cut = Cut {
                         hostile,

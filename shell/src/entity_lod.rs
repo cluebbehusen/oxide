@@ -315,7 +315,7 @@ fn blend_material(texture: &Texture2D) -> Result<Material> {
     use macroquad::miniquad::{BlendFactor, BlendState, BlendValue, Equation, PipelineParams};
     let material = load_material(
         ShaderSource::Glsl {
-            vertex: r#"#version 100
+            vertex: r"#version 100
 attribute vec3 position;
 attribute vec2 texcoord;
 attribute vec4 color0;
@@ -326,8 +326,8 @@ varying highp vec2 uv;
 varying lowp vec4 color;
 varying highp vec4 sampling;
 void main(){ gl_Position=Projection*Model*vec4(position,1.0); uv=texcoord; color=color0/255.0; sampling=normal; }
-"#,
-            fragment: r#"#version 100
+",
+            fragment: r"#version 100
 precision highp float;
 varying highp vec2 uv;
 varying lowp vec4 color;
@@ -343,7 +343,7 @@ void main(){
     }
     gl_FragColor=vec4(pixel.rgb*color.rgb*color.a,pixel.a*color.a);
 }
-"#,
+",
         },
         MaterialParams {
             pipeline_params: PipelineParams {

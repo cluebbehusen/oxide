@@ -1213,7 +1213,7 @@ struct DropOffScan {
 /// remaining foundry — a fully sealed worker floods twice per tick,
 /// not twice per foundry. Returns false only when no drop-off is
 /// reachable at all: the caller's stall.
-/// Ticks between repeated DangerHold reports for one waiting worker.
+/// Ticks between repeated `DangerHold` reports for one waiting worker.
 const DANGER_HOLD_REPORT_PERIOD: u64 = 100;
 
 fn try_drop_offs(

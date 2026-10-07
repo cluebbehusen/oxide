@@ -186,7 +186,7 @@ fn a_crowd_sent_to_an_island_settles_at_the_tip_and_carries_on() {
         for follow_up in [false, true] {
             let mut state = sandbox(&SHORE, crowd(24, 2), vec![]).build().unwrap();
             let ids: Vec<UnitId> = state.units().iter().map(|u| u.id).collect();
-            let homes: Vec<TilePos> = state.units().iter().map(|u| u.tile()).collect();
+            let homes: Vec<TilePos> = state.units().iter().map(oxide_sim::Unit::tile).collect();
             let mut commands = to_the_island(&ids, group);
             if follow_up {
                 // Distinct reachable tiles, so the follow-up's ordinary

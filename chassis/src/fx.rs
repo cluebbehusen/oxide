@@ -150,7 +150,7 @@ fn signed_magnitude(magnitude: u128, negative: bool) -> Option<Fx> {
 fn sign_symmetric_mul(lhs: Fx, rhs: Fx) -> Fx {
     let negative = (lhs < Fx::ZERO) != (rhs < Fx::ZERO);
     let magnitude =
-        ((lhs.to_bits().unsigned_abs() as u128) * (rhs.to_bits().unsigned_abs() as u128)) >> 32;
+        (u128::from(lhs.to_bits().unsigned_abs()) * u128::from(rhs.to_bits().unsigned_abs())) >> 32;
     signed_magnitude(magnitude, negative).unwrap_or_else(|| lhs * rhs)
 }
 
@@ -162,8 +162,8 @@ fn sign_symmetric_div(lhs: Fx, rhs: Fx) -> Fx {
         return lhs / rhs;
     }
     let negative = (lhs < Fx::ZERO) != (rhs < Fx::ZERO);
-    let numerator = (lhs.to_bits().unsigned_abs() as u128) << 32;
-    let magnitude = numerator / (rhs.to_bits().unsigned_abs() as u128);
+    let numerator = u128::from(lhs.to_bits().unsigned_abs()) << 32;
+    let magnitude = numerator / u128::from(rhs.to_bits().unsigned_abs());
     signed_magnitude(magnitude, negative).unwrap_or_else(|| lhs / rhs)
 }
 

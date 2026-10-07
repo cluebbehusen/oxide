@@ -1,6 +1,6 @@
 //! The command band, the orders dock, and the hover tooltip — the
 //! selection panel's entire drawn form. Geometry it publishes rides
-//! the LayoutModel; the pure card model lives in crate::panel.
+//! the `LayoutModel`; the pure card model lives in `crate::panel`.
 
 use super::*;
 use crate::render::prim::{fill_rect, stroke_rect};
@@ -697,7 +697,7 @@ pub(crate) fn draw_panel(
         else {
             match icon {
                 CardIcon::Unit(kind) => {
-                    sprites.draw_portrait(dest, &[(sprites.unit(*kind, faction), tint)])
+                    sprites.draw_portrait(dest, &[(sprites.unit(*kind, faction), tint)]);
                 }
                 CardIcon::Building(kind, tier) => blit_building(dest, *kind, *tier, faction, tint),
                 CardIcon::Verb(v) => blit(dest, sprites.verb_icon(*v), tint),

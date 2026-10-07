@@ -522,7 +522,10 @@ mod tests {
     #[test]
     fn only_paired_ipads_and_ipad_simulators_are_targets() {
         let devices = all();
-        let names: Vec<_> = devices.iter().map(|d| d.to_string()).collect();
+        let names: Vec<_> = devices
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         assert_eq!(
             names,
             [

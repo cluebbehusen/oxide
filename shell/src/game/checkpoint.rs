@@ -569,7 +569,7 @@ mod background_tests {
 
     #[test]
     fn pause_save_bulk_advance_and_replacement_keep_the_settled_boundary() {
-        if std::thread::available_parallelism().map_or(1, |n| n.get()) < 2 {
+        if std::thread::available_parallelism().map_or(1, std::num::NonZero::get) < 2 {
             return; // A single-core host intentionally has no background executor.
         }
         let mut game = Game::with_viewport(Scenario::skirmish(), vec2(1280.0, 800.0)).unwrap();

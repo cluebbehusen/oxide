@@ -238,23 +238,20 @@ impl Tracking {
             {
                 return false;
             }
-            match track.visible_unit {
-                Some(id) => {
-                    if !state.unit(id).is_some_and(|u| {
-                        state.hostile(player, u.player)
-                            && view.visible(u.tile())
-                            && u.tile() == track.tile
-                    }) {
-                        return false;
-                    }
-                    visible.push(id);
+            if let Some(id) = track.visible_unit {
+                if !state.unit(id).is_some_and(|u| {
+                    state.hostile(player, u.player)
+                        && view.visible(u.tile())
+                        && u.tile() == track.tile
+                }) {
+                    return false;
                 }
-                None => {
-                    if view.visible(track.tile) {
-                        return false;
-                    }
-                    reported.push(track.tile);
+                visible.push(id);
+            } else {
+                if view.visible(track.tile) {
+                    return false;
                 }
+                reported.push(track.tile);
             }
         }
         reported.sort_unstable_by_key(|tile| (tile.y, tile.x));

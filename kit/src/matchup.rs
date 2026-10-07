@@ -61,7 +61,7 @@ pub fn parse_garrison(spec: &str) -> Result<Garrison> {
     ];
     let squash = |s: &str| {
         s.chars()
-            .filter(|c| c.is_ascii_alphanumeric())
+            .filter(char::is_ascii_alphanumeric)
             .map(|c| c.to_ascii_lowercase())
             .collect::<String>()
     };
@@ -89,7 +89,7 @@ pub fn garrison_cost(garrison: &Garrison) -> u32 {
 }
 
 fn structure_cost(kind: BuildingKind) -> u32 {
-    kind.base_stats().construction.map(|c| c.cost).unwrap_or(0)
+    kind.base_stats().construction.map_or(0, |c| c.cost)
 }
 
 const ALL_KINDS: [UnitKind; 24] = [
@@ -661,9 +661,9 @@ fn siege_leg(
         // Value alone stayed flat through whole approach marches and
         // nonlethal exchanges, ending slow matchups as phantom draws.
         if now == last && now_hp == last_hp {
-            quiet += 1
+            quiet += 1;
         } else {
-            quiet = 0
+            quiet = 0;
         }
         last = now;
         last_hp = now_hp;

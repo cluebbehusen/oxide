@@ -251,7 +251,7 @@ pub struct UnitStats {
     /// bots. Empty means the producer alone decides.
     pub requires: &'static [BuildingKind],
     /// Whether this machine carries a welding torch: eligibility for the
-    /// Repair and RepairUnit crews (and construction labor rides with
+    /// Repair and `RepairUnit` crews (and construction labor rides with
     /// `harvest` or a torch).
     pub welder: bool,
     /// Construction work applied per adjacent tick (1 for everyone but
@@ -2157,7 +2157,7 @@ pub const EXTRACTOR_SUPPORTED_YIELD: (u32, u64) = (3, 20);
 /// anything is a melting asset, not a free land claim.
 pub const SITE_DECAY_PERIOD: u64 = 8;
 
-/// Per-mille of a building's cost billed per hp welded (against max_hp).
+/// Per-mille of a building's cost billed per hp welded (against `max_hp`).
 /// The three economy verbs price strictly build > repair > salvage:
 /// welding always costs more than salvage refunds, so repair-then-salvage
 /// strictly loses scrap, and a full re-ramp costs ~68% of the price —
@@ -2179,7 +2179,7 @@ pub fn unit_repair_debit(kind: UnitKind, progress: u32) -> u32 {
 }
 
 /// Per-mille of a building's cost refunded per hp drained by salvage
-/// (against max_hp). A full-health salvage banks exactly cost*800/1000.
+/// (against `max_hp`). A full-health salvage banks exactly cost*800/1000.
 pub const SALVAGE_REFUND_PERMILLE: u64 = 800;
 
 /// Reach of the Repair Bay's welding aura, in tiles from the nearest

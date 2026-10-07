@@ -1163,7 +1163,7 @@ mod tests {
                 .map(|(seat, faction)| PlayerSpec {
                     name: format!("seat {seat}"),
                     faction,
-                    team: trio.then_some(if seat == 1 { 1 } else { 0 }),
+                    team: trio.then_some(u8::from(seat == 1)),
                     scrap: 0,
                     bot: false,
                     bot_config: None,

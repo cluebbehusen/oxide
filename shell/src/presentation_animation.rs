@@ -771,9 +771,7 @@ impl AnimationController {
                 ),
             }
         });
-        let activity = if !facts.built {
-            BuildingActivity::Idle
-        } else {
+        let activity = if facts.built {
             match facts.kind {
                 BuildingKind::Foundry | BuildingKind::Fabricator | BuildingKind::Crucible => {
                     let period = match facts.kind {
@@ -805,6 +803,8 @@ impl AnimationController {
                 BuildingKind::RepairBay => self.repair_activity(facts.id, clock),
                 _ => BuildingActivity::Idle,
             }
+        } else {
+            BuildingActivity::Idle
         };
         let weapon = facts
             .kind

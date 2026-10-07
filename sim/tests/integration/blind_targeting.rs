@@ -912,7 +912,7 @@ fn legacy_focus_still_rejects_friendly_hidden_and_incompatible_units() {
             32,
             24,
             vec![unit(
-                if case == "friendly" { 0 } else { 1 },
+                u8::from(case != "friendly"),
                 enemy_kind,
                 if case == "hidden" { 24 } else { 12 },
                 10,

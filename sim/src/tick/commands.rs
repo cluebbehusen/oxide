@@ -463,7 +463,7 @@ fn apply_attack(
             ) {
                 landed += 1;
             }
-        } else if let Some(goal) = walk_goals[(stats.domain == Domain::Air) as usize]
+        } else if let Some(goal) = walk_goals[usize::from(stats.domain == Domain::Air)]
             && assign(u, Order::Run { goal }, queue)
         {
             landed += 1;

@@ -406,9 +406,9 @@ pub struct UiView {
     /// Row under the pointer (highlight only — never the selection).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hover: Option<usize>,
-    /// Gameplay chrome geometry as [top_bar_h, panel_top, minimap x/y/w/h,
-    /// panel_right, orders x/y/w/h] in window pixels — the same
-    /// LayoutModel hit-testing reads, so an agent can aim clicks at (or
+    /// Gameplay chrome geometry as [`top_bar_h`, `panel_top`, minimap x/y/w/h,
+    /// `panel_right`, orders x/y/w/h] in window pixels — the same
+    /// `LayoutModel` hit-testing reads, so an agent can aim clicks at (or
     /// away from) real chrome. The command band spans only to
     /// `panel_right`; `orders` is the queue dock on the left edge,
     /// zero-sized when absent. Menu modes report `None`.

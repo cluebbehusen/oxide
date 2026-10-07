@@ -416,7 +416,7 @@ impl PlaybackSession {
                             Action::Back => leave = true,
                             Action::ReplayPause => self.paused = !self.paused,
                             Action::ReplayBack => {
-                                seek_to = Some(self.engine.position().saturating_sub(500))
+                                seek_to = Some(self.engine.position().saturating_sub(500));
                             }
                             Action::ReplayForward => seek_to = Some(self.engine.position() + 500),
                             Action::ReplayStart => seek_to = Some(self.engine.start()),
@@ -445,7 +445,7 @@ impl PlaybackSession {
                         Fed::Activated(Transport::PlayPause) => self.paused = !self.paused,
                         Fed::Held => {}
                         Fed::Ignored => {
-                            self.apply_pointer(e, viewport, ui, zoom_inverted, mouse, &mut seek_to)
+                            self.apply_pointer(e, viewport, ui, zoom_inverted, mouse, &mut seek_to);
                         }
                     }
                 }

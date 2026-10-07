@@ -1005,13 +1005,13 @@ pub(crate) fn investments(
         return Vec::new();
     };
     let fortification = u64::from(traits.fortification);
-    let cunning = (fortification + u64::from(traits.guile)) / 2;
+    let cunning = u64::midpoint(fortification, u64::from(traits.guile));
     let weights = [
         (BuildingKind::Turret, fortification),
         (BuildingKind::Bastion, fortification),
         (
             BuildingKind::FlakTurret,
-            (fortification + u64::from(traits.support)) / 2,
+            u64::midpoint(fortification, u64::from(traits.support)),
         ),
         (BuildingKind::Array, cunning / 2),
     ];
@@ -1053,7 +1053,7 @@ pub(crate) fn investments(
             points(wounds * composition::weight(traits.support) / 1_000 / BAY_POINTS),
         ));
     }
-    let upgrade_weight = (fortification + u64::from(traits.greed)) / 2;
+    let upgrade_weight = u64::midpoint(fortification, u64::from(traits.greed));
     list.extend(
         observation
             .my_buildings
@@ -1124,31 +1124,32 @@ fn upgrade(guard: &Guard<'_>, building: &BuildingObs, weight: u64) -> Option<(In
     let worth: u64 = guard
         .assets
         .iter()
-        .map(|asset| match raised {
-            Some((cover, next)) => [Domain::Ground, Domain::Air]
-                .into_iter()
-                .filter_map(|domain| Some((domain, asset.approach(domain)?)))
-                .map(|(domain, approach)| {
-                    // The army scrap of the shortfall at the samples the next
-                    // tier covers that it closes beyond the gun today.
-                    let short: u64 = approach
-                        .samples
-                        .iter()
-                        .zip(&approach.open)
-                        .map(|(point, open)| {
-                            approach.shortfall(*open).min(raises(
-                                cover,
-                                next,
-                                domain,
-                                *point,
-                                |cover| approach.held(cover),
-                            ))
-                        })
-                        .sum();
-                    asset.value * short * approach.evidence.weight() / 1_000
-                })
-                .sum::<u64>(),
-            None => {
+        .map(|asset| {
+            if let Some((cover, next)) = raised {
+                [Domain::Ground, Domain::Air]
+                    .into_iter()
+                    .filter_map(|domain| Some((domain, asset.approach(domain)?)))
+                    .map(|(domain, approach)| {
+                        // The army scrap of the shortfall at the samples the next
+                        // tier covers that it closes beyond the gun today.
+                        let short: u64 = approach
+                            .samples
+                            .iter()
+                            .zip(&approach.open)
+                            .map(|(point, open)| {
+                                approach.shortfall(*open).min(raises(
+                                    cover,
+                                    next,
+                                    domain,
+                                    *point,
+                                    |cover| approach.held(cover),
+                                ))
+                            })
+                            .sum();
+                        asset.value * short * approach.evidence.weight() / 1_000
+                    })
+                    .sum::<u64>()
+            } else {
                 let evidence = [Domain::Ground, Domain::Air]
                     .into_iter()
                     .filter_map(|domain| asset.approach(domain))

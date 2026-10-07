@@ -436,7 +436,7 @@ pub(crate) struct GroundSalvageDanger {
     /// in it; built from the captured lists on the first probe.
     threat_cells: OnceCell<ThreatCells>,
     /// One byte of memo lanes per tile, replacing three separate
-    /// tables and their RefCell borrow bookkeeping — the A*
+    /// tables and their `RefCell` borrow bookkeeping — the A*
     /// predicates probe these once per neighbor, and a `Cell` read is
     /// a plain load. The incident-near stamp is set at capture (the
     /// incident rule depends on the mover's origin, so only the
@@ -653,7 +653,7 @@ impl GroundSalvageDanger {
         // One bounds test and one byte load serve both the observed
         // memo and the incident-near stamp.
         let index = self.lane_index(tile);
-        let bits = index.map(|i| self.lanes[i].get()).unwrap_or(0);
+        let bits = index.map_or(0, |i| self.lanes[i].get());
         let observed = self.observed_at(tile, index, bits);
         if observed && self.mobile_or_radar_contains(tile) {
             return false;

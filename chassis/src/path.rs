@@ -797,7 +797,7 @@ mod tests {
             let density = rng.next_below(45);
             let cells = (width * height) as usize;
             let mut walls = vec![false; cells];
-            for wall in walls.iter_mut() {
+            for wall in &mut walls {
                 *wall = rng.next_below(100) < density;
             }
             let start = TilePos::new(

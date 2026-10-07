@@ -61,7 +61,14 @@ pub struct Update {
 
 /// Every keyboard action is exposed, including contextual cards and navigation.
 fn control_sections() -> Vec<(&'static str, Vec<Action>)> {
-    use Action::*;
+    use Action::{
+        AssignGroup, Back, Build, BuildCategory, ClearRally, Confirm, CycleIdleWorker, DeleteSave,
+        HomeCamera, Hunt, JumpToLastAlert, MenuDown, MenuEnd, MenuHome, MenuLeft, MenuPageDown,
+        MenuPageUp, MenuRight, MenuUp, PanDown, PanLeft, PanRight, PanUp, Patrol, RecallBookmark,
+        RepairUnit, ReplayBack, ReplayEnd, ReplayForward, ReplayPause, ReplaySpeed, ReplayStart,
+        ReplayStats, ReturnCargo, Run, Salvage, SetBookmark, SetRally, Slot, StopOrScrap,
+        ToggleBuildPalette, ToggleOverlay, TogglePause, TrainSlot, Unload, Upgrade,
+    };
     let mut sections = vec![
         (
             "Camera",
@@ -339,8 +346,7 @@ fn controls_menu(config: &Config, selected_slot: usize) -> Menu {
                 let value = config
                     .bindings
                     .chord_at(action, slot)
-                    .map(BindingMap::chord_label)
-                    .unwrap_or_else(|| "unbound".into());
+                    .map_or_else(|| "unbound".into(), BindingMap::chord_label);
                 if slot == selected_slot {
                     format!("[{value}]")
                 } else {

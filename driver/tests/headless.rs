@@ -116,7 +116,7 @@ fn shipped_scenarios() -> Vec<PathBuf> {
         "expected the shipped maps, found {}",
         paths.len()
     );
-    paths.sort_by_key(|p| std::cmp::Reverse(std::fs::metadata(p).map(|m| m.len()).unwrap_or(0)));
+    paths.sort_by_key(|p| std::cmp::Reverse(std::fs::metadata(p).map_or(0, |m| m.len())));
     paths
 }
 

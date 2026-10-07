@@ -281,7 +281,7 @@ impl FailureDetectors {
                     // post-tick state; its producer still marks its home.
                     let Some(home) = state
                         .unit(unit)
-                        .map(|trained| trained.tile())
+                        .map(oxide_sim::Unit::tile)
                         .or_else(|| state.building(building).map(|producer| producer.anchor))
                     else {
                         continue;

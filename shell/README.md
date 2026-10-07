@@ -102,7 +102,7 @@ the last choice as the default; `--device <name or id>` skips the question and
 `--list` only prints the devices. A locked iPad still receives the install; open
 Oxide yourself once it is unlocked.
 
-iPadOS 27 requires the UIScene lifecycle, so the workspace pins an unreleased
+iPadOS 27 requires the `UIScene` lifecycle, so the workspace pins an unreleased
 miniquad commit; see the workspace `Cargo.toml` for why that exact commit.
 
 `uv run tools/gen_icon.py` reproduces the shared desktop and iOS icon. The iOS

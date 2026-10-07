@@ -468,8 +468,7 @@ impl InputState {
         {
             return self
                 .build_category
-                .map(Context::BuildCategory)
-                .unwrap_or(Context::Construction);
+                .map_or(Context::Construction, Context::BuildCategory);
         }
         if game.presentation.selection.units.iter().any(|id| {
             game.state
@@ -772,7 +771,7 @@ fn touch_event(phase: mq::TouchPhase, id: u64, x: f32, y: f32) -> Option<RawEven
 /// dropped out of the selection), and could never draw on the press
 /// frame at all — `MouseDown` set `mouse` and `drag_origin` to the same
 /// point by construction, and the frame's motion had already been
-/// collapsed into one MouseMove ahead of it.
+/// collapsed into one `MouseMove` ahead of it.
 ///
 /// Raw events arrive in backing-store pixels; the dpi factor is
 /// injected (never queried) so the whole adapter runs headless.
@@ -921,7 +920,7 @@ fn typable(ch: char) -> bool {
     ('\u{20}'..='\u{7e}').contains(&ch)
 }
 
-/// Whether Cmd, or Ctrl without Alt, is held. AltGr reaches some platforms
+/// Whether Cmd, or Ctrl without Alt, is held. `AltGr` reaches some platforms
 /// as Ctrl+Alt and still types.
 fn chorded(mods: macroquad::miniquad::KeyMods) -> bool {
     mods.logo || (mods.ctrl && !mods.alt)
@@ -1149,7 +1148,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                         .anchors
                         .iter()
                         .any(|a| (a.x - anchor.x).abs() < w && (a.y - anchor.y).abs() < h);
-                    let cost = kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
+                    let cost = kind.base_stats().construction.map_or(0, |c| c.cost);
                     let projection = pending_build_projection(&game.view(), kind, anchor, true);
                     // The projected bank already reflects every paid
                     // pending command; only surviving deferred claims
@@ -1615,7 +1614,7 @@ fn place_at(
     // phase, with future prices held for surviving deferred
     // claims. A broke click gets the honest toast, not an
     // acknowledgment ping followed by a sim rejection.
-    let cost = kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
+    let cost = kind.base_stats().construction.map_or(0, |c| c.cost);
     if projection.funds.available() < cost {
         game.presentation.toast(format!(
             "Not enough scrap for a {}",
@@ -1881,7 +1880,7 @@ pub(crate) fn activate_action_card(game: &mut Game, input: &mut InputState, acti
 fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::CardAction) {
     match action {
         crate::panel::CardAction::Dispatch(Action::TrainSlot(slot)) => {
-            orders::train(game, slot as usize)
+            orders::train(game, slot as usize);
         }
         crate::panel::CardAction::Dispatch(a) => dispatch_action(game, input, a),
         crate::panel::CardAction::ArmBuild(kind) => {
@@ -1899,7 +1898,7 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
             input.rallying = buildings;
         }
         crate::panel::CardAction::CancelProduction(kind) => {
-            crate::production::cancel_one(game, kind)
+            crate::production::cancel_one(game, kind);
         }
         crate::panel::CardAction::CancelQueue(building, index) => {
             game.issue(Command::CancelTrain { building, index });

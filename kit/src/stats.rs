@@ -20,7 +20,7 @@ pub struct PlayerStats {
     /// Standing army value (sum of living units' costs) per sample.
     pub army_value: Vec<u32>,
     /// Living units by kind name at each sample point — the
-    /// composition timeline a viewer can band-chart. BTreeMap keys keep
+    /// composition timeline a viewer can band-chart. `BTreeMap` keys keep
     /// the serialization deterministic.
     #[serde(deserialize_with = "deserialize_kinds")]
     pub kinds: Vec<BTreeMap<&'static str, u16>>,

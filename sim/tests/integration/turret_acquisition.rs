@@ -187,7 +187,7 @@ fn turret_building_fallback_obeys_range_terrain_and_allegiance() {
         scenario.buildings = vec![
             building(0, BuildingKind::Turret, 5, 7),
             building(
-                if case == "own" { 0 } else { 1 },
+                u8::from(case != "own"),
                 BuildingKind::Reclaimer,
                 if case == "out of range" { 12 } else { 9 },
                 7,

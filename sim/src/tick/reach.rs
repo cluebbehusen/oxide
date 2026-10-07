@@ -136,13 +136,12 @@ impl Reach {
         );
         let reverse = scan_reversed(state, player, center, from);
         let key = (domain_key(domain), set, center, reverse);
-        let best = match self.endpoints.get(&key) {
-            Some(&best) => best,
-            None => {
-                let best = nearest(center, reverse, width.max(height), member);
-                self.endpoints.insert(key, best);
-                best
-            }
+        let best = if let Some(&best) = self.endpoints.get(&key) {
+            best
+        } else {
+            let best = nearest(center, reverse, width.max(height), member);
+            self.endpoints.insert(key, best);
+            best
         };
         let best = best?;
         if let Some(stored) = stored

@@ -413,20 +413,18 @@ impl Scenario {
             .players
             .iter()
             .map(|spec| {
-                let team = match spec.team {
-                    Some(id) => match team_ids.iter().find(|(k, _)| *k == Some(id)) {
-                        Some((_, dense)) => *dense,
-                        None => {
-                            let dense = team_ids.len() as u8;
-                            team_ids.push((Some(id), dense));
-                            dense
-                        }
-                    },
-                    None => {
+                let team = if let Some(id) = spec.team {
+                    if let Some((_, dense)) = team_ids.iter().find(|(k, _)| *k == Some(id)) {
+                        *dense
+                    } else {
                         let dense = team_ids.len() as u8;
-                        team_ids.push((None, dense));
+                        team_ids.push((Some(id), dense));
                         dense
                     }
+                } else {
+                    let dense = team_ids.len() as u8;
+                    team_ids.push((None, dense));
+                    dense
                 };
                 Player {
                     name: spec.name.clone(),
@@ -648,7 +646,7 @@ mod tests {
         let _ = inner;
         // Move player 0's anchor to the last interior column, so the
         // footprint's second column lands on the border.
-        for line in scenario.map.iter_mut() {
+        for line in &mut scenario.map {
             *line = line.replace('1', ".");
         }
         let width = scenario.map[1].len();

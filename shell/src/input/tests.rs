@@ -5484,7 +5484,7 @@ fn a_group_sent_into_fog_draws_its_click_for_every_member() {
         }
     };
 
-    assert!(goals(&game).iter().all(|goal| goal.is_pending()));
+    assert!(goals(&game).iter().all(oxide_sim::Goal::is_pending));
     draws_the_click(&game);
 
     let mut exposed = false;
@@ -5496,7 +5496,7 @@ fn a_group_sent_into_fog_draws_its_click_for_every_member() {
         }
     }
     assert!(exposed, "the walk explores its click on the way");
-    let mut targets: Vec<_> = goals(&game).iter().map(|goal| goal.target()).collect();
+    let mut targets: Vec<_> = goals(&game).iter().map(oxide_sim::Goal::target).collect();
     targets.sort_unstable_by_key(|tile| (tile.y, tile.x));
     targets.dedup();
     assert_eq!(targets.len(), group.len(), "each member took its own slot");

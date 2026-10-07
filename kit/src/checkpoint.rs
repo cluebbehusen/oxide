@@ -577,7 +577,7 @@ mod tests {
         };
         forged(&|bad| bad["bots"].as_array_mut().unwrap().swap(0, 1));
         forged(&|bad| {
-            bad["bots"][1] = serde_json::json!({"controller": {"player": 1}, "events": []})
+            bad["bots"][1] = serde_json::json!({"controller": {"player": 1}, "events": []});
         });
         forged(&|bad| bad["bots"][0]["memory"] = serde_json::json!([]));
         forged(&|bad| bad["bots"][0] = bad["bots"][1].clone());

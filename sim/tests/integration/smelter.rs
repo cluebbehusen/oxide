@@ -148,7 +148,7 @@ fn mirrored_crucibles_smelt_mirrored_wreck_tiles() {
     // must burn mirrored tiles, not whichever an absolute scan meets first.
     let (width, height) = (30usize, 10usize);
     let mut rows = vec![vec!['.'; width]; height];
-    for row in rows.iter_mut() {
+    for row in &mut rows {
         row[0] = '#';
         row[width - 1] = '#';
     }
@@ -245,7 +245,7 @@ fn a_centered_crucible_smelts_in_its_owners_home_frame() {
     let anchor = TilePos::new(14, 4);
     let build = |owner: u8| {
         let mut rows = vec![vec!['.'; width]; height];
-        for row in rows.iter_mut() {
+        for row in &mut rows {
             row[0] = '#';
             row[width - 1] = '#';
         }

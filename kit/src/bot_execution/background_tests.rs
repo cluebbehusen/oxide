@@ -247,7 +247,7 @@ fn wrong_world_tick_roster_and_worker_failure_reject_without_installing() {
         let (send, result) = mpsc::channel();
         let job = PendingDecision {
             world: Arc::downgrade(&state),
-            tick: if kind == 1 { 1 } else { 0 },
+            tick: u64::from(kind == 1),
             result,
         };
         let value = if kind == 3 {

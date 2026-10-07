@@ -467,7 +467,7 @@ fn safe_theme_prop_tile(rows: &[String], pos: TilePos) -> bool {
 
 fn symmetric_safe_theme_prop_tile(rows: &[String], pos: TilePos) -> bool {
     let height = rows.len() as i32;
-    let width = rows.first().map_or(0, |row| row.len()) as i32;
+    let width = rows.first().map_or(0, std::string::String::len) as i32;
     let mirror = TilePos::new(width - 1 - pos.x, height - 1 - pos.y);
     safe_theme_prop_tile(rows, pos) && safe_theme_prop_tile(rows, mirror)
 }
@@ -516,12 +516,7 @@ fn quarry_dressing(pos: TilePos, width: i32, height: i32, seed: u64) -> Option<Q
 pub(crate) fn draw_tiles(game: &crate::game::Scene<'_>, sprites: &Sprites) {
     let zoom = game.presentation.camera.zoom;
     let size = zoom.ceil() + 1.0; // slight overlap kills seam hairlines
-    let theme = game
-        .scenario
-        .meta
-        .as_ref()
-        .map(|m| m.theme.as_str())
-        .unwrap_or("");
+    let theme = game.scenario.meta.as_ref().map_or("", |m| m.theme.as_str());
     let tint = theme_tint(theme);
     let themed = theme_code(theme).is_some();
     let map_width = game.state.map().width();
@@ -1018,8 +1013,7 @@ mod tests {
             let theme = scenario
                 .meta
                 .as_ref()
-                .map(|meta| meta.theme.as_str())
-                .unwrap_or("");
+                .map_or("", |meta| meta.theme.as_str());
             assert!(
                 theme_code(theme).is_some(),
                 "{} has no generated theme-prop row",

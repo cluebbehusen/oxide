@@ -658,9 +658,7 @@ fn the_repair_salvage_pump_strictly_loses_scrap() {
     let drip_free = state.player(PlayerId(0)).scrap - drips_between(0, &state);
     assert!(
         drip_free < bank_start,
-        "welding back what salvage banked must cost more than it paid: {} -> {} (drip removed)",
-        bank_start,
-        drip_free
+        "welding back what salvage banked must cost more than it paid: {bank_start} -> {drip_free} (drip removed)"
     );
 }
 

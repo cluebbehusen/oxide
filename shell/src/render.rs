@@ -366,7 +366,7 @@ pub fn reduced_motion() -> bool {
 /// macroquad's high-dpi backing store absorbs the retina multiple
 /// underneath. Multiplying dpi in here double-sized every piece of
 /// chrome for four releases (the audit's giant menus and viewport-
-/// swallowing minimap, root-caused by a live probe: screen_w=1280 on a
+/// swallowing minimap, root-caused by a live probe: `screen_w=1280` on a
 /// 2560-pixel display). The user preference is the only factor.
 pub fn ui_scale() -> f32 {
     #[cfg(not(test))]
@@ -1253,8 +1253,7 @@ pub fn tutorial_card_rect(t: &crate::tutorial::Tutorial) -> Rect {
     let x = (viewport().x - w) * 0.5;
     let lines = (crate::tutorial::STEPS
         .get(t.step)
-        .map(|step| step.body(crate::platform::TOUCH_ONLY).len())
-        .unwrap_or(0)
+        .map_or(0, |step| step.body(crate::platform::TOUCH_ONLY).len())
         + usize::from(t.coach_active())) as f32;
     Rect::new(x, 36.0 * s, w, 34.0 * s + lines * 18.0 * s + 10.0 * s)
 }

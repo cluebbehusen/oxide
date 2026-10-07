@@ -256,7 +256,7 @@ impl TerraceField {
 }
 
 pub(super) fn shifted(color: Color, amount: i16) -> Color {
-    let amount = amount as f32 / 255.0;
+    let amount = f32::from(amount) / 255.0;
     Color::new(
         (color.r + amount).clamp(0.0, 1.0),
         (color.g + amount).clamp(0.0, 1.0),

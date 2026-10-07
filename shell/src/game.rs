@@ -555,13 +555,13 @@ impl Game {
             }
         }
 
-        if !self.suppress_presentation {
-            self.presentation
-                .observe_tick(&self.state, &report.events, &report.movement);
-        } else {
+        if self.suppress_presentation {
             self.presentation
                 .projectile_releases
                 .observe(&self.state, &report.events);
+        } else {
+            self.presentation
+                .observe_tick(&self.state, &report.events, &report.movement);
         }
         // Dead units leave the selection — and so do HOSTILES whose
         // ground fog has re-covered: the panel reads live hp from the

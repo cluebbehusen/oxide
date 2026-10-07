@@ -589,7 +589,7 @@ fn draw_defense_mount(
     action: Option<usize>,
 ) {
     let draw = |x, y, tint, params| {
-        sprites.draw_building(x, y, tint, params, game.presentation.camera.zoom)
+        sprites.draw_building(x, y, tint, params, game.presentation.camera.zoom);
     };
     let faction = game.state.player(building.player).faction;
     let screen = game
@@ -871,11 +871,7 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
         }
         if !building.built {
             // Construction progress in bone, distinct from training amber.
-            let ticks = building
-                .stats()
-                .construction
-                .map(|c| c.build_ticks)
-                .unwrap_or(1);
+            let ticks = building.stats().construction.map_or(1, |c| c.build_ticks);
             let fraction = building.progress as f32 / ticks as f32;
             draw_rectangle(screen.x, screen.y + dest.y + 3.0, dest.x, 4.0, HP_BACK);
             draw_rectangle(
@@ -912,11 +908,7 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
         } else if building.built {
             building.hp < max_hp
         } else {
-            let ticks = building
-                .stats()
-                .construction
-                .map(|c| c.build_ticks)
-                .unwrap_or(1);
+            let ticks = building.stats().construction.map_or(1, |c| c.build_ticks);
             let start = max_hp / 5;
             let expected = start + (max_hp - start) * building.progress.min(ticks) / ticks;
             building.hp < expected
@@ -3303,7 +3295,7 @@ mod tests {
         for (tier, stats) in kind.tiers().iter().enumerate() {
             let mut ranges = Vec::new();
             visit_building_ranges(vec2(10.0, 10.0), kind, tier as u8, |range| {
-                ranges.push(range)
+                ranges.push(range);
             });
             let weapon = ranges
                 .iter()
@@ -3367,7 +3359,7 @@ mod tests {
             game.presentation.selection.units = vec![id];
             let mut indicators = Vec::new();
             visit_active_ranges(&game.view(), &InputState::new(), |indicator| {
-                indicators.push(indicator)
+                indicators.push(indicator);
             });
             let weapons: Vec<_> = indicators
                 .iter()

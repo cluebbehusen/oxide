@@ -487,11 +487,7 @@ fn steer_turn_limited(
         let step = flight::safest_step(map, unit.pos, heading_before, radius);
         unit.heading = heading_before.wrapping_add(step.wrapping_mul(stats.turn_rate));
     };
-    if !flight::escapable(map, straight, unit.heading, radius) {
-        // Wall reflex: one more straight tick would leave no arc that stays
-        // inside the world, so bank away now, whatever the route wants.
-        bank_away(unit);
-    } else {
+    if flight::escapable(map, straight, unit.heading, radius) {
         match target {
             Some(target) => steer_toward(unit, map, stats, target),
             // No route: hold the bank and orbit. The circle is tangent to
@@ -511,6 +507,10 @@ fn steer_turn_limited(
         {
             bank_away(unit);
         }
+    } else {
+        // Wall reflex: one more straight tick would leave no arc that stays
+        // inside the world, so bank away now, whatever the route wants.
+        bank_away(unit);
     }
     let ahead = map.clamp_to_envelope(unit.pos + chassis::compass::dir(unit.heading) * stats.speed);
     let sky_open = |p: Vec2Fx| {
@@ -1618,10 +1618,10 @@ mod tests {
         let mut map = vec![".".repeat(width as usize); height as usize];
         map[1].replace_range(1..2, "1");
         map[height as usize - 2].replace_range(width as usize - 2..width as usize - 1, "2");
-        map[blocked.y as usize].replace_range(blocked.x as usize..blocked.x as usize + 1, "#");
+        map[blocked.y as usize].replace_range((blocked.x as usize)..=(blocked.x as usize), "#");
         let mirrored_blocked = mirror_tile(blocked);
         map[mirrored_blocked.y as usize].replace_range(
-            mirrored_blocked.x as usize..mirrored_blocked.x as usize + 1,
+            (mirrored_blocked.x as usize)..=(mirrored_blocked.x as usize),
             "#",
         );
 

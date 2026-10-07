@@ -265,10 +265,10 @@ pub(super) fn run(
             Order::Found { kind, anchor } => found(state, id, kind, anchor, events, &mut builds),
             Order::RepairUnit { unit } => repair_unit(state, id, unit, events, &mut field_welds),
             Order::Board { transport } => {
-                logistics::board(state, id, transport, &mut logistics_pending, events)
+                logistics::board(state, id, transport, &mut logistics_pending, events);
             }
             Order::Unload { .. } => {
-                logistics::unload(state, index, &mut reach, id, &mut logistics_pending, events)
+                logistics::unload(state, index, &mut reach, id, &mut logistics_pending, events);
             }
             Order::Land { goal, from } => land(state, index, id, goal, from, events),
         }
@@ -370,7 +370,9 @@ fn resolve_hits(
         // so only a dead one is judged by where it fired from.
         let shooter = match hit.attacker {
             Target::Unit(id) => state.unit(id).map(|unit| unit.pos),
-            Target::Building(id) => state.building(id).map(|building| building.center()),
+            Target::Building(id) => state
+                .building(id)
+                .map(super::super::state::Building::center),
         }
         .unwrap_or(hit.origin);
         if !state.can_see(victim, chassis::grid::TilePos::containing(shooter)) {
@@ -396,13 +398,12 @@ fn resolve_hits(
             let Some(b) = state.building(gain.site).filter(|b| b.hp > 0) else {
                 continue;
             };
-            let i = match rooms.iter().position(|(id, _)| *id == gain.site) {
-                Some(i) => i,
-                None => {
-                    let room = i64::from(b.stats().max_hp) - i64::from(b.hp);
-                    rooms.push((gain.site, room));
-                    rooms.len() - 1
-                }
+            let i = if let Some(i) = rooms.iter().position(|(id, _)| *id == gain.site) {
+                i
+            } else {
+                let room = i64::from(b.stats().max_hp) - i64::from(b.hp);
+                rooms.push((gain.site, room));
+                rooms.len() - 1
             };
             let accepted = rooms[i].1.clamp(0, i64::from(gain.step)) as u32;
             if rooms[i].1 <= 0 {
@@ -446,10 +447,10 @@ fn resolve_hits(
         completes: Option<(crate::ids::PlayerId, crate::stats::BuildingKind)>,
     }
     let mut work: Vec<Work> = Vec::new();
-    let slot = |v: &mut Vec<Work>, building| match v.iter_mut().position(|w| w.building == building)
-    {
-        Some(i) => i,
-        None => {
+    let slot = |v: &mut Vec<Work>, building| {
+        if let Some(i) = v.iter_mut().position(|w| w.building == building) {
+            i
+        } else {
             v.push(Work {
                 building,
                 gain: 0,
@@ -534,20 +535,19 @@ fn resolve_hits(
 /// reading, so a welder whose WHOLE step lands past the hp ceiling
 /// gets its prepaid coin back (the marginal welder's partially
 /// accepted step keeps its ceil-billed fraction); and per unit the
-/// gains net into one delta clamped once to max_hp.
+/// gains net into one delta clamped once to `max_hp`.
 fn resolve_unit_heals(state: &mut State, heals: Vec<PendingUnitHeal>, events: &mut Vec<Event>) {
     let mut rooms: Vec<(UnitId, i64)> = Vec::new();
     for heal in &heals {
         let Some(u) = state.unit(heal.unit).filter(|u| u.hp > 0) else {
             continue;
         };
-        let i = match rooms.iter().position(|(id, _)| *id == heal.unit) {
-            Some(i) => i,
-            None => {
-                let room = i64::from(u.kind.stats().max_hp) - i64::from(u.hp);
-                rooms.push((heal.unit, room));
-                rooms.len() - 1
-            }
+        let i = if let Some(i) = rooms.iter().position(|(id, _)| *id == heal.unit) {
+            i
+        } else {
+            let room = i64::from(u.kind.stats().max_hp) - i64::from(u.hp);
+            rooms.push((heal.unit, room));
+            rooms.len() - 1
         };
         let accepted = rooms[i].1.clamp(0, i64::from(heal.step)) as u32;
         if rooms[i].1 <= 0 {

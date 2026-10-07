@@ -54,7 +54,7 @@ fn arena4(units: Vec<UnitSpec>) -> Scenario {
 #[test]
 fn a_single_team_scenario_is_rejected() {
     let mut scenario = arena4(vec![]);
-    for p in scenario.players.iter_mut() {
+    for p in &mut scenario.players {
         p.team = Some(0);
     }
     assert!(matches!(scenario.build(), Err(ScenarioError::OneTeam)));

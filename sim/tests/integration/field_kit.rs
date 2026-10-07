@@ -455,8 +455,7 @@ fn saturation_fire_clears_a_field_without_detonation() {
         for event in &report.events {
             match event {
                 Event::BuildingDestroyed { building, .. }
-                    if *building
-                        == state.buildings().first().map(|b| b.id).unwrap_or(*building) => {}
+                    if *building == state.buildings().first().map_or(*building, |b| b.id) => {}
                 _ => {}
             }
             if matches!(event, Event::ChargeDetonated { .. }) {

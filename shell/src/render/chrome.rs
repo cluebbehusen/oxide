@@ -1,6 +1,6 @@
 //! Standing chrome and overlays: the top bar with its controls hint,
 //! toasts, the salvage hover tooltip, the omniscient debug overlay,
-//! and the endgame verdict. The LayoutModel publish rides in the hud
+//! and the endgame verdict. The `LayoutModel` publish rides in the hud
 //! so drawn and clickable can never disagree.
 
 use super::*;

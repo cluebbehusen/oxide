@@ -299,7 +299,7 @@ fn seat_team_keys(scenario: &Scenario) -> Vec<u16> {
         .players
         .iter()
         .enumerate()
-        .map(|(i, p)| p.team.map(u16::from).unwrap_or(256 + i as u16))
+        .map(|(i, p)| p.team.map_or(256 + i as u16, u16::from))
         .collect()
 }
 
@@ -477,7 +477,31 @@ fn setup_card_controls(
     let inset = (4.0 * ui).clamp(2.0, 6.0);
     let chip_h = (card.h * 0.72).clamp(10.0, 40.0 * ui);
     let chip_y = card.y + (card.h - chip_h) * 0.5;
-    if seat != seat_choice {
+    if seat == seat_choice {
+        let controls_w = (card.w * 0.36)
+            .max(MIN_TOUCH_TARGET * 2.0)
+            .min(card.w - MIN_TOUCH_TARGET);
+        let lane_w = controls_w / 2.0;
+        let controls_x = card.x + card.w - controls_w;
+        let control = |lane: usize| {
+            Rect::new(
+                controls_x + lane as f32 * lane_w + inset * 0.5,
+                chip_y,
+                (lane_w - inset).max(1.0),
+                chip_h,
+            )
+        };
+        let faction = control(0);
+        let team = control(1);
+        (
+            [
+                Rect::new(card.x, card.y, controls_x - card.x, card.h),
+                faction,
+                team,
+            ],
+            [zero; 2],
+        )
+    } else {
         let controls_w = (card.w * 0.72)
             .max(MIN_TOUCH_TARGET * 4.0)
             .min(card.w - MIN_TOUCH_TARGET);
@@ -502,30 +526,6 @@ fn setup_card_controls(
                 team,
             ],
             [difficulty, stance],
-        )
-    } else {
-        let controls_w = (card.w * 0.36)
-            .max(MIN_TOUCH_TARGET * 2.0)
-            .min(card.w - MIN_TOUCH_TARGET);
-        let lane_w = controls_w / 2.0;
-        let controls_x = card.x + card.w - controls_w;
-        let control = |lane: usize| {
-            Rect::new(
-                controls_x + lane as f32 * lane_w + inset * 0.5,
-                chip_y,
-                (lane_w - inset).max(1.0),
-                chip_h,
-            )
-        };
-        let faction = control(0);
-        let team = control(1);
-        (
-            [
-                Rect::new(card.x, card.y, controls_x - card.x, card.h),
-                faction,
-                team,
-            ],
-            [zero; 2],
         )
     }
 }
@@ -1440,7 +1440,7 @@ impl Wizard {
         }
     }
 
-    /// The (title, items, selected) surface QueryUi reports — the
+    /// The (title, items, selected) surface `QueryUi` reports — the
     /// custom screens speak the same protocol the row menus do.
     pub fn ui_surface(&self, draft: &NewMatchDraft) -> (String, Vec<String>, usize) {
         match self.step {
@@ -1494,7 +1494,7 @@ impl Wizard {
         }
     }
 
-    /// The half-open item-index range actually on screen — QueryUi's
+    /// The half-open item-index range actually on screen — `QueryUi`'s
     /// `visible_range`, computed from the same injected viewport the
     /// frame drew with. The map grid reads the browser's real layout
     /// (visible cards are a contiguous run of entry indices; a window
@@ -1509,14 +1509,10 @@ impl Wizard {
                     _ => [0, 0],
                 }
             }
-            Step::Setup => draft
-                .scenario
-                .as_deref()
-                .map(|scenario| {
-                    setup_layout_page(scenario, draft.seat_choice, view, ui, self.setup_page)
-                        .visible_range
-                })
-                .unwrap_or([0, 0]),
+            Step::Setup => draft.scenario.as_deref().map_or([0, 0], |scenario| {
+                setup_layout_page(scenario, draft.seat_choice, view, ui, self.setup_page)
+                    .visible_range
+            }),
         }
     }
 

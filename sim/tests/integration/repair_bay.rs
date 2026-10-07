@@ -171,7 +171,7 @@ fn forge_buildings(
         building["hp"] = serde_json::json!(hp);
         building["built"] = serde_json::json!(built);
         building["tier"] = serde_json::json!(tier);
-        building["progress"] = serde_json::json!(if *built { 0 } else { 1 });
+        building["progress"] = serde_json::json!(i32::from(!*built));
     }
     serde_json::from_value(json).unwrap()
 }

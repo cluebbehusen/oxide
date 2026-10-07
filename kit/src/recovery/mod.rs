@@ -106,7 +106,7 @@ pub(crate) enum Event {
 pub struct Inspection {
     /// Whether the record belongs to live play or replay viewing.
     pub kind: RecordingKind,
-    /// Recorded build, which may differ even when SIM_VERSION matches.
+    /// Recorded build, which may differ even when `SIM_VERSION` matches.
     pub build: BuildIdentity,
     /// Unique recording identity.
     pub session: String,

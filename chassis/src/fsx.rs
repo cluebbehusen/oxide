@@ -82,7 +82,10 @@ pub fn sweep_temps(dir: &Path, older_than: Duration) -> usize {
         return 0;
     };
     let mut swept = 0;
-    for path in entries.filter_map(|e| e.ok()).map(|e| e.path()) {
+    for path in entries
+        .filter_map(std::result::Result::ok)
+        .map(|e| e.path())
+    {
         let temp_named = path
             .file_name()
             .and_then(|n| n.to_str())
@@ -116,7 +119,7 @@ mod tests {
     fn temps_in(dir: &Path) -> Vec<std::path::PathBuf> {
         std::fs::read_dir(dir)
             .unwrap()
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .map(|e| e.path())
             .filter(|p| {
                 p.file_name()

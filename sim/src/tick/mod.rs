@@ -976,7 +976,7 @@ mod tests {
             commands.push(PlayerCommand {
                 player: PlayerId(player),
                 command: Command::Train {
-                    building: BuildingId(player as u32),
+                    building: BuildingId(u32::from(player)),
                     kind: UnitKind::Harvester,
                 },
             });

@@ -271,11 +271,11 @@ pub(crate) fn selection_info(game: &Scene<'_>, panel: &Panel) -> SelectionInfo {
             );
         }
         if stats.transport_capacity > 0 {
-            let value = if !game.state.hostile(game.presentation.human, u.player) {
+            let value = if game.state.hostile(game.presentation.human, u.player) {
+                format!("{} points", stats.transport_capacity)
+            } else {
                 let held: u8 = u.cargo.iter().map(|r| r.kind.stats().transport_size).sum();
                 format!("{held}/{} points", stats.transport_capacity)
-            } else {
-                format!("{} points", stats.transport_capacity)
             };
             info.row("Cargo", value, Some(Verb(VerbIcon::Build)));
         }

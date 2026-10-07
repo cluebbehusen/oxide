@@ -61,12 +61,13 @@ impl NativeCapture {
             }
         };
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-        let output = std::env::var_os("OXIDE_ANIMATION_CAPTURE_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
+        let output = std::env::var_os("OXIDE_ANIMATION_CAPTURE_DIR").map_or_else(
+            || {
                 root.join("screenshots/native-animation")
                     .join(format!("run-{}", std::process::id()))
-            });
+            },
+            PathBuf::from,
+        );
         std::fs::create_dir_all(&output)?;
         Ok(Self {
             shell: Some(shell),
@@ -1096,7 +1097,7 @@ fn combat_kinds() -> impl Iterator<Item = UnitKind> {
 
 fn movement_scenario(kind: UnitKind) -> Value {
     scenario(
-        &format!("Native {:?} Movement", kind),
+        &format!("Native {kind:?} Movement"),
         &[],
         vec![unit(0, kind, 15, 10)],
         Vec::new(),
@@ -1159,12 +1160,7 @@ fn unit_duel_scenario(attacker: UnitKind) -> Value {
     } else {
         Vec::new()
     };
-    scenario(
-        &format!("Native {:?} Fire", attacker),
-        &[],
-        units,
-        buildings,
-    )
+    scenario(&format!("Native {attacker:?} Fire"), &[], units, buildings)
 }
 
 fn sentinel_sidearm_scenario() -> Value {
@@ -1216,7 +1212,7 @@ fn defense_duel_scenario(defense: BuildingKind) -> Value {
         buildings.push(structure(0, BuildingKind::Array, 21, 12));
     }
     scenario(
-        &format!("Native {:?} Fire", defense),
+        &format!("Native {defense:?} Fire"),
         &[],
         vec![unit(1, target, target_x, 10)],
         buildings,

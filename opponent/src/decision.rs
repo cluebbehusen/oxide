@@ -922,17 +922,16 @@ fn train_scout(
     if coming >= lacking {
         return;
     }
-    let (producer, kind) = match airworks {
-        Some(producer) => (producer, air),
-        None => {
-            let Some(foundry) = producers
-                .iter()
-                .find(|producer| producer.building.kind == BuildingKind::Foundry)
-            else {
-                return;
-            };
-            (foundry, UnitKind::Scuttler)
-        }
+    let (producer, kind) = if let Some(producer) = airworks {
+        (producer, air)
+    } else {
+        let Some(foundry) = producers
+            .iter()
+            .find(|producer| producer.building.kind == BuildingKind::Foundry)
+        else {
+            return;
+        };
+        (foundry, UnitKind::Scuttler)
     };
     ledger.train(producer.building.id, kind);
 }

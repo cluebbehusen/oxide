@@ -26,8 +26,7 @@ fn guard_dist(state: &State, id: UnitId, from: TilePos) -> i64 {
         .units()
         .iter()
         .find(|u| u.id == id)
-        .map(|u| milli(u.pos.dist(from.center())))
-        .unwrap_or(0)
+        .map_or(0, |u| milli(u.pos.dist(from.center())))
 }
 
 /// Quiet ticks: the guard earns its station standing them.

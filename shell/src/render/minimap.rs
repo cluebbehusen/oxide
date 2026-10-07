@@ -169,9 +169,7 @@ pub(crate) fn draw_minimap(game: &crate::game::Scene<'_>) {
         } else {
             (vision.explored(pos), vision.visible(pos))
         };
-        let color = if !explored {
-            MINI_VOID
-        } else {
+        let color = if explored {
             // Same memory rule as the world view: live scrap in sight,
             // last-seen scrap under the dim.
             let scrap = if visible {
@@ -210,6 +208,8 @@ pub(crate) fn draw_minimap(game: &crate::game::Scene<'_>) {
             } else {
                 dim(base)
             }
+        } else {
+            MINI_VOID
         };
         layer.image.set_pixel(pos.x as u32, pos.y as u32, color);
     }

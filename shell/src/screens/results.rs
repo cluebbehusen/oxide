@@ -484,14 +484,14 @@ impl ResultsScreen {
             );
             draw_text(
                 "BUILT",
-                (columns[2] + columns[3]) * 0.5 - 17.0 * s,
+                f32::midpoint(columns[2], columns[3]) - 17.0 * s,
                 header_y,
                 layout.header_size,
                 theme::TEXT_SECONDARY,
             );
             draw_text(
                 "LOST",
-                (columns[4] + columns[5]) * 0.5 - 14.0 * s,
+                f32::midpoint(columns[4], columns[5]) - 14.0 * s,
                 header_y,
                 layout.header_size,
                 theme::TEXT_SECONDARY,

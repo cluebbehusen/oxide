@@ -70,7 +70,10 @@ impl Link {
             return;
         }
         let spread = u64::from(self.rng.next_below(2 * self.jitter + 1));
-        let at = (now + self.latency + ms(spread) - ms(u64::from(self.jitter))).max(self.last);
+        let at = (now + self.latency + ms(spread))
+            .checked_sub(ms(u64::from(self.jitter)))
+            .unwrap()
+            .max(self.last);
         self.last = at;
         self.queue.push_back((at, line));
     }
@@ -405,7 +408,7 @@ fn a_stuck_client_with_a_live_network_is_dropped_and_surrenders() {
         }
     );
     assert_eq!(net.host.events.len(), 1);
-    assert!(dropped_at >= Duration::from_secs(4) + PROGRESS_TIMEOUT - ms(500));
+    assert!(dropped_at + ms(500) >= Duration::from_secs(4) + PROGRESS_TIMEOUT);
     assert!(
         net.clients[0].end.is_none(),
         "the waiting host kept heartbeating"

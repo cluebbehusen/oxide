@@ -213,8 +213,8 @@ fn air_route(state: &State, a: &oxide_sim::Building, b: &oxide_sim::Building) ->
     let center = |f: &oxide_sim::Building| {
         let (w, h) = f.stats().size;
         (
-            f.anchor.x as f64 + w as f64 / 2.0,
-            f.anchor.y as f64 + h as f64 / 2.0,
+            f64::from(f.anchor.x) + f64::from(w) / 2.0,
+            f64::from(f.anchor.y) + f64::from(h) / 2.0,
         )
     };
     let (ax, ay) = center(a);
@@ -383,18 +383,20 @@ pub fn audit(scenario: &Scenario) -> Result<MapAudit> {
                 .buildings()
                 .iter()
                 .find(|b| b.player.0 == *seat && b.kind == BuildingKind::Foundry)
-                .map(|b| {
+                .map_or((0.0, 0.0), |b| {
                     let size = b.stats().size;
                     (
-                        b.anchor.x as f64 + size.0 as f64 / 2.0,
-                        b.anchor.y as f64 + size.1 as f64 / 2.0,
+                        f64::from(b.anchor.x) + f64::from(size.0) / 2.0,
+                        f64::from(b.anchor.y) + f64::from(size.1) / 2.0,
                     )
-                })
-                .unwrap_or((0.0, 0.0));
+                });
             let nearest_scrap = nodes
                 .iter()
                 .map(|n| {
-                    let (dx, dy) = (n.x as f64 + 0.5 - center.0, n.y as f64 + 0.5 - center.1);
+                    let (dx, dy) = (
+                        f64::from(n.x) + 0.5 - center.0,
+                        f64::from(n.y) + 0.5 - center.1,
+                    );
                     (dx * dx + dy * dy).sqrt()
                 })
                 .fold(f64::INFINITY, f64::min);
@@ -403,7 +405,10 @@ pub fn audit(scenario: &Scenario) -> Result<MapAudit> {
                 .extractor_frames()
                 .iter()
                 .map(|f| {
-                    let (dx, dy) = (f.x as f64 + 1.0 - center.0, f.y as f64 + 1.0 - center.1);
+                    let (dx, dy) = (
+                        f64::from(f.x) + 1.0 - center.0,
+                        f64::from(f.y) + 1.0 - center.1,
+                    );
                     (dx * dx + dy * dy).sqrt()
                 })
                 .fold(None, |best: Option<f64>, d| {

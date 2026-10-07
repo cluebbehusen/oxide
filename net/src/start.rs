@@ -225,7 +225,7 @@ mod tests {
         let deadline = secs(5) + START_TIMEOUT;
         assert!(
             barrier
-                .poll(deadline - Duration::from_millis(1))
+                .poll(deadline.checked_sub(Duration::from_millis(1)).unwrap())
                 .unwrap()
                 .is_none()
         );

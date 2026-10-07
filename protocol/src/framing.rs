@@ -32,7 +32,7 @@ const MAX_CLIENTS: usize = 8;
 
 /// How long a connection may sit silent before it is closed. Generous on
 /// purpose (see the module docs).
-const IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const IDLE_TIMEOUT: Duration = Duration::from_mins(30);
 
 /// How long a peer that stopped reading may stall a response.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);

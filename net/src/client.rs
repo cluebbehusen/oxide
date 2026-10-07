@@ -254,9 +254,13 @@ mod tests {
             client.poll(now).unwrap();
             now += secs(1);
         }
-        let heard = now - secs(1);
+        let heard = now.checked_sub(secs(1)).unwrap();
         client
-            .poll(heard + SILENCE_TIMEOUT - Duration::from_millis(1))
+            .poll(
+                (heard + SILENCE_TIMEOUT)
+                    .checked_sub(Duration::from_millis(1))
+                    .unwrap(),
+            )
             .unwrap();
         assert_eq!(
             client.poll(heard + SILENCE_TIMEOUT),

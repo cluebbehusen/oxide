@@ -182,7 +182,7 @@ fn row(path: &str, scenario: &Scenario, sweep: SweepReport) -> Result<PaceRow> {
         .with_context(|| format!("auditing {}", scenario.name))?
         .routes
         .iter()
-        .filter_map(|r| r.effective_steps())
+        .filter_map(super::audit::RouteAudit::effective_steps)
         .min();
     Ok(PaceRow {
         scenario: scenario.name.clone(),

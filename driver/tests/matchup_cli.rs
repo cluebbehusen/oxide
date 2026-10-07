@@ -9,10 +9,10 @@ use std::process::Command;
 
 /// The token following `needle`, cut at the next `,` or `)`.
 fn token_after<'a>(line: &'a str, needle: &str) -> &'a str {
-    let start = line
-        .find(needle)
-        .map(|i| i + needle.len())
-        .unwrap_or_else(|| panic!("`{needle}` missing in line: {line}"));
+    let start = line.find(needle).map_or_else(
+        || panic!("`{needle}` missing in line: {line}"),
+        |i| i + needle.len(),
+    );
     line[start..]
         .split([',', ')'])
         .next()

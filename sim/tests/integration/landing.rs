@@ -993,8 +993,7 @@ fn an_unseen_enemy_never_pulls_a_landing_into_an_attack() {
         {
             let seen = state
                 .building(id)
-                .map(|b| b.tiles().any(|t| state.vision(PlayerId(0)).visible(t)))
-                .unwrap_or(false);
+                .is_some_and(|b| b.tiles().any(|t| state.vision(PlayerId(0)).visible(t)));
             assert!(
                 seen,
                 "the landing turned on a building the player cannot see at tick {} from {:?}",

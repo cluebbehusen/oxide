@@ -257,7 +257,7 @@ pub enum Event {
         /// Its owner.
         player: crate::ids::PlayerId,
         /// Scrap returned: full cost before the first construction tick,
-        /// otherwise cost x hp / max_hp at cancel time.
+        /// otherwise cost x hp / `max_hp` at cancel time.
         refund: u32,
     },
     /// A command was dropped instead of applied.

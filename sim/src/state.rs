@@ -2478,7 +2478,7 @@ mod tests {
             let stats = kind.base_stats();
             let ramp = u64::from(stats.max_hp - stats.max_hp / 5);
             assert!(
-                ramp * (u64::from(PROGRESS_ENVELOPE) + 1) <= u64::from(u32::MAX),
+                u32::try_from(ramp * (u64::from(PROGRESS_ENVELOPE) + 1)).is_ok(),
                 "{}: the ramp math must stay inside u32 at the ceiling",
                 kind.name()
             );
@@ -2501,7 +2501,7 @@ mod tests {
         for kind in UNIT_KINDS {
             let ramp = u64::from(kind.stats().max_hp);
             assert!(
-                ramp * (u64::from(PROGRESS_ENVELOPE) + 1) <= u64::from(u32::MAX),
+                u32::try_from(ramp * (u64::from(PROGRESS_ENVELOPE) + 1)).is_ok(),
                 "{}: the unit weld ramp must stay inside u32 at the ceiling",
                 kind.name()
             );

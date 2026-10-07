@@ -226,7 +226,7 @@ mod tests {
         for total in [1.0, 4.0, 20.0, 80.0] {
             let ignition = missile_ejection_ticks(total);
             assert_eq!(motor_envelope(ignition - 0.01, total), 0.0);
-            assert!(motor_envelope((ignition + total) / 2.0, total) > 0.0);
+            assert!(motor_envelope(f32::midpoint(ignition, total), total) > 0.0);
             assert!(motor_envelope(total - 0.01, total) > 0.0);
             assert_eq!(motor_envelope(total, total), 0.0);
         }

@@ -119,7 +119,7 @@ struct Args {
     #[arg(long, default_value_t = 1.0, value_parser = parse_speed)]
     speed: f64,
 
-    /// Window size as WIDTHxHEIGHT (e.g. 800x600) — the UX matrix boots
+    /// Window size as `WIDTHxHEIGHT` (e.g. 800x600) — the UX matrix boots
     /// the shell at every supported size.
     #[arg(long, value_parser = parse_window)]
     window: Option<(u32, u32)>,
@@ -131,13 +131,13 @@ struct Args {
 
     /// Print startup diagnostics to stderr: prologue milestones with
     /// ms-since-entry, then per-frame gap and hardware-event counts for
-    /// the first frames. OXIDE_TRACE_STARTUP=1 enables it too (handy
+    /// the first frames. `OXIDE_TRACE_STARTUP=1` enables it too (handy
     /// for the packaged .app, where flags are awkward).
     #[arg(long)]
     trace_startup: bool,
 
     /// Collect bounded native GPU-shell frame timings for
-    /// query_performance. Off by default so ordinary play pays no timing or
+    /// `query_performance`. Off by default so ordinary play pays no timing or
     /// sample-retention cost.
     #[arg(long, requires = "debug_server")]
     profile_frames: bool,
@@ -152,8 +152,8 @@ static TRACE_ENTRY: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLoc
 const TRACE_FRAMES: u32 = 200;
 
 /// The env var alone must not switch tracing on under `--automation`:
-/// the shots and menu_ux harnesses capture stderr from spawned shells,
-/// and an exported OXIDE_TRACE_STARTUP would leak into every one. The
+/// the shots and `menu_ux` harnesses capture stderr from spawned shells,
+/// and an exported `OXIDE_TRACE_STARTUP` would leak into every one. The
 /// explicit flag always wins.
 fn trace_active(flag: bool, automation: bool, env_set: bool) -> bool {
     flag || (env_set && !automation)

@@ -142,7 +142,7 @@ fn max_scroll(all: &[Line], view: Vec2, ui: f32) -> f32 {
 }
 
 /// Card and band sizes at this viewport. Returns
-/// (band_x, band_w, card_w, card_h, heading_h, top, bottom).
+/// (`band_x`, `band_w`, `card_w`, `card_h`, `heading_h`, top, bottom).
 fn metrics(view: Vec2, ui: f32) -> (f32, f32, f32, f32, f32, f32, f32) {
     let cols = columns(view.x, ui) as f32;
     let band_w = (view.x - 96.0 * ui).min(1120.0 * ui);
@@ -363,7 +363,9 @@ impl Browser {
                     self.selected = (self.selected + 1).min(last);
                     self.ensure_visible(entries);
                 }
-                RawEvent::KeyDown { key: Key::Up } | RawEvent::KeyDown { key: Key::Down } => {
+                RawEvent::KeyDown {
+                    key: Key::Up | Key::Down,
+                } => {
                     let down = matches!(*event, RawEvent::KeyDown { key: Key::Down });
                     let all = lines(entries, cols);
                     let (li, ci) = Self::locate(entries, cols, self.selected);

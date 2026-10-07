@@ -80,8 +80,8 @@ pub(super) fn route(
         return None;
     }
     let (width, height) = (observation.map_width, observation.map_height);
-    let xs = [(from.x + to.x) / 2, (from.x + to.x + 1) / 2];
-    let ys = [(from.y + to.y) / 2, (from.y + to.y + 1) / 2];
+    let xs = [i32::midpoint(from.x, to.x), (from.x + to.x + 1) / 2];
+    let ys = [i32::midpoint(from.y, to.y), (from.y + to.y + 1) / 2];
     let offsets = [
         (-DETOUR, -DETOUR),
         (0, -DETOUR),

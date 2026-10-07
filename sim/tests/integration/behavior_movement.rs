@@ -226,7 +226,7 @@ fn group_moves_fan_out_over_distinct_tiles() {
         state.units().iter().map(|u| u.order).collect::<Vec<_>>()
     );
     // …near the click, on distinct goals (spread), without stacking.
-    let mut tiles: Vec<TilePos> = state.units().iter().map(|u| u.tile()).collect();
+    let mut tiles: Vec<TilePos> = state.units().iter().map(oxide_sim::Unit::tile).collect();
     for t in &tiles {
         assert!(
             t.chebyshev(TilePos::new(10, 4)) <= 3,
@@ -330,7 +330,7 @@ fn congestion_survives_nonconsecutive_unit_ids() {
         let report = state.tick(&[]);
         for event in &report.events {
             if let Event::ScrapDeposited { amount, .. } = event {
-                deposited[(tick >= 1500) as usize] += amount;
+                deposited[usize::from(tick >= 1500)] += amount;
             }
         }
     }

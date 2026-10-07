@@ -507,7 +507,7 @@ fn run(
                         prepared = false;
                     }
                     Event::Clean { tick: at } => {
-                        ensure!(*at == tick && !prepared, "invalid recovery close")
+                        ensure!(*at == tick && !prepared, "invalid recovery close");
                     }
                 }
                 let clean = matches!(queued.event, Event::Clean { .. });
@@ -614,7 +614,7 @@ fn managed_size(root: &Path) -> u64 {
                 .flatten()
                 .filter_map(Result::ok)
                 .filter_map(|entry| entry.metadata().ok())
-                .filter(|metadata| metadata.is_file())
+                .filter(std::fs::Metadata::is_file)
                 .map(|metadata| metadata.len())
                 .sum::<u64>();
             if read_lease(directory).is_none() {

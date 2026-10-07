@@ -281,7 +281,7 @@ impl CodexScreen {
             );
             match entry {
                 Entry::Unit(kind) => {
-                    sprites.draw_portrait(dest, &[(sprites.unit(kind, *faction), WHITE)])
+                    sprites.draw_portrait(dest, &[(sprites.unit(kind, *faction), WHITE)]);
                 }
                 Entry::Building(kind) => {
                     let mut layers = vec![(sprites.building(kind, *faction), WHITE)];

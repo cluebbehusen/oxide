@@ -941,11 +941,10 @@ fn every_map_mirrors_its_paired_seats_entry_by_entry() {
 
         let (fw, fh) = BuildingKind::Foundry.base_stats().size;
         let anchor = |seat: PlayerId| {
-            anchors
-                .iter()
-                .find(|(p, _)| *p == seat)
-                .map(|(_, at)| *at)
-                .unwrap_or_else(|| panic!("{name}: seat {} has no Foundry anchor", seat.0))
+            anchors.iter().find(|(p, _)| *p == seat).map_or_else(
+                || panic!("{name}: seat {} has no Foundry anchor", seat.0),
+                |(_, at)| *at,
+            )
         };
         // An anchor names the footprint's top-left, so its image sits a
         // footprint in from the rotated corner.
@@ -955,16 +954,15 @@ fn every_map_mirrors_its_paired_seats_entry_by_entry() {
                 x: w - fw - at.x,
                 y: h - fh - at.y,
             };
-            anchors
-                .iter()
-                .find(|(_, a)| *a == image)
-                .map(|(p, _)| *p)
-                .unwrap_or_else(|| {
+            anchors.iter().find(|(_, a)| *a == image).map_or_else(
+                || {
                     panic!(
                         "{name}: seat {}'s anchor rotates onto ({}, {}), where no seat sits",
                         seat.0, image.x, image.y
                     )
-                })
+                },
+                |(p, _)| *p,
+            )
         };
 
         let state = scenario.build().expect("shipped maps build");

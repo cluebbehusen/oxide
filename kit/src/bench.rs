@@ -9,7 +9,7 @@ use oxide_sim::{Command, Faction, PlayerCommand, PlayerId, Scenario, UnitKind};
 
 /// A symmetric mass battle: `per_side` mixed-role units per seat on a
 /// 96x56 open field, foundries far corners, armies deployed in facing
-/// blocks. Deterministic for a given (per_side, seed).
+/// blocks. Deterministic for a given (`per_side`, seed).
 pub fn mass_battle(per_side: u32, seed: u64) -> Scenario {
     let (w, h) = (96, 56);
     let mut map: Vec<String> = (0..h)

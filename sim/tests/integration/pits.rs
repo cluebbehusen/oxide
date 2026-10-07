@@ -137,7 +137,7 @@ fn direct_fire_crosses_the_void_that_rock_would_block() {
 
     // The identical geometry over rock: full cover, no firing position.
     let mut walled = chasm(1, vec![]);
-    for row in walled.map.iter_mut() {
+    for row in &mut walled.map {
         *row = row.replace('~', "#");
     }
     walled.units = vec![

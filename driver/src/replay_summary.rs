@@ -495,21 +495,20 @@ impl BattleClusterer {
                 .max((y - cluster.anchor.1).abs())
                 <= BATTLE_RADIUS_TILES
         });
-        let cluster = match joined {
-            Some(cluster) => cluster,
-            None => {
-                self.active.push(BattleCluster {
-                    from_tick: tick,
-                    last_loss_tick: tick,
-                    anchor: (x, y),
-                    sum_x: 0,
-                    sum_y: 0,
-                    n: 0,
-                    transports: 0,
-                    losses: BTreeMap::new(),
-                });
-                self.active.last_mut().expect("just pushed")
-            }
+        let cluster = if let Some(cluster) = joined {
+            cluster
+        } else {
+            self.active.push(BattleCluster {
+                from_tick: tick,
+                last_loss_tick: tick,
+                anchor: (x, y),
+                sum_x: 0,
+                sum_y: 0,
+                n: 0,
+                transports: 0,
+                losses: BTreeMap::new(),
+            });
+            self.active.last_mut().expect("just pushed")
         };
         cluster.sum_x += x;
         cluster.sum_y += y;
@@ -1682,7 +1681,7 @@ fn render_result(result: &GameResult, winner_seats: &[u8]) -> String {
         GameResult::Victory { team } => {
             let seats = winner_seats
                 .iter()
-                .map(|seat| seat.to_string())
+                .map(std::string::ToString::to_string)
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("victory team {team} (seats: {seats})")

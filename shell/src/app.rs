@@ -320,7 +320,7 @@ fn draft_scenario(draft: &NewMatchDraft, personality_seed_base: u64) -> Result<S
     // seats on one faction-derived label ("North West Ferrous" twice),
     // so duplicates take an ordinal instead of refusing to launch.
     let mut seen: Vec<String> = Vec::new();
-    for player in scenario.players.iter_mut() {
+    for player in &mut scenario.players {
         if seen.contains(&player.name) {
             let mut n = 2;
             while seen.contains(&format!("{} {n}", player.name)) {
@@ -784,7 +784,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             speed: visible_speed(&screen, &app.game),
             width: screen_width() as u32,
             height: screen_height() as u32,
-            dpi: macroquad::miniquad::window::dpi_scale() as f64,
+            dpi: f64::from(macroquad::miniquad::window::dpi_scale()),
             paused: match &screen {
                 Screen::Playback(playback) => playback.paused,
                 Screen::Pause(_) => true,

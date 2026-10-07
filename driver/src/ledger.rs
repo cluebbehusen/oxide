@@ -1447,7 +1447,7 @@ fn life(totals: &KindLedger) -> String {
     } else {
         format!(
             "{:.0}",
-            totals.lifetime as f64 / totals.deaths as f64 / oxide_sim::TICKS_PER_SECOND as f64
+            totals.lifetime as f64 / totals.deaths as f64 / f64::from(oxide_sim::TICKS_PER_SECOND)
         )
     }
 }

@@ -1199,13 +1199,16 @@ impl Presentation {
                     }
                     self.sounds_pending
                         .push((SoundKind::UnitDeath, Some(world_vec(*pos))));
-                    let body = prior.map(|(body, _)| body).unwrap_or(UnitBody {
-                        kind: *kind,
-                        player: *player,
-                        faction: state.player(*player).faction,
-                        rotation: self.facing.get(&unit.0).copied().unwrap_or(0.0),
-                        velocity: Vec2::ZERO,
-                    });
+                    let body = prior.map_or(
+                        UnitBody {
+                            kind: *kind,
+                            player: *player,
+                            faction: state.player(*player).faction,
+                            rotation: self.facing.get(&unit.0).copied().unwrap_or(0.0),
+                            velocity: Vec2::ZERO,
+                        },
+                        |(body, _)| body,
+                    );
                     let airborne =
                         kind.stats().domain == oxide_sim::stats::Domain::Air && !grounded;
                     self.fx.push(Effect {
@@ -2394,7 +2397,7 @@ mod tests {
             for collateral_charge in [false, true] {
                 let mut map = vec![".".repeat(80); 40];
                 for (x, y, mark) in [(3, 3, "1"), (60, 3, "2"), (65, 30, "3")] {
-                    map[y].replace_range(x..x + 1, mark);
+                    map[y].replace_range(x..=x, mark);
                 }
                 let mut buildings = vec![serde_json::json!({
                     "player": 1, "kind": "scuttle_charge", "x": 30, "y": 20
