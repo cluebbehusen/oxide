@@ -191,7 +191,7 @@ fn deserialize_kinds<'de, D: serde::Deserializer<'de>>(
 fn blank_players(seats: usize) -> Vec<PlayerStats> {
     (0..seats)
         .map(|seat| PlayerStats {
-            seat: seat as u8,
+            seat: u8::try_from(seat).expect("seat indices fit in u8"),
             scrap: Vec::new(),
             army_value: Vec::new(),
             kinds: Vec::new(),
@@ -214,7 +214,7 @@ fn sample(state: &State, stats: &mut [PlayerStats], ticks: &mut Vec<u64>) {
         for unit in state
             .units()
             .iter()
-            .filter(|unit| unit.player == PlayerId(seat as u8))
+            .filter(|unit| unit.player == PlayerId::from_index(seat))
         {
             value = value.saturating_add(unit.kind.stats().cost);
             *counts.entry(unit.kind.name()).or_default() += 1;

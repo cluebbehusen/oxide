@@ -244,7 +244,7 @@ fn scenario_summary(replay: &GameReplay, initial_state: &oxide_sim::State) -> Sc
         .iter()
         .enumerate()
         .map(|(seat, spec)| ReplayPlayerSummary {
-            seat: seat as u8,
+            seat: u8::try_from(seat).expect("seat indices fit in u8"),
             name: spec.name.clone(),
             faction: spec.faction,
             team: initial_state.players()[seat].team,
@@ -285,7 +285,12 @@ fn command_activity(replay: &GameReplay, total: u64) -> Vec<SeatCommandActivity>
         .players
         .iter()
         .enumerate()
-        .map(|(seat, _)| (seat as u8, ActivityBuilder::default()))
+        .map(|(seat, _)| {
+            (
+                u8::try_from(seat).expect("seat indices fit in u8"),
+                ActivityBuilder::default(),
+            )
+        })
         .collect();
     for timed in &replay.commands {
         let seat = timed.command.player.0;

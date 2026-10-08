@@ -836,6 +836,16 @@ pub(crate) fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
     }])
 }
 
+/// `value` rounded up to whole pixels.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "contact sheet sizes are small positive pixel counts"
+)]
+fn ceil_px(value: f32) -> u32 {
+    value.ceil() as u32
+}
+
 /// Drives a capture run: advance, screenshot, repeat, then tile every
 /// frame (quarter scale) into one contact sheet for reading motion at a
 /// glance. Frames land as `frame-NNN.png` beside `sheet.png`.
@@ -882,16 +892,19 @@ pub(crate) fn capture_sequence(
 
     let first = tiny_skia::Pixmap::decode_png(&std::fs::read(&paths[0])?)
         .context("decoding first frame")?;
-    let tile_w = (first.width() as f32 * SHEET_SCALE).ceil() as u32;
-    let tile_h = (first.height() as f32 * SHEET_SCALE).ceil() as u32;
-    let columns = (frames as f32).sqrt().ceil() as u32;
+    let tile_w = ceil_px(first.width() as f32 * SHEET_SCALE);
+    let tile_h = ceil_px(first.height() as f32 * SHEET_SCALE);
+    let columns = ceil_px((frames as f32).sqrt());
     let rows = frames.div_ceil(columns);
     let mut sheet = tiny_skia::Pixmap::new(columns * tile_w, rows * tile_h)
         .context("allocating contact sheet")?;
     for (i, path) in paths.iter().enumerate() {
         let frame = tiny_skia::Pixmap::decode_png(&std::fs::read(path)?)
             .with_context(|| format!("decoding {}", path.display()))?;
-        let (col, row) = (i as u32 % columns, i as u32 / columns);
+        let (col, row) = (
+            u32::try_from(i).expect("frame counts fit in u32") % columns,
+            u32::try_from(i).expect("frame counts fit in u32") / columns,
+        );
         sheet.draw_pixmap(
             0,
             0,

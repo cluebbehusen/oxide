@@ -182,21 +182,27 @@ impl SeatSummaryBuilder {
                 .into_iter()
                 .map(|(tick, samples)| IncomeMedian {
                     tick,
-                    samples: samples.len() as u32,
-                    actual_per_minute: median(
-                        samples
-                            .iter()
-                            .map(|(actual, _)| u64::from(*actual))
-                            .collect(),
+                    samples: u32::try_from(samples.len()).expect("lengths fit in u32"),
+                    actual_per_minute: u32::try_from(
+                        median(
+                            samples
+                                .iter()
+                                .map(|(actual, _)| u64::from(*actual))
+                                .collect(),
+                        )
+                        .unwrap_or(0),
                     )
-                    .unwrap_or(0) as u32,
-                    saturation_per_minute: median(
-                        samples
-                            .iter()
-                            .map(|(_, saturation)| u64::from(*saturation))
-                            .collect(),
+                    .expect("a median of u32 rates fits in u32"),
+                    saturation_per_minute: u32::try_from(
+                        median(
+                            samples
+                                .iter()
+                                .map(|(_, saturation)| u64::from(*saturation))
+                                .collect(),
+                        )
+                        .unwrap_or(0),
                     )
-                    .unwrap_or(0) as u32,
+                    .expect("a median of u32 rates fits in u32"),
                     percent_of_saturation: median(
                         samples
                             .iter()
@@ -206,7 +212,7 @@ impl SeatSummaryBuilder {
                             })
                             .collect(),
                     )
-                    .map(|percent| percent as u32),
+                    .map(|percent| u32::try_from(percent).expect("a percentage fits in u32")),
                 })
                 .collect(),
             ledger: self.ledger,

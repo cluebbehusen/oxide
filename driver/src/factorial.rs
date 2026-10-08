@@ -14,6 +14,7 @@
 
 use crate::sweep::{SweepOutcome, Tally, outcome_of, play_mirror, wilson};
 use anyhow::{Context, Result};
+use chassis::grid::as_index;
 #[cfg(test)]
 use oxide_sim::PlayerId;
 use oxide_sim::scenario::Scenario;
@@ -294,7 +295,7 @@ pub fn rotate_180(base: &Scenario) -> Result<Scenario> {
     // target sits inside the original footprint and is therefore open
     // ground the symmetry check already cleared.
     let (fw, fh) = BuildingKind::Foundry.base_stats().size;
-    let (fw, fh) = (fw as usize, fh as usize);
+    let (fw, fh) = (as_index(fw), as_index(fh));
     for (y, row) in rows.iter().enumerate() {
         for (x, &c) in row.iter().enumerate() {
             if !is_anchor(c) {
@@ -315,7 +316,7 @@ pub fn rotate_180(base: &Scenario) -> Result<Scenario> {
     // `E` likewise names the top-left of a 2x2 Extractor frame. Rotating
     // the marker as a point would shift the gameplay footprint by one tile.
     let (ew, eh) = BuildingKind::Extractor.base_stats().size;
-    let (ew, eh) = (ew as usize, eh as usize);
+    let (ew, eh) = (as_index(ew), as_index(eh));
     for (y, row) in rows.iter().enumerate() {
         for (x, &c) in row.iter().enumerate() {
             if !is_frame(c) {
@@ -336,7 +337,10 @@ pub fn rotate_180(base: &Scenario) -> Result<Scenario> {
 
     let mut out = base.clone();
     out.map = map.into_iter().map(|r| r.into_iter().collect()).collect();
-    let (w, h) = (width as i32, height as i32);
+    let (w, h) = (
+        i32::try_from(width).expect("map extents fit in i32"),
+        i32::try_from(height).expect("map extents fit in i32"),
+    );
     for unit in &mut out.units {
         unit.x = w - 1 - unit.x;
         unit.y = h - 1 - unit.y;
@@ -374,7 +378,7 @@ fn design(enabled: &[Factor]) -> Vec<Cell> {
     for factor in enabled {
         let mut next = Vec::with_capacity(cells.len() * factor.levels().len());
         for cell in &cells {
-            for level in 0..factor.levels().len() as u8 {
+            for level in 0..u8::try_from(factor.levels().len()).expect("lengths fit in u8") {
                 let mut grown = *cell;
                 grown[factor.index()] = level;
                 next.push(grown);

@@ -409,7 +409,7 @@ fn run(
     let mut count = header.base.commands.len();
     let mut replay_bytes = super::pretty_size(&header.base)?.saturating_add(256);
     ensure!(
-        replay_bytes <= MAX_BYTES as usize,
+        replay_bytes <= usize::try_from(MAX_BYTES).expect("the byte limit fits in usize"),
         "recovery replay size limit"
     );
     let mut sequence = 0;
@@ -492,7 +492,9 @@ fn run(
                             bytes.saturating_add(command_bytes(&command.command))
                         });
                         ensure!(
-                            replay_bytes <= MAX_BYTES as usize,
+                            replay_bytes
+                                <= usize::try_from(MAX_BYTES)
+                                    .expect("the byte limit fits in usize"),
                             "recovery replay size limit"
                         );
                         ensure!(

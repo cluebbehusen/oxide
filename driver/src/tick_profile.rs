@@ -49,12 +49,14 @@ impl Window {
         );
         playback.seek(from);
         let first = recorded.partition_point(|command| command.tick < from);
-        let mut commands = vec![Vec::new(); ticks as usize];
+        let mut commands =
+            vec![Vec::new(); usize::try_from(ticks).expect("tick counts fit in usize")];
         for command in recorded[first..]
             .iter()
             .take_while(|command| command.tick < end)
         {
-            commands[(command.tick - from) as usize].push(command.command.clone());
+            commands[usize::try_from(command.tick - from).expect("tick counts fit in usize")]
+                .push(command.command.clone());
         }
         Ok(Self {
             start: playback.state,
@@ -309,7 +311,7 @@ fn costliest(
     top: usize,
 ) -> Vec<WindowCost> {
     let mut windows: Vec<WindowCost> = times
-        .chunks(window as usize)
+        .chunks(usize::try_from(window).expect("window sizes fit in usize"))
         .zip(units)
         .enumerate()
         .map(|(index, (chunk, &units))| WindowCost {

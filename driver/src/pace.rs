@@ -175,8 +175,8 @@ fn row(path: &str, scenario: &Scenario, sweep: SweepReport) -> Result<PaceRow> {
         .map(|m| m.ticks)
         .collect();
     decided_ticks.sort_unstable();
-    let matches = sweep.matches.len() as u32;
-    let decided = decided_ticks.len() as u32;
+    let matches = u32::try_from(sweep.matches.len()).expect("lengths fit in u32");
+    let decided = u32::try_from(decided_ticks.len()).expect("lengths fit in u32");
     let undecided = matches - decided;
     let ground_route = crate::audit::audit(scenario)
         .with_context(|| format!("auditing {}", scenario.name))?
@@ -272,7 +272,7 @@ mod tests {
         assert!(slate.per_map.len() >= 5, "the 1v1 roster is present");
         assert_eq!(slate.decided, 0);
         assert_eq!(slate.undecided, slate.matches);
-        assert_eq!(slate.matches, slate.per_map.len() as u32);
+        assert_eq!(slate.matches, u32::try_from(slate.per_map.len()).unwrap());
         for r in &slate.per_map {
             assert_eq!(r.matches, 1, "{}: one seed, one match", r.scenario);
             assert_eq!(r.censored_percent, 100.0);

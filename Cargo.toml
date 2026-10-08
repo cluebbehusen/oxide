@@ -35,10 +35,6 @@ pedantic = { level = "warn", priority = -1 }
 # No checked integer-to-float conversion exists, and every value converted
 # here stays far below `f32`'s 2^24 exact-integer range.
 cast_precision_loss = "allow"
-# Re-enabled at each crate root once that crate's casts are checked.
-cast_possible_truncation = "allow"
-cast_possible_wrap = "allow"
-cast_sign_loss = "allow"
 # Its suggested `assert_eq!(x, [] as [T; 0])` reads worse than `is_empty`.
 assert_is_empty = "allow"
 # Stat tables keep one arm per kind so each kind's values read in one place.

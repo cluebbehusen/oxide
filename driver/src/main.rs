@@ -638,6 +638,11 @@ fn latency_summary(samples_ns: &[u64]) -> String {
     let mut sorted = samples_ns.to_vec();
     sorted.sort_unstable();
     let ms = |ns: u64| ns as f64 / 1_000_000.0;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a quantile in [0, 1] of a sample count is a valid index"
+    )]
     let at = |q: f64| sorted[((sorted.len() - 1) as f64 * q) as usize];
     let mean = samples_ns.iter().sum::<u64>() / samples_ns.len() as u64;
     let (worst_tick, worst) = samples_ns
@@ -1290,9 +1295,18 @@ fn main() -> Result<()> {
                     let bots_done = std::time::Instant::now();
                     let report = state.tick(&commands);
                     oxide_kit::controller::record_events(&mut bots, &report);
-                    sim_ns.push(bots_done.elapsed().as_nanos() as u64);
-                    bot_ns.push((bots_done - tick_start).as_nanos() as u64);
-                    tick_ns.push(tick_start.elapsed().as_nanos() as u64);
+                    sim_ns.push(
+                        u64::try_from(bots_done.elapsed().as_nanos())
+                            .expect("durations fit in u64 nanoseconds"),
+                    );
+                    bot_ns.push(
+                        u64::try_from((bots_done - tick_start).as_nanos())
+                            .expect("durations fit in u64 nanoseconds"),
+                    );
+                    tick_ns.push(
+                        u64::try_from(tick_start.elapsed().as_nanos())
+                            .expect("durations fit in u64 nanoseconds"),
+                    );
                     ran += 1;
                 }
                 let secs = start.elapsed().as_secs_f64();
@@ -1329,7 +1343,10 @@ fn main() -> Result<()> {
                 }
                 let tick_start = std::time::Instant::now();
                 state.tick(&[]);
-                tick_ns.push(tick_start.elapsed().as_nanos() as u64);
+                tick_ns.push(
+                    u64::try_from(tick_start.elapsed().as_nanos())
+                        .expect("durations fit in u64 nanoseconds"),
+                );
                 ran += 1;
             }
             let secs = start.elapsed().as_secs_f64();

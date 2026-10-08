@@ -142,7 +142,7 @@ pub fn seat_controllers(scenario: &Scenario) -> Result<Vec<SeatController>, Scen
         .filter(|(_, seat)| seat.bot)
         .filter_map(|(index, seat)| {
             seat.bot_config
-                .map(|config| (PlayerId(index as u8), config))
+                .map(|config| (PlayerId::from_index(index), config))
         })
         .map(|(player, config)| SeatController::configured(player, config, &opponent_map))
         .collect()

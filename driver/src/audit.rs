@@ -6,6 +6,7 @@
 
 use anyhow::{Context, Result};
 use chassis::grid::TilePos;
+use chassis::grid::as_index;
 use oxide_sim::stats::BuildingKind;
 use oxide_sim::{Scenario, State};
 use serde::Serialize;
@@ -50,6 +51,11 @@ impl RouteAudit {
     /// when a ground route exists, else the air detour rounded up.
     /// `None` never survives a built scenario — the sim's connectivity
     /// gate refuses a pair no mover can reach.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "an air detour is a short positive distance"
+    )]
     pub fn effective_steps(&self) -> Option<usize> {
         self.ground_steps
             .or_else(|| self.air_tiles.map(|tiles| tiles.ceil() as usize))
@@ -108,8 +114,8 @@ fn doorsteps(state: &State, anchor: TilePos, size: (i32, i32)) -> Vec<TilePos> {
 /// Flood fill over ground passability from a doorstep set.
 fn reachable_from(state: &State, starts: &[TilePos]) -> usize {
     let (w, h) = (state.map().width(), state.map().height());
-    let index = |t: TilePos| (t.y * w + t.x) as usize;
-    let mut seen = vec![false; (w * h) as usize];
+    let index = |t: TilePos| as_index(t.y * w + t.x);
+    let mut seen = vec![false; as_index(w * h)];
     let mut queue: std::collections::VecDeque<TilePos> = starts.iter().copied().collect();
     for &s in starts {
         seen[index(s)] = true;
@@ -156,15 +162,15 @@ fn ground_route(state: &State, from: &[TilePos], to: &[TilePos]) -> Option<usize
         return None;
     }
     let (w, h) = (state.map().width(), state.map().height());
-    let index = |t: TilePos| (t.y * w + t.x) as usize;
-    let mut dist: Vec<u32> = vec![u32::MAX; (w * h) as usize];
+    let index = |t: TilePos| as_index(t.y * w + t.x);
+    let mut dist: Vec<u32> = vec![u32::MAX; as_index(w * h)];
     let mut heap: std::collections::BinaryHeap<std::cmp::Reverse<(u32, i32, i32)>> =
         BinaryHeap::default();
     for &s in from {
         dist[index(s)] = 0;
         heap.push(std::cmp::Reverse((0, s.x, s.y)));
     }
-    let mut target = vec![false; (w * h) as usize];
+    let mut target = vec![false; as_index(w * h)];
     for t in to {
         target[index(*t)] = true;
     }
@@ -240,14 +246,14 @@ fn air_route(state: &State, a: &oxide_sim::Building, b: &oxide_sim::Building) ->
         return Some(euclid);
     }
     let (w, h) = (state.map().width(), state.map().height());
-    let index = |t: TilePos| (t.y * w + t.x) as usize;
+    let index = |t: TilePos| as_index(t.y * w + t.x);
     let open = |t: TilePos| {
         state
             .map()
             .tile(t)
             .is_some_and(|tile| !tile.terrain.blocks_air())
     };
-    let mut dist: Vec<f64> = vec![f64::INFINITY; (w * h) as usize];
+    let mut dist: Vec<f64> = vec![f64::INFINITY; as_index(w * h)];
     let mut heap: std::collections::BinaryHeap<std::cmp::Reverse<(u64, i32, i32)>> =
         BinaryHeap::default();
     // Costs are ordered through their raw bit patterns: all values are
@@ -257,7 +263,7 @@ fn air_route(state: &State, a: &oxide_sim::Building, b: &oxide_sim::Building) ->
         dist[index(t)] = 0.0;
         heap.push(std::cmp::Reverse((0u64, t.x, t.y)));
     }
-    let mut target = vec![false; (w * h) as usize];
+    let mut target = vec![false; as_index(w * h)];
     for t in b.tiles() {
         target[index(t)] = true;
     }
@@ -338,7 +344,7 @@ pub fn audit(scenario: &Scenario) -> Result<MapAudit> {
             continue;
         };
         steps.push((
-            i as u8,
+            u8::try_from(i).expect("seat indices fit in u8"),
             foundry,
             doorsteps(&state, foundry.anchor, foundry.stats().size),
         ));
@@ -356,6 +362,11 @@ pub fn audit(scenario: &Scenario) -> Result<MapAudit> {
             let ground_steps = ground_route(&state, &steps[i].2, &steps[j].2);
             let air_tiles = air_route(&state, steps[i].1, steps[j].1);
             let artillery_pressure = ground_steps.map(|s| reach / s.max(1) as f64);
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "an air detour is a short positive distance"
+            )]
             let effective = ground_steps.or_else(|| air_tiles.map(|tiles| tiles.ceil() as usize));
             for (seat, slot) in [(i, effective), (j, effective)] {
                 nearest_enemy[seat] = match (nearest_enemy[seat], slot) {

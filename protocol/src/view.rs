@@ -6,6 +6,7 @@
 //! exactness should use the state hash, not a view.
 
 use chassis::grid::TilePos;
+use chassis::grid::as_index;
 use oxide_sim::{Building, Faction, GameResult, Order, PlayerId, State, Unit, UnitKind};
 use serde::{Deserialize, Serialize};
 
@@ -246,11 +247,11 @@ impl FogView {
     pub fn capture(state: &State, player: PlayerId) -> Self {
         let vision = state.vision(player);
         let (width, height) = (state.map().width(), state.map().height());
-        let mut mask = Vec::with_capacity(height as usize);
+        let mut mask = Vec::with_capacity(as_index(height));
         let mut scrap = Vec::new();
         let mut wrecks = Vec::new();
         for y in 0..height {
-            let mut row = String::with_capacity(width as usize);
+            let mut row = String::with_capacity(as_index(width));
             for x in 0..width {
                 let pos = TilePos::new(x, y);
                 row.push(if vision.visible(pos) {
@@ -468,7 +469,7 @@ impl StateView {
 fn player_view(state: &State, index: usize) -> PlayerView {
     let player = &state.players()[index];
     PlayerView {
-        id: index as u8,
+        id: PlayerId::from_index(index).0,
         name: player.name.clone(),
         faction: player.faction,
         team: player.team,
@@ -564,8 +565,8 @@ fn ascii_with_entities(state: &State) -> Vec<String> {
         .collect();
     let mut put = |x: i32, y: i32, c: char| {
         if let Some(cell) = rows
-            .get_mut(y as usize)
-            .and_then(|row| row.get_mut(x as usize))
+            .get_mut(as_index(y))
+            .and_then(|row| row.get_mut(as_index(x)))
         {
             *cell = c;
         }
@@ -646,9 +647,9 @@ mod tests {
         assert!(fog.ghosts.is_empty(), "nothing hostile has been seen yet");
 
         let mask_at = |tile: [i32; 2]| {
-            fog.mask[tile[1] as usize]
+            fog.mask[as_index(tile[1])]
                 .chars()
-                .nth(tile[0] as usize)
+                .nth(as_index(tile[0]))
                 .expect("tile inside the mask")
         };
         let flat: String = fog.mask.concat();

@@ -206,7 +206,7 @@ fn a_busy_bot_seat_reports_its_stall_from_any_thread() {
         log.iter().all(|incident| incident["thread"] != "main"),
         "the main thread is unwatched until its first frame"
     );
-    assert!(monitor.seat(SEATS as u8, 0).is_none());
+    assert!(monitor.seat(u8::try_from(SEATS).unwrap(), 0).is_none());
     drop(monitor);
     std::fs::remove_dir_all(root).unwrap();
 }

@@ -11,8 +11,11 @@ use oxide_sim::map::Terrain;
 use oxide_sim::{Faction, State, UnitKind};
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Rect, Shader, Transform};
 
+/// Whole pixels per tile.
+const TILE_PIXELS: u32 = 12;
+
 /// Pixels per tile.
-pub const TILE_PX: f32 = 12.0;
+pub const TILE_PX: f32 = TILE_PIXELS as f32;
 
 fn rgb(hex: u32) -> Color {
     Color::from_rgba8(
@@ -83,8 +86,9 @@ fn fill_circle(pixmap: &mut Pixmap, cx: f32, cy: f32, r: f32, color: u32) {
 
 /// Draws `state` to a fresh pixmap at [`TILE_PX`] resolution.
 pub fn render_state(state: &State) -> Pixmap {
-    let width = (state.map().width() as f32 * TILE_PX) as u32;
-    let height = (state.map().height() as f32 * TILE_PX) as u32;
+    let width = u32::try_from(state.map().width()).expect("map extents are positive") * TILE_PIXELS;
+    let height =
+        u32::try_from(state.map().height()).expect("map extents are positive") * TILE_PIXELS;
     let mut pixmap = Pixmap::new(width, height).expect("nonzero map dimensions");
     pixmap.fill(rgb(GROUND));
 
@@ -249,10 +253,13 @@ mod tests {
         let saved = std::fs::read(&path).unwrap();
         assert_eq!(saved, png_bytes(&state).unwrap());
         let decoded = Pixmap::decode_png(&saved).expect("saved bytes are a PNG");
-        assert_eq!(decoded.width(), state.map().width() as u32 * TILE_PX as u32);
+        assert_eq!(
+            decoded.width(),
+            u32::try_from(state.map().width()).unwrap() * TILE_PIXELS
+        );
         assert_eq!(
             decoded.height(),
-            state.map().height() as u32 * TILE_PX as u32
+            u32::try_from(state.map().height()).unwrap() * TILE_PIXELS
         );
         std::fs::remove_dir_all(dir).ok();
     }
@@ -272,14 +279,14 @@ mod tests {
             })
             .expect("an open extractor frame");
         let pixmap = render_state(&state);
-        let at = |dx: f32, dy: f32| {
-            let x = (frame.x as f32 * TILE_PX + dx) as u32;
-            let y = (frame.y as f32 * TILE_PX + dy) as u32;
+        let at = |dx: u32, dy: u32| {
+            let x = u32::try_from(frame.x).unwrap() * TILE_PIXELS + dx;
+            let y = u32::try_from(frame.y).unwrap() * TILE_PIXELS + dy;
             let p = pixmap.pixel(x, y).expect("inside the map");
             (u32::from(p.red()) << 16) | (u32::from(p.green()) << 8) | u32::from(p.blue())
         };
-        assert_eq!(at(1.0, 1.0), SCRAP_FULL, "the rim");
-        assert_eq!(at(TILE_PX, TILE_PX), FRAME, "the block");
+        assert_eq!(at(1, 1), SCRAP_FULL, "the rim");
+        assert_eq!(at(TILE_PIXELS, TILE_PIXELS), FRAME, "the block");
         assert_ne!(FRAME, ROCK);
     }
 

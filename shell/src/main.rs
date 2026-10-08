@@ -2,11 +2,6 @@
 // The workspace's disallowed types guard simulation determinism. Shell state
 // (interpolation caches, input sets) is presentation and may hash.
 #![allow(clippy::disallowed_types)]
-#![warn(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss
-)]
 
 mod action;
 mod app;

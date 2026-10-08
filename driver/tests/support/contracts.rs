@@ -1,6 +1,7 @@
 //! Small rule scenarios whose assertions establish what each hash exercises.
 
 use chassis::grid::TilePos;
+use chassis::grid::as_index;
 use oxide_kit::GameReplay;
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, ScenarioMode, UnitSpec};
 use oxide_sim::{
@@ -43,9 +44,9 @@ fn arena(name: &str, units: Vec<UnitSpec>) -> Scenario {
 }
 
 fn terrain(scenario: &mut Scenario, at: TilePos, cell: char) {
-    let mut row: Vec<_> = scenario.map[at.y as usize].chars().collect();
-    row[at.x as usize] = cell;
-    scenario.map[at.y as usize] = row.into_iter().collect();
+    let mut row: Vec<_> = scenario.map[as_index(at.y)].chars().collect();
+    row[as_index(at.x)] = cell;
+    scenario.map[as_index(at.y)] = row.into_iter().collect();
 }
 
 struct Probe {

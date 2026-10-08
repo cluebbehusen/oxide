@@ -86,7 +86,7 @@ pub fn ledger(path: &Path, replay: &GameReplay) -> Result<GameLedger> {
         .zip(ledgers)
         .enumerate()
         .map(|(seat, (spec, ledger))| LedgerSeat {
-            seat: seat as u8,
+            seat: u8::try_from(seat).expect("seat indices fit in u8"),
             name: spec.name.clone(),
             faction: spec.faction,
             team: state.players()[seat].team,

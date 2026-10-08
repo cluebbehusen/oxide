@@ -17,6 +17,7 @@
 use crate::runner::GameReplay;
 use anyhow::Result;
 use chassis::grid::TilePos;
+use chassis::grid::as_index;
 use oxide_sim::scenario::BotConfig;
 use oxide_sim::{
     BuildingId, BuildingKind, Event, Faction, GameResult, Order, PlayerId, SIM_VERSION, State,
@@ -455,7 +456,10 @@ struct BattleCluster {
 
 impl BattleCluster {
     fn centroid(&self) -> [i32; 2] {
-        [(self.sum_x / self.n) as i32, (self.sum_y / self.n) as i32]
+        [
+            i32::try_from(self.sum_x / self.n).expect("a centroid of map tiles fits in i32"),
+            i32::try_from(self.sum_y / self.n).expect("a centroid of map tiles fits in i32"),
+        ]
     }
 
     fn total_value(&self) -> u64 {
@@ -657,7 +661,7 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
         .iter()
         .enumerate()
         .map(|(seat, spec)| SeatLine {
-            seat: seat as u8,
+            seat: u8::try_from(seat).expect("seat indices fit in u8"),
             name: spec.name.clone(),
             faction: spec.faction,
             team: state.players()[seat].team,
@@ -677,7 +681,13 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
     // kind a seat starts with is not a tech first.
     let mut completed_ids: BTreeSet<BuildingId> = BTreeSet::new();
     let tick0_foundries: Vec<u32> = (0..seat_count)
-        .map(|seat| built_count(&state, seat as u8, BuildingKind::Foundry))
+        .map(|seat| {
+            built_count(
+                &state,
+                u8::try_from(seat).expect("seat indices fit in u8"),
+                BuildingKind::Foundry,
+            )
+        })
         .collect();
     let mut unit_reach: Vec<BTreeSet<UnitKind>> = (0..seat_count)
         .map(|seat| {
@@ -945,7 +955,12 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
         for (seat, done) in eliminated.iter_mut().enumerate() {
             if !*done && state.players()[seat].eliminated_at.is_some() {
                 *done = true;
-                timeline.push(entry(now, TimelineKind::Elimination { seat: seat as u8 }));
+                timeline.push(entry(
+                    now,
+                    TimelineKind::Elimination {
+                        seat: u8::try_from(seat).expect("seat indices fit in u8"),
+                    },
+                ));
             }
         }
 
@@ -1047,7 +1062,7 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
         .map(|(seat, mut firsts)| {
             firsts.sort_by_key(|first| first.tick);
             SeatTechReach {
-                seat: seat as u8,
+                seat: u8::try_from(seat).expect("seat indices fit in u8"),
                 firsts,
             }
         })
@@ -1196,11 +1211,14 @@ fn flush_lull(quiet_run: &mut Option<QuietRun>, timeline: &mut Vec<TimelineEntry
 }
 
 fn built_count(state: &State, seat: u8, kind: BuildingKind) -> u32 {
-    state
-        .buildings()
-        .iter()
-        .filter(|building| building.player.0 == seat && building.kind == kind && building.built)
-        .count() as u32
+    u32::try_from(
+        state
+            .buildings()
+            .iter()
+            .filter(|building| building.player.0 == seat && building.kind == kind && building.built)
+            .count(),
+    )
+    .expect("seat indices fit in u32")
 }
 
 fn team_exploration(state: &State) -> BTreeMap<u8, (u64, u32)> {
@@ -1211,7 +1229,7 @@ fn team_exploration(state: &State) -> BTreeMap<u8, (u64, u32)> {
     for seat in 0..state.players().len() {
         let team = state.players()[seat].team;
         team_explored.entry(team).or_insert_with(|| {
-            let vision = state.vision(PlayerId(seat as u8));
+            let vision = state.vision(PlayerId::from_index(seat));
             let mut explored: u64 = 0;
             for y in 0..map.height() {
                 for x in 0..map.width() {
@@ -1220,7 +1238,10 @@ fn team_exploration(state: &State) -> BTreeMap<u8, (u64, u32)> {
                     }
                 }
             }
-            (explored, ((explored * 100) / tiles.max(1)) as u32)
+            (
+                explored,
+                u32::try_from((explored * 100) / tiles.max(1)).expect("a percentage fits in u32"),
+            )
         });
     }
 
@@ -1240,7 +1261,7 @@ fn capture_digest(
 
     let rows = (0..seat_count)
         .map(|seat| {
-            let seat_id = seat as u8;
+            let seat_id = u8::try_from(seat).expect("seat indices fit in u8");
             let mut units: u32 = 0;
             let mut army_value: u64 = 0;
             let mut combat_value: u64 = 0;
@@ -1267,11 +1288,14 @@ fn capture_digest(
             let mut kinds: Vec<(&'static str, u32)> = kind_counts.into_iter().collect();
             kinds.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
             kinds.truncate(3);
-            let buildings = state
-                .buildings()
-                .iter()
-                .filter(|building| building.player.0 == seat_id && building.built)
-                .count() as u32;
+            let buildings = u32::try_from(
+                state
+                    .buildings()
+                    .iter()
+                    .filter(|building| building.player.0 == seat_id && building.built)
+                    .count(),
+            )
+            .expect("seat indices fit in u32");
             let window = std::mem::take(&mut windows[seat]);
             SeatDigestRow {
                 seat: seat_id,
@@ -1329,13 +1353,13 @@ fn minimap(state: &State) -> Vec<String> {
     let width = map.width().max(1);
     let height = map.height().max(1);
     let cell = ceil_div(width, 46).max(ceil_div(height, 32)).max(1);
-    let cols = ceil_div(width, cell) as usize;
-    let rows = ceil_div(height, 2 * cell) as usize;
+    let cols = as_index(ceil_div(width, cell));
+    let rows = as_index(ceil_div(height, 2 * cell));
     let seat_count = state.players().len();
 
     let index = |tile: TilePos| -> usize {
-        let cx = (tile.x / cell) as usize;
-        let cy = (tile.y / (2 * cell)) as usize;
+        let cx = as_index(tile.x / cell);
+        let cy = as_index(tile.y / (2 * cell));
         cy.min(rows - 1) * cols + cx.min(cols - 1)
     };
 
@@ -1396,7 +1420,7 @@ fn minimap(state: &State) -> Vec<String> {
                         .filter(|&seat| presence[at][seat])
                         .max_by_key(|&seat| (value[at][seat], std::cmp::Reverse(seat)));
                     if let Some(seat) = dominant {
-                        let letter = b'a' + seat as u8;
+                        let letter = b'a' + u8::try_from(seat).expect("seat indices fit in u8");
                         return if value[at][seat] >= MINIMAP_MASS_THRESHOLD {
                             char::from(letter.to_ascii_uppercase())
                         } else {
@@ -1545,7 +1569,10 @@ impl SummaryReport {
                 let _ = writeln!(
                     out,
                     "  map: a-{} units (CAPS massed ≥{}) 0-{} foundry · ground # rock ^ peak ~ pit $ scrap",
-                    char::from(b'a' + (self.seats.len().saturating_sub(1)) as u8),
+                    char::from(
+                        b'a' + u8::try_from(self.seats.len().saturating_sub(1))
+                            .expect("seat indices fit in u8")
+                    ),
                     MINIMAP_MASS_THRESHOLD,
                     self.seats.len().saturating_sub(1),
                 );
