@@ -91,11 +91,17 @@ pub(crate) mod prim;
 mod support_brackets;
 mod worker;
 mod world;
-use chrome::*;
-use entities::*;
+use chrome::{
+    draw_hud, draw_overlay, draw_overlay_info, draw_result_overlay, draw_salvage_tooltip,
+};
+use entities::{
+    draw_blips, draw_breadcrumbs, draw_buildings, draw_drag_rect, draw_fx, draw_group_press_ring,
+    draw_long_press_ring, draw_pending_founds, draw_pings, draw_placement_ghost, draw_rally_marker,
+    draw_range_ground, draw_range_rings, draw_touch_box, draw_units,
+};
 pub use minimap::*;
-use panel_draw::*;
-use world::*;
+use panel_draw::{draw_panel, draw_panel_tooltip};
+use world::{draw_fog, draw_scorches, draw_tiles};
 
 use crate::game::{EffectKind, Scene};
 use crate::input::InputState;

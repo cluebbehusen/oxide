@@ -8,6 +8,10 @@
 /// What the player has demonstrably done this session (flags set by
 /// `Game::do_tick` as accepted commands pass the recorder).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag records an independent tutorial milestone"
+)]
 pub struct Demo {
     /// Trained anything at a building.
     pub trained: bool,

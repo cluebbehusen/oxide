@@ -55,6 +55,10 @@ use crate::numeric::Fit;
 use clap::Parser;
 use macroquad::prelude::*;
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent command-line switches"
+)]
 #[derive(Parser)]
 #[command(name = "oxide-shell", version, about = "Oxide, playable")]
 struct Args {

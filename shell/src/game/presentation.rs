@@ -12,6 +12,10 @@ use oxide_sim::{
 };
 use std::collections::HashMap;
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "pausing, the overlay, the concession banner and spectating are independent"
+)]
 pub struct Presentation {
     /// The seat local input controls.
     pub human: PlayerId,

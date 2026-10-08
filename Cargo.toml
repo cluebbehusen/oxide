@@ -42,9 +42,6 @@ match_same_arms = "allow"
 # Floats exist only for presentation, where exact comparisons check values
 # that were copied or snapped rather than computed.
 float_cmp = "allow"
-# Independent flags stay separate fields; exclusive states already use enums.
-fn_params_excessive_bools = "allow"
-struct_excessive_bools = "allow"
 # Geometry reads naturally with x, y, w, and h.
 many_single_char_names = "allow"
 # Internal crates: error and panic sections and `#[must_use]` on every
@@ -53,8 +50,6 @@ missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 must_use_candidate = "allow"
 similar_names = "allow"
-# Modules split into child files share the parent's imports via `use super::*`.
-wildcard_imports = "allow"
 
 # iPadOS 27 refuses to launch apps linked against its SDK unless they adopt
 # the UIScene lifecycle, and only unreleased miniquad master does. The pin

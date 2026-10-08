@@ -11,6 +11,7 @@ const SALT: u32 = 347;
 pub(super) const WAVE_LIFTS: [i16; 6] = [-4, -2, 0, 1, 2, 4];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[expect(clippy::struct_excessive_bools, reason = "one flag per map edge")]
 struct BoundaryInsets {
     top: bool,
     right: bool,

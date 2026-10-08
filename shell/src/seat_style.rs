@@ -1,5 +1,4 @@
 //! Viewer-relative presentation identity, prepared once for a live or replay view.
-use crate::numeric::Fit;
 use macroquad::prelude::{Color, WHITE, color_u8};
 use oxide_sim::scenario::MAX_PLAYERS;
 use oxide_sim::{PlayerId, State};
@@ -10,6 +9,19 @@ pub(crate) enum AllegianceCue {
     Mine,
     Ally,
     Hostile,
+}
+
+impl AllegianceCue {
+    /// How `viewer` sees `owner`.
+    pub fn of(state: &State, viewer: PlayerId, owner: PlayerId) -> Self {
+        if owner == viewer {
+            Self::Mine
+        } else if state.hostile(viewer, owner) {
+            Self::Hostile
+        } else {
+            Self::Ally
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -30,14 +42,8 @@ impl SeatStyles {
             color: WHITE,
         }; MAX_PLAYERS];
         for (seat, player) in state.players().iter().enumerate() {
-            let owner = PlayerId(seat.fit::<u8>());
-            let cue = if owner == viewer {
-                AllegianceCue::Mine
-            } else if !state.hostile(viewer, owner) {
-                AllegianceCue::Ally
-            } else {
-                AllegianceCue::Hostile
-            };
+            let owner = PlayerId::from_index(seat);
+            let cue = AllegianceCue::of(state, viewer, owner);
             let color = match cue {
                 AllegianceCue::Mine => faction_accent(player.faction, colorblind),
                 AllegianceCue::Ally => {
@@ -142,6 +148,7 @@ fn identity_color(cue: AllegianceCue, rank: usize, colorblind: bool) -> Color {
 mod tests {
     use super::*;
     use crate::numeric;
+    use crate::numeric::Fit;
     use oxide_sim::scenario::PlayerSpec;
     use oxide_sim::scenario::ScenarioMode;
     use oxide_sim::{Faction, Scenario};

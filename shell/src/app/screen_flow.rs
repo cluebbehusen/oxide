@@ -33,6 +33,10 @@ fn backdrop_fx_advances(screen: &Screen) -> bool {
 /// Escape clears a live selection before it opens Pause. A decided match and
 /// the concession banner are terminal overlays, so their advertised Escape
 /// action wins even when a selection survived underneath.
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "a predicate over four independent facts"
+)]
 fn playing_escape_opens_pause(
     escape_pressed: bool,
     had_selection: bool,

@@ -8,3 +8,7 @@ disallowed-types = [
 
 # Functions past this length are split or carry a reasoned `#[expect]`.
 too-many-lines-threshold = 250
+
+# Modules split into child files share their parent's imports through
+# `use super::*`; every other glob import still warns.
+allowed-wildcard-imports = ["super"]
