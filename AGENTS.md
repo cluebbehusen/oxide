@@ -166,6 +166,11 @@ instrumentation makes it expensive while adding little line coverage.
 `cargo test --workspace --locked` runs it; the exhaustive all-map integrity soak
 is opt-in. Compact controller contracts run under combined coverage.
 
+Both floors measure production code. A module's unit tests live in a child
+`tests.rs` or `*_tests.rs` file, never an inline `mod tests { … }`;
+cargo-llvm-cov's default filter skips those files and everything under `tests/`.
+A driver test fails on an inline or counted test module.
+
 The `oxide-sim` integration suite compiles into one test binary: modules of
 `tests/integration/main.rs`, whose guard test fails on an undeclared file. Add
 new suites there rather than as separate files under `tests/`; each extra binary
