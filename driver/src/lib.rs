@@ -39,4 +39,6 @@ pub fn build_identity() -> oxide_kit::recovery::BuildIdentity {
 }
 
 #[cfg(test)]
-mod test_support;
+mod source_tests;
+#[cfg(test)]
+mod support_tests;
