@@ -8,6 +8,8 @@
 
 use crate::action::{Action, ActionEvent, ActionResolver, BindingMap};
 use crate::game::{Game, PingKind};
+use crate::numeric;
+use crate::numeric::Fit;
 use chassis::grid::TilePos;
 use macroquad::prelude::{self as mq, Vec2, vec2};
 use oxide_protocol::{Key, MouseButton, RawEvent};
@@ -107,7 +109,7 @@ pub(crate) fn placement_preview_anchor(
     }
     (input.last_pointer == Pointer::Mouse).then(|| {
         let world = game.presentation.camera.to_world(input.mouse);
-        let hovered = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+        let hovered = numeric::tile_at(world);
         (kind, placement_anchor(game, kind, hovered))
     })
 }
@@ -388,8 +390,8 @@ fn placement_ping(kind: oxide_sim::BuildingKind, anchor: TilePos) -> Vec2 {
 pub(crate) fn ground_tile(state: &oxide_sim::State, world: Vec2) -> TilePos {
     let map = state.map();
     TilePos::new(
-        (world.x.floor() as i32).clamp(0, map.width() - 1),
-        (world.y.floor() as i32).clamp(0, map.height() - 1),
+        numeric::to_i32(world.x.floor()).clamp(0, map.width() - 1),
+        numeric::to_i32(world.y.floor()).clamp(0, map.height() - 1),
     )
 }
 
@@ -633,7 +635,7 @@ impl InputState {
                 ids.sort_unstable();
                 ids == own
             })
-            .map(|slot| slot as u8 + 1)
+            .map(|slot| slot.fit::<u8>() + 1)
     }
 
     /// The group the strip's "+" would save the selection to: the lowest
@@ -667,7 +669,7 @@ impl InputState {
         }
         (0..self.groups.len())
             .find(|slot| live(*slot).is_empty())
-            .map(|slot| slot as u8 + 1)
+            .map(|slot| slot.fit::<u8>() + 1)
     }
 
     /// Flips the QUEUE toggle.
@@ -1141,7 +1143,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     && crate::render::minimap_world_at(&game.view(), vec2(x, y)).is_none()
                 {
                     let world = game.presentation.camera.to_world(vec2(x, y));
-                    let clicked = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+                    let clicked = numeric::tile_at(world);
                     let anchor = placement_anchor(&game.view(), kind, clicked);
                     let (w, h) = kind.base_stats().size;
                     let overlaps = stroke
@@ -1479,7 +1481,7 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2, pointer: Pointe
                 });
                 return true;
             }
-            let clicked = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+            let clicked = numeric::tile_at(world);
             let anchor = placement_anchor(&game.view(), kind, clicked);
             if place_at(game, input, kind, anchor) {
                 // The stroke opens: dragging stamps more of the same
@@ -1504,13 +1506,13 @@ fn ghost_anchor_under(
     world: Vec2,
 ) -> TilePos {
     if kind == oxide_sim::BuildingKind::Extractor {
-        let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+        let tile = numeric::tile_at(world);
         return placement_anchor(game, kind, tile);
     }
     let (w, h) = kind.base_stats().size;
     TilePos::new(
-        (world.x - w as f32 * 0.5).round() as i32,
-        (world.y - h as f32 * 0.5).round() as i32,
+        numeric::to_i32((world.x - w as f32 * 0.5).round()),
+        numeric::to_i32((world.y - h as f32 * 0.5).round()),
     )
 }
 
@@ -1550,8 +1552,8 @@ pub(crate) fn drag_ghost(game: &crate::game::Scene<'_>, input: &mut InputState, 
     {
         let shift = world - grabbed;
         let moved = TilePos::new(
-            anchor.x + shift.x.round() as i32,
-            anchor.y + shift.y.round() as i32,
+            anchor.x + numeric::to_i32(shift.x.round()),
+            anchor.y + numeric::to_i32(shift.y.round()),
         );
         ghost.anchor = placement_anchor(game, kind, moved);
     }
@@ -1669,7 +1671,7 @@ fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             game.presentation.camera.pan(Vec2::ZERO); // re-clamp
         } else if !click_on_hud(game, p) {
             let world = game.presentation.camera.to_world(p);
-            let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+            let tile = numeric::tile_at(world);
             let target = game.state.buildings_at(tile).find(|b| {
                 b.player == game.presentation.human
                     && b.built

@@ -8,6 +8,8 @@
 use crate::assets::Sprites;
 use crate::game::SoundKind;
 use crate::menu::Menu;
+use crate::numeric;
+use crate::numeric::Fit;
 use crate::panel::{
     building_economy_lines, building_flavor, building_stat_line, building_weapon_lines,
     unit_flavor, unit_stat_line, weapon_lines,
@@ -225,7 +227,7 @@ impl CodexScreen {
         let body_size = 16.0 * s;
         let line_h = 20.0 * s;
         let body_w = w - pad * 2.0;
-        let measure = |t: &str| measure_text(t, None, body_size as u16, 1.0).width;
+        let measure = |t: &str| measure_text(t, None, numeric::font_size(body_size), 1.0).width;
         let mut lines: Vec<(String, Color)> = Vec::new();
         let para = |text: &str, color: Color, lines: &mut Vec<(String, Color)>| {
             for line in render::wrap_words(text, measure, body_w) {
@@ -414,7 +416,7 @@ fn building_notes(kind: BuildingKind) -> Vec<String> {
         };
         let mut line = format!(
             "Upgrade: {} for {} scrap ({:.0} s){} - {} hp",
-            entity_name(kind.tier_name(tier as u8)),
+            entity_name(kind.tier_name(tier.fit::<u8>())),
             c.cost,
             c.build_ticks as f32 / oxide_sim::TICKS_PER_SECOND as f32,
             if c.requires.is_empty() {
@@ -425,7 +427,7 @@ fn building_notes(kind: BuildingKind) -> Vec<String> {
             },
             stats.max_hp
         );
-        for weapon in building_weapon_lines(kind, tier as u8) {
+        for weapon in building_weapon_lines(kind, tier.fit::<u8>()) {
             let _ = write!(line, "; {weapon}");
         }
         notes.push(line);

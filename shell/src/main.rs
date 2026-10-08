@@ -2,6 +2,11 @@
 // The workspace's disallowed types guard simulation determinism. Shell state
 // (interpolation caches, input sets) is presentation and may hash.
 #![allow(clippy::disallowed_types)]
+#![warn(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss
+)]
 
 mod action;
 mod app;
@@ -26,6 +31,7 @@ mod input;
 mod layout;
 mod menu;
 mod netplay;
+mod numeric;
 mod panel;
 mod paths;
 mod performance;
@@ -50,6 +56,7 @@ mod tutorial;
 mod typography;
 mod viewer_touch;
 
+use crate::numeric::Fit;
 use clap::Parser;
 use macroquad::prelude::*;
 
@@ -216,8 +223,8 @@ fn window_conf() -> Conf {
     let (width, height) = args.window.unwrap_or(config::Config::load().window);
     Conf {
         window_title: "Oxide".to_string(),
-        window_width: width as i32,
-        window_height: height as i32,
+        window_width: width.fit::<i32>(),
+        window_height: height.fit::<i32>(),
         // Render at native pixel density — pre-atlas this was too many
         // pixels to afford; post-atlas it's crisp text and art for free.
         high_dpi: !args.no_high_dpi,

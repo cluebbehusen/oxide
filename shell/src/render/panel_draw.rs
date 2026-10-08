@@ -3,6 +3,8 @@
 //! the `LayoutModel`; the pure card model lives in `crate::panel`.
 
 use super::*;
+use crate::numeric;
+use crate::numeric::Fit;
 use crate::render::prim::{fill_rect, stroke_rect};
 
 use super::panel_layout::{PanelGeometry, measure_info};
@@ -51,7 +53,7 @@ fn panel_packing_at_right(
     };
     let available =
         (right - cards_x - (CARD_LEFT_INSET + CARD_RIGHT_INSET) * scale).max(first_width);
-    let per_row = 1 + ((available - first_width) / (card_w + gap)).floor() as usize;
+    let per_row = 1 + numeric::to_usize(((available - first_width) / (card_w + gap)).floor());
     let cards_h = if cards_shown == 0 {
         0.0
     } else {
@@ -257,10 +259,10 @@ fn draw_rally_control(card: &crate::panel::Card, rect: Rect, scale: f32) {
     ] {
         let available = rect.w - 6.0 * scale;
         let mut font_size = size * scale;
-        let mut measured = measure_text(text, None, font_size as u16, 1.0);
+        let mut measured = measure_text(text, None, numeric::font_size(font_size), 1.0);
         while measured.width > available && font_size > 8.0 * scale {
             font_size -= 0.5 * scale;
-            measured = measure_text(text, None, font_size as u16, 1.0);
+            measured = measure_text(text, None, numeric::font_size(font_size), 1.0);
         }
         if measured.width <= available {
             draw_text(
@@ -319,7 +321,7 @@ fn queue_grid_with_width(
     let header = header * scale;
     let available =
         (panel_top - crate::layout::TOP_BAR_H * scale - header - label_h - 2.0 * scale).max(size);
-    let max_rows = (((available + gap) / (size + gap)).floor() as usize).max(1);
+    let max_rows = numeric::to_usize(((available + gap) / (size + gap)).floor()).max(1);
     let columns = count.div_ceil(max_rows).max(1);
     let rows = count.div_ceil(columns);
     let slot_width = width * scale;
@@ -401,9 +403,11 @@ fn catalog_geometry(
         viewport.x
     };
     let available = (right - left - 10.0 * scale).max(136.0 * scale);
-    let max_columns = ((available + 4.0 * scale) / (116.0 * scale))
-        .floor()
-        .max(1.0) as usize;
+    let max_columns = numeric::to_usize(
+        ((available + 4.0 * scale) / (116.0 * scale))
+            .floor()
+            .max(1.0),
+    );
     let rows = count.max(1).div_ceil(max_columns);
     // Thirteen buildings in their four categories plus Back, which
     // takes the free cell under UTILITY.
@@ -514,13 +518,13 @@ fn draw_catalog(
         {
             let key = input
                 .bindings
-                .label(crate::action::Action::BuildCategory(category as u8));
+                .label(crate::action::Action::BuildCategory(category.fit::<u8>()));
             let palette_key = input
                 .bindings
                 .label(crate::action::Action::ToggleBuildPalette);
             let label = category_label(
                 label,
-                input.build_category == Some(category as u8),
+                input.build_category == Some(category.fit::<u8>()),
                 &key,
                 input
                     .build_category
@@ -573,7 +577,7 @@ fn draw_catalog(
         );
         let names = card_title_lines(
             &card.title,
-            |text| measure_text(text, None, (15.0 * s) as u16, 1.0).width,
+            |text| measure_text(text, None, numeric::font_size(15.0 * s), 1.0).width,
             rect.w - 49.0 * s,
         );
         for (line, name) in names.iter().enumerate() {
@@ -602,7 +606,7 @@ fn draw_catalog(
                 },
             );
         }
-        let key_width = measure_text(&card.hotkey, None, (11.0 * s) as u16, 1.0).width;
+        let key_width = measure_text(&card.hotkey, None, numeric::font_size(11.0 * s), 1.0).width;
         draw_text(
             &card.hotkey,
             rect.x + rect.w - key_width - 5.0 * s,
@@ -823,7 +827,9 @@ pub(crate) fn draw_panel(
         );
         draw_text(
             &value,
-            cards_x - 12.0 * s - measure_text(&value, None, measured.font as u16, 1.0).width,
+            cards_x
+                - 12.0 * s
+                - measure_text(&value, None, numeric::font_size(measured.font), 1.0).width,
             y + 13.0 * s,
             measured.font,
             TEXT_PRIMARY,
@@ -872,7 +878,8 @@ pub(crate) fn draw_panel(
                 TEXT_SECONDARY
             },
         );
-        let value_width = measure_text(&line.value, None, measured.font as u16, 1.0).width;
+        let value_width =
+            measure_text(&line.value, None, numeric::font_size(measured.font), 1.0).width;
         draw_text(
             &line.value,
             cards_x - 12.0 * s - value_width,
@@ -941,10 +948,10 @@ pub(crate) fn draw_panel(
                 &card.title
             };
             let mut size = 11.0 * s;
-            let mut dims = measure_text(label, None, size as u16, 1.0);
+            let mut dims = measure_text(label, None, numeric::font_size(size), 1.0);
             while dims.width > rect.w - 6.0 * s && size > 8.0 * s {
                 size -= 0.5 * s;
-                dims = measure_text(label, None, size as u16, 1.0);
+                dims = measure_text(label, None, numeric::font_size(size), 1.0);
             }
             draw_text(
                 label,
@@ -1025,7 +1032,7 @@ pub(crate) fn draw_panel(
         };
         let title_top = rect.y + if horizontal { 4.0 } else { 32.0 } * s;
         let title_bottom = if let Some(cost) = card.cost {
-            let dims = measure_text(cost.to_string(), None, (16.0 * s) as u16, 1.0);
+            let dims = measure_text(cost.to_string(), None, numeric::font_size(16.0 * s), 1.0);
             rect.y + rect.h - 5.0 * s - dims.offset_y - 3.0 * s
         } else {
             rect.y + rect.h - 4.0 * s
@@ -1035,14 +1042,14 @@ pub(crate) fn draw_panel(
         let (names, ascent) = loop {
             let names = card_title_lines(
                 &card.title,
-                |text| measure_text(text, None, title_size as u16, 1.0).width,
+                |text| measure_text(text, None, numeric::font_size(title_size), 1.0).width,
                 title_width,
             );
             let mut ascent = 0.0_f32;
             let mut descent = 0.0_f32;
             let mut width = 0.0_f32;
             for name in &names {
-                let dims = measure_text(name, None, title_size as u16, 1.0);
+                let dims = measure_text(name, None, numeric::font_size(title_size), 1.0);
                 ascent = ascent.max(dims.offset_y);
                 descent = descent.max(dims.height - dims.offset_y);
                 width = width.max(dims.width);
@@ -1065,7 +1072,7 @@ pub(crate) fn draw_panel(
         }
         if let Some(cost) = card.cost {
             let label = format!("{cost}");
-            let dims = measure_text(&label, None, (16.0 * s) as u16, 1.0);
+            let dims = measure_text(&label, None, numeric::font_size(16.0 * s), 1.0);
             draw_text(
                 &label,
                 rect.x + rect.w - dims.width - 5.0 * s,
@@ -1145,7 +1152,7 @@ pub(crate) fn draw_panel(
         };
         if !panel.queue.is_empty() {
             let queue_label_width = queue_label_width(panel, |text| {
-                measure_text(text, None, (14.0 * s) as u16, 1.0).width
+                measure_text(text, None, numeric::font_size(14.0 * s), 1.0).width
             }) + 16.0 * s;
             grid_dock.w = grid_dock.w.max(queue_label_width);
         }
@@ -1279,7 +1286,8 @@ pub(crate) fn draw_panel(
             }
             if let Some(group) = group.filter(|_| !wide_group) {
                 let label = format!("x{}", group.count);
-                let width = measure_text(&label, None, (12.0 * s) as u16, 1.0).width + 4.0 * s;
+                let width =
+                    measure_text(&label, None, numeric::font_size(12.0 * s), 1.0).width + 4.0 * s;
                 draw_rectangle(
                     rect.right() - width - 2.0 * s,
                     rect.y + 2.0 * s,
@@ -1429,9 +1437,11 @@ pub(crate) fn draw_panel_tooltip(game: &crate::game::Scene<'_>, input: &InputSta
     // once put a Skyhook tooltip wider than the window.
     let wrap_w = (400.0 * s).min(screen_width() - 40.0 * s);
     for d in &card.desc {
-        for line in
-            crate::render::wrap_words(d, |t| measure_text(t, None, size as u16, 1.0).width, wrap_w)
-        {
+        for line in crate::render::wrap_words(
+            d,
+            |t| measure_text(t, None, numeric::font_size(size), 1.0).width,
+            wrap_w,
+        ) {
             lines.push((line, TEXT_BODY));
         }
     }
@@ -1440,16 +1450,16 @@ pub(crate) fn draw_panel_tooltip(game: &crate::game::Scene<'_>, input: &InputSta
     }
     let text_width = lines
         .iter()
-        .map(|(l, _)| measure_text(l, None, size as u16, 1.0).width)
+        .map(|(l, _)| measure_text(l, None, numeric::font_size(size), 1.0).width)
         .fold(0.0f32, f32::max);
     let mut columns = [0.0_f32; 2];
     if let Some(comparison) = comparison {
         for (column, header) in columns.iter_mut().zip(["Changes", "After upgrade"]) {
-            *column = measure_text(header, None, size as u16, 1.0).width;
+            *column = measure_text(header, None, numeric::font_size(size), 1.0).width;
         }
         for row in &comparison.rows {
             for (column, text) in columns.iter_mut().zip([&row.label, &row.upgraded]) {
-                *column = column.max(measure_text(text, None, size as u16, 1.0).width);
+                *column = column.max(measure_text(text, None, numeric::font_size(size), 1.0).width);
             }
         }
     }
@@ -2072,7 +2082,7 @@ mod tests {
             scenario.units.push(oxide_sim::scenario::UnitSpec {
                 player: 0,
                 kind,
-                x: 6 + index as i32,
+                x: 6 + index.fit::<i32>(),
                 y: 5,
             });
         }

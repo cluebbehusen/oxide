@@ -2,6 +2,9 @@
 //! veil itself, and battle scars.
 
 use super::*;
+use crate::numeric;
+use crate::numeric::Fit;
+use chassis::grid::as_index;
 
 /// Share of a tile's width over which the veil fades into lighter ground.
 const FOG_FEATHER: f32 = 0.45;
@@ -10,14 +13,14 @@ const FOG_FEATHER: f32 = 0.45;
 /// explored-but-unseen is dimmed.
 pub(crate) fn draw_fog(game: &crate::game::Scene<'_>) {
     let (lo, hi) = game.presentation.camera.world_rect();
-    let min = TilePos::new(lo.x.floor() as i32, lo.y.floor() as i32);
-    let max = TilePos::new(hi.x.ceil() as i32, hi.y.ceil() as i32);
+    let min = numeric::tile_at(lo);
+    let max = TilePos::new(numeric::to_i32(hi.x.ceil()), numeric::to_i32(hi.y.ceil()));
     // One extra ring so every drawn tile sees all eight neighbors.
-    let stride = (max.x - min.x + 2) as usize;
+    let stride = as_index(max.x - min.x + 2);
     let states: Vec<Fog> = (min.y - 1..=max.y)
         .flat_map(|y| (min.x - 1..=max.x).map(move |x| tile_fog(game, TilePos::new(x, y))))
         .collect();
-    let fog = |x: i32, y: i32| states[(y - min.y + 1) as usize * stride + (x - min.x + 1) as usize];
+    let fog = |x: i32, y: i32| states[as_index(y - min.y + 1) * stride + as_index(x - min.x + 1)];
     for y in min.y..max.y {
         for x in min.x..max.x {
             let alpha = fog(x, y).alpha();
@@ -44,7 +47,7 @@ pub(crate) fn draw_fog(game: &crate::game::Scene<'_>) {
     for y in min.y..max.y {
         for x in min.x..max.x {
             let neighborhood: [[Fog; 3]; 3] = std::array::from_fn(|row| {
-                std::array::from_fn(|col| fog(x + col as i32 - 1, y + row as i32 - 1))
+                std::array::from_fn(|col| fog(x + col.fit::<i32>() - 1, y + row.fit::<i32>() - 1))
             });
             let current = neighborhood[1][1];
             if current == Fog::Unexplored
@@ -70,7 +73,7 @@ pub(crate) fn draw_fog(game: &crate::game::Scene<'_>) {
 /// Samples [`fog_feather_alpha`] on a grid over one tile's screen rect.
 fn draw_fog_feather(a: Vec2, b: Vec2, neighborhood: &[[Fog; 3]; 3]) {
     let band = (b - a).max_element() * FOG_FEATHER;
-    let steps = (band / 6.0).ceil().clamp(1.0, 8.0) as usize;
+    let steps = numeric::to_usize((band / 6.0).ceil().clamp(1.0, 8.0));
     // Grid lines fall on the feather band boundaries so straight fades
     // interpolate exactly; only the rounded corners are approximated.
     let coords: Vec<f32> = (0..=steps)
@@ -92,8 +95,8 @@ fn draw_fog_feather(a: Vec2, b: Vec2, neighborhood: &[[Fog; 3]; 3]) {
     let indices = (0..side - 1)
         .flat_map(|row| {
             (0..side - 1).flat_map(move |col| {
-                let top = (row * side + col) as u16;
-                let bottom = top + side as u16;
+                let top = (row * side + col).fit::<u16>();
+                let bottom = top + side.fit::<u16>();
                 [top, top + 1, bottom + 1, top, bottom + 1, bottom]
             })
         })
@@ -278,7 +281,7 @@ impl ObstaclePlacement {
 
 fn coordinate_hash(x: i32, y: i32, salt: u32) -> u32 {
     let mut hash = 2_166_136_261u32;
-    for word in [x as u32, y as u32, salt] {
+    for word in [x.cast_unsigned(), y.cast_unsigned(), salt] {
         for byte in word.to_le_bytes() {
             hash ^= u32::from(byte);
             hash = hash.wrapping_mul(16_777_619);
@@ -317,8 +320,12 @@ fn placement_for_group(
             let x_slack = 3 - footprint.0;
             let y_slack = 2 - footprint.1;
             let anchor = TilePos::new(
-                group.x + ((hash / 37 + step as u32) % (x_slack as u32 + 1)) as i32,
-                group.y + ((hash / 71 + step as u32) % (y_slack as u32 + 1)) as i32,
+                group.x
+                    + ((hash / 37 + step.fit::<u32>()) % (x_slack.cast_unsigned() + 1))
+                        .cast_signed(),
+                group.y
+                    + ((hash / 71 + step.fit::<u32>()) % (y_slack.cast_unsigned() + 1))
+                        .cast_signed(),
             );
             let fits = (0..footprint.1)
                 .all(|dy| (0..footprint.0).all(|dx| known_rock(anchor.offset(dx, dy))));
@@ -397,10 +404,10 @@ fn symmetric_theme_prop(
     let mut hash = 2_166_136_261u32;
     for word in [
         theme,
-        canonical.x as u32,
-        canonical.y as u32,
-        width as u32,
-        height as u32,
+        canonical.x.cast_unsigned(),
+        canonical.y.cast_unsigned(),
+        width.cast_unsigned(),
+        height.cast_unsigned(),
     ] {
         for byte in word.to_le_bytes() {
             hash ^= u32::from(byte);
@@ -429,9 +436,9 @@ fn authored_tile(rows: &[String], pos: TilePos) -> Option<u8> {
     if pos.x < 0 || pos.y < 0 {
         return None;
     }
-    rows.get(pos.y as usize)?
+    rows.get(as_index(pos.y))?
         .as_bytes()
-        .get(pos.x as usize)
+        .get(as_index(pos.x))
         .copied()
 }
 
@@ -466,8 +473,11 @@ fn safe_theme_prop_tile(rows: &[String], pos: TilePos) -> bool {
 }
 
 fn symmetric_safe_theme_prop_tile(rows: &[String], pos: TilePos) -> bool {
-    let height = rows.len() as i32;
-    let width = rows.first().map_or(0, std::string::String::len) as i32;
+    let height = rows.len().fit::<i32>();
+    let width = rows
+        .first()
+        .map_or(0, std::string::String::len)
+        .fit::<i32>();
     let mirror = TilePos::new(width - 1 - pos.x, height - 1 - pos.y);
     safe_theme_prop_tile(rows, pos) && safe_theme_prop_tile(rows, mirror)
 }
@@ -487,10 +497,10 @@ fn quarry_dressing(pos: TilePos, width: i32, height: i32, seed: u64) -> Option<Q
     }
     let mirrored = (pos.y, pos.x) > (mirror.y, mirror.x);
     let canonical = if mirrored { mirror } else { pos };
-    let salt = (seed as u32)
+    let salt = (seed & 0xFFFF_FFFF) as u32
         ^ (seed >> 32) as u32
-        ^ (width as u32).rotate_left(9)
-        ^ (height as u32).rotate_left(19);
+        ^ width.cast_unsigned().rotate_left(9)
+        ^ height.cast_unsigned().rotate_left(19);
     let mut token = super::environment::hash(canonical.x, canonical.y, salt);
     token ^= token >> 16;
     token = token.wrapping_mul(0x7feb_352d);
@@ -529,7 +539,10 @@ pub(crate) fn draw_tiles(game: &crate::game::Scene<'_>, sprites: &Sprites) {
             };
             let screen = game.presentation.camera.to_screen(vec2(x as f32, y as f32));
             // Position hashes drive all variety: deterministic, no state.
-            let h = (x.wrapping_mul(31).wrapping_add(y.wrapping_mul(17))) as usize;
+            let h = x
+                .wrapping_mul(31)
+                .wrapping_add(y.wrapping_mul(17))
+                .cast_unsigned() as usize;
             // The linear hash deliberately steps shades in diagonal waves.
             // Grit and cracks use a mixed hash so no shade repeats one texture;
             // FNV's low bits track coordinate parity, so read its high bits.
@@ -870,7 +883,7 @@ mod tests {
         for index in 0..3_usize.pow(9) {
             let left: [[Fog; 3]; 3] = std::array::from_fn(|row| {
                 std::array::from_fn(|col| {
-                    FOG_STATES[index / 3_usize.pow(row as u32 * 3 + col as u32) % 3]
+                    FOG_STATES[index / 3_usize.pow(row.fit::<u32>() * 3 + col.fit::<u32>()) % 3]
                 })
             });
             // The right tile's far column is a full tile from the shared edge.
@@ -1020,8 +1033,8 @@ mod tests {
                 path.display()
             );
             seen_themes.insert(theme.to_string());
-            let height = scenario.map.len() as i32;
-            let width = scenario.map.first().expect("map row").len() as i32;
+            let height = scenario.map.len().fit::<i32>();
+            let width = scenario.map.first().expect("map row").len().fit::<i32>();
             let mut count = 0;
             let mut safe_count = 0;
             let mut variants = BTreeSet::new();
@@ -1122,13 +1135,13 @@ mod tests {
             pos.x >= 0
                 && pos.y >= 0
                 && rows
-                    .get(pos.y as usize)
-                    .and_then(|row| row.as_bytes().get(pos.x as usize))
+                    .get(as_index(pos.y))
+                    .and_then(|row| row.as_bytes().get(as_index(pos.x)))
                     == Some(&b'#')
         };
         let mut covered = BTreeSet::new();
-        for y in (0..rows.len() as i32).step_by(2) {
-            for x in (0..rows[0].len() as i32).step_by(3) {
+        for y in (0..rows.len().fit::<i32>()).step_by(2) {
+            for x in (0..rows[0].len().fit::<i32>()).step_by(3) {
                 let Some(placement) = placement_for_group(TilePos::new(x, y), is_rock) else {
                     continue;
                 };
@@ -1179,8 +1192,13 @@ mod tests {
         for path in paths {
             let scenario = oxide_sim::Scenario::load(&path)
                 .unwrap_or_else(|error| panic!("loading {}: {error}", path.display()));
-            let height = scenario.map.len() as i32;
-            let width = scenario.map.first().expect("scenario row").len() as i32;
+            let height = scenario.map.len().fit::<i32>();
+            let width = scenario
+                .map
+                .first()
+                .expect("scenario row")
+                .len()
+                .fit::<i32>();
             let authored_rock =
                 |pos: TilePos| authored_tile(&scenario.map, pos).is_some_and(|cell| cell == b'#');
             for y in (0..height).step_by(2) {

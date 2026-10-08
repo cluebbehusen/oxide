@@ -1,4 +1,6 @@
 //! Independent sprite reductions and premultiplied-alpha sampling.
+use crate::numeric;
+use crate::numeric::Fit;
 use anyhow::{Context, Result};
 use macroquad::prelude::*;
 use std::cell::RefCell;
@@ -20,7 +22,12 @@ pub(crate) struct EntityLod {
     mesh: RefCell<Mesh>,
 }
 fn source_key(rect: Rect) -> Source {
-    [rect.x as u32, rect.y as u32, rect.w as u32, rect.h as u32]
+    [
+        numeric::to_u32(rect.x),
+        numeric::to_u32(rect.y),
+        numeric::to_u32(rect.w),
+        numeric::to_u32(rect.h),
+    ]
 }
 fn is_entity_source(name: &str) -> bool {
     let name = name.strip_prefix("rig_").unwrap_or(name);
@@ -66,14 +73,18 @@ fn entity_sources(manifest: &HashMap<String, [f32; 4]>) -> BTreeSet<Source> {
             // sprite remains in use for portraits. Keep full poses for old atlases.
             !manifest.contains_key(&format!("rig_{stem}_hull_{faction}"))
         })
-        .map(|(_, row)| row.map(|value| value as u32))
+        .map(|(_, row)| row.map(numeric::to_u32))
         .collect()
 }
 
 fn lod_mix(source: Vec2, physical: Vec2) -> (usize, usize, f32) {
     let ratio = (source.x / physical.x.max(1.0)).max(source.y / physical.y.max(1.0));
     let lod = (ratio.log2() - 0.4).clamp(0.0, 3.0);
-    (lod.floor() as usize, lod.ceil() as usize, lod.fract())
+    (
+        numeric::to_usize(lod.floor()),
+        numeric::to_usize(lod.ceil()),
+        lod.fract(),
+    )
 }
 fn opaque_bounds(image: &Image, source: Source) -> Rect {
     let [x, y, w, h] = source;
@@ -128,7 +139,7 @@ fn contact_sources(manifest: &HashMap<String, [f32; 4]>) -> BTreeSet<Source> {
                 }))
                 && !name.contains("_accent")
         })
-        .map(|(_, row)| row.map(|v| v as u32))
+        .map(|(_, row)| row.map(numeric::to_u32))
         .collect()
 }
 impl EntityLod {
@@ -136,7 +147,7 @@ impl EntityLod {
         let sources = entity_sources(manifest);
         let count = sources
             .iter()
-            .map(|k| k[1] as usize / page_height as usize + 1)
+            .map(|k| k[1] as usize / numeric::to_usize(page_height) + 1)
             .max()
             .unwrap_or(0);
         let mut originals = Vec::new();
@@ -156,8 +167,13 @@ impl EntityLod {
         let contact_sources = contact_sources(manifest);
         let mut contacts = HashMap::new();
         for &key in &sources {
-            let page = key[1] as usize / page_height as usize;
-            let local = [key[0], key[1] % page_height as u32, key[2], key[3]];
+            let page = key[1] as usize / numeric::to_usize(page_height);
+            let local = [
+                key[0],
+                key[1] % numeric::to_u32(page_height),
+                key[2],
+                key[3],
+            ];
             anyhow::ensure!(
                 key[2] >= 8 && key[3] >= 8 && key[2] % 8 == 0 && key[3] % 8 == 0,
                 "sprite dimensions must be multiples of eight"
@@ -180,8 +196,13 @@ impl EntityLod {
             }
         }
         for (key, level) in packing_order(&sources) {
-            let page = key[1] as usize / page_height as usize;
-            let local = [key[0], key[1] % page_height as u32, key[2], key[3]];
+            let page = key[1] as usize / numeric::to_usize(page_height);
+            let local = [
+                key[0],
+                key[1] % numeric::to_u32(page_height),
+                key[2],
+                key[3],
+            ];
             let region = packer.insert(&reduce(&originals[page], local, LEVELS[level]));
             sprites.entry(key).or_insert([region; 4])[level] = region;
         }
@@ -257,8 +278,8 @@ fn packing_order(sources: &BTreeSet<Source>) -> Vec<(Source, usize)> {
         .collect();
     entries.sort_by_key(|&(key, level)| {
         (
-            std::cmp::Reverse(key[3] / LEVELS[level] as u32),
-            std::cmp::Reverse(key[2] / LEVELS[level] as u32),
+            std::cmp::Reverse(key[3] / LEVELS[level].fit::<u32>()),
+            std::cmp::Reverse(key[2] / LEVELS[level].fit::<u32>()),
             key,
             level,
         )
@@ -369,7 +390,11 @@ struct Packer {
 impl Packer {
     fn new() -> Self {
         Self {
-            images: vec![Image::gen_image_color(PAGE as u16, PAGE as u16, BLANK)],
+            images: vec![Image::gen_image_color(
+                PAGE.fit::<u16>(),
+                PAGE.fit::<u16>(),
+                BLANK,
+            )],
             x: 2,
             y: 2,
             row_height: 0,
@@ -384,8 +409,11 @@ impl Packer {
             self.row_height = 0;
         }
         if self.y + height + 2 > PAGE {
-            self.images
-                .push(Image::gen_image_color(PAGE as u16, PAGE as u16, BLANK));
+            self.images.push(Image::gen_image_color(
+                PAGE.fit::<u16>(),
+                PAGE.fit::<u16>(),
+                BLANK,
+            ));
             self.x = 2;
             self.y = 2;
             self.row_height = 0;
@@ -393,13 +421,14 @@ impl Packer {
         let page = self.images.len() - 1;
         let output = &mut self.images[page];
         // Extrude each reduced sprite independently, including corners.
-        for dy in -1..=height as isize {
-            for dx in -1..=width as isize {
-                let sx = dx.clamp(0, width as isize - 1) as usize;
-                let sy = dy.clamp(0, height as isize - 1) as usize;
+        for dy in -1..=height.fit::<isize>() {
+            for dx in -1..=width.fit::<isize>() {
+                let sx = dx.clamp(0, width.fit::<isize>() - 1).fit::<usize>();
+                let sy = dy.clamp(0, height.fit::<isize>() - 1).fit::<usize>();
                 let src = (sy * width + sx) * 4;
-                let dst =
-                    ((self.y as isize + dy) as usize * PAGE + (self.x as isize + dx) as usize) * 4;
+                let dst = ((self.y.fit::<isize>() + dy).fit::<usize>() * PAGE
+                    + (self.x.fit::<isize>() + dx).fit::<usize>())
+                    * 4;
                 output.bytes[dst..dst + 4].copy_from_slice(&image.bytes[src..src + 4]);
             }
         }
@@ -415,7 +444,8 @@ impl Packer {
 
 fn reduce(image: &Image, source: Source, factor: usize) -> Image {
     let [x, y, w, h] = source.map(|v| v as usize);
-    let mut result = Image::gen_image_color((w / factor) as u16, (h / factor) as u16, BLANK);
+    let mut result =
+        Image::gen_image_color((w / factor).fit::<u16>(), (h / factor).fit::<u16>(), BLANK);
     for oy in 0..h / factor {
         for ox in 0..w / factor {
             let mut sum = [0_u32; 4];
@@ -430,9 +460,9 @@ fn reduce(image: &Image, source: Source, factor: usize) -> Image {
             }
             let dst = &mut result.bytes[(oy * (w / factor) + ox) * 4..][..4];
             for channel in 0..3 {
-                dst[channel] = (sum[channel] / (factor * factor * 255) as u32) as u8;
+                dst[channel] = (sum[channel] / (factor * factor * 255).fit::<u32>()).fit::<u8>();
             }
-            dst[3] = (sum[3] / (factor * factor) as u32) as u8;
+            dst[3] = (sum[3] / (factor * factor).fit::<u32>()).fit::<u8>();
         }
     }
     result
@@ -460,7 +490,7 @@ mod tests {
             "rig_buzzard_hull_cupric_move2",
             "bombard_ferrous_action2",
         ] {
-            let key = manifest[name].map(|v| v as u32);
+            let key = manifest[name].map(numeric::to_u32);
             assert!(sources.contains(&key), "uncached live body frame: {name}");
             assert!(
                 loaded_sources.contains(&key),
@@ -517,10 +547,10 @@ mod tests {
         assert_eq!(order.len(), sources.len() * LEVELS.len());
         let mut packer = Packer::new();
         for (key, level) in order {
-            let factor = LEVELS[level] as u32;
+            let factor = LEVELS[level].fit::<u32>();
             let region = packer.insert(&Image::gen_image_color(
-                (key[2] / factor) as u16,
-                (key[3] / factor) as u16,
+                (key[2] / factor).fit::<u16>(),
+                (key[3] / factor).fit::<u16>(),
                 WHITE,
             ));
             assert!(region.rect.right() < PAGE as f32);
@@ -646,8 +676,8 @@ mod tests {
         let mut packer = Packer::new();
         let red = packer.insert(&Image::gen_image_color(2, 2, RED));
         packer.insert(&Image::gen_image_color(2, 2, BLUE));
-        for y in red.rect.y as u32 - 1..=red.rect.y as u32 + 2 {
-            for x in red.rect.x as u32 - 1..=red.rect.x as u32 + 2 {
+        for y in numeric::to_u32(red.rect.y) - 1..=numeric::to_u32(red.rect.y) + 2 {
+            for x in numeric::to_u32(red.rect.x) - 1..=numeric::to_u32(red.rect.x) + 2 {
                 assert_eq!(
                     packer.images[red.page].get_pixel(x, y),
                     packer.images[red.page].get_pixel(2, 2)

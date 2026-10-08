@@ -3,6 +3,7 @@
 #[cfg(test)]
 use crate::game::Game;
 use crate::game::checkpoint::{GameCheckpoint, RestoredGame, SaveCapture};
+use crate::numeric::Fit;
 use anyhow::{Context, Result, ensure};
 use chassis::replay::ReplayMeta;
 use oxide_sim::SIM_VERSION;
@@ -70,7 +71,7 @@ pub(crate) fn write_capture(capture: SaveCapture, meta: ReplayMeta, path: &Path)
     );
     chassis::fsx::write_atomic(path, |writer| {
         writer.write_all(MAGIC)?;
-        writer.write_all(&(header.len() as u32).to_le_bytes())?;
+        writer.write_all(&header.len().fit::<u32>().to_le_bytes())?;
         writer.write_all(&header)?;
         writer.write_all(&compressed)?;
         Ok(())
@@ -411,7 +412,7 @@ mod tests {
             assert!(inspect(&path.0).is_err());
         }
         let mut malformed = original;
-        malformed[8..12].copy_from_slice(&((MAX_HEADER + 1) as u32).to_le_bytes());
+        malformed[8..12].copy_from_slice(&(MAX_HEADER + 1).fit::<u32>().to_le_bytes());
         std::fs::write(&path.0, malformed).unwrap();
         assert!(prepare_load(&path.0).is_err());
     }
@@ -533,7 +534,7 @@ mod tests {
             changed[field] = value;
             let bytes = serde_json::to_vec(&changed).unwrap();
             let mut file = MAGIC.to_vec();
-            file.extend((bytes.len() as u32).to_le_bytes());
+            file.extend(bytes.len().fit::<u32>().to_le_bytes());
             file.extend(bytes);
             file.extend(&original[end..]);
             std::fs::write(&path.0, file).unwrap();

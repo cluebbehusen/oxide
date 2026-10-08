@@ -3,6 +3,8 @@
 use super::{air_presentation, reduced_motion, seat_identity_tint, unit_draw_scale};
 use crate::assets::Sprites;
 use crate::game::{EffectKind, Scene, UnitBody};
+use crate::numeric;
+use crate::numeric::Fit;
 use macroquad::prelude::*;
 use oxide_sim::{BuildingKind, ProjectileKind};
 
@@ -31,8 +33,8 @@ fn rotate(v: Vec2, angle: f32) -> Vec2 {
 fn visible(game: &Scene<'_>, at: Vec2) -> bool {
     game.presentation.all_seeing()
         || game.my_vision().visible(chassis::grid::TilePos::new(
-            at.x.floor() as i32,
-            at.y.floor() as i32,
+            numeric::to_i32(at.x.floor()),
+            numeric::to_i32(at.y.floor()),
         ))
 }
 
@@ -44,8 +46,8 @@ fn floor_contact(game: &Scene<'_>, at: Vec2) -> bool {
     game.state
         .map()
         .tile(chassis::grid::TilePos::new(
-            at.x.floor() as i32,
-            at.y.floor() as i32,
+            numeric::to_i32(at.x.floor()),
+            numeric::to_i32(at.y.floor()),
         ))
         .is_some_and(|tile| tile.terrain != oxide_sim::map::Terrain::Pit)
 }
@@ -231,7 +233,7 @@ struct PiecePose {
 }
 
 fn collapse_piece(index: usize, age: f32, seed: u32) -> PiecePose {
-    let h = hash(seed, index as u32);
+    let h = hash(seed, index.fit::<u32>());
     let delay = 0.06 + (index % 3) as f32 * 0.035;
     let t = ((age - delay) / 0.34).clamp(0.0, 1.0);
     let impulse = 1.0 - (1.0 - t).powi(2);
@@ -332,7 +334,7 @@ fn draw_unit_wreck(
         tint: seat_identity_tint(game, body.player),
     };
     for (i, part) in HULL_PIECES.into_iter().enumerate() {
-        let h = hash(seed, i as u32);
+        let h = hash(seed, i.fit::<u32>());
         let direction = vec2(
             (h % 101) as f32 / 100.0 - 0.5,
             ((h >> 8) % 101) as f32 / 100.0 - 0.5,
@@ -434,7 +436,7 @@ struct AirFragment {
 }
 
 fn air_fragment(body: UnitBody, seed: u32, index: usize, age: f32) -> AirFragment {
-    let h = hash(seed, index as u32);
+    let h = hash(seed, index.fit::<u32>());
     let flight = 0.42 + (h % 20) as f32 * 0.01;
     let t = (age / flight).clamp(0.0, 1.0);
     let direction = rotate(

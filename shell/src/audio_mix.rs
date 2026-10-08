@@ -1,6 +1,7 @@
 //! Pure camera-listener weighting for one frame of queued sound events.
 
 use crate::game::SoundKind;
+use crate::numeric;
 use macroquad::prelude::Vec2;
 
 const WIDE_ZOOM: f32 = 8.0;
@@ -93,7 +94,9 @@ fn distance_gain(kind: SoundKind, world: Vec2, center: Vec2, half_extents: Vec2)
 fn positional_voice_limit(zoom: f32) -> usize {
     let detail = zoom_detail(zoom);
     WIDE_POSITIONAL_VOICES
-        + ((CLOSE_POSITIONAL_VOICES - WIDE_POSITIONAL_VOICES) as f32 * detail).round() as usize
+        + numeric::to_usize(
+            ((CLOSE_POSITIONAL_VOICES - WIDE_POSITIONAL_VOICES) as f32 * detail).round(),
+        )
 }
 
 /// Coalesces one frame of emitters into the mix heard at the current camera.

@@ -1,4 +1,5 @@
 use super::*;
+use crate::numeric;
 use std::path::PathBuf;
 use std::sync::{
     Arc,
@@ -259,7 +260,7 @@ pub(super) fn frame(app: &mut App, mut busy: Box<Busy>, events: &[RawEvent]) -> 
     render::draw(&app.game.view(), &app.sprites, &app.input);
     veil();
     let loading = busy.intent.loading();
-    let dots = match (get_time() * 3.0) as u64 % 3 {
+    let dots = match numeric::to_u32(numeric::to_f32(get_time()) * 3.0) % 3 {
         0 => ".",
         1 => "..",
         _ => "...",

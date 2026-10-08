@@ -5,6 +5,8 @@
 //! funnel as gameplay, so injected events drive menus exactly like hardware
 //! (which is also how the menus get tested).
 
+use crate::numeric;
+use crate::numeric::Fit;
 use macroquad::prelude::*;
 use oxide_protocol::{Key, MouseButton, RawEvent};
 use oxide_sim::Scenario;
@@ -158,7 +160,9 @@ impl Menu {
             if !self.is_header(i) {
                 return i;
             }
-            i = (i as i64 + dir).rem_euclid(n as i64) as usize;
+            i = (i.fit::<i64>() + dir)
+                .rem_euclid(n.fit::<i64>())
+                .fit::<usize>();
         }
         index.min(n - 1)
     }
@@ -170,26 +174,26 @@ impl Menu {
     /// section label sat in the way (`PageUp` once snapped to the bottom
     /// Back row through the browser's leading header).
     fn snap_clamped(&self, index: usize, dir: i64) -> usize {
-        let n = self.items.len() as i64;
+        let n = self.items.len().fit::<i64>();
         if n == 0 {
             return 0;
         }
-        let start = (index as i64).min(n - 1);
+        let start = index.fit::<i64>().min(n - 1);
         let mut i = start;
         while (0..n).contains(&i) {
-            if !self.is_header(i as usize) {
-                return i as usize;
+            if !self.is_header(i.fit::<usize>()) {
+                return i.fit::<usize>();
             }
             i += dir;
         }
         let mut i = start - dir;
         while (0..n).contains(&i) {
-            if !self.is_header(i as usize) {
-                return i as usize;
+            if !self.is_header(i.fit::<usize>()) {
+                return i.fit::<usize>();
             }
             i -= dir;
         }
-        start as usize
+        start.fit::<usize>()
     }
 
     /// Moves the keyboard cursor and scrolls just enough to show it —
@@ -211,7 +215,9 @@ impl Menu {
     fn scroll_by(&mut self, delta: i64) {
         let (_, _, _, visible) = self.layout();
         let max = self.items.len().saturating_sub(visible);
-        self.scroll = (self.scroll as i64 + delta).clamp(0, max as i64) as usize;
+        self.scroll = (self.scroll.fit::<i64>() + delta)
+            .clamp(0, max.fit::<i64>())
+            .fit::<usize>();
         // The selection rides inside the window: Enter must never
         // activate a row the wheel has scrolled out of sight (a hidden
         // Quit would be a nasty surprise) — and never lands on a
@@ -271,7 +277,7 @@ impl Menu {
         let avail = (bottom_bound - top_bound).max(ITEM_HEIGHT * s);
         let n = self.items.len().max(1);
         let row = row_pitch(avail, n, s, crate::platform::TOUCH_ONLY);
-        let visible = ((avail / row).floor() as usize).clamp(1, n);
+        let visible = numeric::to_usize((avail / row).floor()).clamp(1, n);
         // The window is scroll state, clamped — never a function of the
         // selection, or hovering near an edge walks the list.
         let first = self.scroll.min(n.saturating_sub(visible));
@@ -471,7 +477,7 @@ impl Menu {
         let subtitle = binding_hint(subtitle);
         let s = ui();
         let title_size = 96.0 * s;
-        let dims = measure_text(&self.title, None, title_size as u16, 1.0);
+        let dims = measure_text(&self.title, None, numeric::font_size(title_size), 1.0);
         draw_text(
             &self.title,
             (view_w() - dims.width) * 0.5,
@@ -482,11 +488,11 @@ impl Menu {
         // The subtitle shrinks to fit — map blurbs run long, and text
         // spilling off both window edges reads as a defect, not a hook.
         let mut sub_size = 20.0 * s;
-        let mut sub_dims = measure_text(&subtitle, None, sub_size as u16, 1.0);
+        let mut sub_dims = measure_text(&subtitle, None, numeric::font_size(sub_size), 1.0);
         let max_width = view_w() * 0.55;
         if sub_dims.width > max_width {
             sub_size = (sub_size * max_width / sub_dims.width).max(12.0 * s);
-            sub_dims = measure_text(&subtitle, None, sub_size as u16, 1.0);
+            sub_dims = measure_text(&subtitle, None, numeric::font_size(sub_size), 1.0);
         }
         draw_text(
             &subtitle,
@@ -504,7 +510,7 @@ impl Menu {
             };
             if self.is_header(index) {
                 let size = (20.0 * s).min(text_size);
-                let dims = measure_text(label, None, size as u16, 1.0);
+                let dims = measure_text(label, None, numeric::font_size(size), 1.0);
                 draw_text(
                     label,
                     rect.x + (rect.w - dims.width) * 0.5,
@@ -536,7 +542,8 @@ impl Menu {
                     (primary, rect.x + rect.w * 0.61, rect.w * 0.18),
                     (secondary, rect.x + rect.w * 0.81, rect.w * 0.18),
                 ] {
-                    let measured = measure_text(text, None, text_size as u16, 1.0).width;
+                    let measured =
+                        measure_text(text, None, numeric::font_size(text_size), 1.0).width;
                     let size = text_size * (width / measured.max(1.0)).min(1.0);
                     draw_text(text, x, rect.y + rect.h * 0.68, size, color);
                 }
@@ -582,11 +589,11 @@ impl Menu {
             binding_hint,
         );
         let mut hint_size = 18.0 * s;
-        let mut hint_dims = measure_text(&hint, None, hint_size as u16, 1.0);
+        let mut hint_dims = measure_text(&hint, None, numeric::font_size(hint_size), 1.0);
         let max_width = view_w() - 32.0 * s;
         if hint_dims.width > max_width {
             hint_size = (hint_size * max_width / hint_dims.width).max(12.0 * s);
-            hint_dims = measure_text(&hint, None, hint_size as u16, 1.0);
+            hint_dims = measure_text(&hint, None, numeric::font_size(hint_size), 1.0);
         }
         draw_text(
             &hint,
@@ -716,8 +723,8 @@ fn render_preview(path: Option<&std::path::Path>) -> Option<PreviewPixels> {
     let state = scenario.build().ok()?;
     let pixmap = oxide_kit::render::render_state(&state);
     Some(PreviewPixels {
-        width: pixmap.width() as u16,
-        height: pixmap.height() as u16,
+        width: pixmap.width().fit::<u16>(),
+        height: pixmap.height().fit::<u16>(),
         rgba: pixmap.data().to_vec(),
     })
 }

@@ -4,6 +4,7 @@
 //! as the mouse, in logical pixels.
 
 use super::*;
+use crate::numeric;
 
 /// Where a finger landed, which decides what it may drive for its
 /// whole life. Chrome and minimap fingers never drive world gestures:
@@ -216,7 +217,7 @@ fn charge(input: &InputState, finger: &TouchPoint) -> Option<(Vec2, f32)> {
     }
     let charge_ms = (f64::from(input.touch_prefs.long_press_ms) - TOUCH_REST_MS).max(1.0);
     let progress = ((held_ms - TOUCH_REST_MS) / charge_ms).min(1.0);
-    Some((finger.at, progress as f32))
+    Some((finger.at, numeric::to_f32(progress)))
 }
 
 /// A finger landed.

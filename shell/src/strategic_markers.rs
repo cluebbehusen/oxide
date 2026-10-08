@@ -1,6 +1,7 @@
 //! Role and allegiance cues at strategic camera scales.
 
 use crate::game::Scene;
+use crate::numeric;
 use crate::render::prim::{fill_circle, stroke_circle};
 use macroquad::prelude::*;
 use oxide_sim::{Unit, UnitKind};
@@ -494,11 +495,11 @@ pub(crate) fn draw_resources(game: &Scene<'_>) {
     let mut groups = std::collections::BTreeMap::<(i32, i32), (Vec2, u32, f32)>::new();
     let (lo, hi) = game.presentation.camera.world_rect();
     // World-anchored cells keep summaries stable while the camera pans.
-    for y in ((lo.y.floor() as i32).div_euclid(4) * 4).max(0)
-        ..(((hi.y.ceil() as i32).div_euclid(4) + 1) * 4).min(game.state.map().height())
+    for y in (numeric::to_i32(lo.y.floor()).div_euclid(4) * 4).max(0)
+        ..((numeric::to_i32(hi.y.ceil()).div_euclid(4) + 1) * 4).min(game.state.map().height())
     {
-        for x in ((lo.x.floor() as i32).div_euclid(4) * 4).max(0)
-            ..(((hi.x.ceil() as i32).div_euclid(4) + 1) * 4).min(game.state.map().width())
+        for x in (numeric::to_i32(lo.x.floor()).div_euclid(4) * 4).max(0)
+            ..((numeric::to_i32(hi.x.ceil()).div_euclid(4) + 1) * 4).min(game.state.map().width())
         {
             let pos = chassis::grid::TilePos::new(x, y);
             if known_resource(game, pos) == 0 {

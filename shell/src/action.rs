@@ -1,5 +1,6 @@
 //! Contextual keyboard actions, shared by input, hints, settings, and persistence.
 
+use crate::numeric::Fit;
 use oxide_protocol::Key;
 use oxide_sim::BuildingKind;
 use serde::{Deserialize, Serialize};
@@ -75,10 +76,11 @@ pub const BUILD_CATEGORIES: [(&str, &[BuildingKind]); 4] = [
     ),
 ];
 pub fn building_category(kind: BuildingKind) -> u8 {
-    BUILD_CATEGORIES
+    (BUILD_CATEGORIES
         .iter()
         .position(|(_, kinds)| kinds.contains(&kind))
-        .unwrap_or(0) as u8
+        .unwrap_or(0))
+    .fit::<u8>()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -370,15 +372,15 @@ impl BindingMap {
         for (i, key) in [Key::F5, Key::F6, Key::F7, Key::F8].into_iter().enumerate() {
             bindings.push(Binding {
                 chord: Chord::ctrl(key),
-                action: Action::SetBookmark(i as u8),
+                action: Action::SetBookmark(i.fit::<u8>()),
             });
             bindings.push(Binding {
                 chord: Chord::bare(key),
-                action: Action::RecallBookmark(i as u8),
+                action: Action::RecallBookmark(i.fit::<u8>()),
             });
         }
         for (i, key) in digits.into_iter().enumerate() {
-            let n = (i + 1) as u8;
+            let n = (i + 1).fit::<u8>();
             bindings.push(Binding {
                 chord: Chord::bare(key),
                 action: Action::Slot(n),
@@ -514,9 +516,9 @@ impl BindingMap {
             .into_iter()
             .enumerate()
         {
-            assert!(map.rebind(TrainSlot(n as u8), Chord::bare(key)));
+            assert!(map.rebind(TrainSlot(n.fit::<u8>()), Chord::bare(key)));
             if n < 4 {
-                assert!(map.rebind(BuildCategory(n as u8), Chord::bare(key)));
+                assert!(map.rebind(BuildCategory(n.fit::<u8>()), Chord::bare(key)));
                 for (_, kinds) in BUILD_CATEGORIES {
                     if let Some(kind) = kinds.get(n) {
                         assert!(map.rebind(Build(*kind), Chord::bare(key)));
@@ -537,15 +539,15 @@ impl BindingMap {
         .into_iter()
         .enumerate()
         {
-            assert!(map.rebind(ReplaySpeed(n as u8), Chord::bare(key)));
+            assert!(map.rebind(ReplaySpeed(n.fit::<u8>()), Chord::bare(key)));
             if n < CONTROL_GROUPS {
-                assert!(map.rebind(Slot(n as u8 + 1), Chord::bare(key)));
-                assert!(map.rebind(AssignGroup(n as u8 + 1), Chord::ctrl(key)));
+                assert!(map.rebind(Slot(n.fit::<u8>() + 1), Chord::bare(key)));
+                assert!(map.rebind(AssignGroup(n.fit::<u8>() + 1), Chord::ctrl(key)));
             }
         }
         for (n, key) in [Key::F5, Key::F6, Key::F7, Key::F8].into_iter().enumerate() {
-            assert!(map.rebind(SetBookmark(n as u8), Chord::ctrl(key)));
-            assert!(map.rebind(RecallBookmark(n as u8), Chord::bare(key)));
+            assert!(map.rebind(SetBookmark(n.fit::<u8>()), Chord::ctrl(key)));
+            assert!(map.rebind(RecallBookmark(n.fit::<u8>()), Chord::bare(key)));
         }
         map
     }

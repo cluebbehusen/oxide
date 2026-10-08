@@ -3,6 +3,8 @@
 //! placement ghost, and the drag rectangle.
 
 use super::*;
+use crate::numeric;
+use crate::numeric::Fit;
 use crate::render::prim::{fill_circle, line_between, stroke_circle};
 
 /// The armed building follows the cursor as a translucent footprint —
@@ -475,10 +477,7 @@ fn payload_contact(
         ),
     }
     .filter(|point| {
-        game.presentation.all_seeing()
-            || game
-                .my_vision()
-                .visible(TilePos::new(point.x.floor() as i32, point.y.floor() as i32))
+        game.presentation.all_seeing() || game.my_vision().visible(numeric::tile_at(*point))
     });
     (point.unwrap_or(at), surface)
 }
@@ -509,10 +508,7 @@ pub(super) fn impact_contact(
         ),
     }
     .filter(|point| {
-        game.presentation.all_seeing()
-            || game
-                .my_vision()
-                .visible(TilePos::new(point.x.floor() as i32, point.y.floor() as i32))
+        game.presentation.all_seeing() || game.my_vision().visible(numeric::tile_at(*point))
     })
     .unwrap_or(at)
 }
@@ -1065,8 +1061,8 @@ fn draw_bomber_bombs(game: &crate::game::Scene<'_>, sprites: &Sprites) {
         if !game.presentation.all_seeing()
             && game.state.hostile(game.presentation.human, shell.player)
             && !game.my_vision().visible(TilePos::new(
-                position.x.floor() as i32,
-                position.y.floor() as i32,
+                numeric::to_i32(position.x.floor()),
+                numeric::to_i32(position.y.floor()),
             ))
         {
             continue;
@@ -1344,10 +1340,7 @@ fn draw_splash_bloom(sprites: &Sprites, center: Vec2, zoom: f32, radius: f32, pr
 
 #[expect(clippy::too_many_lines, reason = "draws every shell and effect kind")]
 pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
-    let sees = |p: Vec2| {
-        game.my_vision()
-            .visible(TilePos::new(p.x.floor() as i32, p.y.floor() as i32))
-    };
+    let sees = |p: Vec2| game.my_vision().visible(numeric::tile_at(p));
     // Real shells render from sim state, aged by sim ticks: pause holds
     // them mid-air, speed changes track, and a replay loaded mid-flight
     // restores them — no wall-clock effect can drift from the rules.
@@ -2200,7 +2193,7 @@ fn visit_stroke_segments(
 }
 
 fn circle_path(center: Vec2, radius: f32) -> Vec<Vec2> {
-    let segments = ((std::f32::consts::TAU * radius / 4.0).ceil() as usize).clamp(48, 240);
+    let segments = numeric::to_usize((std::f32::consts::TAU * radius / 4.0).ceil()).clamp(48, 240);
     (0..=segments)
         .map(|segment| {
             let angle = std::f32::consts::TAU * segment as f32 / segments as f32;
@@ -2542,7 +2535,7 @@ fn draw_economy_ground(game: &crate::game::Scene<'_>, shape: BuildingRangeShape)
             .camera
             .to_screen(max + Vec2::splat(radius));
         let depth = (10.0 * scale).min((max - min).min_element() * 0.25);
-        let steps = depth.ceil() as usize;
+        let steps = numeric::to_usize(depth.ceil());
         for step in 0..steps {
             let inset = step as f32 * depth / steps as f32;
             let thickness = depth / steps as f32;
@@ -2765,8 +2758,8 @@ fn range_fade_mesh(shape: BuildingRangeShape, width: f32, color: Color) -> Mesh 
     let count = mesh.vertices.len() / 3;
     for band in 0..2 {
         for point in 0..count - 1 {
-            let a = (band * count + point) as u16;
-            let b = a + count as u16;
+            let a = (band * count + point).fit::<u16>();
+            let b = a + count.fit::<u16>();
             mesh.indices
                 .extend_from_slice(&[a, a + 1, b + 1, a, b + 1, b]);
         }
@@ -3008,7 +3001,7 @@ mod tests {
             .flat_map(|(y, row)| {
                 row.char_indices()
                     .filter(|(_, tile)| *tile == 'E')
-                    .map(move |(x, _)| (x as i32, y as i32))
+                    .map(move |(x, _)| (x.fit::<i32>(), y.fit::<i32>()))
             })
             .collect();
         assert!(frames.len() >= 3, "fixture needs home and remote frames");
@@ -3299,7 +3292,7 @@ mod tests {
         let kind = oxide_sim::BuildingKind::FlakTurret;
         for (tier, stats) in kind.tiers().iter().enumerate() {
             let mut ranges = Vec::new();
-            visit_building_ranges(vec2(10.0, 10.0), kind, tier as u8, |range| {
+            visit_building_ranges(vec2(10.0, 10.0), kind, tier.fit::<u8>(), |range| {
                 ranges.push(range);
             });
             let weapon = ranges

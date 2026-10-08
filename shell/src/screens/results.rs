@@ -5,6 +5,8 @@
 
 use crate::bot_label::{BotLabelStyle, bot_label};
 use crate::game::{Game, SoundKind};
+use crate::numeric;
+use crate::numeric::Fit;
 use crate::press::Press;
 use crate::{render, theme};
 use macroquad::prelude::*;
@@ -194,7 +196,7 @@ fn player_column_right(left: f32, right: f32, wide: bool) -> f32 {
 }
 
 fn draw_centered_text(text: &str, x: f32, y: f32, size: f32, color: Color) {
-    let width = measure_text(text, None, size as u16, 1.0).width;
+    let width = measure_text(text, None, numeric::font_size(size), 1.0).width;
     draw_text(text, x - width * 0.5, y, size, color);
 }
 
@@ -420,7 +422,7 @@ impl ResultsScreen {
         let player_count = game.state.players().len();
         let layout = results_layout(viewport, s, player_count);
         let (title, title_color, subtitle) = verdict(game);
-        let dims = measure_text(title, None, layout.title_size as u16, 1.0);
+        let dims = measure_text(title, None, numeric::font_size(layout.title_size), 1.0);
         draw_text(
             title,
             (viewport.x - dims.width) * 0.5,
@@ -434,10 +436,10 @@ impl ResultsScreen {
         let mut meta_size = layout.meta_size;
         let min_meta_size = 10.0 * s;
         let max_meta_width = panel.w - 24.0 * s;
-        let mut meta_dims = measure_text(&meta, None, meta_size as u16, 1.0);
+        let mut meta_dims = measure_text(&meta, None, numeric::font_size(meta_size), 1.0);
         while meta_dims.width > max_meta_width && meta_size > min_meta_size {
             meta_size = (meta_size - s).max(min_meta_size);
-            meta_dims = measure_text(&meta, None, meta_size as u16, 1.0);
+            meta_dims = measure_text(&meta, None, numeric::font_size(meta_size), 1.0);
         }
         draw_text(
             &meta,
@@ -530,7 +532,7 @@ impl ResultsScreen {
                     .iter()
                     .find(|entry| usize::from(entry.seat) == seat);
                 let y = rule_y + (row as f32 + layout.row_baseline) * row_h;
-                let color = render::seat_identity_color(&game.view(), PlayerId(seat as u8));
+                let color = render::seat_identity_color(&game.view(), PlayerId(seat.fit::<u8>()));
                 draw_marker(
                     columns[0],
                     y - layout.row_size * 0.36,
@@ -538,7 +540,7 @@ impl ResultsScreen {
                     seat,
                     color,
                 );
-                let winner = game.state.winners().contains(&PlayerId(seat as u8));
+                let winner = game.state.winners().contains(&PlayerId(seat.fit::<u8>()));
                 let crown = if winner { " *" } else { "" };
                 let max_name_chars = if viewport.x < 800.0 {
                     if game.scenario.players.get(seat).is_some_and(|spec| spec.bot) {
@@ -555,14 +557,15 @@ impl ResultsScreen {
                 let fixed_width = measure_text(
                     format!("{prefix}{crown}"),
                     None,
-                    layout.row_size as u16,
+                    numeric::font_size(layout.row_size),
                     1.0,
                 )
                 .width;
                 let name_width =
                     (player_text_right - player_text_x - 8.0 * s - fixed_width).max(0.0);
-                let measure_name =
-                    |text: &str| measure_text(text, None, layout.row_size as u16, 1.0).width;
+                let measure_name = |text: &str| {
+                    measure_text(text, None, numeric::font_size(layout.row_size), 1.0).width
+                };
                 let name = fitted_player_name_with_controller(
                     game,
                     seat,
@@ -864,7 +867,7 @@ fn draw_army_graph(
             Color::new(0.55, 0.55, 0.62, 0.18),
         );
         let label = value.to_string();
-        let dims = measure_text(&label, None, label_size as u16, 1.0);
+        let dims = measure_text(&label, None, numeric::font_size(label_size), 1.0);
         draw_text(
             &label,
             plot.x - dims.width - 5.0 * scale,
@@ -887,7 +890,7 @@ fn draw_army_graph(
             Color::new(0.55, 0.55, 0.62, 0.13),
         );
         let label = format_duration(tick);
-        let dims = measure_text(&label, None, label_size as u16, 1.0);
+        let dims = measure_text(&label, None, numeric::font_size(label_size), 1.0);
         let label_x =
             (x - dims.width * 0.5).clamp(rect.x + 2.0, rect.x + rect.w - dims.width - 2.0);
         draw_text(

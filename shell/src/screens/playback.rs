@@ -4,6 +4,8 @@
 use crate::action::{Action, ActionEvent, ActionResolver, BindingMap, Context as InputContext};
 use crate::frame_time::FrameTime;
 use crate::game::{self, GameReplay, Presentation, Scene};
+use crate::numeric;
+use crate::numeric::Fit;
 use crate::press::{Fed, Press};
 use crate::render;
 use crate::render::prim::{fill_rect, stroke_rect};
@@ -93,7 +95,7 @@ impl PlaybackSession {
             .unwrap_or(0);
         let mut presentation = Presentation::new(
             &engine.state,
-            oxide_sim::PlayerId(vantage as u8),
+            oxide_sim::PlayerId(vantage.fit::<u8>()),
             render::viewport(),
         );
         // Spectator truth: fog-free, but NOT the developer overlay —
@@ -214,7 +216,7 @@ pub fn playback_hud(pb: &PlaybackSession, viewport: Vec2, mouse: Vec2) {
         // Mid-seek the transport numbers would lie (the state is
         // sprinting through the record); show honest progress instead.
         let line = format!("SEEKING  {} / {target}", pb.engine.position());
-        let width = measure_text(&line, None, size as u16, 1.0).width;
+        let width = measure_text(&line, None, numeric::font_size(size), 1.0).width;
         let x = (screen_width() - width) * 0.5;
         let y = screen_height() - 14.0 * s;
         draw_rectangle(
@@ -244,7 +246,8 @@ pub fn playback_hud(pb: &PlaybackSession, viewport: Vec2, mouse: Vec2) {
     // has no keys to hint at.
     let line = if crate::platform::TOUCH_ONLY
         || !crate::hints::showing()
-        || measure_text(&full, None, size as u16, 1.0).width > screen_width() - 16.0 * s
+        || measure_text(&full, None, numeric::font_size(size), 1.0).width
+            > screen_width() - 16.0 * s
     {
         format!(
             "PLAYBACK  {} / {}  |  {}x{}",
@@ -256,7 +259,7 @@ pub fn playback_hud(pb: &PlaybackSession, viewport: Vec2, mouse: Vec2) {
     } else {
         full
     };
-    let width = measure_text(&line, None, size as u16, 1.0).width;
+    let width = measure_text(&line, None, numeric::font_size(size), 1.0).width;
     let x = (screen_width() - width) * 0.5;
     let y = screen_height() - 14.0 * s;
     draw_rectangle(
@@ -376,7 +379,7 @@ fn composition_band(
     for (index, kind) in named.iter().enumerate() {
         let label = format!("{kind} ");
         draw_text(&label, x, band.y - 4.0 * s, size, BAND_COLORS[index]);
-        x += measure_text(&label, None, size as u16, 1.0).width + 6.0 * s;
+        x += measure_text(&label, None, numeric::font_size(size), 1.0).width + 6.0 * s;
     }
     stroke_rect(band, 1.2 * s, Color::new(0.45, 0.45, 0.52, 0.8));
 }
@@ -386,7 +389,7 @@ impl PlaybackSession {
     fn tick_at(&self, bar: macroquad::prelude::Rect, x: f32) -> u64 {
         let frac = ((x - bar.x) / bar.w).clamp(0.0, 1.0);
         self.engine.start()
-            + (frac * (self.engine.total() - self.engine.start()) as f32).round() as u64
+            + numeric::to_u64((frac * (self.engine.total() - self.engine.start()) as f32).round())
     }
 
     /// Applies transport input without advancing replay time.
@@ -621,7 +624,7 @@ impl PlaybackSession {
             self.presentation.reset_after_jump(&self.engine.state);
         } else if !self.paused && !self.engine.at_end() {
             self.accum += time.raw * self.speed;
-            let ticks = (self.accum / game::TICK_DT) as u64;
+            let ticks = numeric::to_u64(self.accum / game::TICK_DT);
             if ticks > 0 {
                 self.accum -= ticks as f32 * game::TICK_DT;
                 // One tick per present: fog is per-tick truth, and
@@ -757,7 +760,7 @@ impl oxide_protocol::DebugSession for PlaybackSession {
 
     fn set_speed(&mut self, multiplier: f64) -> Result<(), String> {
         oxide_protocol::check_speed(multiplier)?;
-        self.speed = multiplier as f32;
+        self.speed = numeric::to_f32(multiplier);
         Ok(())
     }
 }

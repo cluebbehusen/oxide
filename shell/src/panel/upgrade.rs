@@ -97,6 +97,7 @@ pub(super) fn comparison(kind: BuildingKind, tier: u8) -> Option<UpgradeComparis
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::numeric::Fit;
 
     fn values(kind: BuildingKind, tier: u8, label: &str) -> (String, String) {
         let row = comparison(kind, tier)
@@ -116,7 +117,7 @@ mod tests {
     #[test]
     fn every_upgrade_compares_completed_health_and_stops_at_the_top() {
         for kind in BuildingKind::ALL {
-            for tier in 0..kind.tiers().len() as u8 - 1 {
+            for tier in 0..kind.tiers().len().fit::<u8>() - 1 {
                 assert_eq!(
                     values(kind, tier, "Max health"),
                     (
@@ -125,7 +126,7 @@ mod tests {
                     )
                 );
             }
-            assert!(comparison(kind, kind.tiers().len() as u8 - 1).is_none());
+            assert!(comparison(kind, kind.tiers().len().fit::<u8>() - 1).is_none());
         }
     }
 

@@ -8,7 +8,7 @@
 
 use super::Pointer;
 use crate::game::Game;
-use chassis::grid::TilePos;
+use crate::numeric;
 use macroquad::prelude::{Vec2, vec2};
 use oxide_sim::UnitId;
 
@@ -75,7 +75,7 @@ pub(super) enum Picked {
 /// under it.
 pub(super) fn pick(game: &Game, screen: Vec2, ui: f32, pointer: Pointer) -> Option<Picked> {
     let world = game.presentation.camera.to_world(screen);
-    let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+    let tile = numeric::tile_at(world);
     // Over known salvage only a unit's body counts: the slop that widens
     // a fingertip or a zoomed-out cursor must not hand the harvester
     // working a pile the tap aimed at the pile itself.
@@ -221,7 +221,7 @@ pub(super) fn click_select(
     game.presentation.selection.units.clear();
     game.presentation.selection.buildings.clear();
     let world = game.presentation.camera.to_world(screen);
-    let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+    let tile = numeric::tile_at(world);
     game.presentation.selection.pile = game.view().known_salvage(tile).is_some().then_some(tile);
 }
 
@@ -429,7 +429,7 @@ pub(super) fn select_all_of_kind_on_screen(
         return;
     }
 
-    let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+    let tile = numeric::tile_at(world);
     let Some(picked) = game
         .state
         .buildings_at(tile)

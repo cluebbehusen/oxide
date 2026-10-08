@@ -2,6 +2,8 @@
 //! resolver against a real (headless) sim.
 
 use super::*;
+use crate::numeric;
+use crate::numeric::Fit;
 use oxide_sim::scenario::ScenarioMode;
 use oxide_sim::{PlayerCommand, UnitKind};
 
@@ -920,7 +922,7 @@ fn an_off_centre_ground_click_orders_its_tile_and_pings_its_centre() {
     let mut input = InputState::new();
     let (fighter, at) = own_fighter(&game);
     game.presentation.selection.units = vec![fighter];
-    let tile = TilePos::new(at.x as i32 + 4, at.y as i32 + 2);
+    let tile = TilePos::new(numeric::to_i32(at.x) + 4, numeric::to_i32(at.y) + 2);
     let screen = game.presentation.camera.to_screen(off_centre(tile));
 
     apply_events(&mut game, &mut input, &[right_down(screen)]);
@@ -948,7 +950,7 @@ fn armed_ground_verbs_ping_at_the_tile_centre() {
         } else {
             input.running = true;
         }
-        let tile = TilePos::new(at.x as i32 + 3, at.y as i32 - 2);
+        let tile = TilePos::new(numeric::to_i32(at.x) + 3, numeric::to_i32(at.y) - 2);
         let screen = game.presentation.camera.to_screen(off_centre(tile));
 
         apply_events(&mut game, &mut input, &[left_down(screen)]);
@@ -977,7 +979,7 @@ fn a_minimap_order_pings_at_the_tile_centre() {
     let minimap = publish_minimap(&game);
     let screen = vec2(minimap.x + 97.0, minimap.y + 61.0);
     let world = crate::render::minimap_world_at(&game.view(), screen).expect("inside the minimap");
-    let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+    let tile = numeric::tile_at(world);
     assert!(
         (world - vec2(tile.x as f32 + 0.5, tile.y as f32 + 0.5)).length() > 0.05,
         "premise: the minimap point is off the tile's centre"
@@ -1655,7 +1657,7 @@ fn a_shift_click_on_the_wounded_wall_queues_the_weld_not_the_rat() {
             .clamp(wall.anchor.y as f32, wall.anchor.y as f32 + 2.0),
     );
     let world = clamped + (center - clamped).normalize() * 0.05;
-    let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+    let tile = numeric::tile_at(world);
     assert!(
         wall.tiles().any(|t| t == tile),
         "premise: the click lands on the wall ({tile:?})"
@@ -4476,7 +4478,7 @@ fn a_minimap_right_click_sets_every_selected_producer_rally() {
     let minimap = publish_minimap(&game);
     let at = vec2(minimap.x + 30.0, minimap.y + 30.0);
     let world = crate::render::minimap_world_at(&game.view(), at).expect("point is inside minimap");
-    let rally = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+    let rally = numeric::tile_at(world);
     let mut producers: Vec<_> = game
         .state
         .buildings()
@@ -6908,7 +6910,7 @@ fn construction_menu_shows_every_building_and_shortcuts_arm_the_visible_card() {
             .position(|k| *k == kind)
             .unwrap();
         controls_key(&mut game, &mut input, keys[category]);
-        assert_eq!(input.build_category, Some(category as u8));
+        assert_eq!(input.build_category, Some(category.fit::<u8>()));
         // Shift remains queue semantics, never a different building.
         apply_events(&mut game, &mut input, &[key_down(Key::Shift)]);
         controls_key(&mut game, &mut input, keys[index]);
@@ -7385,7 +7387,7 @@ fn remapped_construction_sequence_arms_every_enabled_card_without_shift_changing
     input.bindings = BindingMap::classic();
     for (category, (_, kinds)) in BUILD_CATEGORIES.into_iter().enumerate() {
         assert!(input.bindings.rebind(
-            Action::BuildCategory(category as u8),
+            Action::BuildCategory(category.fit::<u8>()),
             Chord::ctrl([Key::J, Key::K, Key::L, Key::O][category])
         ));
         for kind in kinds {

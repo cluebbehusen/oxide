@@ -14,7 +14,9 @@ use super::environment::{
     draw_strata, hash, mixed, quarry_color, rgba, shifted,
 };
 use crate::game::Scene;
+use crate::numeric::Fit;
 use chassis::grid::TilePos;
+use chassis::grid::as_index;
 use macroquad::prelude::*;
 use oxide_sim::map::Terrain;
 
@@ -25,6 +27,11 @@ const VIGNETTE_CELLS: i32 = 4;
 /// the way the boundary's do per side segment.
 const BLOCK_TILES: i32 = 3;
 const MAX_BENCH_CELLS: i32 = 3;
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "the drop table is a handful of entries"
+)]
 const MAX_DEPTH: i32 = DROP.len() as i32 * (1 + MAX_BENCH_CELLS) + VIGNETTE_CELLS;
 const VOID: Color = rgba(8, 9, 12);
 const GLINT: Color = rgba(22, 24, 34);
@@ -59,8 +66,8 @@ fn bench_widths(block_x: i32, block_y: i32) -> [i32; DROP.len()] {
     let mut widths = [0; DROP.len()];
     for (level, layer) in DROP.iter().enumerate() {
         let token = hash(
-            block_x + level as i32 * 11,
-            block_y + level as i32 * 7,
+            block_x + level.fit::<i32>() * 11,
+            block_y + level.fit::<i32>() * 7,
             SALT,
         ) % 11;
         let shift = match token {
@@ -90,7 +97,7 @@ fn material(depth: u8, widths: [i32; DROP.len()]) -> Option<Material> {
         }
     }
     Some(if depth <= cursor + VIGNETTE_CELLS {
-        Material::Vignette((depth - cursor) as u8)
+        Material::Vignette((depth - cursor).fit::<u8>())
     } else {
         Material::Void
     })
@@ -144,8 +151,8 @@ impl PitField {
         let width = max.x - min.x + 2 * pad;
         let height = max.y - min.y + 2 * pad;
         let (cw, ch) = (width * CELLS, height * CELLS);
-        let mut depth = vec![0u8; (cw * ch).max(0) as usize];
-        let mut known = vec![false; (width * height).max(0) as usize];
+        let mut depth = vec![0u8; as_index((cw * ch).max(0))];
+        let mut known = vec![false; as_index((width * height).max(0))];
         let map = game.state.map();
         let vision = game.my_vision();
         let all_seeing = game.presentation.all_seeing();
@@ -157,9 +164,9 @@ impl PitField {
                 let Some(known_pit) = seed(terrain, explored) else {
                     continue;
                 };
-                known[(ty * width + tx) as usize] = known_pit;
+                known[as_index(ty * width + tx)] = known_pit;
                 for sy in 0..CELLS {
-                    let row = ((ty * CELLS + sy) * cw + tx * CELLS) as usize;
+                    let row = as_index((ty * CELLS + sy) * cw + tx * CELLS);
                     depth[row..row + CELLS as usize].fill(u8::MAX);
                 }
             }
@@ -186,7 +193,7 @@ impl PitField {
             let y = if backward { ch - 1 - step_y } else { step_y };
             for step_x in 0..cw {
                 let x = if backward { cw - 1 - step_x } else { step_x };
-                let index = (y * cw + x) as usize;
+                let index = as_index(y * cw + x);
                 if self.depth[index] == 0 {
                     continue;
                 }
@@ -206,7 +213,7 @@ impl PitField {
         if x < 0 || y < 0 || x >= cw || y >= ch {
             u8::MAX
         } else {
-            self.depth[(y * cw + x) as usize]
+            self.depth[as_index(y * cw + x)]
         }
     }
 
@@ -216,7 +223,7 @@ impl PitField {
             && ty >= 0
             && tx < self.width
             && ty < self.height
-            && self.known[(ty * self.width + tx) as usize]
+            && self.known[as_index(ty * self.width + tx)]
     }
 
     /// Depth of a cell addressed by absolute tile and sub-cell; the sub-cell
@@ -300,10 +307,10 @@ fn draw_fill(game: &Scene<'_>, field: &PitField, pos: TilePos, zoom: f32, fractu
                 continue;
             }
             draw_rectangle(
-                xs[run_start as usize],
-                ys[sy as usize],
-                xs[sx as usize] - xs[run_start as usize],
-                ys[sy as usize + 1] - ys[sy as usize],
+                xs[as_index(run_start)],
+                ys[as_index(sy)],
+                xs[as_index(sx)] - xs[as_index(run_start)],
+                ys[as_index(sy) + 1] - ys[as_index(sy)],
                 run_color,
             );
             if let Some(color) = next {
@@ -332,10 +339,10 @@ fn draw_relief(game: &Scene<'_>, field: &PitField, pos: TilePos, zoom: f32, frac
         for sx in 0..CELLS {
             let depth = field.at(pos, sx, sy);
             let rect = Rect::new(
-                xs[sx as usize],
-                ys[sy as usize],
-                xs[sx as usize + 1] - xs[sx as usize],
-                ys[sy as usize + 1] - ys[sy as usize],
+                xs[as_index(sx)],
+                ys[as_index(sy)],
+                xs[as_index(sx) + 1] - xs[as_index(sx)],
+                ys[as_index(sy) + 1] - ys[as_index(sy)],
             );
             match field.material_at(pos, sx, sy) {
                 Some(Material::Riser(level)) => {
@@ -402,7 +409,7 @@ mod tests {
     #[test]
     fn depth_walks_lip_bench_vignette_void_in_order() {
         let mut seen = Vec::new();
-        for depth in 1..=(MAX_DEPTH as u8 + 1) {
+        for depth in 1..=(MAX_DEPTH.fit::<u8>() + 1) {
             let material = material(depth, BASE).expect("pit cell");
             if seen.last() != Some(&material) {
                 seen.push(material);
@@ -462,8 +469,8 @@ mod tests {
             origin: TilePos::new(0, 0),
             width: cells / CELLS,
             height: cells / CELLS,
-            depth: vec![u8::MAX; (cells * cells) as usize],
-            known: vec![true; ((cells / CELLS) * (cells / CELLS)) as usize],
+            depth: vec![u8::MAX; as_index(cells * cells)],
+            known: vec![true; as_index((cells / CELLS) * (cells / CELLS))],
         }
     }
 
@@ -476,7 +483,7 @@ mod tests {
         field.relax(12, 12, true);
         for y in 0..12i32 {
             for x in 0..12i32 {
-                let expected = (x - 6).abs().max((y - 6).abs()) as u8;
+                let expected = (x - 6).abs().max((y - 6).abs()).fit::<u8>();
                 assert_eq!(field.cell(x, y), expected, "cell {x},{y}");
             }
         }

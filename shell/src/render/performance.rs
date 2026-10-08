@@ -1,6 +1,7 @@
 //! Performance chrome uses the same measured geometry for drawing and input.
 
 use crate::config::PerformanceDisplay;
+use crate::numeric;
 use crate::performance::PerformanceView;
 use crate::render::prim::fill_rect;
 use crate::{layout::TOP_BAR_H, theme, typography};
@@ -123,7 +124,7 @@ pub(super) fn draw(view: &PerformanceView, status_space: Option<(f32, f32)>) -> 
     let step = graph.w / view.graph.len() as f32;
     for (index, ms) in view.graph.iter().enumerate() {
         if let Some(ms) = ms {
-            let height = ((*ms / 50.0).clamp(0.0, 1.0) as f32 * graph.h).max(s);
+            let height = (numeric::to_f32((*ms / 50.0).clamp(0.0, 1.0)) * graph.h).max(s);
             let x = graph.x + index as f32 * step;
             draw_rectangle(
                 x,

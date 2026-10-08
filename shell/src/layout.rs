@@ -7,6 +7,7 @@
 //! drawing and hit-testing each kept their own arithmetic. New screens
 //! and widgets grow this model rather than freehand math.
 
+use crate::numeric;
 use crate::panel::CardAction;
 use macroquad::prelude::{Rect, Vec2};
 
@@ -252,7 +253,7 @@ pub(crate) fn group_column(ui: f32, touch_only: bool, minimap: Rect) -> Option<G
         return None;
     }
     let groups = crate::action::CONTROL_GROUPS;
-    let rows = (rows_fit as usize).min(groups);
+    let rows = numeric::to_usize(rows_fit).min(groups);
     let columns = groups.div_ceil(rows);
     let span = |n: usize| n as f32 * side + n.saturating_sub(1) as f32 * gap;
     let (w, h) = (span(columns) + 2.0 * pad, span(rows) + 2.0 * pad);

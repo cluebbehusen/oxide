@@ -10,6 +10,8 @@
 use crate::assets::{
     ExcavatorPose as SpriteExcavatorPose, HarvesterPose as SpriteHarvesterPose, Sprites,
 };
+use crate::numeric;
+use crate::numeric::Fit;
 pub(crate) mod tracks;
 static COLORBLIND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -545,10 +547,13 @@ const FOG_EXPLORED: Color = color_u8!(13, 13, 17, 135);
 
 fn visible_tiles(game: &crate::game::Scene<'_>) -> (TilePos, TilePos) {
     let (lo, hi) = game.presentation.camera.world_rect();
-    let min = TilePos::new((lo.x.floor() as i32).max(0), (lo.y.floor() as i32).max(0));
+    let min = TilePos::new(
+        numeric::to_i32(lo.x.floor()).max(0),
+        numeric::to_i32(lo.y.floor()).max(0),
+    );
     let max = TilePos::new(
-        (hi.x.ceil() as i32).min(game.state.map().width()),
-        (hi.y.ceil() as i32).min(game.state.map().height()),
+        numeric::to_i32(hi.x.ceil()).min(game.state.map().width()),
+        numeric::to_i32(hi.y.ceil()).min(game.state.map().height()),
     );
     (min, max)
 }
@@ -775,17 +780,17 @@ impl UnitSpriteFrame {
         };
         let hull_phase = match animation.propulsion {
             crate::presentation_animation::PropulsionState::LiftRotors { cycle } => {
-                ((cycle * 3.0) as usize).min(2)
+                numeric::to_usize(cycle * 3.0).min(2)
             }
             crate::presentation_animation::PropulsionState::None => worker_phase,
         };
         Self {
             frame,
-            hull_phase: hull_phase as u8,
-            worker_phase: worker_phase as u8,
+            hull_phase: hull_phase.fit::<u8>(),
+            worker_phase: worker_phase.fit::<u8>(),
             cargo: animation
                 .cargo
-                .map_or(0, |cargo| (cargo.fill * 5.0).ceil() as u8),
+                .map_or(0, |cargo| numeric::to_u8((cargo.fill * 5.0).ceil())),
         }
     }
 }

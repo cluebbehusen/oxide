@@ -8,6 +8,7 @@ use crate::action::{Action, BindingMap, Chord};
 use crate::config::Config;
 use crate::game::SoundKind;
 use crate::menu::Menu;
+use crate::numeric;
 use crate::render;
 use macroquad::prelude::{Vec2, draw_text, measure_text};
 use oxide_protocol::{Key, RawEvent};
@@ -284,11 +285,11 @@ fn settings_menu(config: &Config) -> Menu {
 fn cycle_setting(config: &mut Config, row: Row) -> bool {
     let step = |v: f32| {
         // 0 -> 25 -> 50 -> 75 -> 100 -> 0, tolerant of odd stored values.
-        let next = ((v * 4.0).round() as u32 + 1) % 5;
+        let next = (numeric::to_u32((v * 4.0).round()) + 1) % 5;
         next as f32 / 4.0
     };
     // 75 -> 100 -> 125 -> 150 -> 75.
-    let scale_step = |v: f32| match (v * 100.0).round() as u32 {
+    let scale_step = |v: f32| match numeric::to_u32((v * 100.0).round()) {
         75 => 1.0,
         100 => 1.25,
         125 => 1.5,
@@ -440,7 +441,7 @@ impl SettingsScreen {
         if let Some(notice) = &self.notice {
             let s = render::ui_scale();
             let size = 16.0 * s;
-            let width = measure_text(&notice.text, None, size as u16, 1.0).width;
+            let width = measure_text(&notice.text, None, numeric::font_size(size), 1.0).width;
             draw_text(
                 &notice.text,
                 (render::viewport().x - width) * 0.5,

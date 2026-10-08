@@ -8,6 +8,8 @@
 //! rects it publishes.
 
 use crate::menu::{PreviewCache, ScenarioEntry};
+use crate::numeric;
+use crate::numeric::Fit;
 use crate::render::prim::{fill_rect, stroke_rect};
 use macroquad::prelude::{
     Color, DrawTextureParams, Rect, Vec2, draw_rectangle, draw_text, draw_texture_ex, measure_text,
@@ -369,13 +371,13 @@ impl Browser {
                     let down = matches!(*event, RawEvent::KeyDown { key: Key::Down });
                     let all = lines(entries, cols);
                     let (li, ci) = Self::locate(entries, cols, self.selected);
-                    let mut target = li as i64;
+                    let mut target = li.fit::<i64>();
                     loop {
                         target += if down { 1 } else { -1 };
-                        if target < 0 || target as usize >= all.len() {
+                        if target < 0 || target.fit::<usize>() >= all.len() {
                             break;
                         }
-                        if let Line::Cards(row) = &all[target as usize] {
+                        if let Line::Cards(row) = &all[target.fit::<usize>()] {
                             self.selected = row[ci.min(row.len() - 1)];
                             break;
                         }
@@ -486,7 +488,7 @@ impl Browser {
         let layout = self.layout(entries, view, ui);
         for (label, rect) in &layout.headings {
             draw_text(label, rect.x, rect.y + rect.h * 0.62, 22.0 * ui, TEXT_TITLE);
-            let dims = measure_text(label, None, (22.0 * ui) as u16, 1.0);
+            let dims = measure_text(label, None, numeric::font_size(22.0 * ui), 1.0);
             draw_rectangle(
                 rect.x + dims.width + 14.0 * ui,
                 rect.y + rect.h * 0.5,
@@ -530,7 +532,7 @@ impl Browser {
             };
             stroke_rect(*rect, if selected { 3.0 } else { 1.5 }, border);
             let name_size = 17.0 * ui;
-            let name = measure_text(&entry.label, None, name_size as u16, 1.0);
+            let name = measure_text(&entry.label, None, numeric::font_size(name_size), 1.0);
             draw_text(
                 &entry.label,
                 rect.x + (rect.w - name.width) * 0.5,
@@ -556,7 +558,7 @@ impl Browser {
             crate::render::OUTSIDE,
         );
         let title_size = 64.0 * ui;
-        let dims = measure_text("OXIDE", None, title_size as u16, 1.0);
+        let dims = measure_text("OXIDE", None, numeric::font_size(title_size), 1.0);
         draw_text(
             "OXIDE",
             (view.x - dims.width) * 0.5,
@@ -590,11 +592,11 @@ impl Browser {
                 .clone()
                 .unwrap_or_else(|| "machines eating a dead world".to_string());
             let mut size = 18.0 * ui;
-            let mut dims = measure_text(&blurb, None, size as u16, 1.0);
+            let mut dims = measure_text(&blurb, None, numeric::font_size(size), 1.0);
             let max = view.x * 0.8;
             if dims.width > max {
                 size = (size * max / dims.width).max(12.0 * ui);
-                dims = measure_text(&blurb, None, size as u16, 1.0);
+                dims = measure_text(&blurb, None, numeric::font_size(size), 1.0);
             }
             draw_text(
                 &blurb,
@@ -605,7 +607,7 @@ impl Browser {
             );
         }
         let hint = crate::menu::binding_hint(browser_hint(crate::platform::TOUCH_ONLY));
-        let dims = measure_text(&hint, None, (16.0 * ui) as u16, 1.0);
+        let dims = measure_text(&hint, None, numeric::font_size(16.0 * ui), 1.0);
         draw_text(
             &hint,
             (view.x - dims.width) * 0.5,

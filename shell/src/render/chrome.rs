@@ -4,6 +4,8 @@
 //! so drawn and clickable can never disagree.
 
 use super::*;
+use crate::numeric;
+use crate::numeric::Fit;
 use crate::render::prim::{fill_rect, line_between, stroke_rect};
 use crate::theme::TEXT_ACCENT;
 
@@ -65,14 +67,14 @@ fn draw_group_slot(
             fill_rect(rect, TOP_BAR_BADGE);
             let text = count.to_string();
             let mut size = 17.0 * s;
-            while measure_text(&text, None, size as u16, 1.0).width > rect.w - 14.0 * s
+            while measure_text(&text, None, numeric::font_size(size), 1.0).width > rect.w - 14.0 * s
                 && size > 11.0 * s
             {
                 size -= 1.0 * s;
             }
             // Centered on the glyphs' own box, not the baseline, so the
             // count sits in the middle of the slot at any size.
-            let dims = measure_text(&text, None, size as u16, 1.0);
+            let dims = measure_text(&text, None, numeric::font_size(size), 1.0);
             draw_text(
                 &text,
                 rect.x + (rect.w - dims.width) * 0.5,
@@ -136,7 +138,7 @@ fn draw_group_column(
     stroke_rect(column.plate, 1.5 * s, Color::new(0.6, 0.6, 0.65, 0.4));
     let current = input.selected_group(game);
     for (slot, rect) in column.slots.iter().enumerate() {
-        let number = slot as u8 + 1;
+        let number = slot.fit::<u8>() + 1;
         let action = if counts[slot] > 0 {
             crate::layout::GroupSlot::Recall(number)
         } else if offer == Some(number) {
@@ -183,14 +185,14 @@ pub(crate) fn draw_salvage_tooltip(game: &crate::game::Scene<'_>, input: &InputS
         return;
     }
     let world = game.presentation.camera.to_world(point);
-    let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+    let tile = numeric::tile_at(world);
     let text = match game.known_salvage(tile) {
         Some(crate::game::Salvage::Scrap(amount)) => format!("scrap {amount}"),
         Some(crate::game::Salvage::Wreck(amount)) => format!("wreck {amount}"),
         None => return,
     };
     let s = ui_scale();
-    let dims = measure_text(&text, None, (16.0 * s) as u16, 1.0);
+    let dims = measure_text(&text, None, numeric::font_size(16.0 * s), 1.0);
     let (x, y) = (point.x + 14.0 * s, point.y - 10.0 * s);
     draw_rectangle(
         x - 4.0 * s,
@@ -267,7 +269,7 @@ pub(crate) fn draw_overlay_info(game: &crate::game::Scene<'_>) {
         60.0 * s
     };
     let size = 14.0 * s;
-    let width = measure_text(&info, None, size as u16, 1.0).width;
+    let width = measure_text(&info, None, numeric::font_size(size), 1.0).width;
     draw_text(
         &info,
         (screen_width() - width - 12.0 * s).max(0.0),
@@ -403,9 +405,9 @@ fn draw_mode_ribbon(
         .map(|construction| construction.cost.to_string());
     let (label_size, cost_size) = (18.0 * s, 16.0 * s);
     let icon_w = if building.is_some() { 40.0 * s } else { 0.0 };
-    let label_w = measure_text(&label, None, label_size as u16, 1.0).width;
+    let label_w = measure_text(&label, None, numeric::font_size(label_size), 1.0).width;
     let cost_w = cost.as_deref().map_or(0.0, |cost| {
-        12.0 * s + measure_text(cost, None, cost_size as u16, 1.0).width
+        12.0 * s + measure_text(cost, None, numeric::font_size(cost_size), 1.0).width
     });
     let width = ribbon_width(viewport, s, icon_w + label_w + cost_w);
     // The ribbon sits above whichever panel region lies under it.
@@ -554,15 +556,15 @@ pub(crate) fn draw_hud(
             crate::platform::TOUCH_ONLY,
             crate::layout::TopBarText {
                 scrap: crate::typography::measure(&scrap_text, 21.0 * s).width,
-                passive: measure_text(&passive_text, None, (16.0 * s) as u16, 1.0).width,
+                passive: measure_text(&passive_text, None, numeric::font_size(16.0 * s), 1.0).width,
                 units_label: crate::typography::measure("UNITS", 13.0 * s).width,
                 units: crate::typography::measure(&units_text, 21.0 * s).width,
                 idle: idle_text
                     .as_deref()
-                    .map(|text| measure_text(text, None, (15.0 * s) as u16, 1.0).width),
+                    .map(|text| measure_text(text, None, numeric::font_size(15.0 * s), 1.0).width),
                 alert: alert_text
                     .as_deref()
-                    .map(|text| measure_text(text, None, (15.0 * s) as u16, 1.0).width),
+                    .map(|text| measure_text(text, None, numeric::font_size(15.0 * s), 1.0).width),
                 status: crate::typography::measure(&status, 14.0 * s).width,
             },
         );
@@ -716,7 +718,8 @@ pub(crate) fn draw_hud(
         );
         let mut size = 20.0 * s;
         let available = (screen_width() - origin.x - 12.0 * s).max(1.0);
-        while measure_text(&toast.text, None, size as u16, 1.0).width > available && size > 12.0 * s
+        while measure_text(&toast.text, None, numeric::font_size(size), 1.0).width > available
+            && size > 12.0 * s
         {
             size -= 1.0 * s;
         }
@@ -736,7 +739,7 @@ pub(crate) fn draw_hud(
         } else {
             "ELIMINATED - SPECTATING"
         };
-        let dims = measure_text(text, None, (24.0 * s) as u16, 1.0);
+        let dims = measure_text(text, None, numeric::font_size(24.0 * s), 1.0);
         let x = (screen_width() - dims.width) * 0.5;
         draw_rectangle(
             x - 12.0 * s,
@@ -760,7 +763,7 @@ pub(crate) fn draw_result_overlay(game: &crate::game::Scene<'_>) {
     let s = ui_scale();
     let text = "SURRENDERED";
     let size = 48.0 * s;
-    let dims = measure_text(text, None, size as u16, 1.0);
+    let dims = measure_text(text, None, numeric::font_size(size), 1.0);
     let x = (screen_width() - dims.width) * 0.5;
     let y = screen_height() * 0.38;
     draw_rectangle(
@@ -772,7 +775,7 @@ pub(crate) fn draw_result_overlay(game: &crate::game::Scene<'_>) {
     );
     draw_text(text, x, y, size, DANGER);
     let sub = crate::menu::binding_hint(concede_hint(crate::platform::TOUCH_ONLY));
-    let sub_dims = measure_text(&sub, None, (18.0 * s) as u16, 1.0);
+    let sub_dims = measure_text(&sub, None, numeric::font_size(18.0 * s), 1.0);
     draw_text(
         &sub,
         (screen_width() - sub_dims.width) * 0.5,

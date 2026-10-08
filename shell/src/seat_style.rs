@@ -1,4 +1,5 @@
 //! Viewer-relative presentation identity, prepared once for a live or replay view.
+use crate::numeric::Fit;
 use macroquad::prelude::{Color, WHITE, color_u8};
 use oxide_sim::scenario::MAX_PLAYERS;
 use oxide_sim::{PlayerId, State};
@@ -29,7 +30,7 @@ impl SeatStyles {
             color: WHITE,
         }; MAX_PLAYERS];
         for (seat, player) in state.players().iter().enumerate() {
-            let owner = PlayerId(seat as u8);
+            let owner = PlayerId(seat.fit::<u8>());
             let cue = if owner == viewer {
                 AllegianceCue::Mine
             } else if !state.hostile(viewer, owner) {
@@ -140,6 +141,7 @@ fn identity_color(cue: AllegianceCue, rank: usize, colorblind: bool) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::numeric;
     use oxide_sim::scenario::PlayerSpec;
     use oxide_sim::scenario::ScenarioMode;
     use oxide_sim::{Faction, Scenario};
@@ -179,9 +181,9 @@ mod tests {
 
     fn rgb(color: Color) -> (u8, u8, u8) {
         (
-            (color.r * 255.0).round() as u8,
-            (color.g * 255.0).round() as u8,
-            (color.b * 255.0).round() as u8,
+            numeric::to_u8((color.r * 255.0).round()),
+            numeric::to_u8((color.g * 255.0).round()),
+            numeric::to_u8((color.b * 255.0).round()),
         )
     }
 
@@ -191,10 +193,10 @@ mod tests {
             let state = scenario(count, |_| None).build().unwrap();
             for viewer in 0..count {
                 for colorblind in [false, true] {
-                    let styles = SeatStyles::new(&state, PlayerId(viewer as u8), colorblind);
+                    let styles = SeatStyles::new(&state, PlayerId(viewer.fit::<u8>()), colorblind);
                     let mut colors = Vec::new();
                     for owner in 0..count {
-                        let style = styles.get(PlayerId(owner as u8));
+                        let style = styles.get(PlayerId(owner.fit::<u8>()));
                         if owner == viewer {
                             assert_eq!(style.cue, AllegianceCue::Mine);
                             assert_eq!(
@@ -250,7 +252,7 @@ mod tests {
 
     #[test]
     fn live_and_replay_views_share_prepared_styles_after_viewer_changes() {
-        let scenario = scenario(MAX_PLAYERS, |seat| Some((seat / 8) as u8));
+        let scenario = scenario(MAX_PLAYERS, |seat| Some((seat / 8).fit::<u8>()));
         let viewport = macroquad::prelude::vec2(1100.0, 720.0);
         let mut game = crate::game::Game::with_viewport(scenario.clone(), viewport).unwrap();
         let mut playback = crate::screens::playback::PlaybackSession::from_replay(

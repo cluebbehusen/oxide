@@ -1,5 +1,6 @@
 //! Shared interface lettering for short labels and body copy.
 
+use crate::numeric;
 use macroquad::prelude::*;
 use std::cell::RefCell;
 
@@ -36,7 +37,7 @@ pub(crate) fn install(font: Font) {
 }
 
 pub(crate) fn measure(text: &str, size: f32) -> TextDimensions {
-    DISPLAY.with(|font| measure_text(text, font.borrow().as_ref(), size as u16, 1.0))
+    DISPLAY.with(|font| measure_text(text, font.borrow().as_ref(), numeric::font_size(size), 1.0))
 }
 
 pub(crate) fn draw(text: &str, x: f32, y: f32, size: f32, color: Color) {
@@ -47,7 +48,7 @@ pub(crate) fn draw(text: &str, x: f32, y: f32, size: f32, color: Color) {
             y,
             TextParams {
                 font: font.borrow().as_ref(),
-                font_size: size as u16,
+                font_size: numeric::font_size(size),
                 color,
                 ..Default::default()
             },

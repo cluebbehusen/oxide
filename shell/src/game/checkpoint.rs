@@ -291,6 +291,7 @@ impl RestoredGame {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::numeric::Fit;
     use crate::tutorial::Demo;
     use oxide_kit::recovery::BuildIdentity;
     use oxide_sim::scenario::BotConfig;
@@ -537,7 +538,7 @@ mod tests {
             let game = Game::with_viewport(scenario, vec2(1280.0, 720.0)).unwrap();
             let original = serde_json::to_value(&game).unwrap();
             let restored: Game = serde_json::from_value(original.clone()).unwrap();
-            assert_eq!(restored.presentation.human, PlayerId(human as u8));
+            assert_eq!(restored.presentation.human, PlayerId(human.fit::<u8>()));
             let mut bad = original;
             bad["human"] = serde_json::json!(1 - human);
             let error = serde_json::from_value::<Game>(bad).err().unwrap();

@@ -3,6 +3,7 @@
 
 use crate::game::SoundKind;
 use crate::menu::Menu;
+use crate::numeric;
 use crate::press::{Fed, Press};
 use macroquad::prelude::{
     Color, Rect, Vec2, draw_rectangle, draw_rectangle_lines, draw_text, measure_text,
@@ -176,7 +177,7 @@ impl TextField {
         let view = crate::render::viewport();
         let layout = layout(view, s);
         let title_size = 48.0 * s;
-        let dims = measure_text(self.title, None, title_size as u16, 1.0);
+        let dims = measure_text(self.title, None, numeric::font_size(title_size), 1.0);
         draw_text(
             self.title,
             (view.x - dims.width) * 0.5,
@@ -185,7 +186,7 @@ impl TextField {
             crate::theme::TEXT_TITLE,
         );
         let hint_size = 18.0 * s;
-        let dims = measure_text(hint, None, hint_size as u16, 1.0);
+        let dims = measure_text(hint, None, numeric::font_size(hint_size), 1.0);
         draw_text(
             hint,
             (view.x - dims.width) * 0.5,
@@ -212,7 +213,7 @@ impl TextField {
         let text = format!("{}_", self.value);
         let room = field.w - 24.0 * s;
         let mut size = 22.0 * s;
-        let width = measure_text(&text, None, size as u16, 1.0).width;
+        let width = measure_text(&text, None, numeric::font_size(size), 1.0).width;
         if width > room {
             size = (size * room / width).max(10.0);
         }

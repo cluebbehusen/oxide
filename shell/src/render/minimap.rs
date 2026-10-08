@@ -4,6 +4,7 @@
 //! world renderer.
 
 use super::*;
+use crate::numeric::Fit;
 use crate::render::prim::stroke_circle;
 
 const MINIMAP_MAX: Vec2 = vec2(220.0, 150.0);
@@ -126,7 +127,7 @@ pub(crate) struct MinimapLayer {
 
 impl MinimapLayer {
     fn ensure(slot: &mut Option<Self>, w: i32, h: i32) -> &mut Self {
-        let (w, h) = (w.max(1) as u16, h.max(1) as u16);
+        let (w, h) = (w.max(1).fit::<u16>(), h.max(1).fit::<u16>());
         if slot
             .as_ref()
             .is_none_or(|layer| layer.image.width != w || layer.image.height != h)
@@ -211,7 +212,9 @@ pub(crate) fn draw_minimap(game: &crate::game::Scene<'_>) {
         } else {
             MINI_VOID
         };
-        layer.image.set_pixel(pos.x as u32, pos.y as u32, color);
+        layer
+            .image
+            .set_pixel(pos.x.fit::<u32>(), pos.y.fit::<u32>(), color);
     }
     layer.texture.update(&layer.image);
     // Downscaled tiles (sub-pixel on grand maps) blend; upscaled tiles
@@ -317,6 +320,7 @@ pub(crate) fn draw_minimap(game: &crate::game::Scene<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::numeric;
 
     const VIEWPORT: Vec2 = vec2(1280.0, 800.0);
 
@@ -356,7 +360,13 @@ mod tests {
                 rect.y + (tile.1 as f32 + 0.5) * scale,
             );
             let world = minimap_world_in(rect, map_w, screen).unwrap();
-            assert_eq!((world.x.floor() as i32, world.y.floor() as i32), tile);
+            assert_eq!(
+                (
+                    numeric::to_i32(world.x.floor()),
+                    numeric::to_i32(world.y.floor())
+                ),
+                tile
+            );
         }
         assert!(map_h as f32 * scale <= rect.h + 0.01);
     }

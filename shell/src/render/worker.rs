@@ -58,10 +58,11 @@ fn contact(
             };
             let origin = vec2(tile.x as f32, tile.y as f32);
             let flip = wreck
-                && (tile
+                && tile
                     .x
                     .wrapping_mul(31)
-                    .wrapping_add(tile.y.wrapping_mul(17)) as usize)
+                    .wrapping_add(tile.y.wrapping_mul(17))
+                    .cast_unsigned() as usize
                     % 5
                     < 2;
             let to_local = |p: Vec2| {

@@ -2,6 +2,8 @@
 //! away from the battlefield floor.
 
 use crate::game::Scene;
+use crate::numeric;
+use crate::numeric::Fit;
 use crate::render::prim::{fill_rect, line_between};
 use macroquad::prelude::*;
 
@@ -142,8 +144,8 @@ impl TerraceField {
             rect: frame.rect,
             tile: frame.tile,
             cell,
-            inner_width: (frame.rect.w / cell).round() as i32,
-            inner_height: (frame.rect.h / cell).round() as i32,
+            inner_width: numeric::to_i32((frame.rect.w / cell).round()),
+            inner_height: numeric::to_i32((frame.rect.h / cell).round()),
         }
     }
 
@@ -197,8 +199,8 @@ impl TerraceField {
             return LAYERS[layer].bench_cells;
         };
         let token = hash(
-            segment + layer as i32 * 11,
-            side as i32 + layer as i32 * 7,
+            segment + layer.fit::<i32>() * 11,
+            side as i32 + layer.fit::<i32>() * 7,
             SALT,
         ) % 11;
         (LAYERS[layer].bench_cells
@@ -228,7 +230,7 @@ impl TerraceField {
             }
         }
         if depth <= cursor + 4 {
-            Material::Vignette((depth - cursor) as u8)
+            Material::Vignette((depth - cursor).fit::<u8>())
         } else {
             Material::Void
         }
@@ -245,11 +247,11 @@ impl TerraceField {
 
     fn visible_ranges(&self) -> (std::ops::Range<i32>, std::ops::Range<i32>) {
         let pad = Self::max_depth();
-        let left = (((-self.rect.x) / self.cell).floor() as i32 - 1).max(-pad);
-        let right = (((screen_width() - self.rect.x) / self.cell).ceil() as i32 + 1)
+        let left = (numeric::to_i32(((-self.rect.x) / self.cell).floor()) - 1).max(-pad);
+        let right = (numeric::to_i32(((screen_width() - self.rect.x) / self.cell).ceil()) + 1)
             .min(self.inner_width + pad);
-        let top = (((-self.rect.y) / self.cell).floor() as i32 - 1).max(-pad);
-        let bottom = (((screen_height() - self.rect.y) / self.cell).ceil() as i32 + 1)
+        let top = (numeric::to_i32(((-self.rect.y) / self.cell).floor()) - 1).max(-pad);
+        let bottom = (numeric::to_i32(((screen_height() - self.rect.y) / self.cell).ceil()) + 1)
             .min(self.inner_height + pad);
         (left..right, top..bottom)
     }
@@ -487,7 +489,7 @@ fn draw_boundary_terraces(frame: MapFrame, fractured: bool) {
 
 pub(super) fn hash(x: i32, y: i32, salt: u32) -> u32 {
     let mut value = 2_166_136_261u32;
-    for word in [x as u32, y as u32, salt] {
+    for word in [x.cast_unsigned(), y.cast_unsigned(), salt] {
         for byte in word.to_le_bytes() {
             value ^= u32::from(byte);
             value = value.wrapping_mul(16_777_619);
@@ -514,6 +516,7 @@ pub(super) fn draw_boundary(game: &Scene<'_>, fractured: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chassis::grid::as_index;
 
     #[test]
     fn solid_authored_walls_are_absorbed_but_open_lanes_stay_playable() {
@@ -558,7 +561,7 @@ mod tests {
     #[test]
     fn floor_wave_carries_across_the_terrace_benches() {
         let phases: Vec<_> = (0..6)
-            .map(|tile_x| WAVE_LIFTS[(tile_x as usize) % 6])
+            .map(|tile_x| WAVE_LIFTS[as_index(tile_x) % 6])
             .collect();
         assert_eq!(phases, WAVE_LIFTS);
         assert!(phases.iter().any(|lift| *lift < 0));
