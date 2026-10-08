@@ -57,19 +57,72 @@ fn module_file(file: &Path, name: &str, path_override: Option<&str>) -> PathBuf 
     }
 }
 
-/// The `#[cfg(test)]` modules declared in `file` that coverage would count:
+/// Whether a `#[cfg(...)]` attribute compiles its item for tests, alone or
+/// combined with other predicates; anything under `not(...)` does not count.
+fn cfg_mentions_test(attribute: &str) -> bool {
+    let Some(predicate) = attribute
+        .strip_prefix("#[cfg(")
+        .and_then(|rest| rest.strip_suffix(")]"))
+    else {
+        return false;
+    };
+    let mut kept = String::new();
+    let mut in_string = false;
+    let mut negated_depth = None;
+    let mut depth = 0usize;
+    for (at, ch) in predicate.char_indices() {
+        if in_string {
+            in_string = ch != '"';
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '(' => depth += 1,
+            ')' => {
+                if negated_depth == Some(depth) {
+                    negated_depth = None;
+                }
+                depth -= 1;
+            }
+            _ if negated_depth.is_none() && predicate[at..].starts_with("not(") => {
+                negated_depth = Some(depth + 1);
+            }
+            _ => {}
+        }
+        if negated_depth.is_none() {
+            kept.push(ch);
+        }
+    }
+    kept.split(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
+        .any(|word| word == "test")
+}
+
+/// The test-only modules declared in `file` that coverage would count:
 /// inline ones, and out-of-line ones whose file the filter keeps.
 fn counted_test_modules(root: &Path, file: &Path) -> Vec<String> {
     let text = std::fs::read_to_string(file).expect("readable source file");
     let lines: Vec<&str> = text.lines().collect();
     let shown = file.strip_prefix(root).unwrap_or(file);
     let mut found = Vec::new();
-    for (index, line) in lines.iter().enumerate() {
-        if line.trim() != "#[cfg(test)]" {
+    let mut index = 0;
+    while index < lines.len() {
+        let start = index;
+        index += 1;
+        if !lines[start].trim().starts_with("#[cfg(") {
+            continue;
+        }
+        // rustfmt splits a long attribute across lines.
+        let mut attribute = lines[start].trim().to_owned();
+        let mut item = start + 1;
+        while attribute.matches('[').count() > attribute.matches(']').count() {
+            let Some(next) = lines.get(item) else { break };
+            attribute.push_str(next.trim());
+            item += 1;
+        }
+        if !cfg_mentions_test(&attribute) {
             continue;
         }
         let mut path_override = None;
-        let mut item = index + 1;
         while let Some(next) = lines.get(item).map(|line| line.trim()) {
             if let Some(path) = next
                 .strip_prefix("#[path = \"")
@@ -136,4 +189,20 @@ fn test_modules_live_in_files_that_coverage_skips() {
         "move each test module into a child `tests.rs` file:\n{}",
         found.join("\n")
     );
+}
+
+#[test]
+fn compound_test_cfgs_count_and_negated_ones_do_not() {
+    assert!(cfg_mentions_test("#[cfg(test)]"));
+    assert!(cfg_mentions_test(
+        r#"#[cfg(all(test, target_os = "linux"))]"#
+    ));
+    assert!(cfg_mentions_test(
+        r#"#[cfg(any(test, feature = "fixtures"))]"#
+    ));
+    assert!(cfg_mentions_test("#[cfg(all(test,unix))]"));
+    assert!(!cfg_mentions_test("#[cfg(not(test))]"));
+    assert!(!cfg_mentions_test("#[cfg(all(unix, not(test)))]"));
+    assert!(!cfg_mentions_test(r#"#[cfg(feature = "test")]"#));
+    assert!(!cfg_mentions_test("#[cfg(unix)]"));
 }
