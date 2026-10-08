@@ -379,7 +379,7 @@ fn lab_bulk_attack() {
     let mut state = lane_arena(w, h, units).build().expect("builds");
     // The lab's target is the EAST foundry (2x2 at (w-3, h-3)); hunt
     // the swarm onto it, the way a player right-clicks a base.
-    let foundry = TilePos::new(w as i32 - 3, h as i32 - 3);
+    let foundry = TilePos::new(i32::try_from(w).unwrap() - 3, i32::try_from(h).unwrap() - 3);
     let target_id = state
         .buildings()
         .iter()
@@ -467,7 +467,7 @@ fn lab_bulk_attack_pocket() {
     })
     .build()
     .expect("builds");
-    let foundry = TilePos::new(w as i32 - 3, h as i32 - 3);
+    let foundry = TilePos::new(i32::try_from(w).unwrap() - 3, i32::try_from(h).unwrap() - 3);
     let target_id = state
         .buildings()
         .iter()
@@ -539,7 +539,7 @@ fn lab_bulk_attack_ranged() {
         ));
     }
     let mut state = lane_arena(w, h, units).build().expect("builds");
-    let foundry = TilePos::new(w as i32 - 3, h as i32 - 3);
+    let foundry = TilePos::new(i32::try_from(w).unwrap() - 3, i32::try_from(h).unwrap() - 3);
     let target_id = state
         .buildings()
         .iter()

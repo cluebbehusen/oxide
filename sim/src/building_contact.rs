@@ -225,7 +225,9 @@ mod tests {
         let mut rng = chassis::rng::Pcg32::new(41, 7);
         let mut near = |anchor: i32, span: i32| {
             Fx::from_num(anchor - 3)
-                + Fx::from_bits(i64::from(rng.next_u32() % ((span as u32 + 6) << 10)) << 22)
+                + Fx::from_bits(
+                    i64::from(rng.next_u32() % ((u32::try_from(span).unwrap() + 6) << 10)) << 22,
+                )
         };
         let (mut blocked, mut open) = (0, 0);
         for kind in BuildingKind::ALL {

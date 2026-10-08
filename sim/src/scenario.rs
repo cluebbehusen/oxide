@@ -340,7 +340,7 @@ impl Scenario {
             return Err(ScenarioError::ExtraAnchor(*player, self.players.len()));
         }
         for index in 0..self.players.len() {
-            let player = PlayerId(index as u8);
+            let player = PlayerId::from_index(index);
             if self.mode.is_match() && !anchors.iter().any(|(anchored, _)| *anchored == player) {
                 return Err(ScenarioError::MissingAnchor(player));
             }
@@ -405,12 +405,13 @@ impl Scenario {
                     if let Some((_, dense)) = team_ids.iter().find(|(k, _)| *k == Some(id)) {
                         *dense
                     } else {
-                        let dense = team_ids.len() as u8;
+                        let dense =
+                            u8::try_from(team_ids.len()).expect("teams never outnumber seats");
                         team_ids.push((Some(id), dense));
                         dense
                     }
                 } else {
-                    let dense = team_ids.len() as u8;
+                    let dense = u8::try_from(team_ids.len()).expect("teams never outnumber seats");
                     team_ids.push((None, dense));
                     dense
                 };
@@ -490,10 +491,10 @@ impl Scenario {
         {
             let width = state.map().width();
             let height = state.map().height();
-            let idx = |t: TilePos| (t.y * width + t.x) as usize;
+            let idx = |t: TilePos| t.row_major(width);
             let flood = |passable: &dyn Fn(crate::map::Terrain) -> bool| {
                 let mut open = std::collections::VecDeque::new();
-                let mut seen = vec![false; (width * height) as usize];
+                let mut seen = vec![false; chassis::grid::cell_count(width, height)];
                 let walkable = |t: TilePos| {
                     t.x >= 0
                         && t.y >= 0

@@ -411,7 +411,8 @@ fn resolve_hits(
                 rooms.push((gain.site, room));
                 rooms.len() - 1
             };
-            let accepted = rooms[i].1.clamp(0, i64::from(gain.step)) as u32;
+            let accepted = u32::try_from(rooms[i].1.clamp(0, i64::from(gain.step)))
+                .expect("clamped to a u32 step");
             if rooms[i].1 <= 0 {
                 // Only the refund cares what was paid; EVERY gain
                 // consumes room. A mid-meter welder frequently steps a
@@ -482,7 +483,9 @@ fn resolve_hits(
         }
         let stats = b.stats();
         let before = b.hp;
-        let after = (i64::from(before) + w.gain - w.drain).clamp(0, i64::from(stats.max_hp)) as u32;
+        let after =
+            u32::try_from((i64::from(before) + w.gain - w.drain).clamp(0, i64::from(stats.max_hp)))
+                .expect("clamped to a u32 max_hp");
         b.hp = after;
         if let Some((player, kind)) = w.completes {
             b.built = true;
@@ -549,7 +552,8 @@ fn resolve_unit_heals(state: &mut State, heals: &[PendingUnitHeal], events: &mut
             rooms.push((heal.unit, room));
             rooms.len() - 1
         };
-        let accepted = rooms[i].1.clamp(0, i64::from(heal.step)) as u32;
+        let accepted = u32::try_from(rooms[i].1.clamp(0, i64::from(heal.step)))
+            .expect("clamped to a u32 step");
         if rooms[i].1 <= 0 {
             // Every gain consumes room; only the refund cares what was
             // paid — the same rule the building ledger learned when a
@@ -585,7 +589,8 @@ fn resolve_unit_heals(state: &mut State, heals: &[PendingUnitHeal], events: &mut
             continue; // fire won this tick; the heal forfeits with its coin
         }
         let max = i64::from(u.kind.stats().max_hp);
-        u.hp = (i64::from(u.hp) + gain).clamp(0, max) as u32;
+        u.hp =
+            u32::try_from((i64::from(u.hp) + gain).clamp(0, max)).expect("clamped to a u32 max_hp");
     }
 }
 
@@ -671,22 +676,19 @@ fn repair_bay_aura(
             };
             let due = millis(healed + step).div_ceil(1000) - millis(healed).div_ceil(1000);
             let bank = state.player(owner).scrap;
-            if u64::from(bank) < due {
+            let Some(due) = u32::try_from(due).ok().filter(|&due| due <= bank) else {
                 continue; // broke for this patient; cheaper coins may still land
-            }
-            if due > 0
-                && recovery_reserve > 0
-                && u64::from(bank) - due < u64::from(recovery_reserve)
-            {
+            };
+            if due > 0 && recovery_reserve > 0 && bank - due < recovery_reserve {
                 continue;
             }
-            state.player_mut(owner).scrap = bank - due as u32;
+            state.player_mut(owner).scrap = bank - due;
             in_flight.insert(id, queued + step);
             heals.push(PendingUnitHeal {
                 unit: id,
                 step,
                 player: owner,
-                paid: due as u32,
+                paid: due,
                 source: crate::event::UnitRepairSource::RepairBay { building: bay },
             });
         }
@@ -765,16 +767,13 @@ fn repair_bay_aura(
             };
             let due = millis(healed + step).div_ceil(1000) - millis(healed).div_ceil(1000);
             let bank = state.player(owner).scrap;
-            if u64::from(bank) < due {
+            let Some(due) = u32::try_from(due).ok().filter(|&due| due <= bank) else {
+                continue;
+            };
+            if due > 0 && recovery_reserve > 0 && bank - due < recovery_reserve {
                 continue;
             }
-            if due > 0
-                && recovery_reserve > 0
-                && u64::from(bank) - due < u64::from(recovery_reserve)
-            {
-                continue;
-            }
-            state.player_mut(owner).scrap = bank - due as u32;
+            state.player_mut(owner).scrap = bank - due;
             in_flight.insert(id, queued + step);
             builds.push(PendingHpGain {
                 starts: false,
@@ -783,7 +782,7 @@ fn repair_bay_aura(
                 completes: false,
                 player: owner,
                 kind: target_kind,
-                paid: due as u32,
+                paid: due,
                 repair_bay: Some(bay),
             });
         }

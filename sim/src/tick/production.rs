@@ -22,7 +22,7 @@ pub(super) fn capture_recovery_entitlements(state: &mut State) {
         .players
         .iter()
         .enumerate()
-        .map(|(index, _)| PlayerId(index as u8))
+        .map(|(index, _)| PlayerId::from_index(index))
         .collect();
     for player in players {
         if !super::harvester_recovery_needed(state, player) || !state.player(player).recovery_ready
@@ -32,8 +32,10 @@ pub(super) fn capture_recovery_entitlements(state: &mut State) {
         let target = state.recovery_package_target(player);
         let allowance = target.saturating_sub(state.player(player).scrap);
         let seat = state.player_mut(player);
-        seat.recovery_target = target as u16;
-        seat.recovery_allowance = allowance as u16;
+        seat.recovery_target =
+            u16::try_from(target).expect("a recovery package fits the u16 ledger");
+        seat.recovery_allowance =
+            u16::try_from(allowance).expect("an allowance never exceeds its target");
         seat.recovery_ready = false;
     }
 }
@@ -101,7 +103,7 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
             .players
             .iter()
             .enumerate()
-            .map(|(index, _)| PlayerId(index as u8))
+            .map(|(index, _)| PlayerId::from_index(index))
             .filter(|player| !state.player(*player).resigned)
             .map(|player| {
                 let foundries = state
@@ -113,8 +115,11 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
                             && building.built
                             && building.kind == crate::stats::BuildingKind::Foundry
                     })
-                    .count() as u32;
-                (player, foundries)
+                    .count();
+                (
+                    player,
+                    u32::try_from(foundries).expect("building counts fit in u32"),
+                )
             })
             .filter(|(_, foundries)| *foundries > 0)
             .collect();
@@ -131,7 +136,7 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
         .players
         .iter()
         .enumerate()
-        .map(|(index, _)| PlayerId(index as u8))
+        .map(|(index, _)| PlayerId::from_index(index))
         .collect();
     for player in &players {
         if !super::harvester_recovery_needed(state, *player) || state.player(*player).recovery_ready
@@ -140,7 +145,9 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
         }
         let seat = state.player_mut(*player);
         let headroom = u32::from(seat.recovery_target).saturating_sub(seat.scrap);
-        seat.recovery_allowance = seat.recovery_allowance.min(headroom as u16);
+        seat.recovery_allowance = seat
+            .recovery_allowance
+            .min(u16::try_from(headroom).expect("headroom never exceeds the u16 target"));
     }
 
     if state

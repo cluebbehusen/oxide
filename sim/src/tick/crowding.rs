@@ -177,7 +177,7 @@ pub(crate) fn choose(
                 if tile.x < 0 || tile.y < 0 || tile.x >= width || tile.y >= height {
                     0
                 } else {
-                    labels[(tile.y * width + tile.x) as usize]
+                    labels[tile.row_major(width)]
                 }
             };
             let from = state.unit(id).expect("position owner").tile();
@@ -201,7 +201,7 @@ pub(crate) fn choose(
                 || tile.y < 0
                 || tile.x >= state.map().width()
                 || tile.y >= state.map().height()
-                || !accessible.contains(&labels[(tile.y * state.map().width() + tile.x) as usize])
+                || !accessible.contains(&labels[tile.row_major(state.map().width())])
         }) {
             continue;
         }

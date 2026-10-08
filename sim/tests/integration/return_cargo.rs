@@ -432,7 +432,12 @@ fn mirrored_workers_return_to_mirrored_doorsteps() {
             height,
             vec![
                 unit(0, UnitKind::Harvester, 2, 8),
-                unit(1, UnitKind::Harvester, width as i32 - 3, height as i32 - 9),
+                unit(
+                    1,
+                    UnitKind::Harvester,
+                    i32::try_from(width).unwrap() - 3,
+                    i32::try_from(height).unwrap() - 9,
+                ),
             ],
         )
         .build()
@@ -461,7 +466,10 @@ fn mirrored_workers_return_to_mirrored_doorsteps() {
         };
         let (west, east) = (goal(workers[0]), goal(workers[1]));
         assert_eq!(
-            TilePos::new(width as i32 - 1 - west.x, height as i32 - 1 - west.y),
+            TilePos::new(
+                i32::try_from(width).unwrap() - 1 - west.x,
+                i32::try_from(height).unwrap() - 1 - west.y
+            ),
             east,
             "mirrored workers {off:?} off the line chose unmirrored doorsteps"
         );

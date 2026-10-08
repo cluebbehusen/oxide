@@ -12,7 +12,7 @@
 
 use crate::State;
 use crate::state::{Building, Unit};
-use chassis::grid::TilePos;
+use chassis::grid::{TilePos, as_index, cell_count};
 
 /// Reusable tile index over the living units of one moment.
 ///
@@ -64,8 +64,8 @@ const CELL: i32 = 8;
 /// team. Bodies outside the map count in the nearest border cell, so a
 /// window that reaches past the map still finds them.
 struct Presence {
-    columns: usize,
-    rows: usize,
+    columns: i32,
+    rows: i32,
     cells: Vec<Teams>,
     /// The first building id placed after the survey.
     next_building: u32,
@@ -85,9 +85,9 @@ pub(super) struct HostilesNear {
 
 impl Presence {
     fn cell(&self, tile: TilePos) -> (usize, usize) {
-        let column = tile.x.div_euclid(CELL).clamp(0, self.columns as i32 - 1);
-        let row = tile.y.div_euclid(CELL).clamp(0, self.rows as i32 - 1);
-        (column as usize, row as usize)
+        let column = tile.x.div_euclid(CELL).clamp(0, self.columns - 1);
+        let row = tile.y.div_euclid(CELL).clamp(0, self.rows - 1);
+        (as_index(column), as_index(row))
     }
 }
 
@@ -140,7 +140,7 @@ impl UnitIndex {
         self.width = high.x - low.x + 1;
         self.height = high.y - low.y + 1;
 
-        let area = self.width as usize * self.height as usize;
+        let area = cell_count(self.width, self.height);
         self.layout = if area <= TILES_PER_BODY * self.unordered.len() {
             Layout::Tiles
         } else {
@@ -148,7 +148,7 @@ impl UnitIndex {
         };
         let buckets = match self.layout {
             Layout::Tiles => area,
-            Layout::Rows => self.height as usize,
+            Layout::Rows => as_index(self.height),
         };
 
         // Counting sort: tally each bucket, accumulate to each bucket's end,
@@ -180,9 +180,9 @@ impl UnitIndex {
 
     /// The bucket holding an occupied-rectangle tile.
     fn bucket(&self, tile: TilePos) -> usize {
-        let row = (tile.y - self.origin.y) as usize;
+        let row = as_index(tile.y - self.origin.y);
         match self.layout {
-            Layout::Tiles => row * self.width as usize + (tile.x - self.origin.x) as usize,
+            Layout::Tiles => row * as_index(self.width) + as_index(tile.x - self.origin.x),
             Layout::Rows => row,
         }
     }
@@ -200,17 +200,18 @@ impl UnitIndex {
         let Some(team_bits) = team_bits else {
             return;
         };
-        let columns = state.map.width().div_euclid(CELL).max(0) as usize + 1;
-        let rows = state.map.height().div_euclid(CELL).max(0) as usize + 1;
+        let columns = state.map.width().div_euclid(CELL).max(0) + 1;
+        let rows = state.map.height().div_euclid(CELL).max(0) + 1;
+        let stride = as_index(columns);
         let mut presence = Presence {
             columns,
             rows,
-            cells: vec![Teams::default(); columns * rows],
+            cells: vec![Teams::default(); cell_count(columns, rows)],
             next_building: state.buildings().last().map_or(0, |b| b.id.0 + 1),
         };
         for &(tile, slot) in &self.entries {
             let (column, row) = presence.cell(tile);
-            presence.cells[row * columns + column].bodies |=
+            presence.cells[row * stride + column].bodies |=
                 team_bits[state.units[slot].player.0 as usize];
         }
         for building in state.buildings() {
@@ -220,7 +221,7 @@ impl UnitIndex {
                 presence.cell(building.anchor.offset(width - 1, height - 1));
             for row in low_row..=high_row {
                 for column in low_column..=high_column {
-                    presence.cells[row * columns + column].buildings |=
+                    presence.cells[row * stride + column].buildings |=
                         team_bits[building.player.0 as usize];
                 }
             }
@@ -242,7 +243,9 @@ impl UnitIndex {
         let (high_column, high_row) = presence.cell(home.offset(reach, reach));
         let mut teams = Teams::default();
         for row in low_row..=high_row {
-            for cell in &presence.cells[row * presence.columns..][low_column..=high_column] {
+            for cell in
+                &presence.cells[row * as_index(presence.columns)..][low_column..=high_column]
+            {
                 teams.bodies |= cell.bodies;
                 teams.buildings |= cell.buildings;
             }
@@ -283,7 +286,7 @@ impl UnitIndex {
                 &self.entries[self.starts[first] as usize..self.starts[last + 1] as usize]
             }
             Layout::Rows => {
-                let at = (y - self.origin.y) as usize;
+                let at = as_index(y - self.origin.y);
                 let row = &self.entries[self.starts[at] as usize..self.starts[at + 1] as usize];
                 let start = row.partition_point(|&(t, _)| t.x < x_min);
                 let len = row[start..].partition_point(|&(t, _)| t.x <= x_max);
@@ -366,7 +369,7 @@ mod tests {
         // Pack the same bodies into a block across the corner, stacking
         // several per tile, until the rectangle is small enough for tiles.
         for (slot, unit) in state.units.iter_mut().enumerate() {
-            let slot = slot as i32 / 2;
+            let slot = i32::try_from(slot).unwrap() / 2;
             unit.pos = TilePos::new(slot % 3 - 1, slot / 3 - 1).center();
         }
         index.rebuild(&state.units);

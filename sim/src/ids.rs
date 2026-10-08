@@ -18,6 +18,18 @@ pub struct BuildingId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct PlayerId(pub u8);
 
+impl PlayerId {
+    /// The seat at `index` in the player list.
+    ///
+    /// # Panics
+    ///
+    /// When `index` exceeds `u8::MAX`; scenarios and validated states hold
+    /// fewer seats than that.
+    pub fn from_index(index: usize) -> Self {
+        Self(u8::try_from(index).expect("seat indices fit in u8"))
+    }
+}
+
 /// Zero-based rank of a live unit among its owner's units in canonical id
 /// order.
 ///

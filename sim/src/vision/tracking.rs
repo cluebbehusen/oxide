@@ -423,12 +423,16 @@ mod tests {
             bot_config: None,
         };
         let army = |player: u8, x: i32| {
-            (0..12).map(move |i| UnitSpec {
-                player,
-                kind: [UnitKind::Sentinel, UnitKind::Scuttler, UnitKind::Lancer][i % 3],
-                x: x + (i as i32 % 3),
-                y: 1 + i as i32 / 3 * 2,
-            })
+            [UnitKind::Sentinel, UnitKind::Scuttler, UnitKind::Lancer]
+                .into_iter()
+                .cycle()
+                .zip(0..12)
+                .map(move |(kind, i)| UnitSpec {
+                    player,
+                    kind,
+                    x: x + i % 3,
+                    y: 1 + i / 3 * 2,
+                })
         };
         let mut state = Scenario {
             mode: ScenarioMode::Match,
@@ -478,7 +482,7 @@ mod tests {
             state.tick(&[]);
             let sightings = Sighting::gather(&state);
             for (index, view) in state.vision.iter().enumerate() {
-                let player = PlayerId(index as u8);
+                let player = PlayerId::from_index(index);
                 let (mut direct, mut sorted) = (view.tracking.clone(), view.tracking.clone());
                 direct.refresh(view, &state, player, &sightings);
                 sorted_refresh(&mut sorted, view, &state, player);

@@ -510,15 +510,15 @@ impl ObservationData {
             let tiles = state.map().grid().row(y).expect("row in range");
             obs.visible.extend_from_slice(visible);
             obs.explored.extend_from_slice(explored);
-            for (x, tile) in tiles.iter().enumerate() {
-                let pos = TilePos::new(x as i32, y);
-                let seen = visible[x];
-                let known = explored[x];
-                let amount = if seen { tile.scrap } else { scrap_mem[x] };
+            for ((column, tile), x) in tiles.iter().enumerate().zip(0..) {
+                let pos = TilePos::new(x, y);
+                let seen = visible[column];
+                let known = explored[column];
+                let amount = if seen { tile.scrap } else { scrap_mem[column] };
                 if amount > 0 {
                     obs.known_scrap.push((pos, amount));
                 }
-                let wreck = if seen { tile.wreck } else { wreck_mem[x] };
+                let wreck = if seen { tile.wreck } else { wreck_mem[column] };
                 if wreck > 0 {
                     obs.known_wrecks.push((pos, wreck));
                 }

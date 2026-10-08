@@ -273,7 +273,10 @@ fn mirrored_groups_sent_into_mirrored_enclosures_settle_symmetrically() {
                 .map(|row| row.chars().rev().collect()),
         )
         .collect();
-    let (width, height) = (ENCLOSURE[0].len() as i32, map.len() as i32);
+    let (width, height) = (
+        i32::try_from(ENCLOSURE[0].len()).unwrap(),
+        i32::try_from(map.len()).unwrap(),
+    );
     let inside = TilePos::new(20, 5);
     let mirror = |tile: TilePos| TilePos::new(width - 1 - tile.x, height - 1 - tile.y);
     let mirror_pos =

@@ -122,7 +122,7 @@ fn aura_bill(kind: UnitKind, from: u32, to: u32) -> u32 {
         u64::from(hp) * u64::from(stats.cost) * oxide_sim::stats::REPAIR_COST_PERMILLE
             / u64::from(stats.max_hp)
     };
-    (millis(to).div_ceil(1000) - millis(from).div_ceil(1000)) as u32
+    u32::try_from(millis(to).div_ceil(1000) - millis(from).div_ceil(1000)).unwrap()
 }
 
 fn building_aura_bill(kind: BuildingKind, tier: u8, from: u32, to: u32) -> u32 {
@@ -138,7 +138,7 @@ fn building_aura_bill(kind: BuildingKind, tier: u8, from: u32, to: u32) -> u32 {
         u64::from(hp) * u64::from(basis) * oxide_sim::stats::REPAIR_COST_PERMILLE
             / u64::from(stats.max_hp)
     };
-    (millis(to).div_ceil(1000) - millis(from).div_ceil(1000)) as u32
+    u32::try_from(millis(to).div_ceil(1000) - millis(from).div_ceil(1000)).unwrap()
 }
 
 fn building_at(state: &State, kind: BuildingKind, anchor: TilePos, player: PlayerId) -> BuildingId {
@@ -276,10 +276,13 @@ fn the_aura_heals_the_ring_to_whole_and_bills_the_welders_exact_price() {
     // strictly more per hp than salvage's 800 permille refunds, so no
     // heal-then-liquidate loop can profit.
     let healed = max - hurt;
-    let salvage_value = (u64::from(healed)
-        * u64::from(UnitKind::Harvester.stats().cost)
-        * oxide_sim::stats::SALVAGE_REFUND_PERMILLE
-        / (1000 * u64::from(max))) as u32;
+    let salvage_value = u32::try_from(
+        u64::from(healed)
+            * u64::from(UnitKind::Harvester.stats().cost)
+            * oxide_sim::stats::SALVAGE_REFUND_PERMILLE
+            / (1000 * u64::from(max)),
+    )
+    .unwrap();
     assert!(
         billed > salvage_value,
         "aura sustain ({billed}) must out-price a salvage-permille valuation ({salvage_value})"

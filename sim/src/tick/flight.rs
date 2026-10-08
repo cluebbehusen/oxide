@@ -64,9 +64,9 @@ pub(crate) fn arc_bounds(
         max = Vec2Fx::new(max.x.max(p.x), max.y.max(p.y));
     };
     let end = if step == STEP_POS {
-        radial.wrapping_add(sweep as u8)
+        radial.wrapping_add((sweep & 0xFF) as u8)
     } else {
-        radial.wrapping_sub(sweep as u8)
+        radial.wrapping_sub((sweep & 0xFF) as u8)
     };
     include(center + dir(end) * radius);
     for cardinal in [0u8, 64, 128, 192] {
@@ -86,7 +86,7 @@ pub(crate) fn arc_bounds(
 /// `sweep` compass steps.
 pub(crate) fn arc_end(pos: Vec2Fx, heading: u8, step: u8, sweep: u16, radius: Fx) -> (Vec2Fx, u8) {
     let center = turn_center(pos, heading, step, radius);
-    let sweep = sweep.min(FULL_TURN) as u8;
+    let sweep = (sweep.min(FULL_TURN) & 0xFF) as u8;
     let (radial, end_heading) = if step == STEP_POS {
         (
             heading.wrapping_sub(64).wrapping_add(sweep),

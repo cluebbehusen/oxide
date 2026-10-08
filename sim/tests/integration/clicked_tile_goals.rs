@@ -157,7 +157,7 @@ fn a_group_spreads_at_issue_on_explored_ground_and_on_exposure_otherwise() {
         assert_eq!(
             goal.aim,
             oxide_sim::Aim::Pending {
-                rank: rank as u8,
+                rank: u8::try_from(rank).unwrap(),
                 reverse
             },
             "each member holds its place in one frame"

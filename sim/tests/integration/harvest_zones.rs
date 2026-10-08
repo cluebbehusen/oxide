@@ -2,6 +2,7 @@
 //! queue handoff, and fog-honest retirement.
 
 use crate::common;
+use chassis::grid::as_index;
 
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
@@ -199,19 +200,19 @@ fn state_with_salvage(
 ) -> State {
     let mut scenario = open_arena_with(width, 12, units, |rows| {
         for &(pos, _) in sources {
-            rows[pos.y as usize][pos.x as usize] = 's';
+            rows[as_index(pos.y)][as_index(pos.x)] = 's';
         }
     });
     scenario.buildings = buildings;
     let state = scenario.build().unwrap();
     let mut doc = serde_json::to_value(&state).unwrap();
-    let map_width = doc["map"]["grid"]["width"].as_i64().unwrap() as usize;
+    let map_width = usize::try_from(doc["map"]["grid"]["width"].as_i64().unwrap()).unwrap();
     for &(pos, scrap) in sources {
-        let index = pos.y as usize * map_width + pos.x as usize;
+        let index = as_index(pos.y) * map_width + as_index(pos.x);
         doc["map"]["grid"]["cells"][index]["scrap"] = json!(scrap);
     }
     for &(pos, wreck) in wrecks {
-        let index = pos.y as usize * map_width + pos.x as usize;
+        let index = as_index(pos.y) * map_width + as_index(pos.x);
         doc["map"]["grid"]["cells"][index]["wreck"] = json!(wreck);
     }
     let mut state: State = serde_json::from_value(doc).unwrap();
@@ -1473,9 +1474,9 @@ fn a_claimed_work_tile_still_serves_when_the_free_ones_are_sealed() {
         scenario.buildings = Vec::new();
         let state = scenario.build().unwrap();
         let mut doc = serde_json::to_value(&state).unwrap();
-        let width = doc["map"]["grid"]["width"].as_i64().unwrap() as usize;
+        let width = usize::try_from(doc["map"]["grid"]["width"].as_i64().unwrap()).unwrap();
         for (pos, scrap) in [(source, 100), (starter, 1)] {
-            let index = pos.y as usize * width + pos.x as usize;
+            let index = as_index(pos.y) * width + as_index(pos.x);
             doc["map"]["grid"]["cells"][index]["scrap"] = json!(scrap);
         }
         let mut state: State = serde_json::from_value(doc).unwrap();

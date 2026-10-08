@@ -260,22 +260,21 @@ pub(super) fn repair(
             welded * u64::from(basis) * crate::stats::REPAIR_COST_PERMILLE / u64::from(stats.max_hp)
         };
         let due = owed_millis(p + 1).div_ceil(1000) - owed_millis(p).div_ceil(1000);
-        if due > 0 {
-            if u64::from(state.player(me).scrap) < due {
-                // Broke stalls the torch.
-                let unit = state.unit_mut(id).expect("caller checked");
-                let (player, pos) = (unit.player, unit.pos);
-                unit.clear_program();
-                events.push(Event::OrderStalled {
-                    unit: id,
-                    player,
-                    pos,
-                    reason: StallReason::InsufficientScrap,
-                });
-                return;
-            }
-            state.player_mut(me).scrap -= due as u32;
-        }
+        let bank = state.player(me).scrap;
+        let Some(due) = u32::try_from(due).ok().filter(|&due| due <= bank) else {
+            // Broke stalls the torch.
+            let unit = state.unit_mut(id).expect("caller checked");
+            let (player, pos) = (unit.player, unit.pos);
+            unit.clear_program();
+            events.push(Event::OrderStalled {
+                unit: id,
+                player,
+                pos,
+                reason: StallReason::InsufficientScrap,
+            });
+            return;
+        };
+        state.player_mut(me).scrap = bank - due;
         let unit = state.unit_mut(id).expect("caller checked");
         unit.path = None;
         unit.progress = p + 1;
@@ -288,7 +287,7 @@ pub(super) fn repair(
                 completes: false,
                 player: me,
                 kind,
-                paid: due as u32,
+                paid: due,
                 repair_bay: None,
             });
         }
@@ -448,23 +447,22 @@ pub(super) fn commit_unit_welds(
         // price. Same ceiling prepay, same survival of no-op reissues.
         let stats = t_kind.stats();
         let (ramp, ramp_ticks) = (stats.max_hp, stats.train_ticks);
-        let due = u64::from(crate::stats::unit_repair_debit(t_kind, p));
-        if due > 0 {
-            if u64::from(state.player(me).scrap) < due {
-                // Broke stalls the torch.
-                let unit = state.unit_mut(weld.welder).expect("just seen");
-                let (player, pos) = (unit.player, unit.pos);
-                unit.clear_program();
-                events.push(Event::OrderStalled {
-                    unit: weld.welder,
-                    player,
-                    pos,
-                    reason: StallReason::InsufficientScrap,
-                });
-                continue;
-            }
-            state.player_mut(me).scrap -= due as u32;
+        let due = crate::stats::unit_repair_debit(t_kind, p);
+        let bank = state.player(me).scrap;
+        if due > bank {
+            // Broke stalls the torch.
+            let unit = state.unit_mut(weld.welder).expect("just seen");
+            let (player, pos) = (unit.player, unit.pos);
+            unit.clear_program();
+            events.push(Event::OrderStalled {
+                unit: weld.welder,
+                player,
+                pos,
+                reason: StallReason::InsufficientScrap,
+            });
+            continue;
         }
+        state.player_mut(me).scrap = bank - due;
         let unit = state.unit_mut(weld.welder).expect("just seen");
         unit.path = None;
         unit.progress = p + 1;
@@ -474,7 +472,7 @@ pub(super) fn commit_unit_welds(
                 unit: weld.patient,
                 step,
                 player: me,
-                paid: due as u32,
+                paid: due,
                 source: crate::event::UnitRepairSource::FieldWelder { unit: weld.welder },
             });
         }
@@ -510,9 +508,8 @@ fn chase_patient(state: &mut State, id: UnitId, patient: UnitId, events: &mut Ve
     let from = unit.tile();
     // Search in the patient's query-relative frame, so mirrored scenes
     // choose mirrored sides without using absolute entity ids.
-    for offset in [0_i16, 32, -32, 64, -64, 96, -96, 128] {
-        let point =
-            target.pos + chassis::compass::dir(bearing.wrapping_add_signed(offset as i8)) * gap;
+    for offset in [0_i8, 32, -32, 64, -64, 96, -96, -128] {
+        let point = target.pos + chassis::compass::dir(bearing.wrapping_add_signed(offset)) * gap;
         let goal = TilePos::containing(point);
         if !state.passable_for(kind.stats().domain, goal) {
             continue;
@@ -2303,7 +2300,7 @@ mod harvest_zone_tests {
                     rows[4][4] = '1';
                     rows[18][34] = '2';
                     for pos in sources.into_iter().flat_map(|pos| [pos, mirror(pos)]) {
-                        rows[pos.y as usize][pos.x as usize] = 's';
+                        rows[chassis::grid::as_index(pos.y)][chassis::grid::as_index(pos.x)] = 's';
                     }
                     let mut scenario = Scenario::skirmish();
                     scenario.map = rows
@@ -2312,9 +2309,9 @@ mod harvest_zone_tests {
                         .collect();
                     scenario.units = [from, mirror(from)]
                         .into_iter()
-                        .enumerate()
-                        .map(|(player, pos)| UnitSpec {
-                            player: player as u8,
+                        .zip(0..)
+                        .map(|(pos, player)| UnitSpec {
+                            player,
                             kind: UnitKind::Harvester,
                             x: pos.x,
                             y: pos.y,

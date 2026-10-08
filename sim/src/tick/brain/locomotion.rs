@@ -218,7 +218,7 @@ pub(super) fn land(
                 let path = unit.path.as_mut().expect("checked above");
                 let last = path.waypoints.len() - 1;
                 path.waypoints[last] = carrot;
-                path.next = last as u32;
+                path.next = u32::try_from(last).expect("waypoint counts fit in u32");
                 return;
             }
         } else {
@@ -954,7 +954,11 @@ mod tests {
             let mut state = sandbox(&map, &units);
             let step = UnitKind::Sentinel.stats().radius * 2;
             for (slot, unit) in state.units.iter_mut().enumerate() {
-                let steps = if slot == bodies { 4 } else { slot as i32 };
+                let steps = if slot == bodies {
+                    4
+                } else {
+                    i32::try_from(slot).unwrap()
+                };
                 unit.pos = endpoint.center() - Vec2Fx::new(step * Fx::from_num(steps), Fx::ZERO);
             }
             let walker = state.units[bodies].id;

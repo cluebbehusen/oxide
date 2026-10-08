@@ -304,7 +304,8 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
             .construction
             .map_or(crate::stats::FOUNDRY_WRECK_VALUE, |c| c.cost);
         let value = price * crate::stats::WRECK_VALUE_NUM / crate::stats::WRECK_VALUE_DEN;
-        let tiles = (stats.size.0 * stats.size.1) as u32;
+        let tiles = u32::try_from(stats.size.0 * stats.size.1)
+            .expect("building footprints have positive area");
         for tile in building.tiles() {
             deposits.push((tile, value / tiles));
         }
@@ -370,7 +371,7 @@ fn victory(state: &mut State, events: &mut Vec<Event>) {
         if state.players[index].eliminated_at.is_some() {
             continue;
         }
-        let seat = crate::ids::PlayerId(index as u8);
+        let seat = crate::ids::PlayerId::from_index(index);
         let out = state.players[index].resigned
             || !state.buildings.iter().any(|b| {
                 b.player == seat && !b.provisional && b.kind == crate::stats::BuildingKind::Foundry

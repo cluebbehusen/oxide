@@ -4,6 +4,11 @@
 //! here instead of one per file.
 
 #![deny(clippy::float_arithmetic, clippy::disallowed_types)]
+#![warn(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss
+)]
 
 mod aircraft_turning;
 mod bastion_acquisition;
