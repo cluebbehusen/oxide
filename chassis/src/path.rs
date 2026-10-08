@@ -12,7 +12,7 @@
 //! Same query, same path, every time.
 
 use crate::fx::{Fx, Vec2Fx};
-use crate::grid::{CARDINALS, DIAGONALS, TilePos};
+use crate::grid::{CARDINALS, DIAGONALS, TilePos, as_index};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
@@ -522,7 +522,7 @@ fn astar_inner<const PRUNE: bool>(
     if !passable(goal) {
         return None;
     }
-    let cell_count = crate::grid::cell_count(width, height);
+    let cell_count = as_index(width).checked_mul(as_index(height))?;
     // A half-turn maps row-major index `i` to `cell_count - 1 - i` and
     // reverses the start/goal lexicographic order. Orienting the tie rank by
     // that order therefore gives corresponding cells identical ranks in the
