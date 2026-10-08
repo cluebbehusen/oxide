@@ -341,7 +341,8 @@ impl SeenUnit {
     /// was.
     pub(crate) fn confidence(&self, now: u64) -> u32 {
         let age = now.saturating_sub(self.seen).min(UNIT_TICKS);
-        ((UNIT_TICKS - age) * 1_000 / UNIT_TICKS) as u32
+        u32::try_from((UNIT_TICKS - age) * 1_000 / UNIT_TICKS)
+            .expect("a per-mille share fits in u32")
     }
 }
 
@@ -360,7 +361,7 @@ mod tests {
         memory.forget(100 + FAILURE_TICKS);
         assert_eq!(memory, Memory::default());
 
-        for x in 0..=FAILURE_CAP as i32 {
+        for x in 0..=i32::try_from(FAILURE_CAP).unwrap() {
             memory.fail(BuildingKind::Fabricator, TilePos::new(x, 0), 200);
         }
         assert_eq!(memory.failures.len(), FAILURE_CAP);

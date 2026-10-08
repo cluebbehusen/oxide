@@ -1240,7 +1240,7 @@ fn share(observation: &ObservationData, profile: &ResolvedProfile) -> u32 {
     } else {
         0
     };
-    (base + greed - cut).clamp(200, 800) as u32
+    (base + greed - cut).clamp(200, 800).cast_unsigned()
 }
 
 /// Price of the seat's workers, alive or queued.
@@ -1285,7 +1285,8 @@ fn depletion(observation: &ObservationData, map: &MapModel) -> u32 {
                 .map_or(0, |index| u64::from(observation.known_scrap[index].1))
         })
         .sum();
-    (1_000 - left.min(initial) * 1_000 / initial) as u32
+    u32::try_from(1_000 - left.min(initial) * 1_000 / initial)
+        .expect("a per-mille share fits in u32")
 }
 
 /// Income per minute, less four for each point of guile, at which the seat

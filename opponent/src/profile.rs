@@ -200,12 +200,12 @@ fn envelope(stance: BotStance) -> [Envelope; 6] {
 
 fn choose_primary(seed: u64) -> Specialty {
     let mut rng = Pcg32::new(seed, PRIMARY_STREAM);
-    Specialty::from_index(rng.next_below(Specialty::ALL.len() as u32) as usize)
+    Specialty::from_index(rng.next_index(Specialty::ALL.len()))
 }
 
 fn choose_secondary(seed: u64, primary: Specialty) -> Specialty {
     let mut rng = Pcg32::new(seed, SECONDARY_STREAM);
-    let offset = rng.next_below((Specialty::ALL.len() - 1) as u32) as usize + 1;
+    let offset = rng.next_index(Specialty::ALL.len() - 1) + 1;
     Specialty::from_index((primary.index() + offset) % Specialty::ALL.len())
 }
 
@@ -222,7 +222,8 @@ fn resolve_trait(
     } else {
         TRAIT_JITTER
     };
-    let jitter = rng.next_below((radius * 2 + 1) as u32) as i16 - radius;
+    let span = 2 * u32::from(radius.unsigned_abs()) + 1;
+    let jitter = i16::try_from(rng.next_below(span)).expect("the jitter span fits in i16") - radius;
     let specialty_bonus = if specialty == primary {
         PRIMARY_BONUS
     } else if specialty == secondary {
@@ -230,8 +231,9 @@ fn resolve_trait(
     } else {
         0
     };
-    (i16::from(envelope.center) + jitter + specialty_bonus)
-        .clamp(i16::from(envelope.min), i16::from(envelope.max)) as u8
+    let value = (i16::from(envelope.center) + jitter + specialty_bonus)
+        .clamp(i16::from(envelope.min), i16::from(envelope.max));
+    u8::try_from(value).expect("clamped into a u8 envelope")
 }
 
 /// Rebalances the five stance-shaped axes around the independently sampled

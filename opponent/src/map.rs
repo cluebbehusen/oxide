@@ -243,7 +243,7 @@ impl MapModel {
             gated: Vec::new(),
         };
         model.cuts = (0..seats)
-            .map(|seat| model.find_cuts(PlayerId(seat as u8), &fixed))
+            .map(|seat| model.find_cuts(PlayerId::from_index(seat), &fixed))
             .collect();
         model.gated = model
             .cuts
@@ -539,7 +539,7 @@ impl MapModel {
     /// Every seat hostile to `player`, in seat order.
     pub(crate) fn hostiles(&self, player: PlayerId) -> impl Iterator<Item = PlayerId> + '_ {
         (0..self.teams.len())
-            .map(|seat| PlayerId(seat as u8))
+            .map(PlayerId::from_index)
             .filter(move |other| self.hostile(player, *other))
     }
 
@@ -939,7 +939,7 @@ fn distance_field(components: &Grid<u32>, start: TilePos) -> Grid<u16> {
             if let Some(cell) = field.get_mut(next)
                 && reached < u32::from(*cell)
             {
-                *cell = reached as u16;
+                *cell = u16::try_from(reached).expect("reached stays below UNREACHABLE");
                 queue.push(Reverse((reached, next.y, next.x)));
             }
         }
@@ -1017,7 +1017,7 @@ fn sites(map: &Map, components: &Grid<u32>, anchors: &[(PlayerId, TilePos)]) -> 
 }
 
 fn site_anchors(map: &Map, components: &Grid<u32>, nodes: &[(TilePos, u32)]) -> Vec<TilePos> {
-    let count = nodes.len() as i64;
+    let count = i64::try_from(nodes.len()).expect("node counts fit in i64");
     let sum = nodes.iter().fold((0, 0), |sum, (node, _)| {
         let (x, y) = doubled(*node);
         (sum.0 + x, sum.1 + y)
@@ -1410,11 +1410,15 @@ pub(crate) mod tests {
             let scenario = Scenario::load(&path).unwrap();
             let model = MapModel::from_scenario(&scenario).unwrap();
             for seat in 0..scenario.players.len() {
-                let start = model.start(PlayerId(seat as u8)).unwrap();
+                let start = model.start(PlayerId::from_index(seat)).unwrap();
                 assert!(model.component(start).is_some(), "{}", path.display());
                 assert!(
                     model
-                        .spots(PlayerId(seat as u8), vec![start], BuildingKind::Fabricator)
+                        .spots(
+                            PlayerId::from_index(seat),
+                            vec![start],
+                            BuildingKind::Fabricator
+                        )
                         .take(8)
                         .count()
                         == 8,

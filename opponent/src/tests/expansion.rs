@@ -144,7 +144,7 @@ fn an_unexplored_expansion_sends_a_harvester_to_look() {
     let (commands, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
     assert_eq!(
         trace.unwrap().target.map(|target| target.investment),
-        Some(Investment::Expansion(index as u16))
+        Some(Investment::Expansion(u16::try_from(index).unwrap()))
     );
     assert!(builds_of(&commands).is_empty(), "nothing to place in fog");
     assert!(
@@ -262,7 +262,7 @@ fn a_site_is_valued_and_built_from_anchors_on_home_ground() {
         let placed: Vec<TilePos> = crate::investments::anchors(
             &model,
             &observation,
-            Investment::Expansion(index as u16),
+            Investment::Expansion(u16::try_from(index).unwrap()),
             BuildingKind::Foundry,
         )
         .collect();

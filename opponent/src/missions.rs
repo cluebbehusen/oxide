@@ -505,7 +505,7 @@ impl Missions {
                 phase: mission.task.phase(),
                 since: mission.since,
                 timeout: mission.task.timeout(),
-                units: mission.units.len() as u32,
+                units: u32::try_from(mission.units.len()).expect("mission sizes fit in u32"),
                 goal: mission.goal,
             })
             .collect()

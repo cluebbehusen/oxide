@@ -214,7 +214,9 @@ mod tests {
     #[test]
     fn a_full_buffer_drops_its_oldest_events_and_refuses_to_load_over_its_cap() {
         let mut events = OwnEvents::default();
-        let tick: Vec<Event> = (0..CAP as u32 + 6).map(|unit| stalled(0, unit)).collect();
+        let tick: Vec<Event> = (0..u32::try_from(CAP).unwrap() + 6)
+            .map(|unit| stalled(0, unit))
+            .collect();
         events.record(PlayerId(0), &tick);
         let json = serde_json::to_value(&events).unwrap();
         let kept: Vec<u32> = events
@@ -225,7 +227,10 @@ mod tests {
                 OwnEvent::CommandRejected { .. } => unreachable!(),
             })
             .collect();
-        assert_eq!(kept, (6..CAP as u32 + 6).collect::<Vec<_>>());
+        assert_eq!(
+            kept,
+            (6..u32::try_from(CAP).unwrap() + 6).collect::<Vec<_>>()
+        );
 
         assert_eq!(json.as_array().unwrap().len(), CAP);
         assert_eq!(

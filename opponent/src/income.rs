@@ -33,13 +33,15 @@ impl Income {
         if rejected {
             return 0;
         }
-        let earned = (u64::from(bank) + u64::from(previous.spent))
-            .saturating_sub(u64::from(previous.bank))
-            .min(u64::from(u32::MAX));
-        let rate = earned * TICKS_PER_MINUTE / (tick - previous.tick);
+        let earned = u32::try_from(
+            (u64::from(bank) + u64::from(previous.spent)).saturating_sub(u64::from(previous.bank)),
+        )
+        .unwrap_or(u32::MAX);
+        let rate = u64::from(earned) * TICKS_PER_MINUTE / (tick - previous.tick);
         let rate = u32::try_from(rate).unwrap_or(u32::MAX);
-        self.per_minute = ((3 * u64::from(self.per_minute) + u64::from(rate)) / 4) as u32;
-        earned as u32
+        self.per_minute = u32::try_from((3 * u64::from(self.per_minute) + u64::from(rate)) / 4)
+            .expect("an average of u32 rates fits in u32");
+        earned
     }
 
     /// Records the decision the next sample is measured from.

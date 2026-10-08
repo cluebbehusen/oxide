@@ -185,7 +185,9 @@ fn every_building_and_upgrade_is_bought_somewhere() {
 
     let missing: Vec<(BuildingKind, u8)> = BuildingKind::ALL
         .into_iter()
-        .flat_map(|kind| (0..kind.tiers().len() as u8).map(move |tier| (kind, tier)))
+        .flat_map(|kind| {
+            (0..u8::try_from(kind.tiers().len()).unwrap()).map(move |tier| (kind, tier))
+        })
         .filter(|rung| !covered.contains(rung))
         .collect();
     assert!(missing.is_empty(), "never bought: {missing:?}");

@@ -1912,7 +1912,14 @@ fn tiles_at(point: (i64, i64)) -> Vec<TilePos> {
     let ys = axis(point.1);
     axis(point.0)
         .into_iter()
-        .flat_map(|x| ys.iter().map(move |y| TilePos::new(x as i32, *y as i32)))
+        .flat_map(|x| {
+            ys.iter().map(move |y| {
+                TilePos::new(
+                    i32::try_from(x).expect("map coordinates fit in i32"),
+                    i32::try_from(*y).expect("map coordinates fit in i32"),
+                )
+            })
+        })
         .collect()
 }
 
@@ -1938,7 +1945,7 @@ pub(crate) fn keeps_paths(
     let (width, height) = (observation.map_width, observation.map_height);
     let index = |tile: TilePos| {
         ((0..width).contains(&tile.x) && (0..height).contains(&tile.y))
-            .then(|| (tile.y * width + tile.x) as usize)
+            .then(|| tile.row_major(width))
     };
     let tiles = |kind: BuildingKind, anchor: TilePos| {
         let (w, h) = kind.base_stats().size;
@@ -1951,7 +1958,7 @@ pub(crate) fn keeps_paths(
         .chain(planned.iter().copied())
         .filter(|(kind, _)| *kind != BuildingKind::ScuttleCharge)
         .collect();
-    let mut blocked = vec![false; (width * height) as usize];
+    let mut blocked = vec![false; chassis::grid::cell_count(width, height)];
     let solid = observation
         .my_buildings
         .iter()
@@ -1979,7 +1986,7 @@ pub(crate) fn keeps_paths(
         index(tile).is_some_and(|at| !blocked[at]) && map.component(tile) == Some(ground)
     };
     let foundry = BuildingKind::Foundry.base_stats().size;
-    let mut reached = vec![false; (width * height) as usize];
+    let mut reached = vec![false; chassis::grid::cell_count(width, height)];
     let foundries: Vec<TilePos> = observation
         .my_buildings
         .iter()

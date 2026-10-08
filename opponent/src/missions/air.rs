@@ -35,10 +35,12 @@ impl Hazard {
         let span = |centre: i64| {
             let low = (centre - self.reach).div_euclid(2);
             let high = (centre + self.reach).div_euclid(2);
-            (low as i32)..=(high as i32)
+            let tile = |doubled: i64| i32::try_from(doubled).expect("map coordinates fit in i32");
+            tile(low)..=tile(high)
         };
+        let columns = span(self.centre.0);
         span(self.centre.1)
-            .flat_map(move |y| span(self.centre.0).map(move |x| TilePos::new(x, y)))
+            .flat_map(move |y| columns.clone().map(move |x| TilePos::new(x, y)))
             .filter(|tile| self.covers(doubled(*tile)))
     }
 }

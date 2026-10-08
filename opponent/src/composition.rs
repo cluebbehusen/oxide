@@ -283,9 +283,9 @@ pub(crate) fn needs(
         kinds[index(kind)] += 1;
     }
     let army: i64 = own.iter().sum();
-    let air = enemy.air as i64;
-    let ground = enemy.ground as i64;
-    let defenses = enemy.defenses as i64;
+    let air = i64::try_from(enemy.air).unwrap_or(i64::MAX);
+    let ground = i64::try_from(enemy.ground).unwrap_or(i64::MAX);
+    let defenses = i64::try_from(enemy.defenses).unwrap_or(i64::MAX);
     let mut need = [0_i64; 4];
     if outlet.ground {
         need[Role::Line as usize] = (3 * ground / 4).max(2 * army / 5) - own[Role::Line as usize];
@@ -361,7 +361,11 @@ impl Needs {
             .filter(|role| self.need[*role as usize] > 0)
             .collect();
         wanted.sort_by_key(|role| {
-            Reverse(self.need[*role as usize] * self.weight[*role as usize] as i64)
+            Reverse(
+                self.need[*role as usize]
+                    * i64::try_from(self.weight[*role as usize])
+                        .expect("role weights stay near a thousand"),
+            )
         });
         wanted
     }
@@ -458,7 +462,8 @@ impl Needs {
             } else {
                 1_000
             };
-            let score = (u64::from(self.worth(role, best)) * better / 1_000) as u32;
+            let score = u32::try_from(u64::from(self.worth(role, best)) * better / 1_000)
+                .unwrap_or(u32::MAX);
             match premium.iter_mut().find(|(kind, _)| *kind == best) {
                 Some((_, kept)) => *kept = (*kept).max(score),
                 None => premium.push((best, score)),
@@ -596,10 +601,10 @@ impl Needs {
         };
         let worth = match role {
             Role::Siege => firepower(kind),
-            Role::Line | Role::AntiAir | Role::AirStrike => {
-                (750 + 5 * (i64::from(stats.max_hp) * 100 / i64::from(stats.cost) - 50))
-                    .clamp(750, 1_250) as u64
-            }
+            Role::Line | Role::AntiAir | Role::AirStrike => (750
+                + 5 * (i64::from(stats.max_hp) * 100 / i64::from(stats.cost) - 50))
+                .clamp(750, 1_250)
+                .cast_unsigned(),
         };
         let hits = |air: bool| {
             stats.weapons.iter().any(|weapon| {
@@ -847,7 +852,13 @@ mod tests {
             .iter_mut()
             .for_each(|visible| *visible = false);
         observation.enemy_units = (0..36)
-            .map(|index| unit(100 + index, (index % 6) as i32 * 6, (index / 6) as i32 * 4))
+            .map(|index| {
+                unit(
+                    100 + index,
+                    (index % 6).cast_signed() * 6,
+                    (index / 6).cast_signed() * 4,
+                )
+            })
             .collect();
         let mut memory = Memory::default();
         memory.observe(&observation);
@@ -857,7 +868,13 @@ mod tests {
         );
         observation.tick = 300;
         observation.enemy_units = (1..=4)
-            .map(|index| unit(index, 20 + (index % 2) as i32, 20 + (index / 2) as i32))
+            .map(|index| {
+                unit(
+                    index,
+                    20 + (index % 2).cast_signed(),
+                    20 + (index / 2).cast_signed(),
+                )
+            })
             .collect();
         memory.observe(&observation);
         assert!(Enemy::of(&observation, &memory).clustered);
