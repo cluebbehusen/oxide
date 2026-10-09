@@ -393,6 +393,7 @@ fn a_destroyed_extractor_wants_another_on_its_site() {
     let lost = Event::BuildingDestroyed {
         building: building_of(&standing, 0, BuildingKind::Extractor),
         player: PlayerId(0),
+        tier: 0,
         pos: Vec2Fx::ZERO,
     };
 

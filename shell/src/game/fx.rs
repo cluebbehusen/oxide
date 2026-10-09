@@ -1304,6 +1304,7 @@ impl Presentation {
                     building,
                     pos,
                     player,
+                    ..
                 } => {
                     if *player == self.human {
                         self.raise_alert(world_vec(*pos));

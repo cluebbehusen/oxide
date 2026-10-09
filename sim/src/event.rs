@@ -103,6 +103,9 @@ pub enum Event {
         building: BuildingId,
         /// Its owner.
         player: PlayerId,
+        /// Its upgrade tier when it fell, including an upgrade bought that
+        /// tick.
+        tier: u8,
         /// Its center (for shell effects).
         pos: Vec2Fx,
     },

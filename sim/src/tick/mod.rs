@@ -260,6 +260,7 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
         events.push(Event::BuildingDestroyed {
             building: building.id,
             player: building.player,
+            tier: building.tier,
             pos: building.center(),
         });
         let stats = building.stats();

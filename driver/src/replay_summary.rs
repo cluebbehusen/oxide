@@ -742,13 +742,6 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
 
     let mut playback = oxide_kit::ReplayPlayback::new(replay);
     for _ in state.current_tick()..effective {
-        // Destruction events name no tier, and the building is gone after
-        // the tick that destroys it.
-        let tiers: Vec<(BuildingId, u8)> = state
-            .buildings()
-            .iter()
-            .map(|building| (building.id, building.tier))
-            .collect();
         let report = playback.step(&mut state);
         let now = state.current_tick();
 
@@ -794,14 +787,12 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
                 Event::BuildingDestroyed {
                     building,
                     player,
+                    tier,
                     pos,
                 } => {
                     let tile = TilePos::containing(*pos);
                     let known = ledgers.building.get(building).map(|(_, kind)| *kind);
-                    let tier = tiers
-                        .binary_search_by_key(building, |(id, _)| *id)
-                        .map_or(0, |index| tiers[index].1);
-                    let value = known.map_or(0, |kind| u64::from(kind.invested_cost(tier)));
+                    let value = known.map_or(0, |kind| u64::from(kind.invested_cost(*tier)));
                     let loss_kind = if known.is_some() {
                         windows[player.0 as usize].buildings_lost += 1;
                         LossKind::Building

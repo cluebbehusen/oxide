@@ -180,6 +180,93 @@ fn footprint_incident_tiles_are_half_turn_equivariant() {
 }
 
 #[test]
+fn a_building_upgraded_on_the_tick_it_falls_reports_the_new_tier() {
+    use crate::scenario::{BuildingSpec, UnitSpec};
+    use crate::{BuildingKind, Command, Order, PlayerCommand, PlayerId, Target, UnitKind};
+
+    let kind = BuildingKind::ALL
+        .into_iter()
+        .find(|kind| {
+            kind.upgrade_from(0)
+                .is_some_and(|up| up.requires == [BuildingKind::Fabricator])
+        })
+        .expect("some building upgrades once a Fabricator stands");
+    let mut scenario = calibration_open_cupric();
+    scenario.units = vec![UnitSpec {
+        player: 0,
+        kind: UnitKind::Sentinel,
+        x: 18,
+        y: 16,
+    }];
+    let anchor = TilePos::new(21, 15);
+    scenario.buildings = vec![
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Fabricator,
+            x: 25,
+            y: 13,
+        },
+        BuildingSpec {
+            player: 1,
+            kind,
+            x: anchor.x,
+            y: anchor.y,
+        },
+        BuildingSpec {
+            player: 1,
+            kind: BuildingKind::Fabricator,
+            x: 29,
+            y: 13,
+        },
+    ];
+    let mut state = scenario.build().expect("the duel builds");
+    let victim = state
+        .buildings
+        .iter()
+        .find(|building| building.player == PlayerId(1) && building.anchor == anchor)
+        .expect("the victim exists")
+        .id;
+    state.building_mut(victim).expect("victim").hp = 1;
+    state.players[1].scrap = kind.upgrade_from(0).expect("upgradable").cost;
+    let shooter = state.units[0].id;
+    let direction = state
+        .building(victim)
+        .unwrap()
+        .closest_point_to(state.units[0].pos)
+        - state.units[0].pos;
+    let unit = state.unit_mut(shooter).unwrap();
+    unit.turret_heading = Some(chassis::compass::heading_of(direction));
+    unit.order = Order::Attack {
+        pursue: false,
+        target: Target::Building(victim).into(),
+        resume: None,
+    };
+
+    // Upgrade on exactly the tick the shot would land.
+    let falls = |report: &crate::TickReport| {
+        report.events.iter().any(|event| {
+            matches!(event, crate::Event::BuildingDestroyed { building, .. } if *building == victim)
+        })
+    };
+    while !falls(&state.clone().tick(&[])) {
+        state.tick(&[]);
+        assert!(state.current_tick() < 100, "the shot lands");
+    }
+    let report = state.tick(&[PlayerCommand {
+        player: PlayerId(1),
+        command: Command::UpgradeBuilding { building: victim },
+    }]);
+    assert!(
+        report.events.iter().any(|event| matches!(
+            event,
+            crate::Event::BuildingDestroyed { building, tier: 1, .. } if *building == victim
+        )),
+        "the same-tick upgrade counts: {:?}",
+        report.events
+    );
+}
+
+#[test]
 fn mirrored_lethal_hits_record_mirrored_footprint_incidents() {
     use crate::scenario::{BuildingSpec, UnitSpec};
     use crate::{BuildingKind, Order, PlayerId, Target, UnitKind};
