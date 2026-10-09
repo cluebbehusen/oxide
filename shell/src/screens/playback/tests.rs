@@ -373,9 +373,8 @@ fn a_scrub_press_seeks_to_the_bar_fraction_and_a_drag_retargets() {
 
 #[test]
 fn the_viewer_answers_the_shared_surface_exactly_like_a_resumed_live_session() {
-    // Playback and legacy live reconstruction must agree: a replayed
-    // world and a live world resumed from the same record answer the
-    // protocol identically. Both go through the one shared
+    // A replayed world and a live world resumed from the same record
+    // answer the protocol identically. Both go through the one shared
     // dispatcher, so agreement here is agreement on the wire.
     use oxide_protocol::{DebugSession, Reply, Request, StateFilter, dispatch_shared};
     let scenario = oxide_sim::Scenario::skirmish();
@@ -414,7 +413,7 @@ fn the_viewer_answers_the_shared_surface_exactly_like_a_resumed_live_session() {
     }
     // Status: one world, two transports. The world's fields agree;
     // pause stance, speed, and the recorder are each transport's own
-    // (the viewer records nothing — it is read-only by construction).
+    // (the read-only viewer records nothing).
     let live_status = DebugSession::status(&live);
     let viewer_status = DebugSession::status(&pb);
     assert_eq!(live_status.tick, viewer_status.tick);

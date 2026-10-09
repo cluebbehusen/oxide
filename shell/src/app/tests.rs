@@ -177,35 +177,12 @@ fn every_authored_weapon_report_raises_combat_pressure() {
 }
 
 #[test]
-fn mixer_specs_match_the_finalized_manifest_contract() {
-    assert_eq!(Mixer::base_volume(SoundKind::ScuttlerFire), 0.20);
-    assert_eq!(Mixer::min_gap(SoundKind::ScuttlerFire), 0.09);
-    assert_eq!(Mixer::base_volume(SoundKind::Alert), 0.40);
-    assert_eq!(Mixer::min_gap(SoundKind::Alert), 1.50);
-    assert_eq!(Mixer::base_volume(SoundKind::ArtilleryLaunch), 0.40);
-    assert_eq!(Mixer::min_gap(SoundKind::ArtilleryLaunch), 0.20);
-    assert_eq!(Mixer::base_volume(SoundKind::Deposit), 0.25);
-    assert_eq!(Mixer::min_gap(SoundKind::Deposit), 0.15);
-
-    let manifest: serde_json::Value =
-        serde_json::from_str(include_str!("../../../assets/sounds/manifest.json")).unwrap();
-    for (name, kind) in [
-        ("avalanche_launch", SoundKind::AvalancheFire),
-        ("avalanche_motor", SoundKind::RocketMotor),
-        ("rocket_impact", SoundKind::RocketImpact),
-    ] {
-        let entry = manifest["sounds"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|entry| entry["name"] == name)
-            .unwrap();
-        assert_eq!(
-            numeric::to_f32(entry["mixer_volume"].as_f64().unwrap()),
-            Mixer::base_volume(kind)
-        );
-        assert_eq!(entry["min_gap"].as_f64().unwrap(), Mixer::min_gap(kind));
+fn every_sound_kind_mixes_from_its_manifest_row() {
+    for kind in SoundKind::ALL {
+        let spec = mixer_spec(kind);
+        assert!(spec.volume > 0.0 && spec.min_gap > 0.0, "{kind:?}");
     }
+    assert_eq!(MIXER_SPECS.get("laser2"), MIXER_SPECS.get("laser"));
 }
 
 fn team_draft() -> NewMatchDraft {
@@ -448,8 +425,8 @@ fn wizard_seat_swap_opens_on_the_new_humans_foundry() {
 
 #[test]
 fn a_zero_seat_map_refuses_to_launch_instead_of_panicking() {
-    // Discovery lists any parseable JSON; a players: [] file used
-    // to underflow the seat clamp.
+    // Discovery lists any parseable JSON, so a `players: []` file must
+    // refuse instead of underflowing the seat clamp.
     let mut scenario = Scenario::skirmish();
     scenario.players.clear();
     scenario.units.clear();

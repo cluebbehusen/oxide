@@ -101,8 +101,11 @@ state on every run and platform.**
   bound scenario. Controller validation rejects state that could panic or cause
   unbounded work; a forged value that only changes play is accepted. A new
   checkpoint field needs a design review.
-- `FogView` is the canonical player-knowledge surface. Omniscient QA views must
-  never feed a bot or player decision.
+- Player knowledge has two fog-honest projections: `oxide_protocol::FogView` for
+  players and agents, and `oxide_sim::observation::ObservationData::fog_honest`
+  for bots. A parity test in `protocol/src/view/tests.rs` keeps them in
+  agreement; change both together. Omniscient QA views must never feed a bot or
+  player decision.
 - Live, playback, and headless sessions share `oxide_protocol::DebugSession`.
   Explicitly refuse unsupported capabilities instead of faking them.
 - Hardware and injected input enter through the same semantic event funnel and

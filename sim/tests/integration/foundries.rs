@@ -1,7 +1,7 @@
-//! Buildable Foundries: the 0.15 expansion base. Construction sits
-//! behind the Fabricator tech gate, sites count for survival exactly
-//! like standing works, abandoned scaffolds rust away, and every
-//! completed Foundry smelts the transparent drip.
+//! Buildable Foundries as expansion bases. Construction sits behind the
+//! Fabricator tech gate, sites count for survival like standing Foundries,
+//! abandoned scaffolds decay, and every completed Foundry credits the
+//! income floor.
 
 use crate::common;
 use common::{cmd, players};

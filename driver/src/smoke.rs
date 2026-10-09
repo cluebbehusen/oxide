@@ -1,18 +1,18 @@
-//! The layer-3 smoke test: drive a live shell end to end.
+//! The smoke test: drive a live shell end to end.
 //!
-//! Exercises the seams the headless tests cannot — the debug socket, the
-//! input funnel, the camera, screenshots, and the session recorder — and
-//! finishes by proving the live session reproduces headless (save the
-//! replay, re-run it, compare hashes). Run it whenever shell code changes:
+//! Exercises the seams the headless tests cannot (the debug socket, the
+//! input funnel, the camera, screenshots, and the session recorder) and
+//! checks that the live session reproduces headless: save the replay,
+//! re-run it, compare hashes. Run it whenever shell code changes:
 //!
 //! ```text
 //! cargo run -p oxide-driver -- smoke --spawn
 //! ```
 
 use crate::client::Client;
-use crate::runner;
 use anyhow::{Context, Result, bail};
 use chassis::grid::as_index;
+use oxide_kit::runner;
 use oxide_protocol::{RawEvent, Reply, Request, StateFilter};
 use oxide_sim::{Command, PlayerId, UnitId, UnitKind};
 use std::path::PathBuf;
@@ -69,10 +69,9 @@ pub fn run(addr: &str, spawn: bool) -> Result<()> {
                 "--debug-server",
                 "--automation",
                 "--paused",
-                // Pin the window: the persisted config carries whatever
-                // size the user last dragged, and a large-enough window
-                // clamps the camera immovable on the smoke's map —
-                // which turns the minimap-jump check into a coin flip.
+                // Pin the window size: a large enough window clamps the
+                // camera immovable on the smoke's map, which would defeat
+                // the minimap-jump check.
                 "--window",
                 "1280x800",
                 "--port",
@@ -92,11 +91,9 @@ pub fn run(addr: &str, spawn: bool) -> Result<()> {
     };
     let outcome = execute(addr, spawn);
     drop(guard);
-    // A passing smoke tidies its scratch artifacts: the replay and
-    // screenshot exist to be checked, not kept, and the leftovers were
-    // accumulating in replays/ — where the shell's shelf lists them and
-    // every run shifted the screenshot suite's shelf reference. A
-    // failing smoke keeps both for inspection.
+    // A passing smoke removes its replay and screenshot, which would
+    // otherwise accumulate in replays/ where the shell's shelf lists them.
+    // A failing smoke keeps both for inspection.
     if outcome.is_ok()
         && let Ok(cwd) = std::env::current_dir()
     {
@@ -346,7 +343,7 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
         "pause-label glyphs missing from the upper-right HUD or present in its vertical reflection",
     );
 
-    // The decisive check: the live session reproduces headless.
+    // The live session must reproduce headless.
     let live = client.state_hash()?;
     let replay_path = std::env::current_dir()?
         .join(format!("replays/smoke-{pid}.json"))
@@ -356,7 +353,7 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
         path: replay_path.clone(),
     })?;
     let replay = oxide_kit::load_replay(&replay_path).context("reading saved replay")?;
-    let replayed = runner::run_replay(&replay, Some(live.tick), false)?;
+    let replayed = runner::run_replay(&replay, Some(live.tick))?;
     checks.note(
         "saved replay reproduces the live session",
         oxide_protocol::hash_hex(replayed.hash()) == live.hash,
@@ -367,8 +364,8 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
         ),
     );
 
-    // Continuity setup: run the ORIGINAL session (bots with their genuine
-    // memory) past the save point before any reload touches it.
+    // Run the original session, with its bots' live memory, past the save
+    // point before any reload.
     client.call(Request::AdvanceTicks { ticks: 200 })?;
     let future_live = client.state_hash()?;
 
@@ -388,9 +385,8 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
         format!("{} vs {}", after_resume.hash, live.hash),
     );
 
-    // The continuity contract: a resumed session must continue exactly as
-    // the unsaved one would have — including the bots, whose memory is
-    // rebuilt by watching the replay during the fast-forward.
+    // A resumed session must continue as the unsaved one did, including
+    // the bots, whose memory is rebuilt during the fast-forward.
     client.call(Request::AdvanceTicks { ticks: 200 })?;
     let future_resumed = client.state_hash()?;
     checks.note(
@@ -399,13 +395,12 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
         format!("{} vs {}", future_resumed.hash, future_live.hash),
     );
 
-    // Armed placement must not misread a minimap click as world ground —
-    // that once spent scrap on a bogus tile. Reproduce the exact input
-    // sequence through the real funnel: select a harvester, arm a turret
-    // through the palette, click the minimap; the camera must jump and
-    // the bank must not move. Reset to a fresh skirmish first — the
-    // replay checks above left the world hundreds of ticks in, where
-    // wandering machines can sit on any tile this block would target.
+    // Armed placement must not misread a minimap click as world ground.
+    // Through the real funnel: select a harvester, arm a turret through
+    // the palette, click the minimap; the camera must jump and the bank
+    // must not move. Reset to a fresh skirmish first: the replay checks
+    // above left the world hundreds of ticks in, where wandering machines
+    // can sit on any tile this block would target.
     let scenario_path = std::env::current_dir()?.join("scenarios/skirmish.json");
     client.call(Request::LoadScenario {
         path: scenario_path.to_string_lossy().into_owned(),
@@ -460,9 +455,8 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
         client.call(Request::InjectEvent { event })?;
     }
     std::thread::sleep(Duration::from_millis(200));
-    // The minimap rect comes from the shell's published layout — the
-    // QueryUi chrome is the same model hit-testing reads, so geometry
-    // changes cannot strand this check on a stale copy of the formula.
+    // The minimap rect comes from QueryUi's chrome, the same layout the
+    // shell's hit-testing reads.
     let ui = client.ui()?;
     let Some(chrome) = ui.chrome else {
         bail!("playing mode reports chrome geometry");
@@ -503,13 +497,11 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
             scrap_before, view_after.players[0].scrap, cam.center, cam_after.center
         ),
     );
-    // Prove the palette actually armed something: commit the build on
-    // VISIBLE open ground and watch the scrap move — the half of the
-    // contract the minimap check alone cannot see. The minimap jump
-    // left the camera over fog (never-explored ground still refuses,
-    // and a claim on merely remembered ground would defer its charge),
-    // so recenter home first and aim beside the foundry, inside its
-    // vision, where the claim is instant and the scrap moves NOW.
+    // Confirm the palette armed a turret: commit the build on visible open
+    // ground and watch the scrap move. The minimap jump left the camera
+    // over fog, where never-explored ground refuses and remembered ground
+    // defers its charge, so recenter home first and aim beside the
+    // Foundry, inside its vision, where the charge is immediate.
     for event in [
         RawEvent::KeyDown {
             key: oxide_protocol::Key::Space,
@@ -522,8 +514,8 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
     }
     std::thread::sleep(Duration::from_millis(100));
     let cam2 = client.camera()?;
-    // A commit tile chosen from data, not guesswork: open ground ('.')
-    // near the foundry (inside its vision), clear of every unit's tile.
+    // Open ground near the Foundry, inside its vision, clear of every
+    // unit's tile.
     let foundry = view
         .buildings
         .iter()

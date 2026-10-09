@@ -1,7 +1,7 @@
-//! The attack mission: when a known enemy building's local defense is
-//! beatable now by the free army, above a stance-bounded minimum, the army
-//! gathers near home, travels, fights, withdraws from a losing fight, and
-//! recovers to go again or disband. A free Tender joins while it regroups,
+//! The attack mission: when the free army, above a stance-bounded minimum,
+//! can beat the known army it would meet at a known or presumed enemy
+//! building, the army gathers near home, travels, fights, withdraws from a
+//! losing fight, and recovers to go again or disband. A free Tender joins while it regroups,
 //! welds its wounded, and follows it; against known defenses free Sappers
 //! join too, and each blows up the nearest defense once the fight begins.
 
@@ -138,9 +138,9 @@ impl Mission {
 }
 
 impl Missions {
-    /// Advances the attack under way, or launches one when the free army
-    /// beyond the home reserve can beat the known defense of a target.
-    /// Returns the targets given up on.
+    /// Advances the attacks under way, then launches more while the free
+    /// army beyond the home reserve can beat the known army it would meet at
+    /// a target. Returns the targets given up on.
     pub(crate) fn attack(
         &mut self,
         observation: &ObservationData,
@@ -289,10 +289,11 @@ impl Missions {
             .outermost(map, scratch.frame, fit)
     }
 
-    /// Launches an attack with the whole free army on the best target when it
-    /// can beat the target's known defense and no attack is under way: one
-    /// army hits together rather than several that each meet the enemy alone.
-    /// Units freed later join it when it regroups. Returns whether one
+    /// Launches an attack on the best target when the free army can beat the
+    /// known army it would meet. A seat that concentrates sends the whole
+    /// free army and launches none while another is under way, so one army
+    /// hits together rather than several that each meet the enemy alone;
+    /// units freed later join it when it regroups. Returns whether one
     /// launched.
     fn launch(&mut self, plan: &Plan<'_>, fit: &[&UnitObs], ledger: &mut Ledger) -> bool {
         let attacking = self
@@ -746,8 +747,8 @@ impl<'a> Plan<'a> {
     }
 
     /// The best target other than `skip`, or `None`. Known enemy buildings
-    /// come first; with none, hostile starts are presumed held.
-    /// With several enemies, the rival's targets come first.
+    /// come first; with none, hostile starts are presumed held. With several
+    /// enemies, the rival's targets come first.
     fn best(&self, skip: Option<Target>) -> Option<Target> {
         let now = self.observation.tick;
         let differs = |target: &Target| {
@@ -1047,13 +1048,7 @@ pub(super) fn contact(observation: &ObservationData, members: &[&UnitObs]) -> bo
 /// A known building's price with every upgrade it reached, discounted by its
 /// missing health at that tier.
 pub(crate) fn building_value(building: &BuildingObs) -> u64 {
-    let tiers = building.kind.tiers();
-    let reached = usize::from(building.tier).min(tiers.len() - 1);
-    let paid: u64 = tiers[..=reached]
-        .iter()
-        .filter_map(|stats| stats.construction.as_ref())
-        .map(|construction| u64::from(construction.cost))
-        .sum();
+    let paid = u64::from(building.kind.invested_cost(building.tier));
     let max_hp = building.kind.tier_stats(building.tier).max_hp;
     paid * u64::from(building.hp) / u64::from(max_hp.max(1))
 }
@@ -1178,7 +1173,7 @@ fn misjudge(profile: &ResolvedProfile, tick: u64) -> u64 {
     u64::from(1_000 - MISJUDGE + rng.next_below(2 * MISJUDGE + 1))
 }
 
-/// Per mille of a target's known defense the army must bring.
+/// Per mille of the known opposition at a target that a mission must bring.
 pub(crate) fn margin(difficulty: BotDifficulty) -> u64 {
     match difficulty {
         BotDifficulty::Scrapheap => 2_500,

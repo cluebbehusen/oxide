@@ -5,7 +5,7 @@ pub mod input;
 pub mod session;
 pub mod view;
 
-use oxide_sim::{Command, Event, OrderKey, PlayerId};
+use oxide_sim::{Command, Event, PlayerId};
 use serde::{Deserialize, Serialize};
 
 pub use input::{Key, MouseButton, RawEvent};
@@ -24,24 +24,20 @@ pub const MAX_ADVANCE_TICKS: u64 = 1_000_000;
 /// Largest presentation-preserving step the shell will execute at once.
 pub const MAX_PRESENT_TICKS: u64 = 120;
 
-/// Ticks per second both sides budget for a synchronous advance —
-/// deliberately conservative against the harness benchmarks, so a slow
-/// machine still finishes inside the deadline. The client derives its
-/// read timeout from this and the server its reply deadline; sharing one
-/// figure is what keeps the two from ever disagreeing about a legal wait.
+/// Ticks per second both sides budget for a synchronous advance, set
+/// conservatively so a slow machine still finishes inside the deadline. The
+/// client derives its read timeout and the server its reply deadline from
+/// this one figure, so the two agree about a legal wait.
 pub const ADVANCE_TICKS_PER_BUDGET_SECOND: u64 = 1_000;
 
-/// Longest request line a server accepts, newline excluded. A line that
-/// runs past it is answered with an error naming the limit and the
-/// connection is closed — framing has to bound its own allocation, and no
-/// legitimate request comes within three orders of magnitude of this.
+/// Longest request line a server accepts, newline excluded. A longer line
+/// is answered with an error naming the limit and the connection is closed,
+/// so framing bounds its own allocation.
 pub const MAX_FRAME_BYTES: usize = 1 << 20;
 
-/// Ceiling on a RESPONSE line a client should accept, newline excluded.
-/// Requests are hand-sized and [`MAX_FRAME_BYTES`] bounds them; replies scale with
-/// the world (a deep `query_state`, a long presented-event drain), so
-/// the client's ceiling is generous rather than symmetric — a server
-/// never refuses its own legal reply.
+/// Longest response line a client should accept, newline excluded. Replies
+/// scale with the world (a deep `query_state`, a long presented-event
+/// drain), so this is far larger than [`MAX_FRAME_BYTES`].
 pub const MAX_RESPONSE_BYTES: usize = 64 << 20;
 
 /// Everything a client can ask of a running shell.
@@ -61,11 +57,10 @@ pub enum Request {
         #[serde(default)]
         filter: StateFilter,
     },
-    /// The world as one seat honestly knows it: its own economy and command
+    /// The world as one seat knows it: its own economy and command
     /// eligibility, visibility mask, entities filtered to current sight,
-    /// ghost memories, remembered salvage, and radar contacts. The fog-safe
-    /// counterpart to the omniscient [`Request::QueryState`] — what lets an
-    /// agent play fair.
+    /// ghost memories, remembered salvage, and radar contacts. The fog-honest
+    /// counterpart to the omniscient [`Request::QueryState`].
     QueryFogView {
         /// The seat whose knowledge to report.
         player: PlayerId,
@@ -119,8 +114,8 @@ pub enum Request {
         /// Multiplier applied to real time.
         multiplier: f64,
     },
-    /// Issue a game command as `player`, stamped for the next tick — the
-    /// exact same funnel mouse clicks use.
+    /// Issue a game command as `player`, stamped for the next tick through
+    /// the same path mouse clicks use.
     SendCommand {
         /// Acting player.
         player: PlayerId,
@@ -147,9 +142,7 @@ pub enum Request {
         path: String,
     },
     /// Resume a session from a replay file: rebuild its scenario, re-run
-    /// every recorded tick (fast — the sim does thousands per second), and
-    /// keep recording from there. In a deterministic sim, this *is* loading
-    /// a save.
+    /// every recorded tick, and keep recording from there.
     LoadReplay {
         /// Path to a replay JSON.
         path: String,
@@ -384,9 +377,8 @@ impl<'de> Deserialize<'de> for RequestEnvelope {
         if let WireParams::Present(params) = raw.params {
             request.insert("params".to_string(), params);
         }
-        let wire = serde_json::Value::Object(request);
-        let request = serde_json::from_value(wire.clone()).map_err(D::Error::custom)?;
-        reject_unknown_nested_fields(&request, &wire).map_err(D::Error::custom)?;
+        let request =
+            serde_json::from_value(serde_json::Value::Object(request)).map_err(D::Error::custom)?;
         Ok(Self {
             id: raw.id,
             request,
@@ -394,289 +386,9 @@ impl<'de> Deserialize<'de> for RequestEnvelope {
     }
 }
 
-fn reject_unknown_nested_fields(request: &Request, wire: &serde_json::Value) -> Result<(), String> {
-    let (field, allowed): (&str, &[&str]) = match request {
-        Request::SendCommand { command, .. } => ("command", command_wire_fields(command)),
-        Request::InjectEvent { event } => ("event", event_wire_fields(event)),
-        _ => return Ok(()),
-    };
-    let Some(object) = wire
-        .get("params")
-        .and_then(|params| params.get(field))
-        .and_then(serde_json::Value::as_object)
-    else {
-        return Ok(());
-    };
-    if let Some(unknown) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
-        return Err(format!("unknown field `{unknown}` in {field}"));
-    }
-    match request {
-        Request::SendCommand { command, .. } => {
-            reject_unknown_command_value_fields(command, object)
-        }
-        Request::InjectEvent { .. } => Ok(()),
-        _ => unreachable!("only requests with nested wire values reach this point"),
-    }
-}
-
-fn reject_unknown_command_value_fields(
-    command: &Command,
-    wire: &serde_json::Map<String, serde_json::Value>,
-) -> Result<(), String> {
-    match command {
-        Command::Run { .. } | Command::Hunt { .. } | Command::Advance { .. } => {
-            reject_unknown_object_fields(wire.get("goal"), "command.goal", &["x", "y"])
-        }
-        Command::Attack { target, .. } | Command::FocusFire { target, .. } => {
-            reject_unknown_attack_target_fields(wire.get("target"), "command.target", target)
-        }
-        Command::CancelOrder { key, .. } => {
-            let wire = wire.get("key");
-            reject_unknown_object_fields(wire, "command.key", order_key_wire_fields(key))?;
-            let field = |name| wire.and_then(|key| key.get(name));
-            match key {
-                OrderKey::Walk { .. } | OrderKey::Unload { .. } => {
-                    reject_unknown_object_fields(field("tile"), "command.key.tile", &["x", "y"])
-                }
-                OrderKey::Land { .. } => {
-                    reject_unknown_object_fields(field("pad"), "command.key.pad", &["x", "y"])
-                }
-                OrderKey::Harvest { .. } | OrderKey::Found { .. } => {
-                    reject_unknown_object_fields(field("anchor"), "command.key.anchor", &["x", "y"])
-                }
-                OrderKey::Attack { objective } => reject_unknown_attack_target_fields(
-                    field("objective"),
-                    "command.key.objective",
-                    objective,
-                ),
-                OrderKey::ReturnCargo
-                | OrderKey::Build { .. }
-                | OrderKey::Repair { .. }
-                | OrderKey::Salvage { .. }
-                | OrderKey::RepairUnit { .. }
-                | OrderKey::Board { .. } => Ok(()),
-            }
-        }
-        Command::Harvest { .. } => {
-            reject_unknown_object_fields(wire.get("node"), "command.node", &["x", "y"])
-        }
-        Command::Patrol { .. } => {
-            let Some(waypoints) = wire.get("waypoints").and_then(serde_json::Value::as_array)
-            else {
-                return Ok(());
-            };
-            for (index, waypoint) in waypoints.iter().enumerate() {
-                reject_unknown_object_fields(
-                    Some(waypoint),
-                    &format!("command.waypoints[{index}]"),
-                    &["x", "y"],
-                )?;
-            }
-            Ok(())
-        }
-        Command::Build { .. } | Command::CancelFound { .. } => {
-            reject_unknown_object_fields(wire.get("anchor"), "command.anchor", &["x", "y"])
-        }
-        Command::SetRally { .. } => {
-            reject_unknown_object_fields(wire.get("rally"), "command.rally", &["x", "y"])
-        }
-        Command::Unload { .. } => {
-            reject_unknown_object_fields(wire.get("at"), "command.at", &["x", "y"])
-        }
-        Command::ReturnCargo { .. }
-        | Command::Stop { .. }
-        | Command::Train { .. }
-        | Command::Cancel { .. }
-        | Command::Repair { .. }
-        | Command::Salvage { .. }
-        | Command::CancelTrain { .. }
-        | Command::Surrender
-        | Command::RepairUnit { .. }
-        | Command::UpgradeBuilding { .. }
-        | Command::Load { .. }
-        | Command::ClearFocus { .. } => Ok(()),
-    }
-}
-
-fn reject_unknown_attack_target_fields(
-    value: Option<&serde_json::Value>,
-    path: &str,
-    target: &oxide_sim::AttackTarget,
-) -> Result<(), String> {
-    reject_unknown_object_fields(value, path, &["kind", "id"])?;
-    if matches!(target, oxide_sim::AttackTarget::RememberedBuilding(_)) {
-        let memory = value.and_then(|target| target.get("id"));
-        reject_unknown_object_fields(
-            memory,
-            &format!("{path}.id"),
-            &["owner", "building_kind", "anchor"],
-        )?;
-        reject_unknown_object_fields(
-            memory.and_then(|v| v.get("anchor")),
-            &format!("{path}.id.anchor"),
-            &["x", "y"],
-        )?;
-    }
-    Ok(())
-}
-
-fn order_key_wire_fields(key: &OrderKey) -> &'static [&'static str] {
-    match key {
-        OrderKey::Walk { tile: _ } | OrderKey::Unload { tile: _ } => &["order", "tile"],
-        OrderKey::Attack { objective: _ } => &["order", "objective"],
-        OrderKey::Land { pad: _ } => &["order", "pad"],
-        OrderKey::Harvest { anchor: _ } => &["order", "anchor"],
-        OrderKey::ReturnCargo => &["order"],
-        OrderKey::Build { site: _ } => &["order", "site"],
-        OrderKey::Found { kind: _, anchor: _ } => &["order", "kind", "anchor"],
-        OrderKey::Repair { building: _ } | OrderKey::Salvage { building: _ } => {
-            &["order", "building"]
-        }
-        OrderKey::RepairUnit { unit: _ } => &["order", "unit"],
-        OrderKey::Board { transport: _ } => &["order", "transport"],
-    }
-}
-
-fn reject_unknown_object_fields(
-    value: Option<&serde_json::Value>,
-    path: &str,
-    allowed: &[&str],
-) -> Result<(), String> {
-    let Some(object) = value.and_then(serde_json::Value::as_object) else {
-        return Ok(());
-    };
-    if let Some(unknown) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
-        return Err(format!("unknown field `{unknown}` in {path}"));
-    }
-    Ok(())
-}
-
-fn command_wire_fields(command: &Command) -> &'static [&'static str] {
-    match command {
-        Command::ClearFocus { .. } => &["type", "buildings"],
-        Command::Run {
-            units: _,
-            goal: _,
-            queue: _,
-        }
-        | Command::Hunt {
-            units: _,
-            goal: _,
-            queue: _,
-        }
-        | Command::Advance {
-            units: _,
-            goal: _,
-            queue: _,
-        } => &["type", "units", "goal", "queue"],
-        Command::Attack {
-            units: _,
-            target: _,
-            queue: _,
-        } => &["type", "units", "target", "queue"],
-        Command::Harvest {
-            units: _,
-            node: _,
-            queue: _,
-        } => &["type", "units", "node", "queue"],
-        Command::Patrol {
-            units: _,
-            waypoints: _,
-        } => &["type", "units", "waypoints"],
-        Command::ReturnCargo {
-            units: _,
-            foundry: _,
-            repair: _,
-        } => &["type", "units", "foundry", "repair"],
-        Command::Stop { units: _ } => &["type", "units"],
-        Command::Train {
-            building: _,
-            kind: _,
-        } => &["type", "building", "kind"],
-        Command::Build {
-            units: _,
-            kind: _,
-            anchor: _,
-            queue: _,
-            defer: _,
-        } => &["type", "units", "kind", "anchor", "queue", "defer"],
-        Command::Cancel { building: _ } | Command::UpgradeBuilding { building: _ } => {
-            &["type", "building"]
-        }
-        Command::Repair {
-            units: _,
-            building: _,
-            queue: _,
-        }
-        | Command::Salvage {
-            units: _,
-            building: _,
-            queue: _,
-        } => &["type", "units", "building", "queue"],
-        Command::CancelTrain {
-            building: _,
-            index: _,
-        } => &["type", "building", "index"],
-        Command::SetRally {
-            building: _,
-            rally: _,
-        } => &["type", "building", "rally"],
-        Command::Surrender => &["type"],
-        Command::RepairUnit {
-            units: _,
-            target: _,
-            queue: _,
-        } => &["type", "units", "target", "queue"],
-        Command::FocusFire {
-            buildings: _,
-            target: _,
-        } => &["type", "buildings", "target"],
-        Command::CancelFound { kind: _, anchor: _ } => &["type", "kind", "anchor"],
-        Command::Load {
-            units: _,
-            transport: _,
-            queue: _,
-        } => &["type", "units", "transport", "queue"],
-        Command::Unload {
-            transport: _,
-            at: _,
-            queue: _,
-        } => &["type", "transport", "at", "queue"],
-        Command::CancelOrder {
-            unit: _,
-            key: _,
-            from_end: _,
-            units: _,
-        } => &["type", "unit", "key", "from_end", "units"],
-    }
-}
-
-fn event_wire_fields(event: &RawEvent) -> &'static [&'static str] {
-    match event {
-        RawEvent::MouseMove { x: _, y: _ } => &["type", "x", "y"],
-        RawEvent::MouseDown {
-            button: _,
-            x: _,
-            y: _,
-        }
-        | RawEvent::MouseUp {
-            button: _,
-            x: _,
-            y: _,
-        } => &["type", "button", "x", "y"],
-        RawEvent::Wheel { delta: _ } => &["type", "delta"],
-        RawEvent::KeyDown { key: _ } | RawEvent::KeyUp { key: _ } => &["type", "key"],
-        RawEvent::TouchDown { id: _, x: _, y: _ }
-        | RawEvent::TouchMove { id: _, x: _, y: _ }
-        | RawEvent::TouchUp { id: _, x: _, y: _ } => &["type", "id", "x", "y"],
-        RawEvent::Text { ch: _ } => &["type", "ch"],
-    }
-}
-
-/// A response with its correlation id. Internally an enum, so "both ok and
-/// err" or "neither" are unrepresentable; on the wire it keeps the exact
-/// original shape (`{"id":…,"ok":{…}}` / `{"id":…,"err":"…"}`), which the
-/// `wire_shape_is_stable` test pins.
+/// A response with its correlation id. The outcome is an enum, so "both ok
+/// and err" or "neither" are unrepresentable; on the wire it is
+/// `{"id":…,"ok":{…}}` or `{"id":…,"err":"…"}`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResponseEnvelope {
     /// Echo of the request id (0 when the request was unparseable).

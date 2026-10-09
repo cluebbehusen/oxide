@@ -1175,10 +1175,9 @@ fn buildings_are_not_cover_only_terrain_is() {
 
 #[test]
 fn a_turret_fires_past_the_building_flush_against_it() {
-    // The playtest complaint: a 1x1 flush against a Turret used to shadow
-    // over a quarter of its arc, and the turret path has no repositioning
-    // fallback — it just went quiet. Terrain-only cover: the turret fires
-    // straight through its neighbor.
+    // A 1x1 building flush against a Turret must not shadow its arc: the
+    // turret has no repositioning fallback and would go quiet. Cover is
+    // terrain-only, so the turret fires straight through its neighbor.
     let scenario = Scenario {
         players: players(200),
         buildings: vec![
@@ -1199,8 +1198,7 @@ fn a_turret_fires_past_the_building_flush_against_it() {
     };
     let mut state = scenario.build().unwrap();
     let victim = state.units()[0].id;
-    // 60 hp / 12 damage every 25 ticks — dead within ~110 ticks. Before
-    // terrain-only cover the turret never fired at all.
+    // 60 hp / 12 damage every 25 ticks: dead within ~110 ticks.
     run_until(&mut state, 200, |s, _| s.unit(victim).is_none());
 }
 
@@ -1283,9 +1281,9 @@ fn idle_sentinel_auto_acquires_intruder() {
 #[test]
 fn lancer_fires_from_beyond_bombard_sight_and_retaliation_answers() {
     // The lancer opens fire from 5.4 tiles — outside the bombard's own
-    // sight (5), inside rail range (5.5). The bombard is the one chassis that
-    // survives a rail hit AND can answer ground (the 0.10 rail one-shots
-    // the 60-hp sentinel, so the line unit can no longer star here).
+    // sight (5), inside rail range (5.5). The bombard survives a rail hit
+    // and can answer ground (the rail one-shots the 60-hp sentinel, so the
+    // line unit cannot play this role).
     // The first hit turns the victim on its attacker; the rail wins the
     // duel it opened, but the answer — one arcing shell already in
     // flight — lands after its shooter is dead. Shells outlive shooters.
@@ -1346,12 +1344,11 @@ fn lancer_fires_from_beyond_bombard_sight_and_retaliation_answers() {
 fn a_flank_pick_is_lethal_and_the_march_still_arrives() {
     // An open lane: the lancer sits 5.4 tiles off the march route —
     // outside the marchers' aggro, inside its own range — and picks one
-    // off as the column passes. Under the 0.10 numbers the rail
-    // one-shots the 60-hp sentinel: the pick is an assassination, no
-    // answer is possible from a corpse, and the sniper walks away
-    // clean. What the ambush must NOT do is stop the army — the
-    // rearguard still arrives. (The retaliation contract itself is
-    // covered by the bombard tests; fight-then-win-then-resume by
+    // off as the column passes. The rail one-shots the 60-hp sentinel, so
+    // no answer is possible from a corpse and the sniper walks away clean.
+    // What the ambush must not do is stop the army: the rearguard still
+    // arrives. (The retaliation contract itself is covered by the bombard
+    // tests; fight-then-win-then-resume by
     // hunt_engages_on_the_way_then_resumes.)
     let scenario = Scenario {
         players: players(200),
@@ -1511,8 +1508,8 @@ fn turret_holds_ground_and_dies_to_lancer_siege() {
             queue: false,
         },
     )]);
-    // Fog: the rat can't target what it hasn't seen — hunt in
-    // and let fire-at-will find the turret.
+    // Fog: the scuttler can't target what it hasn't seen, so hunt in and
+    // let fire-at-will find the turret.
     state.tick(&[cmd(
         1,
         Command::Hunt {
@@ -1766,9 +1763,8 @@ fn bastion_opens_fire_beyond_its_dead_zone() {
 #[test]
 fn mirrored_duels_end_in_mutual_annihilation() {
     // The observable core of simultaneous resolution: two identical
-    // sentinels ordered at each other die on the same tick. Before 0.6,
-    // inline damage let the lower id win every mirror duel with hp to
-    // spare — the same edge that decided every mirror match.
+    // sentinels ordered at each other die on the same tick. Inline damage
+    // would let the earlier decider win every mirror duel with hp to spare.
     let mut state = arena(vec![
         unit(0, UnitKind::Sentinel, 4, 6),
         unit(1, UnitKind::Sentinel, 11, 6),
@@ -1803,13 +1799,10 @@ fn mirrored_duels_end_in_mutual_annihilation() {
     );
 }
 
-// A retired sibling of the test below — "two simultaneous beyond-aggro
-// attackers, one executed, the victim answers the earliest survivor" —
-// died with the 0.10 rail bless: two rail hits (120) now kill every
-// chassis that can answer ground, so the two-survivable-shooter volley
-// cannot be staged in the real game. The earliest-survivor property
-// itself is structural (the busy-guard makes the first processed answer
-// stick) and stays exercised by the corpse-skip and interrupt tests.
+// The earliest-survivor property (a victim of several beyond-aggro
+// attackers answers the earliest one that survives) is structural: the
+// busy-guard makes the first processed answer stick. The corpse-skip and
+// interrupt tests exercise it.
 
 #[test]
 fn retaliation_interrupts_an_attack_on_a_corpse() {
@@ -1817,8 +1810,8 @@ fn retaliation_interrupts_an_attack_on_a_corpse() {
     // step; the scuttler dies in the same volley that an out-of-aggro
     // lancer lands on the victim. The victim's attack order points at a
     // corpse — it must interrupt and answer the survivor, not stand mute
-    // through the lancer's next cooldown. The victim is a bombard: the
-    // one chassis that survives the rail hit and answers ground.
+    // through the lancer's next cooldown. The victim is a bombard, which
+    // survives the rail hit and answers ground.
     let mut state = arena(vec![
         unit(1, UnitKind::Scuttler, 5, 6), // id 0: bait, dies this tick
         unit(1, UnitKind::Lancer, 9, 4),   // id 1: the real threat

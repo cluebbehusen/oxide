@@ -1,7 +1,7 @@
 //! One owner for every directory Oxide writes: the per-OS config and
 //! data roots plus the derived subdirectories the persistence sites
-//! share. Path policy lives here so no feature grows its own `#[cfg]`
-//! block again.
+//! share. Path policy lives here so no feature needs its own `#[cfg]`
+//! block.
 
 use std::path::{Path, PathBuf};
 

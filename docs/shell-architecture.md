@@ -36,9 +36,9 @@ all-bot scene. A networked session binds an explicit human seat instead, and its
 pending commands stay staged from sending until the batch that carries them
 executes. This choice does not change the configured controllers. Live
 scenarios, replay continuation and checkpoint restoration accept any valid bot
-roster, including no bots; the New Match wizard still authors one local seat.
-Sandbox completion rules belong to the simulation, so headless and native
-sessions reproduce the same open-ended scene.
+roster, including no bots; the New Match wizard authors one local seat. Sandbox
+completion rules belong to the simulation, so headless and native sessions
+reproduce the same open-ended scene.
 
 Match setup with a Remote seat, Home's Join Match, `--host`, and `--join` open a
 LAN lobby (`netplay::Lobby`) that exchanges `oxide-net` Hellos, fills the
@@ -118,13 +118,13 @@ The frame loop:
 5. Captures requested screenshots, replies, and yields to presentation.
 
 Presentation (camera glides, held pans, effects, and music) reads frame time
-clamped to a quarter second. The live and replay clocks read the unclamped time
-and cap their own catch-up. A negative or non-finite clock reading counts as no
-time. A live frame of two seconds or more means the app stopped presenting, as a
-suspended iPad app or a sleeping Mac does; the match opens the pause menu with a
-notice instead of resuming. Frame time arrives one frame late, so the rule
-requires two consecutive live frames, which keeps startup, launches, and loads
-from reading as suspensions. Debug-server sessions are exempt.
+clamped to `MAX_PRESENTATION_DT`. The live and replay clocks read the unclamped
+time and cap their own catch-up. A negative or non-finite clock reading counts
+as no time. A live frame of `SUSPENSION_GAP_SECS` or more means the app stopped
+presenting, as a suspended iPad app or a sleeping Mac does; the match opens the
+pause menu with a notice instead of resuming. Frame time arrives one frame late,
+so the rule requires two consecutive live frames, which keeps startup, launches,
+and loads from reading as suspensions. Debug-server sessions are exempt.
 
 `oxide_protocol::RawEvent` is the common hardware and injected-input vocabulary.
 `input::apply_events` maps gameplay events into camera/selection changes and
@@ -165,8 +165,8 @@ tiles with these details in the tooltip. Clicking a collective tile cancels one
 waiting unit first, choosing the back of the lowest-id factory's queue; if only
 active heads remain, it cancels the least-progressed head with building id
 breaking ties. The tooltip identifies that target, and each click resolves
-against pending commands again. Selecting one factory retains the exact ordered
-queue and its per-slot cancellation controls. Mixed building kinds retain rally
+against pending commands again. Selecting one factory shows the exact ordered
+queue and its per-slot cancellation controls. Mixed building kinds keep rally
 controls and the first compatible producer's training shortcuts.
 
 Production panels reserve a fixed-width rally group with one shared flag beside
@@ -203,8 +203,8 @@ are removed from selection.
 
 Double-clicks and touch double-taps select units or buildings of the picked
 entity's kind and owner whose centers lie in the camera viewport. Building
-groups span upgrade tiers and retain normal visibility and concealment checks.
-Units retain picking priority over buildings, as with single clicks.
+groups span upgrade tiers and apply normal visibility and concealment checks.
+Units take picking priority over buildings, as with single clicks.
 
 Selection panels and tooltips derive their facts from simulation accessors.
 Static capabilities may be shown for foreign selections; current enemy orders,
@@ -257,12 +257,12 @@ messages.
 
 Loaded Harvesters and Excavators expose a Return Cargo card and shortcut (`U` by
 default). Worker selections use Return Cargo, a single selected transport uses
-Unload, and selected buildings retain Upgrade on the same key. Mixed unit
+Unload, and selected buildings use Upgrade on the same key. Mixed unit
 selections containing workers use Return Cargo. The action replaces current and
 queued work, deposits at a reachable owned Foundry, and leaves the worker there.
 A right-click on a completed owned Foundry sends loaded workers to that specific
-building; a damaged Foundry also receives repair after delivery. Empty welders
-retain the existing repair click, and unfinished sites retain construction.
+building; a damaged Foundry also receives repair after delivery. For empty
+welders the click repairs as usual, and on an unfinished site it constructs.
 Cargo returns replace work even when Shift is held; they never resume an
 interrupted harvest job.
 
@@ -342,10 +342,10 @@ knows of no salvage there. Its panel and the desktop hover readout share
 remembered amounts under fog.
 
 Coaching text waits for a stuck player. `hints::HintClock`, fed each frame's
-screen mode and presses, fades coaching in after about 15 seconds without a
-press and keeps it until the screen changes; draw code reads `hints::alpha`.
-Menu footers carry the coaching (`Menu::draw_with_coaching`), and screens that
-mix information with key help show only the information until then.
+screen mode and presses, fades coaching in after a delay without a press and
+keeps it until the screen changes; draw code reads `hints::alpha`. Menu footers
+carry the coaching (`Menu::draw_with_coaching`), and screens that mix
+information with key help show only the information until then.
 
 Touch-only builds hide rows they cannot use: Controls and the left-handed preset
 (key rebinding), edge pan (no hovering pointer), Open diagnostics folder (no
@@ -358,26 +358,21 @@ terminates in the background returns through recovery.
 boundary: scenario, world, controller memory, pending commands, and live
 statistics at a completed tick. Capture borrows the host without draining inputs
 or running bots. Restore validates the pieces before installation and executes
-no historical ticks. Controller and session format revisions are independent of
-`SIM_VERSION`; the initial implementation accepts only matching revisions and
-simulation versions.
+no historical ticks. The session revision (`checkpoint::VERSION`) is independent
+of `SIM_VERSION`; restoration accepts only a matching revision and simulation
+version.
 
 The session envelope fingerprints the captured scenario and world together.
-Restoration rejects changes to either side of that pairing, including a seed
-changed in both the session and its companion recorder. Capture trusts the host
-to supply the world's original scenario; this consistency fingerprint is not
-authentication or proof that historical commands produced the snapshot. Session
-revision 3 tags each seat's controller memory with its implementation and must
-match the scenario's controller roster; earlier revisions are rejected.
-Simulation serialization and hashes are unchanged.
+Restoration rejects a change to either side of that pairing. Capture trusts the
+host to supply the world's original scenario; this consistency fingerprint is
+not authentication or proof that historical commands produced the snapshot. Each
+configured bot seat must supply exactly one controller checkpoint, and the
+restored roster must match the scenario's bot seats.
 
-The headless session serde adapter uses `RecordedCheckpoint`, retaining its
-recorder as a companion. Its setup and end tick must agree with the core, but
-loading does not verify the entire history against the snapshot. The shell
-adapter instead captures the core without a recorder. It additionally retains
-tutorial progress, concession statistics, and decorative boundary exploration.
-Camera, selection, effects, and interpolation rebuild, the wall clock starts
-paused, and the recovery worker is not serialized.
+The shell adapter captures the core checkpoint without a recorder. It also keeps
+the human seat, tutorial progress, concession statistics, and decorative
+boundary exploration. Camera, selection, effects, and interpolation rebuild, the
+wall clock starts paused, and the recovery worker is not serialized.
 
 Player saves use `.oxsave`: eight-byte `OXIDESAV` magic, a little-endian 32-bit
 header length, a JSON metadata header, and one checksummed Zstandard frame
@@ -393,13 +388,17 @@ save is self-contained. Named saves persist until explicitly deleted; autosaves
 and finished-match recordings rotate separately. Finished matches remain JSON
 recordings, containing the available history since the current segment began.
 
-One app-owned worker performs save encoding, disk I/O, decompression,
-restoration, catalog scans, and recovery preparation. It admits one operation at
-a time; a foreground screen can hold one pending intent while a cancelled
-catalog or load finishes. Cancellation does not release admission early. Jobs
-have unique IDs so a stale result cannot replace a newer session. Restoration
-produces CPU data; presentation is installed only on the frame thread. Replaced
-session data and recovery-close waits are retired on the worker.
+One app-owned worker performs save encoding, save and checkpoint disk I/O,
+decompression, restoration, catalog scans, and recovery preparation. Smaller
+file operations run synchronously on the frame thread: opening a shelf replay
+for playback, loading the scenario picked in the New Match wizard, writing the
+configuration, and the debug `SaveReplay` request. The worker admits one
+operation at a time; a foreground screen can hold one pending intent while a
+cancelled catalog or load finishes. Cancellation does not release admission
+early. Jobs have unique IDs so a stale result cannot replace a newer session.
+Restoration produces CPU data; presentation is installed only on the frame
+thread. Replaced session data and recovery-close waits are retired on the
+worker.
 
 A loading frame is presented before dispatch. Loads can be cancelled until
 recovery publication begins; cancellation retains the previous session and never
@@ -422,9 +421,10 @@ Save publication reserves a collision-free destination and uses the chassis
 atomic-write path. Failures are reported to the player. Checkpoint discovery
 reads metadata only: eligibility is not full validation. Continue tries eligible
 autosaves newest first on the worker, skipping corrupt payloads and installing
-the already restored result. Old player saves remain unavailable on disk. Home
-recovery discovery uses bounded status metadata and inactive leases; selection
-validates the journal and its completed prefix before installation.
+the already restored result. Saves in an unsupported format are listed as
+unavailable and left on disk. Home recovery discovery uses bounded status
+metadata and inactive leases; selection validates the journal and its completed
+prefix before installation.
 
 `Game::from_replay` reconstructs state from the recorded commands. Bots observe
 reconstruction to restore their controller-local memory, but their regenerated
@@ -445,9 +445,9 @@ prefix the first journal batch: they survive when no tick completed and are
 consumed exactly once when that batch completed. An unfinished prepared batch
 remains diagnostic evidence. Exports retain the controller origin separately
 from the watchable replay. Replacement journals must retain both origins before
-retiring a recovered source. Ordinary new matches still start recovery from
-their existing scenario-backed recorder. A loaded player save starts recovery
-from its restored session checkpoint and new world-origin recording.
+retiring a recovered source. Ordinary new matches start recovery from their
+scenario-backed recorder. A loaded player save starts recovery from its restored
+session checkpoint and new world-origin recording.
 
 The worker publishes durable progress separately from live progress. Storage
 failure or queue exhaustion stops capture with a visible warning while gameplay
@@ -508,22 +508,23 @@ healthy. At launch the shell installs one `kit::diagnostics::Monitor` for the
 process. The main thread publishes its stage (input, bots, simulation,
 presentation, draw, present wait or replay load) and tick through atomics, and
 each bot seat marks its running decision. A watchdog records a stall when the
-main thread or a seat makes no progress for five seconds, then records its
-resumption. A minimized window waiting for frames is not a stall, and a stall in
-the present wait can be OS or driver delay rather than a deadlock. The panic
-hook records the message, location, thread and a backtrace synchronously, then
-defers to the previous hook. Each incident carries every thread's stage, display
-context and the last 30 seconds of per-stage frame timing, which otherwise stays
-in memory.
+main thread or a seat stops making progress, then records its resumption. A
+minimized window waiting for frames is not a stall, and a stall in the present
+wait can be OS or driver delay rather than a deadlock. The panic hook records
+the message, location, thread and a backtrace synchronously, then defers to the
+previous hook. Each incident carries every thread's stage, display context and
+recent per-stage frame timing, which otherwise stays in memory. Thresholds and
+log limits live in `kit::diagnostics`.
 
 Incidents go to `incidents.json` in the visible live match's open recording, and
 to the recovery root's log during playback, menus and LAN matches or once the
 recording closes. An incident before a new recording's directory is ready goes
 to the root log tagged with that recording, which its ending still counts. A
 minimize reaches the watchdog when it happens, since a minimized window may run
-no further frame. Each log keeps its newest 16 incidents and counts what it
-dropped. Diagnostics are observational and never become replay input. Simulation
-and bot failures reproduce from the recorded replay, not from timing.
+no further frame. Each log keeps a bounded number of its newest incidents and
+counts what it dropped. Diagnostics are observational and never become replay
+input. Simulation and bot failures reproduce from the recorded replay, not from
+timing.
 
 Report export runs off the frame thread. Reports contain a standard recovered
 replay, unfinished-tick evidence, the recording's incidents and the root log,
@@ -552,11 +553,12 @@ performance-window requests before shared dispatch, refuses pause and resume on
 clients, and accepts `SendCommand` only for the machine's bound seat.
 
 `StateView` is an omniscient QA representation, not an exact serialized state;
-use `State::hash` for deterministic identity. `FogView::capture` is the shared
-player-knowledge surface. It hides hostile intent and economy, exposes enemies
-under current sight, and otherwise supplies only recorded ghosts, remembered
-salvage, and anonymous radar contacts. Player-facing commands and effects must
-respect that knowledge boundary.
+use `State::hash` for deterministic identity. `FogView::capture` is the
+player-knowledge view for players and agents; bots read the equivalent
+`ObservationData`, and a parity test keeps the two in agreement. It hides
+hostile intent and economy, exposes enemies under current sight, and otherwise
+supplies only recorded ghosts, remembered salvage, and anonymous radar contacts.
+Player-facing commands and effects must respect that knowledge boundary.
 
 ## Rendering and audio
 
@@ -589,8 +591,8 @@ executed. Unguided unit contacts stay on the original course and require the
 nominal impact to overlap the body; bomb spread and ground misses retain their
 positions. Surface flashes, fragments, dust and scorch marks share the cosmetic
 contact point. Weapon and recipient profiles distinguish rail, orb, mortar,
-shell, rocket and bomb contacts. Simulation targeting, damage, shell arrivals
-and splash centers remain unchanged.
+shell, rocket and bomb contacts. Cosmetic contact never changes simulation
+targeting, damage, shell arrivals or splash centers.
 
 `assets` loads the generated sprite atlas. Its manifest covers every resolved
 sprite key; the renderer does not load individual sprite textures. Optional rigs
@@ -600,9 +602,9 @@ visibility. The shell extends allied unit sight discs and completed-building
 footprint sight into a bounded off-map quarry margin. Its presentation-only
 exploration cache updates on every tick, including bulk advances, and rebuilds
 during explicit command-log reconstruction. Player checkpoints retain that cache
-directly. Map tiles retain authoritative simulation fog; the replay viewer
-remains fog-free. Animation, heading, and weapon effects use the relevant
-simulation state rather than inventing movement or firing delays.
+directly. Map tiles show authoritative simulation fog; the replay viewer is
+fog-free. Animation, heading, and weapon effects use the relevant simulation
+state rather than inventing movement or firing delays.
 
 `entity_lod` derives full, half, quarter, and eighth-resolution entity textures
 at startup without changing authored atlas bytes. Regions pack in descending
@@ -611,30 +613,30 @@ rigs omit unused complete movement/action poses from this cache while retaining
 idle portraits and the independent layers. Independent regions have extruded
 borders; reduction, linear sampling, level blending, and compositing retain
 premultiplied alpha. Physical destination size, including DPI and both axes,
-selects levels with a fixed -0.4 detail bias. Secondary UVs and blend weights
-travel in vertex data; immutable page materials preserve batching without
-reordering translucent layers. The material also handles ordinary straight-alpha
-2D draws and remains active until the screen boundary. Terrain and unrelated
-effects keep nearest-neighbor sampling. Panel and roster portraits share this
-bank, frame visible alpha bounds, and align to physical pixels. Layered
-portraits use union bounds to preserve the relative positions of bases and
-mounts. Construction subjects and scaffolds share the authored canvas; verb
+selects levels with a fixed negative detail bias. Secondary UVs and blend
+weights travel in vertex data; immutable page materials preserve batching
+without reordering translucent layers. The material also handles ordinary
+straight-alpha 2D draws and remains active until the screen boundary. Terrain
+and unrelated effects keep nearest-neighbor sampling. Panel and roster portraits
+share this bank, frame visible alpha bounds, and align to physical pixels.
+Layered portraits use union bounds to preserve the relative positions of bases
+and mounts. Construction subjects and scaffolds share the authored canvas; verb
 pictograms fill their destination without portrait cropping.
 
-`strategic_markers` supplies role and allegiance cues between 24 and 16 logical
-pixels per tile by default. Buildings retain subdued footprints beneath their
-markers; known unclaimed Extractor frames use amber brackets. Resource summaries
-use world-anchored cells and follow the transition slightly later. Each cell
-averages its tiles' visibility and the same bounded memory-age fade as world
-salvage. Marker visibility shares player exploration, known claims, apparent
-buildings, and remembered salvage with world rendering. Ghosts remain distinct
-from live observations. Entity positions, selection, picking, and simulation are
-unchanged.
+`strategic_markers` supplies role and allegiance cues between two zoom
+thresholds in logical pixels per tile. Buildings retain subdued footprints
+beneath their markers; known unclaimed Extractor frames use amber brackets.
+Resource summaries use world-anchored cells and follow the transition slightly
+later. Each cell averages its tiles' visibility and the same bounded memory-age
+fade as world salvage. Marker visibility shares player exploration, known
+claims, apparent buildings, and remembered salvage with world rendering. Ghosts
+remain distinct from live observations. Markers do not change entity positions,
+selection, picking, or simulation.
 
-Settings persists marker timing (Standard 24/16, Earlier 30/22, Later 18/10) and
-size (75–150%) in `Config::markers`, applying changes immediately. Older configs
-adopt the defaults without resetting other preferences. Custom config endpoints
-are clamped to finite, ordered values. Logical marker dimensions keep
+Settings persists marker timing presets (Standard, Earlier, Later) and size in
+`Config::markers`, applying changes immediately. A config without marker
+settings adopts the defaults without resetting other preferences. Custom config
+endpoints are clamped to finite, ordered values. Logical marker dimensions keep
 readability consistent across display densities; sprite sampling independently
 uses physical pixels.
 
@@ -642,17 +644,18 @@ Simulation events enqueue audio cues. The mixer applies user buses, repetition
 limits, and camera-relative attenuation. Missile, artillery, bomb, mine and
 Sapper detonations, building destruction, and aircraft ground impacts are
 audible through fog regardless of ownership. Their distance gain is full inside
-the camera viewport and fades linearly to silence 24 tiles beyond its nearest
-edge, with the same range at every zoom. Zoom weighting still reduces heavy
-sounds to 72% at the widest view. Same-kind events coalesce to the loudest
-emitter; inaudible events consume no voices and do not raise combat music. A
-detonated charge uses only its demolition cue; other buildings destroyed in the
-same tick retain their destruction cues. Visuals, target knowledge, launch
-warnings, and missile motors retain their sight rules. Continuous positional
-sounds are owned and stopped individually; pause and screen transitions release
-them, and resumed presentation can reconstruct them. Soundtrack state controls
-music beds and crossfades. Audio never feeds a simulation decision. Production
-sprite and sound bytes remain owned by their generators and approval workflows.
+the camera viewport and fades linearly to silence a fixed tile distance beyond
+its nearest edge, with the same range at every zoom. Zoom weighting also
+attenuates heavy sounds at the widest view. Same-kind events coalesce to the
+loudest emitter; inaudible events consume no voices and do not raise combat
+music. A detonated charge uses only its demolition cue; other buildings
+destroyed in the same tick keep their destruction cues. Visuals, target
+knowledge, launch warnings, and missile motors follow sight rules. Continuous
+positional sounds are owned and stopped individually; pause and screen
+transitions release them, and resumed presentation can reconstruct them.
+Soundtrack state controls music beds and crossfades. Audio never feeds a
+simulation decision. Production sprite and sound bytes remain owned by their
+generators and approval workflows.
 
 The tiny-skia renderer in `oxide-kit` produces whole-map CPU schematics. It does
 not share the native atlas, camera, HUD, animation, or visual polish. Screenshot

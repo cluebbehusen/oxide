@@ -26,8 +26,7 @@ const EVENT_VARIANTS: usize = 10;
 
 #[test]
 fn every_raw_event_variant_including_touch_survives_a_roundtrip() {
-    // The touch trio ships ahead of the mobile funnel that will read it,
-    // so nothing else exercises it; the wire contract is pinned here.
+    // Pins the wire contract for every variant, including the touch trio.
     let events = [
         RawEvent::MouseMove { x: 1.5, y: 2.5 },
         RawEvent::MouseDown {

@@ -1,15 +1,13 @@
-//! Phases 4–5: footprint eviction, path following, and collision
-//! resolution.
+//! Footprint eviction, path following, and collision resolution.
 //!
 //! Movement is per-unit work. Ground can close *during* a walk because a
 //! construction site claims its footprint when the command lands, so each
 //! step revalidates its next waypoint and drops a blocked path for the brain
 //! to plan again next tick. A pathless ground body left on claimed ground
 //! walks itself off through [`evict_claimed_ground`] rather than teleporting.
-//! Collision resolution then pushes overlapping
-//! bodies apart until they fit — units are solid to each other, but tiles
-//! are only ever blocked by terrain and buildings, so pathfinding stays
-//! deadlock-free while crowds physically jostle.
+//! Collision resolution then pushes overlapping bodies apart until they fit:
+//! units are solid to each other, but tiles are only ever blocked by terrain
+//! and buildings, so pathfinding stays deadlock-free while crowds jostle.
 
 mod cruise;
 mod ground;
@@ -190,7 +188,7 @@ pub(super) fn escape_route(
     None
 }
 
-/// Pure preview of the phase-5 claimed-ground eviction for one unit.
+/// Pure preview of the claimed-ground eviction for one unit.
 ///
 /// Brains that require a body to remain still can consult the exact same
 /// predicate and route that [`evict_claimed_ground`] will apply later in
@@ -224,18 +222,16 @@ pub(super) fn claimed_ground_escape(state: &State, id: crate::ids::UnitId) -> Op
     escape_route(state, unit.kind, unit.tile(), unit.heading)
 }
 
-/// Phase-5 pre-pass: a pathless ground body standing on a building
-/// footprint walks off — an accepted foundation claims its ground
-/// instantly, and no sim rule expects a resting unit on a claimed
-/// footprint. Sets `path` ONLY: orders, queue, progress, leash, and
-/// settle all survive, so the body keeps its job while it clears the
-/// ground. Re-arms every tick because working brains null the path
-/// while standing still (extract, attack-in-range) — brains run first,
-/// eviction re-arms, movement consumes. Id order; deterministic scan.
-/// No route means the body stays put — a crowd the sim already
-/// tolerates — except at placement time, where `apply_build` deals a
-/// routeless body onto the perimeter instantly so nothing can end up
-/// inside a finished building.
+/// Movement pre-pass: a pathless ground body standing on a building
+/// footprint walks off, since an accepted foundation claims its ground
+/// instantly. Sets `path` only: orders, queue, progress, leash, and settle
+/// all survive, so the body keeps its job while it clears the ground.
+/// Re-arms every tick because working brains null the path while standing
+/// still (extract, attack-in-range): brains run first, eviction re-arms,
+/// movement consumes. Runs in id order. No route means the body stays put,
+/// except at placement time, where the build command places a routeless
+/// body onto the perimeter instantly so nothing can end up inside a
+/// finished building.
 pub(super) fn evict_claimed_ground(state: &mut State) {
     for i in 0..state.units.len() {
         let id = state.units[i].id;
@@ -1015,14 +1011,13 @@ fn sort_collision_pairs(
 /// One pass over the tick's candidate pairs; returns whether any pair
 /// overlapped beyond [`COLLISION_SLOP`].
 ///
-/// Corrections apply *immediately*, pair by pair, in deterministic order
-/// (Gauss–Seidel, not Jacobi). Accumulating all pushes first looks tidier
-/// but admits frozen equilibria: symmetric arrangements — several full
-/// harvesters magnetized to one doorstep — cancel to exactly zero net
-/// correction while everything still overlaps, and the bot economy stalls
-/// forever. Sequential application cannot cancel, so jams always evolve.
-/// Dead units are skipped: a corpse should not shove the living on its
-/// removal tick.
+/// Corrections apply immediately, pair by pair, in deterministic order
+/// (Gauss–Seidel, not Jacobi). Accumulating all pushes first admits frozen
+/// equilibria: symmetric arrangements, such as several full harvesters at
+/// one doorstep, cancel to exactly zero net correction while everything
+/// still overlaps. Sequential application cannot cancel, so jams always
+/// evolve. Dead units are skipped: a corpse should not shove the living on
+/// its removal tick.
 fn relaxation_pass(
     state: &mut State,
     travel: &[Vec2Fx],
@@ -1033,9 +1028,9 @@ fn relaxation_pass(
     let n = state.units.len();
     let mut any_overlap = false;
     // One per-unit displacement budget spans all relaxation passes in a
-    // tick. Clamping only per pair lets a unit in k overlaps move k × the
-    // cap, while resetting here lets it move one cap per pass; both made
-    // dense stacks visibly explode outward. Direct unit tests may call one
+    // tick. Clamping only per pair would let a unit in k overlaps move k ×
+    // the cap, and resetting here would let it move one cap per pass; both
+    // make dense stacks explode outward. Direct unit tests may call one
     // pass with a fresh buffer, so initialize only when its shape differs.
     if spent.len() != n {
         spent.clear();

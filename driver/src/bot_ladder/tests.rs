@@ -224,7 +224,7 @@ fn pairs_classify_by_both_legs_and_the_gate_needs_enough_decided_pairs() {
             undecided: 1,
         }
     );
-    assert_eq!(tally.wilson, Some(crate::sweep::wilson(4, 7)));
+    assert_eq!(tally.wilson, Some(wilson(4, 7)));
     assert_eq!(comparison.verdict, Verdict::Fail, "4/7 is under 65%");
     assert_eq!(comparison.stances[0].0, BotStance::Balanced);
 
@@ -361,4 +361,15 @@ fn worth_shares_follow_the_higher_rung_and_ledgers_pool_by_rung() {
         "lowest rung first"
     );
     assert!(report.render().contains("prime share of net worth"));
+}
+
+/// The interval brackets the point estimate and never leaves 0..1.
+#[test]
+fn the_wilson_interval_stays_inside_the_unit_range() {
+    for (wins, n) in [(0u32, 1u32), (1, 1), (0, 8), (8, 8), (3, 7), (40, 95)] {
+        let [lo, hi] = wilson(wins, n);
+        let p = f64::from(wins) / f64::from(n);
+        assert!((0.0..=1.0).contains(&lo) && (0.0..=1.0).contains(&hi));
+        assert!(lo <= p && p <= hi, "{wins}/{n} -> [{lo}, {hi}]");
+    }
 }

@@ -30,19 +30,16 @@ fn target_domain(state: &State, target: Target) -> Domain {
 }
 
 /// Whether full terrain cover applies to a shot: only direct fire between
-/// two ground parties traces rock — rock reaches nobody in the air, and
-/// indirect shells arc over it. Buildings never block fire in any pairing:
-/// they block movement, not bullets (terrain is the only cover). Peaks are
-/// checked on every shot regardless (see the `shot_open` closures): a
-/// mountain outreaches any arc.
+/// two ground parties traces rock; shots involving aircraft and indirect
+/// shells pass over it. Buildings never block fire. Peaks block every shot
+/// regardless (see the `shot_open` closures).
 fn traces_terrain(weapon: &WeaponStats, shooter: Domain, victim: Domain) -> bool {
     !weapon.indirect && shooter == Domain::Ground && victim == Domain::Ground
 }
 
 /// Whether a shot's line may pass over `t`. Peaks wall every pairing and
 /// every arc; full-cover tracing (direct ground-vs-ground) additionally
-/// respects terrain that grants cover. Pits block neither: machines trade
-/// fire across a void nobody can walk.
+/// respects terrain that grants cover. Pits block neither.
 fn shot_crosses(state: &State, t: TilePos, full: bool) -> bool {
     state.map.tile(t).is_some_and(|tile| {
         !tile.terrain.blocks_all_fire() && (!full || !tile.terrain.blocks_direct_fire())
@@ -75,22 +72,10 @@ fn within_unit_weapon_reach(
     distance_sq <= range * range && distance_sq >= weapon.minimum_range * weapon.minimum_range
 }
 
-/// Buffers a shot: the direct hit, plus — for splash weapons — one hit on
-/// every other hostile unit inside the radius that the weapon can cover.
-/// Victims are chosen against the start-of-tick world like every other
-/// decision this phase makes; buildings only ever take the direct hit.
-///
-/// Splash deliberately skips the owner-sight fire gate the aimed paths
-/// enforce: the gate governs *choosing* a victim, and a shell in flight
-/// chooses nothing — whatever stands in the blast is hit, seen or not.
-/// No information leaks through the hole: the only emitted event names
-/// the aimed victim, and retaliation stays gated on the sufferer seeing
-/// the shooter, so an unseen bystander takes damage silently and nobody
-/// learns anything they could not already see.
-/// A real projectile flies to one fixed fire-time aim point and resolves
-/// against whatever stands there then. Predictive artillery chooses that
-/// point before launch; this flight remains unguided. Returns the flight
-/// length for the launch event.
+/// Flight length in ticks (at least one) for a shell from `from` to `aim`.
+/// A projectile flies to one fixed fire-time aim point and resolves against
+/// whatever stands there then; predictive artillery chooses that point
+/// before launch, and the flight is never guided.
 fn shell_flight(from: Vec2Fx, aim: Vec2Fx) -> u64 {
     (from.dist(aim) / crate::stats::SHELL_SPEED)
         .ceil()
@@ -194,12 +179,12 @@ struct ProjectileShooter {
 /// Leads a moving unit using its tick-boundary motion sample for the shell's
 /// estimated flight. For splash shells, the aim backs toward the current
 /// position by one blast radius: a straight commitment remains just inside
-/// the footprint, while stopping or turning gets a principled margin for
-/// error. If the current footprint already contains a second visible eligible
-/// hostile, the gun keeps that known cluster instead of leading away from it.
-/// Later path turns remain private, and the target remains free to change
-/// course after launch; shells are still unguided. Buildings keep their
-/// closest-footprint aim unchanged.
+/// the footprint, while stopping or turning gets a margin for error. If the
+/// current footprint already contains a second visible eligible hostile, the
+/// gun keeps that known cluster instead of leading away from it. Later path
+/// turns remain private, and the target remains free to change course after
+/// launch; shells are still unguided. Buildings keep their closest-footprint
+/// aim unchanged.
 fn projectile_aim(
     state: &State,
     motion: &MotionSnapshot,
@@ -219,9 +204,8 @@ fn projectile_aim(
     let mut aim = current;
     let mut unhedged_aim = current;
     // Ground artillery can only lead ground units, all slower than a shell.
-    // Eight fixed iterations settle even the fastest current ground body;
-    // the projection itself is bounded in case future balance breaks that
-    // relationship.
+    // Eight fixed iterations settle even the fastest ground body; the
+    // projection itself stays bounded if a balance change breaks that.
     for _ in 0..8 {
         let Some(predicted) = position_along_current_motion(motion, target, current, flight) else {
             break;
@@ -298,11 +282,9 @@ fn launch_shell(
 }
 
 /// Arrived shells join this tick's volley, computed against the same
-/// start-of-tick world every buffered shot uses. The direct hit lands
-/// on the hostile building whose footprint covers the impact tile
-/// (buildings cannot dodge — sieges are preserved); units take splash
-/// only, which is the standing splash rule. No fire gate here: the
-/// gate cleared at launch, and a shell in flight chooses nothing.
+/// start-of-tick world every buffered shot uses. The direct hit lands on
+/// the hostile building whose footprint touches the impact point; units
+/// take splash only. No fire gate here: the gate cleared at launch.
 pub(super) fn land_shells(state: &mut State, hits: &mut Vec<PendingHit>, events: &mut Vec<Event>) {
     let now = state.tick;
     let mut due = Vec::new();
@@ -322,11 +304,11 @@ pub(super) fn land_shells(state: &mut State, hits: &mut Vec<PendingHit>, events:
             splash: shell.splash,
         });
         // The direct hit is distance-zero to a footprint, not tile
-        // containment: a shell aimed at a building lands on the
-        // footprint's closest EDGE point, whose exact coordinate floors
-        // into the neighboring tile — containment alone made sieges
-        // deal nothing. A scaffold above a buried charge takes the direct
-        // hit; the charge still takes splash. Other ties stay in id order.
+        // containment: a shell aimed at a building lands on the footprint's
+        // closest edge point, whose exact coordinate can floor into the
+        // neighboring tile. A scaffold above a buried charge takes the
+        // direct hit; the charge still takes splash. Other ties go to the
+        // lowest id.
         let direct = state
             .buildings
             .iter()
@@ -351,7 +333,7 @@ pub(super) fn land_shells(state: &mut State, hits: &mut Vec<PendingHit>, events:
         }
         let Some(radius) = shell.splash else { continue };
         let radius_sq = radius * radius;
-        // Splash-vulnerable buried charges (see the buffer_shot twin).
+        // Buried charges take splash, as in `buffer_shot`.
         if shell.targets.ground {
             for b in &state.buildings {
                 if b.hp == 0
@@ -393,6 +375,15 @@ pub(super) fn land_shells(state: &mut State, hits: &mut Vec<PendingHit>, events:
     }
 }
 
+/// Buffers a shot: the direct hit, plus, for splash weapons, one hit on
+/// every other hostile unit inside the radius that the weapon can cover and
+/// on hostile buried charges. Other buildings only take the direct hit.
+///
+/// Splash skips the owner-sight fire gate the aimed paths enforce: the gate
+/// governs choosing a victim, and splash hits whatever stands in the blast.
+/// No information leaks: a bystander's owner learns only that its own body
+/// took damage, and retaliation stays gated on the victim seeing the
+/// shooter.
 fn buffer_shot(
     state: &State,
     attacker: Target,
@@ -435,9 +426,8 @@ fn buffer_shot(
             aim,
         ));
     }
-    // The one exception to buildings-take-direct-hits-only: a buried
-    // charge is splash-vulnerable, detected or not — saturation fire is
-    // the honest way to clear a field you cannot see.
+    // The one building exception to direct-hits-only: a buried charge takes
+    // splash, detected or not, so saturation fire can clear a minefield.
     if weapon.targets.ground {
         for b in &state.buildings {
             if b.hp == 0
@@ -461,11 +451,11 @@ fn buffer_shot(
     }
 }
 
-/// Built turrets pick their own fights: nearest enemy unit in range with a
-/// clear line (buildings can't chase, so out-of-line targets are simply
-/// ignored until they move). Ground-capable defenses with no eligible unit
-/// fall back to currently apparent hostile buildings. Stateless — target choice re-evaluates
-/// every shot, in building-id order.
+/// Built turrets pick their own fights: the nearest enemy unit in range with
+/// a clear line; out-of-line targets are ignored until they move.
+/// Ground-capable defenses with no eligible unit fall back to currently
+/// apparent hostile buildings. Target choice is re-evaluated every shot, in
+/// building-id order.
 pub(super) fn turret_fire(
     state: &mut State,
     index: &super::super::spatial::UnitIndex,
@@ -624,21 +614,20 @@ pub(super) fn turret_fire(
     }
 }
 
-/// Firing positions for a chaser around an unstandable victim tile:
-/// ring-scanned outward, keeping only tiles the chaser can stand on
-/// AND shoot from — a stand-in beyond the weapon's Euclidean reach is
-/// no stand-in at all (ring corners sit √2 further out than their
-/// Chebyshev radius suggests). Within a ring the scan is row-major, which a
-/// half-turn does not preserve, so a caller that picks one must rank them.
-/// Empty when the victim sits deeper in blocked ground than any weapon
-/// reaches.
+/// Firing positions for a chaser around an unstandable victim tile,
+/// ring-scanned outward, keeping only tiles the chaser can stand on and
+/// that lie within the weapon's Euclidean reach (ring corners sit √2
+/// further out than their Chebyshev radius). Within a ring the scan is
+/// row-major, which a half-turn does not preserve, so a caller that picks
+/// one must rank them. Empty when the victim sits deeper in blocked ground
+/// than any weapon reaches.
 fn chase_stand_ins(
     state: &State,
     domain: Domain,
     around: TilePos,
     range: chassis::fx::Fx,
 ) -> Vec<TilePos> {
-    /// Furthest ring hunted for standing room — covers the longest
+    /// Furthest ring searched for standing room. Covers the longest
     /// anti-air reach (range 5 lands exactly on ring 5's axis tiles).
     const CHASE_STAND_RADIUS: i32 = 5;
     let aim = around.center();
@@ -752,17 +741,15 @@ fn retreat_to_firing_stand(
 }
 
 /// The nearest enemy this unit's weapons can cover, in its autonomous
-/// acquisition range —
-/// units before buildings, ties to the lowest id. `None` for pacifists,
-/// empty horizons, and everything outside the weapon masks (a flak
-/// crawler never picks a fight with infantry it cannot shoot).
+/// acquisition range: units before buildings, ties to the lowest id.
+/// `None` for unarmed units, empty horizons, and everything outside the
+/// weapon masks.
 ///
-/// Unit candidates come from the phase's spatial `index` instead of a
-/// full scan: everything within that range of `pos` stands within
-/// `floor(range) + 1` tiles Chebyshev of its tile (the extra tile
-/// covers both bodies' sub-tile offsets), so the window is a strict
-/// superset of the old scan's survivors — and the pick is a `min` over
-/// `(dist_sq, id)`, which no scan order can move.
+/// Unit candidates come from the phase's spatial `index`: everything within
+/// that range of `pos` stands within `floor(range) + 1` tiles Chebyshev of
+/// its tile (the extra tile covers both bodies' sub-tile offsets), and the
+/// pick is a `min` over `(dist_sq, id)`, so window visit order cannot move
+/// it.
 pub(super) fn acquire_target(
     state: &State,
     index: &super::super::spatial::UnitIndex,
@@ -828,10 +815,8 @@ pub(super) fn acquire_target_from(
                 }
                 // A victim on ground the chaser cannot stand on needs a
                 // firing position to exist, the same test the chase applies
-                // one tick later: acquiring without it took an order the
-                // unit could only stall, cleared it, and re-acquired the
-                // next tick — one army of lancers on a coast logged 11,588
-                // NoFiringPosition stalls in a single three-minute window.
+                // one tick later. Without it the unit would acquire an order
+                // it can only stall, clear it, and re-acquire every tick.
                 let victim_tile = u.tile();
                 if !state.passable_for(stats.domain, victim_tile) {
                     let range = stats
@@ -862,11 +847,9 @@ pub(super) fn acquire_target_from(
         .iter()
         .filter(|b| state.hostile(me, b.player) && b.hp > 0)
         .map(|b| (pos.dist_sq(b.closest_point_to(pos)), b))
-        // Range gates run before the knowledge gates: distance is a
-        // clamp and a multiply, while apparency for a buried charge
-        // scans every friendly scout and radar mast — the filters
-        // commute, so the pick is unchanged and the scan only ever
-        // runs for structures actually inside acquisition range.
+        // Range gates run before the knowledge gates: apparency for a
+        // buried charge scans every friendly scout and radar mast. The
+        // filters commute, so ordering only saves work.
         .filter(|(d, _)| {
             *d <= aggro_sq
                 && stats.weapons.iter().any(|weapon| {
@@ -874,9 +857,8 @@ pub(super) fn acquire_target_from(
                         && *d >= weapon.minimum_range * weapon.minimum_range
                 })
         })
-        // An undetected buried charge must never be auto-attacked: the
-        // machine would be shooting at something its owner cannot know
-        // exists — the stealth leaking through the guns.
+        // An undetected buried charge must never be auto-attacked: that
+        // would leak its existence to the attacker's owner.
         .filter(|(_, b)| state.building_apparent(me, b))
         .filter(|(_, b)| !needs_sight || b.tiles().any(|tile| state.can_see(me, tile)))
         .map(|(d, b)| (d, b.id))
@@ -1042,12 +1024,11 @@ pub(super) fn advance(
     }
 }
 
-/// The walking charge: chase the ordered target to contact and go up
-/// with it. Damage is buffered like every shot — the sapper decides
-/// against the start-of-tick world and its own death lands in the same
-/// resolution as its blast — structures take the full charge, every
-/// hostile ground machine in the ring (the victim included) takes the
-/// splash, and the sapper itself is always consumed.
+/// The walking charge: chase the ordered target to contact and detonate.
+/// Damage is buffered like every shot, so the sapper's own death lands in
+/// the same resolution as its blast. Structures take the full charge,
+/// every hostile ground machine in the ring (the victim included) takes
+/// the splash, and the sapper itself is always consumed.
 fn sapper_attack(
     state: &mut State,
     id: UnitId,
@@ -1076,8 +1057,7 @@ fn sapper_attack(
             .complete_attack(resume);
         return;
     };
-    // A charge only ever presses on ground: air victims are simply out
-    // of its reach forever.
+    // A charge only ever presses on ground: air victims are out of reach.
     if victim_domain != Domain::Ground {
         state.unit_mut(id).expect("caller checked").clear_program();
         return;
@@ -1144,8 +1124,7 @@ fn sapper_attack(
         unit.path = None;
         return;
     }
-    // Not there yet: press on. The chase is the plain building/unit
-    // pursuit the ground arm uses, without any firing stance.
+    // Not there yet: chase without a firing stance.
     let stale = state
         .unit(id)
         .expect("caller checked")
@@ -1158,8 +1137,8 @@ fn sapper_attack(
     let goal = if state.passable_for(Domain::Ground, target_tile) {
         Some(target_tile)
     } else {
-        // A building's tiles are closed ground: press to the nearest
-        // open doorstep instead.
+        // A building's tiles are closed ground: press to the first open
+        // tile around the footprint, scanned row-major, that routes.
         None
     };
     let routed = if let Some(goal) = goal {
@@ -1203,14 +1182,13 @@ fn sapper_attack(
     }
 }
 
-/// The attack run: a turn-limited flier never takes a firing stance.
-/// It keeps a live route on its victim, steers there on a bounded arc
-/// (movement's steering integrator), and releases only when the bay is
-/// cold, the victim is inside release range, AND the victim sits in the
-/// forward cone — the geometry a straight pass produces and a tight
-/// orbit cannot. Each release lays `salvo` bombs along the flight line
-/// and rolls the bomber onto an egress leg past the target, so the wide
-/// loop back IS the reload.
+/// The attack run: a turn-limited flier never takes a firing stance. It
+/// keeps a live route on its victim, steers there on a bounded arc, and
+/// releases only when the bay is cold, the victim is inside release range,
+/// and the victim sits in the forward cone (the geometry a straight pass
+/// produces and a tight orbit cannot). Each release lays `salvo` bombs
+/// along the flight line and rolls the bomber onto an egress leg past the
+/// target, so the loop back covers the reload.
 fn bomber_attack(
     state: &mut State,
     motion: &MotionSnapshot,
@@ -1336,10 +1314,9 @@ fn bomber_attack(
     }
 
     // A hot bay keeps flying. Until the reload is half done the bomber
-    // never turns back toward its victim: it finishes the egress leg,
-    // then keeps extending the run straight ahead — a committed
-    // airframe has no brakes, and hovering over the target to re-bomb
-    // point-blank is exactly the stop-and-strafe this chassis forbids.
+    // never turns back toward its victim: it finishes the egress leg, then
+    // keeps extending the run straight ahead. Hovering over the target to
+    // re-bomb point-blank is the stop-and-strafe this chassis forbids.
     if cooldowns[pi] > weapon.cooldown_ticks / 2 {
         if state.unit(id).expect("caller checked").path.is_none()
             && let Some(goal) = egress_goal(state, pos, heading, stats)
@@ -1360,10 +1337,9 @@ fn bomber_attack(
     // it is: the victim may sit outside the forward cone, and any route to
     // the tile would complete without a tick of flight. Once its approach
     // path completes, send it onward along a clear departure leg instead.
-    // This covers the second half of a reload as well as a cold bay: a
-    // warm bomber chasing straight back to a nearby target used to plan
-    // that instantly accepted route every tick and hang over the target
-    // until the bay was cold. Keep the attack tile as PathFollow's
+    // This covers the second half of a reload as well as a cold bay;
+    // otherwise a warm bomber would plan an instantly accepted route every
+    // tick and hang over the target. Keep the attack tile as PathFollow's
     // semantic goal so the chase retains this leg; when it completes, the
     // next exact-position route lines up another pass.
     let accept = stats.turn_acceptance();
@@ -1421,10 +1397,9 @@ fn bomber_attack(
 /// Where a bomber rolls out after a release: straight ahead along its
 /// heading when the sky is open, bending progressively further, up to a
 /// full reversal, when a wall, mesa, or map corner closes the line.
-/// Every candidate must sit beyond the aircraft's own acceptance ring — a
-/// goal inside it completes without a single tick of flight, which is how
-/// a wall-facing bomber once parked through its whole reload — and must be
-/// a state the airframe can still be flown out of on arrival, so a roll-out
+/// Every candidate must sit beyond the aircraft's own acceptance ring (a
+/// goal inside it completes without a single tick of flight) and must be a
+/// state the airframe can still be flown out of on arrival, so a roll-out
 /// never ends pressed against the world's edge. `None` only in a closed
 /// pocket, where the airframe orbits until the brain replans.
 fn egress_goal(
@@ -1507,9 +1482,9 @@ pub(super) fn attack(
         unit.cooldowns,
     );
 
-    // An huntr pounding a building stays alert: an enemy *unit*
-    // wandering into aggro takes priority (deterministic — acquire prefers
-    // units), so marching armies fight back instead of tunnel-visioning.
+    // A hunter attacking a building stays alert: an enemy unit wandering
+    // into aggro takes priority (acquisition prefers units), so marching
+    // armies fight back.
     if resume.is_some()
         && matches!(target, Target::Building(_))
         && let Some(better @ Target::Unit(_)) = acquire_target(state, index, id)
@@ -1525,8 +1500,7 @@ pub(super) fn attack(
     }
 
     // Resolve the target's current position; None means it is gone. A
-    // target outside every weapon mask ends the engagement the same way —
-    // nothing this chassis carries will ever land on it.
+    // target outside every weapon mask ends the engagement the same way.
     let target_info: Option<(Vec2Fx, TilePos)> = match target {
         Target::Unit(uid) => state
             .unit(uid)
@@ -1557,15 +1531,10 @@ pub(super) fn attack(
     };
     let weapon = &stats.weapons[pi];
 
-    // In range only counts with a clear line — and with eyes. Terrain
-    // cover (rock) applies to direct ground-vs-ground fire only; shots
-    // to or from the air and indirect shells arc past it — but nothing
-    // arcs past a peak. Buildings never block fire: they block movement,
-    // not bullets. The owner must currently *see* the victim's tile: a
-    // gun that outranges its own vision fires on a spotter's sight
-    // (scrap piles are low junk — fire passes over them). No shot →
-    // keep approaching; the chase path already routes around what's in
-    // the way.
+    // In range only counts with a clear line and with sight (see
+    // `traces_terrain`). The owner must currently see the victim's tile, so
+    // a gun that outranges its own vision fires on a spotter's sight. Scrap
+    // piles do not block fire. With no shot, keep approaching.
     let shot_open = |t: TilePos, full: bool| shot_crosses(state, t, full);
     // Sight of any footprint tile serves for a building (matching attack
     // validation); a unit is seen at its own tile. The line trace runs
@@ -1578,13 +1547,12 @@ pub(super) fn attack(
     };
     let in_range = within_unit_weapon_reach(state, kind, target, weapon, pos.dist_sq(aim_point));
     let full = traces_terrain(weapon, stats.domain, victim_domain);
-    // The line trace skips endpoint tiles by design — but a building's
+    // The line trace skips endpoint tiles, but a building's
     // closest-footprint aim point is an exact edge coordinate that can
-    // floor into the NEIGHBORING tile. Flush against a peak, that
-    // neighbor is the mountain itself, and an unchecked endpoint let
-    // direct fire through it. The endpoint tile must be open for this
-    // shot too (a unit's aim point is its own standable tile, and a
-    // footprint tile stands on ground, which shot_open passes).
+    // floor into the neighboring tile. Flush against a peak, that neighbor
+    // is the mountain itself, so the endpoint tile must be open too (a
+    // unit's aim point is its own standable tile, and a footprint tile
+    // stands on ground, which `shot_open` passes).
     let endpoint_open = shot_open(chassis::grid::TilePos::containing(aim_point), full);
     if in_range
         && seen
@@ -1607,13 +1575,10 @@ pub(super) fn attack(
         });
         let unit = state.unit_mut(id).expect("caller checked");
         unit.path = None;
-        // Blood drawn: reaching the firing stance refreshes the warm
-        // window, buying followthrough past the radius — what lets a
-        // guard finish the wounded runner rotating to the rear (the
-        // scripted tiers' preservation trick, otherwise unpunishable)
-        // without licensing a cross-map dive. A kiting harvester
-        // outruns every line fighter, never grants a window, and its
-        // chaser breaks at the radius line exactly.
+        // Reaching the firing stance refreshes the leash patience window,
+        // so a guard can finish a wounded runner past the radius without
+        // licensing a cross-map dive. A target that never comes in reach
+        // grants no window, and its chaser breaks at the radius line.
         if resume.is_none()
             && let Some(leash) = unit.leash.as_mut()
         {
@@ -1676,11 +1641,9 @@ pub(super) fn attack(
     // Opportunist guns don't wait for the march to end.
     fire_sidearms(state, index, id, pi, hits, events);
 
-    // A mobile long gun inside its own dead zone must create space. Folding
-    // minimum and maximum range into the generic "not in range" chase once
-    // sent Avalanches all the way to a target's doorstep, where they could
-    // never fire. If terrain offers no legal stand, hold and retry instead of
-    // making the geometry worse.
+    // A mobile long gun inside its own dead zone must create space; the
+    // generic "not in range" chase would close in further. If terrain offers
+    // no legal stand, hold and retry instead of making the geometry worse.
     if pos.dist_sq(aim_point) < weapon.minimum_range * weapon.minimum_range {
         if let Target::Building(building) = target {
             approach_firing_area(state, id, building, weapon);
@@ -1690,18 +1653,13 @@ pub(super) fn attack(
         return;
     }
 
-    // The tether binds here — the chase, not the trigger and not the
-    // firing stand above. It measures the GUARD's own distance from
-    // its anchor, never the target's: the promise is "a stationed
-    // machine travels at most the radius from its post (plus the
-    // warm window)", and a target-based measure made the effective
-    // pursuit depend on how far the chaser trails — weapon range and
-    // speed matchup — turning a zero-window guard home while still
-    // tiles inside its own zone. Inside the radius the guard hunts
-    // freely (that ground is its zone); beyond it every chase tick
-    // spends the warm-blood window, and an empty window sends the
-    // guard walking home, leash kept so the homecoming arms the post
-    // cooldown.
+    // The tether binds the chase, not the trigger or the firing stand above.
+    // It measures the guard's own distance from its anchor, never the
+    // target's: a stationed machine travels at most the radius from its post
+    // plus the patience window, independent of weapon range or speed.
+    // Inside the radius the guard hunts freely; beyond it every chase tick
+    // spends patience, and an empty window sends the guard walking home,
+    // leash kept so the homecoming arms the post cooldown.
     if resume.is_none()
         && let Some(leash) = state.unit(id).expect("caller checked").leash
     {
@@ -1728,11 +1686,10 @@ pub(super) fn attack(
     // Out of range (or blind, or blocked): chase.
     let reached: Result<(), StallReason> = match target {
         Target::Unit(_) => {
-            // A ground chaser cannot stand where a flyer hovers — over
-            // rock, over a roof — so it marches to a tile it CAN stand
-            // on and shoot from instead; getting within weapon range is
-            // the job, occupying the victim's tile never was. Air
-            // chasers (and reachable tiles) keep the direct goal.
+            // A ground chaser cannot stand where a flyer hovers over rock or
+            // a roof, so it marches to a tile it can stand on and shoot from
+            // instead. Air chasers and standable victim tiles keep the
+            // direct goal.
             let direct = state.passable_for(stats.domain, target_tile);
             // Repath when the target has drifted a tile from the
             // path's goal — cheap pursuit without per-tick A*. A path
@@ -1786,10 +1743,9 @@ pub(super) fn attack(
                         Ok(())
                     }
                     // NoFiringPosition derives from the victim's footing;
-                    // speak it only while the team sees that ground, or
-                    // the stall toast leaks where a fogged flyer parked.
-                    // Unseen, the honest own-state fact is that no route
-                    // worked.
+                    // report it only while the team sees that ground, or the
+                    // stall would leak where a fogged flyer parked. Unseen,
+                    // report that no route worked.
                     None if !direct
                         && state.can_see(me, target_tile)
                         && chase_stand_ins(state, stats.domain, target_tile, weapon.range)
@@ -1829,9 +1785,8 @@ fn stall_attack(
     events: &mut Vec<Event>,
 ) {
     let unit = state.unit_mut(id).expect("caller checked");
-    // A tethered chase that cannot route breaks off home quietly:
-    // abandoning its own acquisition is the guard's decision, not
-    // a player order failing — no stall toast.
+    // A tethered chase that cannot route breaks off home quietly: it
+    // abandons its own acquisition, not a player order, so no stall event.
     if resume.is_none()
         && let Some(leash) = unit.leash
     {
@@ -1857,10 +1812,9 @@ fn stall_attack(
 }
 
 /// The sidearm's opportunist victim: the nearest hostile unit the weapon
-/// can cover, in range, seen by the owner, and clear — chosen through the
+/// can cover, in range, seen by the owner, and clear, chosen through the
 /// spatial index's reach window. Selection is keyed `(distance, id)`, so
-/// window visit order cannot change the answer; a differential test pins
-/// this against the plain full-scan chain it replaced.
+/// window visit order cannot change the answer.
 fn sidearm_victim(
     state: &State,
     index: &super::super::spatial::UnitIndex,
@@ -1959,11 +1913,9 @@ fn fire_sidearms(
 }
 
 /// Damage answers back: a hit unit that can fight and isn't already
-/// fighting turns on its attacker — the counter to weapons that outrange
-/// aggro (nothing else ever gets this far: inside aggro, auto-acquire
-/// already found the attacker). An huntr keeps its destination as
-/// the resume point. Brains run in id order, so the first hit of a tick
-/// picks the target deterministically.
+/// fighting turns on its attacker, which counters weapons that outrange
+/// aggro. A hunter keeps its destination as the resume point. Hits resolve
+/// in decision order, so the first answerable attacker of a tick wins.
 pub(super) fn retaliate(state: &mut State, victim: UnitId, attacker: Target) {
     let Some(unit) = state.unit(victim) else {
         return;
@@ -1973,9 +1925,8 @@ pub(super) fn retaliate(state: &mut State, victim: UnitId, attacker: Target) {
     if unit.hp == 0 || !stats.can_target(attacker_domain) {
         return;
     }
-    // Answering fire needs eyes: an indirect shell lobbed from beyond
-    // every friendly sight line reveals nothing to march after — chasing
-    // it would hand out free intel and a suicide route.
+    // Answering fire needs sight: chasing a shell lobbed from beyond every
+    // friendly sight line would leak the shooter's position.
     let seen = match attacker {
         Target::Unit(uid) => state
             .unit(uid)
@@ -1990,17 +1941,14 @@ pub(super) fn retaliate(state: &mut State, victim: UnitId, attacker: Target) {
     let resume = match unit.order {
         Order::Idle => None,
         Order::Hunt { goal } => Some(goal),
-        // A tethered homecoming answers fire: the walk home resumes
-        // through the leash once the attacker falls, so no resume
-        // goal is carried. A plain Run stays oblivious — it is the
-        // player's recall verb, and auto-engaging on damage would
-        // undo exactly what it was issued to do.
+        // A tethered homecoming answers fire: the walk home resumes through
+        // the leash once the attacker falls, so no resume goal is carried. A
+        // plain Run is the player's recall verb and never auto-engages.
         Order::Run { .. } if unit.leash.is_some() => None,
         // An attack aimed at something that just died in resolution is no
-        // engagement — a victim auto-acquired a neighbor this tick, the
-        // neighbor fell in the volley, and without this arm the busy-guard
-        // would let a surviving out-of-aggro shooter fire unanswered for
-        // another full cooldown. Live targets stay protected.
+        // engagement; without this arm a surviving out-of-aggro shooter
+        // would fire unanswered for another full cooldown. Attacks on live
+        // targets are not interrupted.
         Order::Attack { target, resume, .. }
             if state.attack_view(unit.player, target).is_none() =>
         {
@@ -2018,15 +1966,12 @@ pub(super) fn retaliate(state: &mut State, victim: UnitId, attacker: Target) {
         resume,
     };
     unit.path = None;
-    // Answering a hit is blood drawn: the warm window refreshes, so
-    // the answer can reach an attacker just past the radius (the
-    // repositioning-Bombard case) without opening a cross-map dive.
-    // An answer that resumes a march keeps its player commitment
-    // un-tethered; an answer with no resume is self-acquisition by
-    // damage — an existing tether keeps its anchor (never re-anchored
-    // forward), and a STATIONED machine gets a fresh one where it
-    // stood. An unsettled machine (battle-cycling) answers unleashed,
-    // like it always did.
+    // Answering a hit refreshes the patience window, so the answer can
+    // reach an attacker just past the radius (such as a repositioning
+    // Bombard) without opening a cross-map dive. An answer that resumes a
+    // march stays untethered. An answer with no resume is self-acquisition:
+    // an existing tether keeps its anchor, a stationed machine gets a fresh
+    // one where it stood, and an unsettled machine answers unleashed.
     if resume.is_none() {
         let stationed = unit.settled >= crate::stats::LEASH_STATION_TICKS;
         unit.settled = 0;

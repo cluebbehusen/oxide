@@ -3,8 +3,8 @@
 //! Missions own only units that exist; production never works for one.
 //!
 //! Missions take units in a fixed order each decision: defense first, then
-//! lift, then attacks, strikes and raids, then scouting. Each takes from what
-//! [`Missions::available`] leaves free when it runs.
+//! lift, then attacks, anti-air clearing, strikes and raids, then scouting.
+//! Each takes from what [`Missions::available`] leaves free when it runs.
 
 use crate::decision::Ledger;
 use crate::frame::{HomeFrame, doubled, ring};
@@ -262,10 +262,11 @@ pub struct Launch {
     pub kind: MissionKind,
     /// Known local defense at the target's approach, in scrap.
     pub defense: u64,
-    /// Per mille of that defense the attack had to bring.
+    /// Per mille of the known army it would meet that the attack had to
+    /// bring.
     pub margin: u64,
-    /// Strength the attack needed: the defense times the margin, never under
-    /// the stance minimum.
+    /// Strength the attack needed: the known army it would meet times the
+    /// margin, never under the stance minimum.
     pub need: u64,
     /// Strength against buildings of the units sent.
     pub sent: u64,
@@ -428,13 +429,13 @@ impl Task {
 }
 
 impl Mission {
-    /// Whether the mission keeps its units from a defense: everything but a
-    /// recovering defense or one of an ally's buildings, and an attack only
-    /// once it is fighting. A
-    /// travelling attack may have met the enemy since the last decision. A
-    /// scout keeps its scout, a lift its units once it has left the ground,
-    /// and a strike or raid its units once they have set out and until they
-    /// turn back.
+    /// Whether the mission keeps its units from a defense. A defense keeps
+    /// them unless it is recovering or guards an ally's building. An attack
+    /// keeps them once it is fighting, or while travelling in contact, since
+    /// it may have met the enemy since the last decision. A scout keeps its
+    /// scout, a lift its units once it has left the ground, and a strike,
+    /// clear or raid its units once they have set out and until they turn
+    /// back.
     fn holds(&self, observation: &ObservationData) -> bool {
         match self.task {
             // An ally's defense lends its units back to the seat's own.

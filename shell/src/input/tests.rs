@@ -821,11 +821,11 @@ fn a_misclick_keeps_placement_armed_and_a_shift_click_repeats() {
     assert_eq!(game.pending.len(), 1, "legal ground stages the site");
     assert!(input.placing.is_some(), "shift keeps the wall going up");
 
-    // A plain click (press AND release — the mode settles at the
-    // release, where the placement drag ends) disarms after staging.
-    // Skirmish's 150 scrap is spent after the shift stamp, and a
-    // BROKE click now refuses and keeps the mode armed — so the
-    // disarm half runs in a fresh, still-funded session.
+    // A plain click (press and release; the mode settles at the release,
+    // where the placement drag ends) disarms after staging. Skirmish's
+    // 150 scrap is spent after the shift stamp, and an unaffordable click
+    // refuses and keeps the mode armed, so the disarm half runs in a
+    // fresh, still-funded session.
     let mut game = headless_game();
     let mut input = InputState::new();
     game.presentation.selection.units = vec![
@@ -851,8 +851,8 @@ fn a_misclick_keeps_placement_armed_and_a_shift_click_repeats() {
 
 #[test]
 fn a_click_on_a_unit_selects_it_headlessly() {
-    // The whole event path — resolver, hit-testing, selection —
-    // exercised with no window: the C5 extraction's proof.
+    // The whole event path (resolver, hit-testing, selection) runs with
+    // no window.
     let mut game = headless_game();
     let mut input = InputState::new();
     let unit = game.state.units()[0].id;
@@ -1486,12 +1486,42 @@ fn the_build_palette_has_no_duplicate_structures() {
             assert_ne!(a, b);
         }
     }
-    assert_eq!(kinds.len(), 13);
     assert!(
         crate::action::BUILD_CATEGORIES
             .iter()
             .all(|(_, kinds)| kinds.len() <= 4)
     );
+}
+
+#[test]
+fn the_build_palette_offers_every_building_kind() {
+    // A kind missing here could be built by a bot but never by a human.
+    for kind in oxide_sim::BuildingKind::ALL {
+        assert!(
+            crate::action::BUILD_CATEGORIES
+                .iter()
+                .any(|(_, kinds)| kinds.contains(&kind)),
+            "{kind:?} has no build palette slot"
+        );
+    }
+}
+
+#[test]
+fn every_faction_roster_fits_the_production_hotkeys() {
+    for producer in oxide_sim::BuildingKind::ALL {
+        for faction in [oxide_sim::Faction::Ferrous, oxide_sim::Faction::Cupric] {
+            let roster = producer
+                .base_stats()
+                .produces
+                .iter()
+                .filter(|kind| kind.faction().is_none_or(|f| f == faction))
+                .count();
+            assert!(
+                roster <= usize::from(crate::action::TRAIN_SLOTS),
+                "{producer:?} trains {roster} {faction:?} kinds"
+            );
+        }
+    }
 }
 
 #[test]
@@ -1951,10 +1981,9 @@ fn the_hunt_card_is_touchable_and_arms_the_same_world_tap() {
 
 #[test]
 fn a_paused_stroke_bills_each_kind_at_its_own_price() {
-    // Bank 360: one staged turret (100) plus an armed bastion (250)
-    // is affordable at the ACTUAL sum (350). The old count-times-
-    // current-kind math priced the staged turret as a second bastion
-    // (500) and refused a funded placement.
+    // Bank 360: one staged turret (100) plus an armed bastion (250) is
+    // affordable at the actual sum (350), not priced as two bastions
+    // (500).
     let mut game = drag_arena(360);
     let mut input = InputState::new();
     let builder = game.state.units()[0].id;
@@ -4293,9 +4322,9 @@ fn the_alert_badge_jumps_the_camera_by_click_or_tap() {
 fn a_tap_on_the_idle_badge_cycles_workers() {
     let mut game = headless_game();
     let mut input = InputState::new();
-    // Publish chrome with a live idle badge in the top bar — the
-    // bare-chrome swallow used to eat fingertip taps on it while the
-    // mouse path cycled workers.
+    // Publish chrome with a live idle badge in the top bar: a fingertip
+    // tap must cycle workers as a click does, not be swallowed as bare
+    // chrome.
     let badge = macroquad::math::Rect::new(200.0, 4.0, 60.0, 24.0);
     let mut layout = bare_layout(f32::INFINITY, 0.0);
     layout.idle_badge = badge;
@@ -4880,11 +4909,11 @@ fn drag_feedback_starts_before_box_selection_does() {
 }
 
 /// A mouse already in flight when the button lands: the press must
-/// anchor the box where it LANDED, and the box must be drawable on the
-/// very frame of the press. The polled adapter could do neither — it
-/// stamped every button with the frame's LAST cursor position, so the
-/// anchor jumped forward by a frame of travel and `mouse ==
-/// drag_origin` made the rect zero-sized until the next frame.
+/// anchor the box where it landed, and the box must be drawable on the
+/// very frame of the press. A frame-polled adapter would stamp the
+/// button with the frame's last cursor position, moving the anchor
+/// forward by a frame of travel and leaving a zero-sized rect until the
+/// next frame.
 #[test]
 fn a_press_mid_flight_anchors_the_box_where_it_landed() {
     use macroquad::miniquad::EventHandler;
@@ -4993,7 +5022,7 @@ fn a_paste_chord_types_the_clipboard_only_into_a_text_field() {
 
 /// The selection consequence of the same frame: a unit sitting between
 /// the press point and where the pointer ended the frame belongs in the
-/// box. The old adapter threw that stretch away.
+/// box.
 #[test]
 fn the_stretch_between_press_and_frame_end_still_selects() {
     use macroquad::miniquad::EventHandler;
@@ -5029,9 +5058,9 @@ fn the_stretch_between_press_and_frame_end_still_selects() {
     got.sort_unstable();
     assert_eq!(got, want, "the whole sweep selects, press point included");
 
-    // The shape the polled adapter produced for that same frame: one
-    // MouseMove at the frame's END, and a press and release stamped
-    // there too. Origin == release, so the sweep read as a bare click.
+    // The shape a frame-polled adapter would produce for that same frame:
+    // one MouseMove at the frame's end, and a press and release stamped
+    // there too. Origin == release, so the sweep reads as a bare click.
     let mut input = InputState::new();
     input.ui = 1.0;
     game.presentation.selection.units.clear();
@@ -5136,17 +5165,16 @@ fn drag_over_ticking(game: &mut Game, input: &mut InputState, tiles: &[(i32, i32
 
 #[test]
 fn a_ticking_drag_spends_the_whole_bank() {
-    // Ten turrets, exactly funded — and the tick charging earlier
-    // stamps mid-drag must not make the gate bill them twice (the
-    // double-count cut a funded wall to half its length).
+    // Ten turrets, exactly funded, and the tick charging earlier stamps
+    // mid-drag must not make the gate bill them twice and cut the wall
+    // short.
     let mut game = drag_arena(1000);
     let mut input = InputState::new();
     game.presentation.selection.units = vec![game.state.units()[0].id];
     input.placing = Some(oxide_sim::BuildingKind::Turret);
     // Two short rows bracketing the builder: every anchor stays inside
-    // someone's sight even as the builder walks to its first site —
-    // a wall drawn off into fog refuses honestly, which is a
-    // different test.
+    // someone's sight even as the builder walks to its first site. A wall
+    // drawn off into fog is a different test.
     let tiles: Vec<_> = (4..=8)
         .map(|x| (x, 2))
         .chain((4..=8).map(|x| (x, 6)))
@@ -5818,11 +5846,10 @@ fn the_docks_subject_always_draws_its_trail() {
 
 #[test]
 fn the_tutorial_survives_its_own_literal_instructions() {
-    // The regression gate for the 150-scrap dead end: every lesson,
-    // played exactly as its card words it (keyboard alternatives the
-    // text itself offers, world clicks for the rest), must stay
-    // affordable with the shipped numbers. If a cost change or a bank
-    // change re-opens the trap, this fails before a player finds it.
+    // Every lesson, played as its card words it (keyboard alternatives
+    // the text itself offers, world clicks for the rest), must stay
+    // affordable with the shipped numbers, so a cost or bank change that
+    // strands the player fails here.
     use crate::tutorial::{Tutorial, tutorial_scenario};
 
     let harvester_cost = UnitKind::Harvester.stats().cost;
@@ -5958,7 +5985,7 @@ fn the_tutorial_survives_its_own_literal_instructions() {
         "income survives the building lesson"
     );
 
-    // Lesson 4 — the trap's teeth: the fighter must be payable here.
+    // Lesson 4: the fighter must be payable here.
     assert!(
         bank(&game) >= sentinel_cost,
         "the fighter lesson re-opened the dead end: bank {} vs {} needed",
@@ -5994,8 +6021,8 @@ fn the_tutorial_survives_its_own_literal_instructions() {
     assert!(t.advance(game.demo));
     assert_eq!(t.step, 5, "advance graduates the march lesson");
 
-    // Lesson 6 is the pause menu, a frame-loop act outside the
-    // command stream; its flag flips in main.rs.
+    // Lesson 6 is the pause menu, a frame-loop act outside the command
+    // stream; its flag flips in `app::screen_flow`.
     game.demo.paused_menu = true;
     assert!(!t.advance(game.demo), "school is out");
 }

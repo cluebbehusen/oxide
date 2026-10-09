@@ -18,8 +18,8 @@ fn exact_chords_beat_bare_ones_and_bare_survives_modifiers() {
 
 #[test]
 fn the_left_handed_preset_crosses_every_gameplay_verb_over() {
-    // The preset's guarantee: verbs live on the right hand. Salvage
-    // shipped after the preset and once stayed marooned on V.
+    // The preset's guarantee: verbs live on the right hand, Salvage
+    // included.
     let map = BindingMap::legacy_left_handed();
     assert_eq!(
         map.chord_for(Action::Salvage),
@@ -73,7 +73,7 @@ fn ctrl_digits_past_the_group_count_fall_through_to_slots() {
 #[test]
 fn shift_never_flips_an_assign_into_a_recall() {
     // Shift lingers after queueing orders; Ctrl+Shift+digit must
-    // still mean assign, as the classic layout always had it.
+    // still mean assign.
     let map = BindingMap::legacy();
     assert_eq!(
         map.resolve(Key::Num4, true, true),
@@ -117,8 +117,8 @@ fn held_pans_read_back_until_released() {
 fn the_classic_profile_has_no_conflicts_and_covers_the_old_map() {
     let map = BindingMap::legacy();
     assert!(map.conflicts().is_empty());
-    // Every key the old hardcoded switchboard answered resolves to
-    // something; a silent hole would be a lost shortcut.
+    // Every classic gameplay key resolves to something; a silent hole
+    // would be a lost shortcut.
     for key in [
         Key::Left,
         Key::Right,

@@ -53,7 +53,7 @@ fn the_fog_view_reports_only_what_the_seat_has_seen() {
     let fog = FogView::capture(&state, PlayerId(0));
     let omniscient = StateView::capture(&state, StateFilter::default());
 
-    // At tick zero the enemy base is dark: the honest view carries
+    // At tick zero the enemy base is dark: the fog view carries
     // strictly less than the omniscient one.
     assert!(fog.units.len() < omniscient.units.len());
     assert!(fog.buildings.len() < omniscient.buildings.len());
@@ -382,4 +382,117 @@ fn the_overlaid_debug_map_is_a_picture_not_a_parseable_scenario() {
         }
         other => panic!("expected the overlay to be unparseable terrain, got {other:?}"),
     }
+}
+
+/// Bots read `ObservationData` and agents read [`FogView`]; both are
+/// fog-honest projections of the same vision and must expose exactly the
+/// same world to the same seat.
+#[test]
+fn the_fog_view_and_the_bot_observation_agree() {
+    use oxide_sim::observation::ObservationData;
+    use std::collections::BTreeSet;
+
+    let mut state = oxide_sim::Scenario::skirmish().build().unwrap();
+    let foundry = |state: &oxide_sim::State, seat: u8| {
+        state
+            .buildings()
+            .iter()
+            .find(|b| b.player.0 == seat && b.kind == oxide_sim::BuildingKind::Foundry)
+            .unwrap()
+            .anchor
+    };
+    let raids: Vec<oxide_sim::PlayerCommand> = [0u8, 1]
+        .into_iter()
+        .map(|seat| oxide_sim::PlayerCommand {
+            player: PlayerId(seat),
+            command: oxide_sim::Command::Hunt {
+                units: state
+                    .units()
+                    .iter()
+                    .filter(|u| u.player.0 == seat && u.kind.stats().can_fight())
+                    .map(|u| u.id)
+                    .collect(),
+                goal: foundry(&state, 1 - seat),
+                queue: false,
+            },
+        })
+        .collect();
+    state.tick(&raids);
+    let mut compared_hostiles = false;
+    for tick in 0..1_500 {
+        if tick % 25 == 0 {
+            for seat in [PlayerId(0), PlayerId(1)] {
+                let fog = FogView::capture(&state, seat);
+                let obs = ObservationData::fog_honest(&state, seat);
+
+                let fog_units: BTreeSet<u32> = fog.units.iter().map(|u| u.id).collect();
+                let obs_units: BTreeSet<u32> = obs
+                    .my_units
+                    .iter()
+                    .chain(&obs.ally_units)
+                    .chain(&obs.enemy_units)
+                    .map(|u| u.id.0)
+                    .collect();
+                assert_eq!(fog_units, obs_units, "tick {tick} seat {seat:?} units");
+                compared_hostiles |= !obs.enemy_units.is_empty();
+
+                let fog_buildings: BTreeSet<u32> = fog.buildings.iter().map(|b| b.id).collect();
+                let obs_buildings: BTreeSet<u32> = obs
+                    .my_buildings
+                    .iter()
+                    .chain(&obs.ally_buildings)
+                    .chain(obs.enemy_buildings.iter().filter(|b| b.seen))
+                    .map(|b| b.id.0)
+                    .collect();
+                assert_eq!(
+                    fog_buildings, obs_buildings,
+                    "tick {tick} seat {seat:?} buildings"
+                );
+
+                let key = |owner: u8, kind, x, y| (owner, kind, x, y);
+                let fog_ghosts: BTreeSet<_> = fog
+                    .ghosts
+                    .iter()
+                    .map(|g| key(g.owner, g.kind, g.anchor[0], g.anchor[1]))
+                    .collect();
+                let obs_known: BTreeSet<_> = obs
+                    .enemy_buildings
+                    .iter()
+                    .map(|b| key(b.player.0, b.kind, b.anchor.x, b.anchor.y))
+                    .collect();
+                let obs_ghosts: BTreeSet<_> = obs
+                    .enemy_buildings
+                    .iter()
+                    .filter(|b| !b.seen)
+                    .map(|b| key(b.player.0, b.kind, b.anchor.x, b.anchor.y))
+                    .collect();
+                assert!(
+                    fog_ghosts.is_subset(&obs_known),
+                    "tick {tick} seat {seat:?} ghosts"
+                );
+                assert!(
+                    obs_ghosts.is_subset(&fog_ghosts),
+                    "tick {tick} seat {seat:?} ghosts"
+                );
+
+                let fog_visible: Vec<bool> = fog
+                    .mask
+                    .iter()
+                    .flat_map(|row| row.chars().map(|c| c == '*'))
+                    .collect();
+                assert_eq!(fog_visible, obs.visible, "tick {tick} seat {seat:?} sight");
+                let fog_contacts: Vec<[i32; 2]> = fog.contacts.clone();
+                let obs_contacts: Vec<[i32; 2]> = obs.blips.iter().map(|t| [t.x, t.y]).collect();
+                assert_eq!(
+                    fog_contacts, obs_contacts,
+                    "tick {tick} seat {seat:?} contacts"
+                );
+            }
+        }
+        state.tick(&[]);
+    }
+    assert!(
+        compared_hostiles,
+        "the raids met, so hostile filtering was compared"
+    );
 }

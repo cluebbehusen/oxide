@@ -697,9 +697,9 @@ def _install_defenses(registry: Registry, out: Path, faction: str) -> None:
 def install_finalized_sprites(registry: Registry, out: Path) -> None:
     """Replace machine rows with the finalized native art and action frames.
 
-    Call this after the legacy base generator has populated ``registry`` and
+    Call this after the base generator has populated ``registry`` and
     before construction frames, allegiance masks, and atlas packing. Earlier
-    family passes may use legacy pixels as ancestry, while later focused banks
+    family passes may use base-generator pixels as ancestry, while later focused banks
     replace their complete rows. No external presentation asset is read.
     """
     out.mkdir(parents=True, exist_ok=True)

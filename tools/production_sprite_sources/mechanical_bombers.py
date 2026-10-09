@@ -122,7 +122,7 @@ def nose_bay(
     state: str,
     paint: tuple[int, int, int],
 ) -> None:
-    # An uninterrupted dorsal keel replaces the old opening on the back.
+    # An uninterrupted dorsal keel keeps the back closed.
     draw.line((64, 43, 64, 70), fill=_rgba(IRON_DEEP), width=2)
     spread = {"idle": 0, "crack": 0, "open": 6, "release": 6, "recover": 3}[state]
     # The aperture reaches the leading edge, allowing the separate payload

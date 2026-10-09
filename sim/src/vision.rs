@@ -75,11 +75,9 @@ pub(crate) struct SalvageIncident {
 pub struct Vision {
     visible: Grid<bool>,
     explored: Grid<bool>,
-    /// Remembered enemy buildings, sorted by (anchor.y, anchor.x, owner) —
-    /// a deterministic canonical order like everything else in the state.
-    /// The owner is part of the key, not decoration: two hostile seats can
-    /// leave memories recorded under the same corner.
-    #[serde(default)]
+    /// Remembered enemy buildings, sorted by (anchor.y, anchor.x, owner).
+    /// The owner is part of the key because two hostile seats can leave
+    /// memories recorded under the same corner.
     ghosts: Vec<GhostBuilding>,
     /// Scrap per tile as this player last saw it. Only meaningful where
     /// `explored`; frozen wherever sight is lost, exactly like ghosts.
@@ -93,10 +91,9 @@ pub struct Vision {
     /// sight. A contact without identity — no kind, no owner, no memory
     /// (rebuilt every tick).
     contacts: Vec<TilePos>,
-    #[serde(default)]
     tracking: tracking::Tracking,
     /// Recent tiles where this team saw one of its own assets take damage.
-    /// Sorted and deduplicated by (y, x); old snapshots predate the field.
+    /// Sorted and deduplicated by (y, x).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     salvage_incidents: Vec<SalvageIncident>,
 }
@@ -259,12 +256,12 @@ impl Vision {
         self.explored.get(pos).copied().unwrap_or(false)
     }
 
-    /// Copies `src` into `self` byte-for-byte while reusing this
-    /// view's grid and vector allocations — the team-sight shortcut
-    /// clones a whole view per teammate per tick, and a plain
-    /// clone-assign reallocated four map-sized grids each time. The
-    /// exhaustive destructure makes a future field a compile error
-    /// here instead of silently stale team sight.
+    /// Copies `src` into `self` byte-for-byte while reusing this view's
+    /// grid and vector allocations: the team-sight shortcut clones a whole
+    /// view per teammate per tick, and a plain clone-assign would reallocate
+    /// four map-sized grids each time. The exhaustive destructure makes a
+    /// future field a compile error here instead of silently stale team
+    /// sight.
     pub(crate) fn copy_from(&mut self, src: &Vision) {
         let Vision {
             visible,
@@ -286,9 +283,8 @@ impl Vision {
         salvage_incidents.clone_from(&src.salvage_incidents);
     }
 
-    /// Row slices for the observation builder's full-map walk — the
-    /// same sequential access `refresh` itself uses, instead of four
-    /// bounds-checked point lookups per tile.
+    /// Row slices for the observation builder's full-map walk, instead of
+    /// four bounds-checked point lookups per tile.
     pub(crate) fn rows(&self, y: i32) -> Option<VisionRows<'_>> {
         Some((
             self.visible.row(y)?,
@@ -435,15 +431,12 @@ pub(crate) struct GroundSalvageDanger {
     /// Per coarse cell, the threat records whose reach could cover a tile
     /// in it; built from the captured lists on the first probe.
     threat_cells: OnceCell<ThreatCells>,
-    /// One byte of memo lanes per tile, replacing three separate
-    /// tables and their `RefCell` borrow bookkeeping — the A*
-    /// predicates probe these once per neighbor, and a `Cell` read is
-    /// a plain load. The incident-near stamp is set at capture (the
+    /// One byte of memo lanes per tile; the A* predicates probe these once
+    /// per neighbor. The incident-near stamp is set at capture (the
     /// incident rule depends on the mover's origin, so only the
-    /// outside-every-ring case caches); the contains and observed
-    /// verdicts memoize on first probe; known-ground memoizes except
-    /// its volatile arm (a visible tile with live scrap), which is
-    /// served uncached exactly as before.
+    /// outside-every-ring case caches); the contains and observed verdicts
+    /// memoize on first probe; known-ground memoizes except its volatile
+    /// arm (a visible tile with live scrap), which is served uncached.
     lanes: Vec<Cell<u8>>,
     path_scratch: RefCell<AstarScratch>,
     /// What failed safe searches from outside every envelope reached this
@@ -720,9 +713,9 @@ impl GroundSalvageDanger {
             .is_some_and(|&(start, end)| tile.x >= start && tile.x <= end)
     }
 
-    /// Runs one behavior-identical A* query while reusing this team phase's
-    /// allocation storage. Brain phases are sequential, so one scratch arena
-    /// serves every Harvester without entering deterministic state.
+    /// Runs one A* query while reusing this team phase's allocation storage.
+    /// Brain phases are sequential, so one scratch arena serves every
+    /// Harvester without entering deterministic state.
     pub(crate) fn find_route(
         &self,
         start: TilePos,
@@ -958,7 +951,7 @@ impl GroundSalvageDanger {
     }
 
     /// Serves one boolean verdict through its memo lane pair; out of
-    /// bounds computes uncached, like the tables it replaces.
+    /// bounds computes uncached.
     fn lane_memo(&self, tile: TilePos, set: u8, value: u8, compute: impl FnOnce() -> bool) -> bool {
         let Some(index) = self.lane_index(tile) else {
             return compute();
@@ -1158,9 +1151,9 @@ pub(crate) fn refresh(state: &mut State) {
     let sightings = Sighting::gather(state);
     for index in 0..vision.len() {
         // Team sight is seat-symmetric by construction: every teammate
-        // stamps the same discs, reconciles the same memories, hears
-        // the same radar. A later seat on an already-computed team is
-        // a byte-for-byte clone — half the refresh on team maps.
+        // stamps the same discs, reconciles the same memories, and hears
+        // the same radar, so a later seat on an already-computed team is a
+        // byte-for-byte clone.
         if let Some(src) = (0..index).find(|&j| state.players[j].team == state.players[index].team)
         {
             let (head, tail) = vision.split_at_mut(index);
@@ -1188,7 +1181,7 @@ pub(crate) fn refresh(state: &mut State) {
         for &(tile, radius) in &eyes {
             view.stamp_disc(tile, radius, &mut coverage);
         }
-        // Sites don't see: a pile of parts has no sensors.
+        // Unbuilt sites provide no vision.
         for building in state
             .buildings
             .iter()
@@ -1247,7 +1240,7 @@ pub(crate) fn refresh(state: &mut State) {
         view.ghosts = ghosts;
 
         // Freeze-frame the economy the same way: wherever there is sight,
-        // remember the salvage; everywhere else the old numbers stand.
+        // remember the salvage; everywhere else the remembered numbers stand.
         // Row slices, not per-cell lookups, both memories in one walk —
         // and only inside the x-spans this team's stamps could have
         // touched, since nothing outside them became visible this tick.
@@ -1267,9 +1260,8 @@ pub(crate) fn refresh(state: &mut State) {
             for (x, (&seen, tile)) in visible.iter().zip(tiles).enumerate() {
                 if seen {
                     // Explored accumulates here instead of in the sight
-                    // stamps: the stamps wrote the same spans to two
-                    // grids per row, and this walk already touches
-                    // every newly visible cell exactly once.
+                    // stamps, since this walk already touches every newly
+                    // visible cell exactly once.
                     explored[x] = true;
                     scrap[x] = tile.scrap;
                     wreck[x] = tile.wreck;
@@ -1279,8 +1271,8 @@ pub(crate) fn refresh(state: &mut State) {
 
         // Radar blips: hostile units and buildings inside any own built
         // Array's outer ring, on ground this player cannot actually see. A
-        // tile only — detection is not identification, and there is no
-        // memory: a contact that leaves the ring is simply gone.
+        // tile only, with no identity and no memory: a contact that leaves
+        // the ring is gone.
         view.contacts.clear();
         let masts: Vec<TilePos> = state
             .buildings
@@ -1415,23 +1407,6 @@ fn radar_return(
         None if building.player.0 % 2 == 1 => tied.last().copied(),
         None => tied.first().copied(),
     }
-}
-
-/// Initialize pre-contact snapshots from their validated, stored observations.
-pub(crate) fn initialize_legacy_tracking(state: &mut State) -> bool {
-    let mut vision = std::mem::take(&mut state.vision);
-    let mut initialized = false;
-    let sightings = Sighting::gather(state);
-    for (index, view) in vision.iter_mut().enumerate() {
-        if view.tracking.next_id == 0 && view.tracking.tracks.is_empty() {
-            let mut tracking = std::mem::take(&mut view.tracking);
-            tracking.refresh(view, state, PlayerId::from_index(index), &sightings);
-            initialized |= tracking.next_id != 0;
-            view.tracking = tracking;
-        }
-    }
-    state.vision = vision;
-    initialized
 }
 
 #[cfg(test)]

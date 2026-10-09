@@ -227,7 +227,7 @@ fn wounded_ring_patient(kind: UnitKind, hp: u32, scrap: u32, overlap: bool) -> S
     let mut scenario = arena(
         vec![
             unit(0, kind, pos.x, pos.y),
-            // Make the captured package genuinely worker-sized. Artillery
+            // Make the captured package worker-sized. Artillery
             // cannot escort a replacement Harvester, so the wounded Bombard
             // alone must not count as the recovery screen.
             unit(0, UnitKind::Sentinel, 10, 9),
@@ -303,8 +303,8 @@ fn the_aura_heals_the_ring_to_whole_and_bills_the_welders_exact_price() {
 fn overlapping_bays_stack_the_heal_and_telescope_the_bill_once() {
     // Two bays whose auras both cover the patient's parking spot: the
     // heals stack (2 hp per pulse) and the bill must telescope across
-    // them as ONE meter — each bay pricing from start-of-tick hp
-    // double-charged (or skipped) the shared interval.
+    // them as one meter; each bay pricing from start-of-tick hp would
+    // double-charge (or skip) the shared interval.
     let mut scenario = arena(
         vec![
             unit(0, UnitKind::Harvester, FAR.x, FAR.y),

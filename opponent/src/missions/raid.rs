@@ -156,7 +156,7 @@ impl Missions {
 
     /// Scuttlers a raid on the least guarded known harvest line not raided
     /// lately and not under known guns needs: its known guard by the margin,
-    /// at least one. None while no such line is known.
+    /// at least one. Zero while no such line is known.
     pub(crate) fn raid_squad(
         observation: &ObservationData,
         map: &MapModel,
@@ -344,9 +344,8 @@ impl Foray<'_> {
     /// for: for Sappers the most valuable known enemy building for its
     /// distance with little known defense, for the others the enemy
     /// Extractor or Foundry with the least known defense, nearest first.
-    /// Scuttlers leave lines that known enemy guns cover.
-    /// Targets recently raided are skipped, and ground raiders need a ground
-    /// route.
+    /// Scuttlers leave lines that known enemy guns cover. Targets recently
+    /// raided are skipped, and ground raiders need a ground route.
     fn target(&self, kind: Raider, strength: u64) -> Option<(Objective, TilePos, u64)> {
         let observation = self.observation;
         let now = observation.tick;

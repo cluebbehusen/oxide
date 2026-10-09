@@ -26,9 +26,9 @@ bypass terrain, placement, ownership, cost, or command validation.
 - At least one player seat is required because units need an owner. A seat does
   not require a human or a bot controller.
 - Use `"bot": false` for a passive seat. A `"bot": true` seat without
-  `bot_config` is also an empty chair. A configured bot runs normally; the
-  strategic controller currently needs a Foundry to act, so omit it when only
-  staging units. Units and turrets still auto-defend without a controller.
+  `bot_config` is also an empty chair. A configured bot runs normally but
+  decides only while it owns a completed Foundry, so omit it when only staging
+  units. Units and turrets still auto-defend without a controller.
 - Local input controls the first non-bot seat, falling back to seat zero if
   every seat is bot-controlled. This does not disable any configured bot. Debug
   commands explicitly identify their seat.

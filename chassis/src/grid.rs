@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 /// An integer tile coordinate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TilePos {
     /// Column, increasing rightward.
     pub x: i32,
@@ -111,7 +112,7 @@ pub struct Grid<T> {
 impl<T> Grid<T> {
     /// Whether the deserialized shape holds together: positive dimensions
     /// and a cell vector of exactly `width x height`. Derived `Deserialize`
-    /// can't check this — anything loading grids from untrusted bytes must.
+    /// does not check this, so loaders of untrusted bytes must.
     pub fn is_consistent(&self) -> bool {
         self.width > 0 && self.height > 0 && self.cells.len() == cell_count(self.width, self.height)
     }
@@ -176,10 +177,8 @@ impl<T> Grid<T> {
             .map(|i| &mut self.cells[i])
     }
 
-    /// Overwrites every cell with clones of `value`.
-    /// Fills `[x0, x1]` on row `y` with `value`, clamped to the grid;
-    /// fully out-of-range spans are a no-op. The bulk write behind
-    /// sight-disc stamping — one slice fill instead of per-cell lookups.
+    /// Fills `[x0, x1]` on row `y` with `value`, clamped to the grid; a span
+    /// entirely outside the grid is a no-op.
     pub fn fill_row_span(&mut self, y: i32, x0: i32, x1: i32, value: T)
     where
         T: Clone,
@@ -197,9 +196,8 @@ impl<T> Grid<T> {
         self.cells[first..=last].fill(value);
     }
 
-    /// Copies `other` into `self`, reusing this grid's allocation when
-    /// capacities allow — `Vec::clone_from` keeps the buffer where a
-    /// plain clone-assign reallocates. Dimensions follow the source.
+    /// Copies `other`, including its dimensions, into `self`, reusing this
+    /// grid's allocation when its capacity suffices.
     pub fn copy_from(&mut self, other: &Grid<T>)
     where
         T: Clone,
@@ -209,8 +207,7 @@ impl<T> Grid<T> {
         self.cells.clone_from(&other.cells);
     }
 
-    /// Row `y` as a slice, or `None` out of range — the bulk-read
-    /// counterpart of [`Grid::fill_row_span`].
+    /// Row `y` as a slice, or `None` out of range.
     pub fn row(&self, y: i32) -> Option<&[T]> {
         if y < 0 || y >= self.height {
             return None;

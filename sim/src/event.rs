@@ -103,6 +103,9 @@ pub enum Event {
         building: BuildingId,
         /// Its owner.
         player: PlayerId,
+        /// Its upgrade tier when it fell, including an upgrade bought that
+        /// tick.
+        tier: u8,
         /// Its center (for shell effects).
         pos: Vec2Fx,
     },
@@ -228,10 +231,8 @@ pub enum Event {
     },
     /// A shell arrived and resolved.
     ShellLanded {
-        /// The seat that fired it — presentation uses this to tell a
-        /// hostile impact from a harmless friendly one. Never names a
-        /// sufferer; the impact itself was already visible by the arc
-        /// renderer's rule.
+        /// The seat that fired it, so presentation can tell a hostile
+        /// impact from a friendly one. Never names a sufferer.
         player: PlayerId,
         /// Which movement domains the splash can hurt — a ground-only
         /// shell near a flyer is noise, not an attack.
@@ -298,9 +299,9 @@ pub enum Event {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "source", rename_all = "snake_case")]
 pub enum UnitRepairSource {
-    /// A Harvester's field welder.
+    /// A unit's field welder.
     FieldWelder {
-        /// The Harvester doing the work.
+        /// The welder doing the work.
         unit: UnitId,
     },
     /// A Repair Bay aura pulse.

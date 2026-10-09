@@ -2,7 +2,10 @@
 //! detection, and client liveness.
 
 use crate::message::{ClientMessage, HostMessage};
-use crate::{HEARTBEAT_INTERVAL, LEAD_CAP, PROGRESS_TIMEOUT, SILENCE_TIMEOUT, reports_hash};
+use crate::{
+    BATCH_COMMAND_BYTES, CLIENT_PENDING_BYTES, HEARTBEAT_INTERVAL, LEAD_CAP, MAX_CLIENT_LINE_BYTES,
+    PROGRESS_TIMEOUT, SILENCE_TIMEOUT, reports_hash,
+};
 use oxide_sim::{Command, PlayerCommand, PlayerId, Tick};
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -56,6 +59,22 @@ struct Client {
     blocked_since: Option<Duration>,
 }
 
+/// A command waiting to be sealed, with the bytes it adds to a batch line.
+#[derive(Debug)]
+struct Pending {
+    command: PlayerCommand,
+    bytes: usize,
+}
+
+impl Pending {
+    fn new(player: PlayerId, command: Command) -> Self {
+        let command = PlayerCommand { player, command };
+        // The batch line carries the attributed command plus a separator.
+        let bytes = serde_json::to_string(&command).map_or(0, |entry| entry.len() + 1);
+        Self { command, bytes }
+    }
+}
+
 /// The host's half of a lockstep session.
 ///
 /// Each game-loop step, the host calls [`HostSession::seal`]; if it yields
@@ -68,7 +87,8 @@ pub struct HostSession {
     /// Human seats in rotation order, fixed at creation.
     humans: Vec<PlayerId>,
     clients: Vec<Client>,
-    pending: Vec<PlayerCommand>,
+    /// Orders in arrival order, sealed oldest first.
+    pending: Vec<Pending>,
     /// The tick the next sealed batch executes on.
     next_tick: Tick,
     sealed: bool,
@@ -117,10 +137,7 @@ impl HostSession {
 
     /// Queues an order from the host's own seat for the next sealed tick.
     pub fn submit(&mut self, command: Command) {
-        self.pending.push(PlayerCommand {
-            player: self.host,
-            command,
-        });
+        self.pending.push(Pending::new(self.host, command));
     }
 
     /// Handles one line received from `seat`'s connection. Lines from a
@@ -132,11 +149,25 @@ impl HostSession {
             return;
         }
         self.clients[index].heard = now;
+        if line.len() > MAX_CLIENT_LINE_BYTES {
+            self.drop_client(index, DropReason::Protocol);
+            return;
+        }
         match ClientMessage::decode(line) {
-            Ok(ClientMessage::Command { command }) => self.pending.push(PlayerCommand {
-                player: seat,
-                command,
-            }),
+            Ok(ClientMessage::Command { command }) => {
+                let pending = Pending::new(seat, command);
+                let queued: usize = self
+                    .pending
+                    .iter()
+                    .filter(|queued| queued.command.player == seat)
+                    .map(|queued| queued.bytes)
+                    .sum();
+                if queued + pending.bytes > CLIENT_PENDING_BYTES {
+                    self.drop_client(index, DropReason::Protocol);
+                } else {
+                    self.pending.push(pending);
+                }
+            }
             Ok(ClientMessage::Ack { tick, hash }) => self.acknowledge(index, tick, hash),
             Ok(ClientMessage::Heartbeat) => {}
             Err(_) => self.drop_client(index, DropReason::Protocol),
@@ -165,8 +196,9 @@ impl HostSession {
     }
 
     /// The human commands for the next tick in sealed order, or `None` while
-    /// paused, halted, or waiting on a client at the lead cap. A sealed batch
-    /// must be published before the next seal.
+    /// paused, halted, or waiting on a client at the lead cap. Commands past
+    /// [`BATCH_COMMAND_BYTES`] wait for a later tick. A sealed batch must be
+    /// published before the next seal.
     pub fn seal(&mut self, now: Duration) -> Option<Vec<PlayerCommand>> {
         assert!(
             !self.sealed,
@@ -194,7 +226,22 @@ impl HostSession {
         self.sealed = true;
         let seats = self.humans.len() as Tick;
         let first = tick % seats;
-        let mut batch = std::mem::take(&mut self.pending);
+        let mut budget = BATCH_COMMAND_BYTES;
+        let fits = self
+            .pending
+            .iter()
+            .take_while(|pending| {
+                let fits = pending.bytes <= budget;
+                budget = budget.saturating_sub(pending.bytes);
+                fits
+            })
+            .count();
+        let taken = fits.max(usize::from(!self.pending.is_empty()));
+        let mut batch: Vec<PlayerCommand> = self
+            .pending
+            .drain(..taken)
+            .map(|pending| pending.command)
+            .collect();
         batch.sort_by_key(|command| {
             let index = self
                 .humans
@@ -309,10 +356,7 @@ impl HostSession {
         client.live = false;
         client.blocked_since = None;
         let seat = client.seat;
-        self.pending.push(PlayerCommand {
-            player: seat,
-            command: Command::Surrender,
-        });
+        self.pending.push(Pending::new(seat, Command::Surrender));
         self.events.push(HostEvent::Dropped { seat, reason });
         self.prune_hashes();
     }

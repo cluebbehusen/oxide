@@ -245,7 +245,7 @@ fn controlled_geometry_records_and_applies_the_exact_half_turn() {
     assert_eq!(rotated.geometry, EvaluationGeometry::Rot180);
     assert_ne!(authored.scenario.units, rotated.scenario.units);
     assert_eq!(
-        crate::factorial::rotate_180(&rotated.scenario).unwrap(),
+        crate::rotation::rotate_180(&rotated.scenario).unwrap(),
         authored.scenario,
         "the recorded rot180 cell must be the exact involutive transform"
     );

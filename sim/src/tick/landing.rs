@@ -291,7 +291,6 @@ pub(crate) fn landable(state: &State, stats: &UnitStats, tile: TilePos) -> bool 
             .is_some()
 }
 
-/// Whether `tile` is landable and no other ground body is standing on it.
 /// Whether `tile` is landable and a body resting at `at` on it would touch
 /// no other ground body: nothing on the tile, and nothing within the two
 /// bodies' combined radius of the resting point, since parked bodies are

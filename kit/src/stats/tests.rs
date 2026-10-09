@@ -271,6 +271,7 @@ fn deliberate_salvage_is_not_counted_as_a_building_loss() {
             Event::BuildingDestroyed {
                 building: BuildingId(7),
                 player: PlayerId(0),
+                tier: 0,
                 pos: Vec2Fx::ZERO,
             },
             Event::BuildingSalvaged {

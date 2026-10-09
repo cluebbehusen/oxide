@@ -1,22 +1,21 @@
 //! Replays: the complete input record of a deterministic run.
 //!
 //! A replay is setup, an optional game-owned origin, and tick-stamped commands.
-//! With a deterministic sim, that is the available run. Any live session (human, bot, or agent over the debug
-//! socket) can be saved and later re-executed headless, bit for bit, which
-//! turns every play session into a potential regression test.
+//! With a deterministic sim that is the whole run: any live session (human,
+//! bot, or agent over the debug socket) can be saved and re-executed headless,
+//! bit for bit.
 //!
 //! This crate does not know what a setup or a command is; games instantiate
-//! [`Replay`] with their own serde-able types. Files are JSON on purpose:
-//! replays double as documentation, and agents read them directly.
+//! [`Replay`] with their own serde-able types. Files are JSON so people and
+//! agents can read them directly.
 
 use crate::Tick;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::io::Read as _;
 use std::path::Path;
 
-/// Largest replay document accepted from disk. Honest records remain far
-/// below this ceiling; bounding bytes before JSON parsing prevents an
-/// untrusted path from turning into an unbounded allocation.
+/// Largest replay document accepted from disk. Bounding bytes before JSON
+/// parsing keeps an untrusted file from forcing an unbounded allocation.
 pub const MAX_REPLAY_BYTES: usize = 64 << 20;
 
 /// Most commands accepted in a loaded replay.
@@ -67,15 +66,12 @@ pub struct ReplayMeta {
     /// reproduced (commands alone only bound it from below).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ticks: Option<Tick>,
-    /// What kind of record this is. Chassis assigns no meaning — games
-    /// write their own tags (Oxide uses "autosave", "save", "match") and
-    /// classify at their own boundary, the same shape as `description`.
+    /// What kind of record this is. Chassis assigns no meaning; games write
+    /// and classify their own tags (Oxide uses "autosave", "save", "match").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
-    /// Wall-clock save time, unix seconds. This is provenance OUTSIDE
-    /// the sim: a wall clock is forbidden in deterministic state, not in
-    /// recorder metadata — the caller passes the value (chassis never
-    /// reads a clock) and no sim path or hash ever consumes it.
+    /// Wall-clock save time in unix seconds, supplied by the caller. It is
+    /// recorder provenance only; no sim path or hash consumes it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub saved_at: Option<u64>,
 }
@@ -147,8 +143,8 @@ impl<S, C, O: RecordingOrigin<S>> Replay<S, C, O> {
         self.origin.as_ref().map_or(0, RecordingOrigin::start_tick)
     }
 
-    /// Appends a command. Panics if `tick` precedes the last recorded tick —
-    /// a replay that is not in tick order is corrupt by definition.
+    /// Appends a command. Panics if `tick` precedes the recording origin or
+    /// the last recorded tick.
     pub fn record(&mut self, tick: Tick, command: C) {
         assert!(
             tick >= self.start_tick(),
@@ -165,16 +161,15 @@ impl<S, C, O: RecordingOrigin<S>> Replay<S, C, O> {
     }
 
     /// Checks the invariants recording enforces but deserialization alone
-    /// does not — a file is untrusted input even when it parses.
+    /// does not; a file is untrusted input even when it parses.
     ///
-    /// Verifies command ticks are nondecreasing, that no tick sits at the
-    /// counter's ceiling, the recorded duration covers every command, and
-    /// (when `expected_version` is given) that the file was written by
-    /// this sim. Structure is checked *before* version: callers that
-    /// deliberately tolerate a [`ReplayError::VersionMismatch`] must never
-    /// thereby accept a malformed log. Call before executing any loaded
-    /// replay; a log that fails these can silently produce a different
-    /// world, or panic the recorder later.
+    /// Verifies the command count and origin, that command ticks are
+    /// nondecreasing and start at or after the origin, that no tick sits at
+    /// the counter's ceiling, that the recorded duration covers every
+    /// command, and (when `expected_version` is given) that the file was
+    /// written by this sim. Call before executing any loaded replay; a log that
+    /// fails these can silently produce a different world, or panic the
+    /// recorder later.
     pub fn validate(&self, expected_version: Option<&str>) -> Result<(), ReplayError> {
         self.validate_command_count(MAX_REPLAY_COMMANDS)?;
         if let Some(origin) = &self.origin {
@@ -236,11 +231,7 @@ impl<S, C, O: RecordingOrigin<S>> Replay<S, C, O> {
         }
     }
 
-    /// Writes the replay as pretty JSON through [`crate::fsx::write_atomic`]:
-    /// parent directories are created, the payload is flushed and fsynced,
-    /// and the file atomically replaces any previous record on every
-    /// platform — a crash mid-save can't publish a truncated log, and a
-    /// failed save leaves no temp behind.
+    /// Writes the replay as pretty JSON through [`crate::fsx::write_atomic`].
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), ReplayError>
     where
         S: Serialize,

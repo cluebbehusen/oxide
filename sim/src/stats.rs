@@ -1,141 +1,144 @@
 //! Unit and building kinds, their stats, and global tuning constants.
 //!
-//! All game balance lives in this one file. Stats are `const` tables —
-//! changing a number here changes sim behavior, so expect regression hashes
-//! to move and re-bless deliberately (see AGENTS.md).
+//! Unit and building stats are `const` tables here, alongside most global
+//! tuning constants; a few behavior tunables live beside the tick code that
+//! uses them. Changing a number changes sim behavior, so expect regression
+//! hashes to move (see AGENTS.md).
 //!
 //! Combat is a weapons matrix: every kind carries a (possibly empty) list
 //! of weapons, each declaring which movement domains it can hit, whether it
 //! splashes, and whether it fires indirect (arcing over terrain cover).
-//! Units also carry a movement domain of their own — ground units path and
-//! collide on the terrain grid, air units fly straight lines above it.
+//! Units also carry a movement domain: ground units path and collide on the
+//! terrain grid, air units fly above it.
 
 use crate::state::Faction;
 use chassis::fx::Fx;
 use serde::{Deserialize, Serialize};
 
-/// Every trainable unit type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum UnitKind {
-    /// Gathers scrap from nodes and hauls it to a Foundry.
-    Harvester,
-    /// The line combat unit: short-ranged, sturdy, expendable.
-    Sentinel,
-    /// Fast, cheap, fragile raider: a contact-range shredder that eats
-    /// harvest lines and dies to anything that fights back in time.
-    Scuttler,
-    /// Slow long-range artillery: outranges everything it can see,
-    /// melts to anything that reaches it.
-    Lancer,
-    /// Heavy siege piece: arcing splash shells that reach beyond its own
-    /// eyes — someone else must hold sight on the target. Shared roster.
-    Bombard,
-    /// Ferrous anti-air crawler: tanky flak platform, blind to ground.
-    Flakhound,
-    /// Cupric anti-air crawler: cheap and quick, dies to a stiff breeze.
-    Stinger,
-    /// Ferrous ground-attack flyer: slow, heavy strikes, no answer to air.
-    Buzzard,
-    /// Cupric ground-attack flyer: fast shallow strafes, no answer to air.
-    Darter,
-    /// Ferrous air-superiority flyer: sees far, hits only other flyers.
-    Talon,
-    /// Cupric air-superiority flyer: a swarm wing — fragile, rapid, cheap.
-    Wisp,
-    /// Tier-two line brawler: an upgunned sentinel-class hull. The
-    /// frontline that lets tier two fight as a wall, not a clinic.
-    Warden,
-    /// Armored mobile welder: field sustain for long pushes. No harvest
-    /// gear — its torch is the whole job.
-    Tender,
-    /// Tier-two super-harvester: digs faster, hauls triple, and stands
-    /// works up at twice the pace. The juiciest raid target alive.
-    Excavator,
-    /// Ferrous scout flyer: fast, unarmed, far-sighted.
-    Kestrel,
-    /// Cupric scout flyer: faster still, frailer still.
-    Gnat,
-    /// Ferrous heavy interceptor: the bomber's escort and its answer.
-    Shrike,
-    /// Cupric heavy interceptor: lighter, quicker, hungrier.
-    Sylph,
-    /// Ferrous strategic bomber: one enormous bomb per pass, flown on a
-    /// committed attack run — it cannot stop and strafe.
-    Condor,
-    /// Cupric carpet bomber: a stick of six small bombs laid along its
-    /// flight line each pass.
-    Moth,
-    /// Tier-three assault walker: a slow siege-breaking wall of a
-    /// machine. Shared roster.
-    Breaker,
-    /// Tier-three rocket battery: extreme-reach indirect saturation with
-    /// a blind ring at its feet. Shared roster.
-    Avalanche,
-    /// Air transport: an unarmed lifter with a four-point sling rack.
-    /// Cargo rides sealed — it fights nothing, sees nothing, and dies
-    /// with the airframe. Shared roster.
-    Skyhook,
-    /// A walking demolition charge: presses to its ordered target and
-    /// detonates — enormous against structures, modest splash against
-    /// machines, always fatal to itself. Shared roster.
-    Sapper,
+chassis::listed_enum! {
+    /// Every trainable unit type.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum UnitKind {
+        /// Gathers scrap from nodes and hauls it to a Foundry.
+        Harvester,
+        /// The line combat unit: short-ranged, sturdy, expendable.
+        Sentinel,
+        /// Fast, cheap, fragile raider: a contact-range shredder that eats
+        /// harvest lines and dies to anything that fights back in time.
+        Scuttler,
+        /// Slow long-range artillery: outranges everything it can see,
+        /// melts to anything that reaches it.
+        Lancer,
+        /// Heavy siege piece: arcing splash shells that reach beyond its own
+        /// eyes — someone else must hold sight on the target. Shared roster.
+        Bombard,
+        /// Ferrous anti-air crawler: tanky flak platform, blind to ground.
+        Flakhound,
+        /// Cupric anti-air crawler: cheap, quick, and fragile.
+        Stinger,
+        /// Ferrous ground-attack flyer: slow, heavy strikes, no answer to air.
+        Buzzard,
+        /// Cupric ground-attack flyer: fast shallow strafes, no answer to air.
+        Darter,
+        /// Ferrous air-superiority flyer: sees far, hits only other flyers.
+        Talon,
+        /// Cupric air-superiority flyer: fragile, rapid, and cheap.
+        Wisp,
+        /// Tier-two line brawler: an upgunned sentinel-class hull.
+        Warden,
+        /// Armored mobile welder: field sustain for long pushes. No harvest
+        /// gear.
+        Tender,
+        /// Tier-two super-harvester: digs faster, hauls triple, and builds
+        /// at twice the pace.
+        Excavator,
+        /// Ferrous scout flyer: fast, unarmed, far-sighted.
+        Kestrel,
+        /// Cupric scout flyer: faster and frailer than the Kestrel.
+        Gnat,
+        /// Ferrous heavy interceptor: escorts and counters bombers.
+        Shrike,
+        /// Cupric heavy interceptor: lighter and quicker than the Shrike.
+        Sylph,
+        /// Ferrous strategic bomber: one enormous bomb per pass, flown on a
+        /// committed attack run — it cannot stop and strafe.
+        Condor,
+        /// Cupric carpet bomber: a stick of six small bombs laid along its
+        /// flight line each pass.
+        Moth,
+        /// Tier-three assault walker: slow and heavily armored. Shared
+        /// roster.
+        Breaker,
+        /// Tier-three rocket battery: extreme-reach indirect saturation with
+        /// a blind ring at its feet. Shared roster.
+        Avalanche,
+        /// Air transport: an unarmed lifter with a four-point sling rack.
+        /// Cargo rides sealed — it fights nothing, sees nothing, and dies
+        /// with the airframe. Shared roster.
+        Skyhook,
+        /// A walking demolition charge: presses to its ordered target and
+        /// detonates — enormous against structures, modest splash against
+        /// machines, always fatal to itself. Shared roster.
+        Sapper,
+    }
 }
 
-/// Every building type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BuildingKind {
-    /// HQ, unit factory, and scrap drop-off. Lose all of them, lose the game.
-    Foundry,
-    /// Static defense: fires on its own at anything in range and line of
-    /// sight. Holds ground; loses to patient siege.
-    Turret,
-    /// Second factory: trains the advanced roster. The tech gate.
-    Fabricator,
-    /// Anti-air emplacement: flak bursts that only ever look up.
-    FlakTurret,
-    /// Artillery emplacement: arcing splash shells beyond its own sight —
-    /// punishes lazy siege lines, but needs a spotter at full reach.
-    Bastion,
-    /// Radar: a tall mast of true sight, and a wider ring of blips —
-    /// contacts without identity that never satisfy a targeted attack.
-    Array,
-    /// Grinds ambient debris into a scrap trickle. Slow to repay itself;
-    /// the reason a match can outlive its scrap patches.
-    Reclaimer,
-    /// Field workshop: an unarmed aura that welds own wounded machines —
-    /// ground and air alike — inside its ring, billed per hp from the
-    /// owner's bank at repair pricing.
-    RepairBay,
-    /// A restored strip-mining machine from the old rush. Rebuilt only
-    /// on a map-authored derelict frame, it provides durable income;
-    /// a nearby own Foundry develops the claim into a stronger economy.
-    /// The frame outlives every destruction, so it remains contestable.
-    Extractor,
-    /// Air production hall: every flyer trains here. Committing to the
-    /// sky is a visible, snipeable investment.
-    Airworks,
-    /// The tier-three works: trains the heaviest machines and gates the
-    /// deepest upgrades. Expensive, slow, and worth killing.
-    Crucible,
-    /// A cheap standing wall segment: blocks ground movement and
-    /// nothing else. Terrain you can buy.
-    Barricade,
-    /// A buried demolition charge — the game's only stealth. Invisible
-    /// to enemies until a scout flies close or an Array's detection ring
-    /// covers it; detonates under hostile ground machines.
-    ScuttleCharge,
+chassis::listed_enum! {
+    /// Every building type.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum BuildingKind {
+        /// HQ, unit factory, and scrap drop-off. Lose all of them, lose the game.
+        Foundry,
+        /// Static defense: fires on its own at anything in range and line of
+        /// sight.
+        Turret,
+        /// Second factory: trains the advanced roster and gates further tech.
+        Fabricator,
+        /// Anti-air emplacement: flak bursts that only ever look up.
+        FlakTurret,
+        /// Artillery emplacement: arcing splash shells beyond its own sight;
+        /// needs a spotter at full reach.
+        Bastion,
+        /// Radar: a ring of true sight, and a wider ring of blips (contacts
+        /// without identity that never satisfy a targeted attack).
+        Array,
+        /// Grinds ambient debris into a scrap trickle, so a match can outlive
+        /// its scrap patches.
+        Reclaimer,
+        /// Field workshop: an unarmed aura that repairs own wounded machines
+        /// and completed structures inside its ring, billed per hp from the
+        /// owner's bank at repair pricing.
+        RepairBay,
+        /// A restored strip-mining machine, rebuilt only on a map-authored
+        /// derelict frame. It provides durable income, raised by a nearby own
+        /// Foundry. The frame survives destruction, so the site remains
+        /// contestable.
+        Extractor,
+        /// Air production hall: every flyer trains here.
+        Airworks,
+        /// The tier-three works: trains the heaviest machines, gates the
+        /// deepest upgrades, and smelts nearby wreck into scrap.
+        Crucible,
+        /// A cheap standing wall segment: blocks ground movement and
+        /// nothing else.
+        Barricade,
+        /// A buried demolition charge and the game's only stealth. Invisible
+        /// to enemies until a scout flies close or an Array's detection ring
+        /// covers it; detonates under hostile ground machines.
+        ScuttleCharge,
+    }
 }
 
 /// A movement medium. Ground units path and collide on the terrain grid;
-/// air units fly straight lines, ignore terrain, and collide only with
-/// each other.
+/// air units fly over everything but peaks and collide only with each
+/// other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Domain {
     /// Bound to passable terrain.
     Ground,
-    /// Above the grid: rock, buildings, and scrap mean nothing.
+    /// Above the grid: only peaks block it.
     Air,
 }
 
@@ -246,9 +249,9 @@ pub struct UnitStats {
     pub harvest: Option<HarvestStats>,
     /// Fog-of-war reveal radius, in tiles.
     pub vision: i32,
-    /// Building kinds the owner must have COMPLETED before training this
-    /// unit — the tech tree's production gate, identical for humans and
-    /// bots. Empty means the producer alone decides.
+    /// Building kinds the owner must have completed before training this
+    /// unit; identical for humans and bots. Empty means the producer alone
+    /// decides.
     pub requires: &'static [BuildingKind],
     /// Whether this machine carries a welding torch: eligibility for the
     /// Repair and `RepairUnit` crews (and construction labor rides with
@@ -257,9 +260,9 @@ pub struct UnitStats {
     /// Construction work applied per adjacent tick (1 for everyone but
     /// the Excavator).
     pub build_rate: u32,
-    /// The machine IS its own warhead: an ordered attack ends with the
-    /// unit pressing to contact and detonating (the SAPPER_* constants
-    /// govern the blast). Grants attack legality without weapons.
+    /// The machine is its own warhead: an ordered attack ends with the unit
+    /// pressing to contact and detonating (the `SAPPER_*` constants govern
+    /// the blast). Grants attack legality without weapons.
     pub demolition: bool,
     /// Room this machine occupies aboard a transport. 0 means it can
     /// never be carried — every flyer, and the transport itself.
@@ -285,9 +288,9 @@ impl UnitStats {
     }
 
     /// The ring inside which a turn-limited flier accepts a waypoint or
-    /// goal: [`Self::turn_radius`] plus [`BOMBER_ACCEPT_SLACK`] — anything
-    /// smaller is an orbit the aircraft can fly forever without ever
-    /// crossing the ring. Only meaningful when `turn_rate > 0`.
+    /// goal: [`Self::turn_radius`] plus [`BOMBER_ACCEPT_SLACK`]. Anything
+    /// smaller is an orbit the aircraft can fly forever without crossing the
+    /// ring. Only meaningful when `turn_rate > 0`.
     pub fn turn_acceptance(&self) -> Fx {
         self.turn_radius() + BOMBER_ACCEPT_SLACK
     }
@@ -325,11 +328,11 @@ pub struct BuildingStats {
     pub vision: i32,
     /// What this building can train. Empty for non-producers.
     pub produces: &'static [UnitKind],
-    /// Every weapon this building fires on its own (turrets have no aggro
-    /// dial — their reach is their temper). Empty for civilians.
+    /// Every weapon this building fires on its own; buildings have no aggro
+    /// range separate from weapon range. Empty for unarmed buildings.
     pub weapons: &'static [WeaponStats],
-    /// Present iff harvesters can build it. `None` marks the kinds only
-    /// scenarios place (the Foundry — win conditions stay authored).
+    /// Price, build time, and prerequisites for placing this kind. Every
+    /// current kind has one; for an upgrade tier it prices the upgrade.
     pub construction: Option<ConstructionStats>,
 }
 
@@ -359,6 +362,16 @@ impl BuildingKind {
     pub fn tier_stats(self, tier: u8) -> &'static BuildingStats {
         let tiers = self.tiers();
         tiers[(tier as usize).min(tiers.len() - 1)]
+    }
+
+    /// Scrap paid to build this kind and upgrade it through `tier`.
+    pub fn invested_cost(self, tier: u8) -> u32 {
+        self.tiers()
+            .iter()
+            .take(usize::from(tier) + 1)
+            .filter_map(|stats| stats.construction.as_ref())
+            .map(|construction| construction.cost)
+            .sum()
     }
 
     /// The upgrade that would lift a building at `tier` one rung, if
@@ -393,14 +406,12 @@ impl BuildingStats {
 #[derive(Debug, Clone, Copy)]
 pub struct ConstructionStats {
     /// Scrap price, deducted when the site is placed. Cancelling refunds
-    /// `cost x hp / max_hp` — you salvage what actually got built, and
-    /// enemy fire burns the refund.
+    /// `cost x hp / max_hp`, so enemy fire burns the refund.
     pub cost: u32,
     /// Builder-adjacent ticks from site to standing building.
     pub build_ticks: u32,
-    /// Building kinds the owner must have COMPLETED before placing this
-    /// one — the tech tree's construction gate, identical for humans
-    /// and bots. Empty means always available.
+    /// Building kinds the owner must have completed before placing this
+    /// one; identical for humans and bots. Empty means always available.
     pub requires: &'static [BuildingKind],
 }
 
@@ -562,34 +573,6 @@ impl UnitKind {
     pub const fn has_ground_turret(self) -> bool {
         matches!(self, Self::Sentinel | Self::Warden | Self::Lancer)
     }
-
-    /// Every kind, in declaration order.
-    pub const ALL: [UnitKind; 24] = [
-        UnitKind::Harvester,
-        UnitKind::Sentinel,
-        UnitKind::Scuttler,
-        UnitKind::Lancer,
-        UnitKind::Bombard,
-        UnitKind::Flakhound,
-        UnitKind::Stinger,
-        UnitKind::Buzzard,
-        UnitKind::Darter,
-        UnitKind::Talon,
-        UnitKind::Wisp,
-        UnitKind::Warden,
-        UnitKind::Tender,
-        UnitKind::Excavator,
-        UnitKind::Kestrel,
-        UnitKind::Gnat,
-        UnitKind::Shrike,
-        UnitKind::Sylph,
-        UnitKind::Condor,
-        UnitKind::Moth,
-        UnitKind::Breaker,
-        UnitKind::Avalanche,
-        UnitKind::Skyhook,
-        UnitKind::Sapper,
-    ];
 
     /// The faction whose roster carries this kind; `None` means shared.
     /// Training a faction-bound kind from the other faction's seat is
@@ -773,7 +756,7 @@ const SENTINEL: UnitStats = UnitStats {
     // rails one-shot it, Scuttler swarms out-trade it, and fixed
     // defenses punish unsupported groups.
     max_hp: 60,
-    speed: Fx::lit("0.11"), // 2.2 tiles/s — armies are slightly outrun by harvesters
+    speed: Fx::lit("0.11"), // 2.2 tiles/s; slightly slower than harvesters
     radius: Fx::lit("0.35"),
     cost: 90,
     train_ticks: 150, // 7.5 s
@@ -790,8 +773,8 @@ const SENTINEL: UnitStats = UnitStats {
             salvo: 1,
             projectile: false,
         },
-        // A weak skyward poke: the tier-0 reason a pure air ball cannot
-        // blank the core army — dedicated anti-air still hard-counters.
+        // A weak anti-air weapon so a pure air army cannot ignore the core
+        // army; dedicated anti-air remains the hard counter.
         WeaponStats {
             damage: 4,
             range: Fx::lit("3"),
@@ -819,16 +802,16 @@ const SENTINEL: UnitStats = UnitStats {
 const SCUTTLER: UnitStats = UnitStats {
     contact_reach: Some(Fx::lit("0.16")),
     max_hp: 40,
-    speed: Fx::lit("0.16"), // 3.2 tiles/s — outruns everything on the ground
+    speed: Fx::lit("0.16"), // 3.2 tiles/s; the fastest ground unit
     radius: Fx::lit("0.28"),
     cost: 40,
     train_ticks: 80, // 4 s
     domain: Domain::Ground,
     weapons: &[WeaponStats {
         damage: 3,
-        range: Fx::lit("0.8"), // practically touching
+        range: Fx::lit("0.8"),
         minimum_range: Fx::ZERO,
-        cooldown_ticks: 6, // a gnawing 10 dps
+        cooldown_ticks: 6, // 10 dps
         targets: DomainMask::GROUND,
         splash: None,
         indirect: false,
@@ -850,15 +833,14 @@ const SCUTTLER: UnitStats = UnitStats {
 const LANCER: UnitStats = UnitStats {
     contact_reach: None,
     max_hp: 50,
-    speed: Fx::lit("0.08"), // 1.6 tiles/s — the army protects it, not vice versa
+    speed: Fx::lit("0.08"), // 1.6 tiles/s
     radius: Fx::lit("0.35"),
     cost: 110,
     train_ticks: 200, // 10 s
     domain: Domain::Ground,
     weapons: &[WeaponStats {
-        // This must reward climbing the first tech rung: it two-shots a
-        // Sentinel and one-shots light machines, while siege and air remain
-        // effective counters.
+        // Rewards the first tech rung: it one-shots Sentinels and light
+        // machines, while siege and air remain effective counters.
         damage: 60,
         range: Fx::lit("5.5"), // beyond aggro: it only uses this on orders
         minimum_range: Fx::ZERO,
@@ -884,7 +866,7 @@ const LANCER: UnitStats = UnitStats {
 const BOMBARD: UnitStats = UnitStats {
     contact_reach: None,
     max_hp: 80,
-    speed: Fx::lit("0.06"), // 1.2 tiles/s — a gun that walks, barely
+    speed: Fx::lit("0.06"), // 1.2 tiles/s
     radius: Fx::lit("0.4"),
     cost: 200,
     train_ticks: 300, // 15 s
@@ -902,7 +884,7 @@ const BOMBARD: UnitStats = UnitStats {
     }],
     aggro_range: Fx::lit("9.5"), // its whole spotter-enabled firing envelope
     harvest: None,
-    vision: 5, // it cannot see as far as it shoots — on purpose
+    vision: 5, // shorter than its range: full reach needs a spotter
     requires: &[],
     welder: false,
     build_rate: 1,
@@ -1010,7 +992,7 @@ const BUZZARD: UnitStats = UnitStats {
 const DARTER: UnitStats = UnitStats {
     contact_reach: None,
     max_hp: 55,
-    speed: Fx::lit("0.17"), // 3.4 tiles/s — the fastest thing in the sky
+    speed: Fx::lit("0.17"), // 3.4 tiles/s
     radius: Fx::lit("0.3"),
     // Its exceptional speed carries a premium over other light aircraft.
     cost: 100,
@@ -1297,7 +1279,7 @@ const CONDOR: UnitStats = UnitStats {
         damage: 100,
         range: Fx::lit("2.5"), // release point, not a standoff gun
         minimum_range: Fx::ZERO,
-        cooldown_ticks: 150, // one bomb per pass; the loop IS the reload
+        cooldown_ticks: 150, // one bomb per pass
         targets: DomainMask::GROUND,
         splash: Some(Fx::lit("2.2")),
         indirect: true,
@@ -1313,7 +1295,7 @@ const CONDOR: UnitStats = UnitStats {
     demolition: false,
     transport_size: 0,
     transport_capacity: 0,
-    turn_rate: 2, // ~2.2-tile turn radius: every run is a commitment
+    turn_rate: 2, // ~2.2-tile turn radius
 };
 
 const MOTH: UnitStats = UnitStats {
@@ -1394,8 +1376,8 @@ const AVALANCHE: UnitStats = UnitStats {
         // obsolete its successor. Units inside the blind ring and all
         // aircraft remain lethal counters.
         damage: 110,
-        range: Fx::lit("14"),        // far past its own eyes: a spotter weapon
-        minimum_range: Fx::lit("4"), // blind at its feet — close the gap
+        range: Fx::lit("14"),        // beyond its own vision: needs a spotter
+        minimum_range: Fx::lit("4"), // blind ring at its feet
         cooldown_ticks: 120,
         targets: DomainMask::GROUND,
         splash: Some(Fx::lit("1.6")),
@@ -1445,7 +1427,7 @@ const SAPPER: UnitStats = UnitStats {
     train_ticks: 180,
     domain: Domain::Ground,
     weapons: &[],
-    aggro_range: Fx::ZERO, // it never picks its own grave
+    aggro_range: Fx::ZERO, // never self-acquires a target
     harvest: None,
     vision: 5,
     requires: &[],
@@ -1487,7 +1469,7 @@ const TURRET: BuildingStats = BuildingStats {
     produces: &[],
     weapons: &[WeaponStats {
         damage: 12,
-        range: Fx::lit("5"), // the bottom rung of the siege ladder
+        range: Fx::lit("5"),
         minimum_range: Fx::ZERO,
         cooldown_ticks: 25,
         targets: DomainMask::GROUND,
@@ -1694,9 +1676,8 @@ const EXTRACTOR: BuildingStats = BuildingStats {
     vision: 4,
     produces: &[],
     weapons: &[],
-    // Cheap to restore, brutal to hold: the price buys durable income
-    // on ground everyone can read from the map. A nearby Foundry turns
-    // the claim into a developed extraction base.
+    // Cheap to restore but hard to hold: the price buys durable income on
+    // map-authored ground every player can read.
     construction: Some(ConstructionStats {
         cost: 100,
         build_ticks: 300,
@@ -1708,9 +1689,9 @@ const EXTRACTOR: BuildingStats = BuildingStats {
 //
 // Each upgradeable kind carries an array of tier structs; a building's
 // `tier` indexes it. A tier's `construction` row is the price of the
-// UPGRADE that produced it (tier 0 keeps the ordinary build price), so
+// upgrade that produced it (tier 0 keeps the ordinary build price), so
 // repair pricing and refund logic read the tier they are welding.
-// `BuildingStats.upgrade` names the next tier's row where one exists.
+// `BuildingKind::upgrade_from` reads the next tier's row where one exists.
 
 const HEAVY_TURRET: BuildingStats = BuildingStats {
     max_hp: 500,
@@ -1803,10 +1784,8 @@ const DEEP_ARRAY: BuildingStats = BuildingStats {
     construction: Some(ConstructionStats {
         cost: 150,
         build_ticks: 300,
-        // The forge gate: both deepest rungs (this and the Bulwark)
-        // stand behind the Crucible, which itself requires the
-        // Fabricator — the smelter's immediate utility is what makes
-        // that climb pay before its first tier-three unit.
+        // Both deepest rungs (this and the Bulwark) require the Crucible,
+        // which itself requires the Fabricator.
         requires: &[BuildingKind::Crucible],
     }),
 };
@@ -1855,23 +1834,6 @@ impl UnitKind {
 }
 
 impl BuildingKind {
-    /// Every kind, in declaration order.
-    pub const ALL: [BuildingKind; 13] = [
-        BuildingKind::Foundry,
-        BuildingKind::Turret,
-        BuildingKind::Fabricator,
-        BuildingKind::FlakTurret,
-        BuildingKind::Bastion,
-        BuildingKind::Array,
-        BuildingKind::Reclaimer,
-        BuildingKind::RepairBay,
-        BuildingKind::Extractor,
-        BuildingKind::Airworks,
-        BuildingKind::Crucible,
-        BuildingKind::Barricade,
-        BuildingKind::ScuttleCharge,
-    ];
-
     /// Lowercase display name.
     pub const fn name(self) -> &'static str {
         match self {
@@ -1898,7 +1860,7 @@ impl BuildingKind {
                 "Headquarters, basic unit production, and scrap drop-off. Losing every Foundry loses the match."
             }
             BuildingKind::Turret => {
-                "Automatic defense against ground units and aircraft. Requires line of sight."
+                "Automatic defense against ground units. Requires line of sight."
             }
             BuildingKind::Fabricator => {
                 "Produces advanced ground units and unlocks further construction."
@@ -1972,54 +1934,44 @@ impl BuildingKind {
 /// Scrap contained in a freshly parsed node tile.
 pub const SCRAP_NODE_AMOUNT: u32 = 400;
 
-/// Fraction of a destroyed machine's price left on the field as wreck
-/// salvage: losing an army literally feeds the other side's harvesters.
+/// Numerator of the fraction of a destroyed entity's price left on the
+/// field as wreck salvage.
 pub const WRECK_VALUE_NUM: u32 = 45;
 /// Denominator of the wreck-value fraction.
 pub const WRECK_VALUE_DEN: u32 = 100;
 
-/// The Foundry is never bought, so its wreck value is authored: a prize
-/// worth fighting over where a base used to stand.
+/// Wreck price basis for a destroyed building whose kind has no
+/// construction cost.
 pub const FOUNDRY_WRECK_VALUE: u32 = 300;
 
 /// Ticks between global wreck-decay steps (every wreck tile loses one
-/// salvage per step). Battlefield scrap is a prize that outlives the
-/// battle — worth a deliberate trip minutes later — but never a
-/// permanent bank.
+/// salvage per step). Battlefield scrap outlasts the battle by minutes but
+/// is never a permanent bank.
 pub const WRECK_DECAY_TICKS: u64 = 300;
 
 /// Outer detection ring of the Array, in tiles: hostile units and buildings
-/// inside it but out of true sight appear as blips — a tile, no kind, no
-/// owner.
-/// Blips never satisfy targeted-attack visibility. One mast covers an
-/// approach corridor, providing persistent warning that a patrol cannot.
+/// inside it but out of true sight appear as blips (a tile, no kind, no
+/// owner). Blips never satisfy targeted-attack visibility.
 pub const RADAR_DETECT_RADIUS: i32 = 20;
 
-/// Shell flight speed in tiles per tick. A Bombard's full-range 9.5-tile lob
-/// takes about 32 ticks and a Bastion's 11-tile one about 37: path-aware aim
-/// catches a straight commitment, while a reacting Scuttler can change course
-/// by 4+ tiles before impact.
+/// Shell flight speed in tiles per tick. Slow enough that a reacting target
+/// can change course before a full-range shell lands, while path-aware aim
+/// still catches a straight commitment.
 pub const SHELL_SPEED: Fx = Fx::lit("0.30");
 
-/// Ticks per scrap credited by each built Reclaimer. At this rate the
-/// building repays its own price in roughly three minutes — insurance and
-/// a stalemate valve, never an opening.
+/// Ticks per scrap credited by each built Reclaimer. Slow enough to serve as
+/// insurance and a stalemate valve rather than an opening.
 pub const RECLAIMER_PERIOD: u64 = 24;
 
-/// Ticks per scrap smelted by each standing, completed Foundry — the
-/// transparent income floor.
+/// Ticks per scrap credited by each completed Foundry: the income floor.
 ///
-/// This is the economy's guarantee: exhausted nodes, lost Reclaimers,
-/// and camped salvage can make progress slow, but never leave a seat
-/// with no income at all. Credit is per Foundry so expansion bases are
-/// worth their keep, but the rate is tuned so income alone never pays
-/// for one (20/min against a 300 cost: production, drop-off reach,
-/// and survivability are the reasons to expand).
+/// Exhausted nodes, lost Reclaimers, and camped salvage can slow a seat but
+/// never leave it with no income. Credit is per Foundry, but the rate is low
+/// enough that this income alone is not a reason to expand.
 pub const FOUNDRY_DRIP_PERIOD: u64 = 60;
 
-/// First completed tick eligible for the drip: a two-minute warm-up.
-/// The income floor addresses mid- and late-game lockouts without
-/// becoming free opening economy.
+/// First completed tick eligible for the Foundry income floor. The warm-up
+/// keeps it from becoming free opening economy.
 pub const FOUNDRY_DRIP_START_TICK: u64 = 2_400;
 
 /// Ticks per emergency scrap credited by a surviving Foundry after its
@@ -2035,9 +1987,9 @@ pub const FOUNDRY_RECOVERY_RESERVE: u32 = SENTINEL.cost + HARVESTER.cost;
 
 /// Release gate for turn-limited bombers: the target must sit inside
 /// the forward cone, `dot(heading, to_target) >= |to_target| * CONE`.
-/// 0.92 is a half-angle of about 23 degrees — wide enough that a clean
-/// pass releases, narrow enough that a bomber circling its target must
-/// straighten out before the bay opens.
+/// 0.92 is a half-angle of about 23 degrees: wide enough that a clean pass
+/// releases, narrow enough that a bomber circling its target must
+/// straighten out first.
 pub const BOMBER_CONE_DOT: Fx = Fx::lit("0.92");
 
 /// Distance between consecutive bombs of a stick along the flight line.
@@ -2045,8 +1997,8 @@ pub const BOMB_SALVO_SPACING: Fx = Fx::lit("0.8");
 
 /// Acceptance slack added to a turn-limited flier's computed turn
 /// radius: the ring inside which a waypoint or goal counts as reached.
-/// The radius itself must dominate — an acceptance ring smaller than
-/// the turn radius is an orbit trap the aircraft can circle forever.
+/// An acceptance ring smaller than the turn radius is an orbit trap the
+/// aircraft can circle forever.
 pub const BOMBER_ACCEPT_SLACK: Fx = Fx::lit("0.4");
 /// Ticks an idle turn-limited flier orbits before setting itself down.
 pub const AUTO_LAND_IDLE_TICKS: u16 = 60;
@@ -2099,26 +2051,20 @@ pub const CHARGE_BLAST_RADIUS: Fx = Fx::lit("1.5");
 pub const CHARGE_SCOUT_DETECT_RADIUS: i32 = 4;
 
 /// A built base-tier Array reveals buried charges inside this closer
-/// ring (euclidean, like radar contacts). Detection is two-tiered: the
-/// base mast is fixed anti-stealth infrastructure covering the ground it
-/// stands on, the Deep Array upgrade buys the wide ring below, and scout
-/// flyers remain the mobile channel that goes where no mast stands.
-///
-/// Standing detection is the mast's durable strategic value even when
-/// ordinary radar contacts are too transient to redirect an economy.
+/// ring (euclidean, like radar contacts). The Deep Array upgrade buys the
+/// wider `CHARGE_ARRAY_DETECT_RADIUS`, and scout flyers remain the mobile
+/// detection channel.
 pub const CHARGE_BASE_ARRAY_DETECT_RADIUS: i32 = 12;
 
-/// A built Deep Array (Array tier 1) reveals buried charges anywhere
-/// inside its radar ring (euclidean, like radar contacts) — the wide
-/// ring the upgrade pays for, over the base mast's close one.
+/// A built Deep Array (Array tier 1) reveals buried charges inside this
+/// ring (euclidean, like radar contacts).
 pub const CHARGE_ARRAY_DETECT_RADIUS: i32 = 22;
 
-/// A Sapper reaching contact with its ordered target detonates: this
-/// lands on a building target directly...
+/// Damage a detonating Sapper deals directly to its building target.
 pub const SAPPER_STRUCTURE_DAMAGE: u32 = 250;
 
-/// ...while every hostile ground machine in the blast ring (the
-/// building's occupants aside) takes the splash.
+/// Damage a detonating Sapper deals to every hostile ground machine in its
+/// blast ring.
 pub const SAPPER_SPLASH_DAMAGE: u32 = 60;
 
 /// The Sapper's blast ring.
@@ -2128,8 +2074,7 @@ pub const SAPPER_BLAST_RADIUS: Fx = Fx::lit("1.5");
 /// fires (measured to the target's closest point).
 pub const SAPPER_CONTACT_RANGE: Fx = Fx::lit("0.9");
 
-/// Ticks per scrap ground by a tier-one Reclaimer (the Refinery) — two
-/// and a half times the base drum, the roadmap's "improved Reclaimer".
+/// Ticks per scrap credited by a tier-one Reclaimer (the Refinery).
 pub const REFINERY_PERIOD: u64 = 10;
 
 /// Maximum footprint-to-footprint tile distance at which a completed own
@@ -2149,21 +2094,14 @@ pub const EXTRACTOR_REMOTE_YIELD: (u32, u64) = (1, 10);
 /// Supported Extractors pay three scrap every second.
 pub const EXTRACTOR_SUPPORTED_YIELD: (u32, u64) = (3, 20);
 
-/// Ticks between decay steps on an unattended construction site (one hp
-/// per step, applied while no own harvest-capable machine stands beside
-/// the footprint). Sites count for survival exactly like standing
-/// Foundries, so abandoned scaffolds must rust away rather than keep a
-/// beaten seat technically alive forever — and an untended half-built
-/// anything is a melting asset, not a free land claim.
+/// Ticks between one-hp decay steps on an abandoned tier-zero construction
+/// site.
 pub const SITE_DECAY_PERIOD: u64 = 8;
 
 /// Per-mille of a building's cost billed per hp welded (against `max_hp`).
-/// The three economy verbs price strictly build > repair > salvage:
-/// welding always costs more than salvage refunds, so repair-then-salvage
-/// strictly loses scrap, and a full re-ramp costs ~68% of the price —
-/// cheaper than replacing it, never free, and a real sustain tax under
-/// fire. The hp-proportional price also prevents repair followed by
-/// salvage from creating scrap.
+/// The three economy verbs price strictly build > repair > salvage: welding
+/// always costs more than salvage refunds, so repair followed by salvage
+/// loses scrap, and repair is cheaper than replacement but never free.
 pub const REPAIR_COST_PERMILLE: u64 = 850;
 
 /// Scrap charged for the next unit-repair tick at the given repair progress.
@@ -2179,48 +2117,39 @@ pub fn unit_repair_debit(kind: UnitKind, progress: u32) -> u32 {
 }
 
 /// Per-mille of a building's cost refunded per hp drained by salvage
-/// (against `max_hp`). A full-health salvage banks exactly cost*800/1000.
+/// (against `max_hp`). A full-health salvage banks cost * permille / 1000.
 pub const SALVAGE_REFUND_PERMILLE: u64 = 800;
 
-/// Reach of the Repair Bay's welding aura, in tiles from the nearest
-/// point of its footprint — a base ring, not battlefield cover: shorter
-/// than every siege weapon's reach, so the counter to a healed defense
-/// is standing outside it.
+/// Reach of the Repair Bay's aura, in tiles from the nearest point of its
+/// footprint. Shorter than every siege weapon's reach, so the counter to a
+/// healed defense is firing from outside it.
 pub const REPAIR_BAY_RADIUS: Fx = Fx::lit("4.0");
 
-/// Ticks between Repair Bay aura pulses. With [`REPAIR_BAY_STEP`] this
-/// sets the sustain rate per patient: 1 hp / 8 ticks — around a quarter
-/// of one Turret's damage rate, so an aura never out-heals focused
-/// fire; its value is breadth (every wounded machine in the ring heals
-/// at once) and never needing a harvester's torch time.
+/// Ticks between Repair Bay aura pulses. With [`REPAIR_BAY_STEP`] this sets
+/// the per-patient sustain rate, well below one Turret's damage rate, so an
+/// aura never out-heals focused fire; its value is breadth.
 pub const REPAIR_BAY_PERIOD: u64 = 8;
 
-/// Reach of the Crucible's smelter, in tiles from the nearest point of
-/// its footprint. Wider than the Repair Bay's base ring: the smelter's
-/// fuel is battlefield debris, so the works wants to stand near where
-/// fights happened, not huddle at home.
+/// Reach of the Crucible's smelter, in tiles from the nearest point of its
+/// footprint.
 pub const CRUCIBLE_SMELT_RADIUS: Fx = Fx::lit("6.0");
 
-/// Ticks between smelter pulses; each pulse melts one wreck unit into
-/// one scrap. 1 / 40 sits below a dedicated harvester working the same
-/// field and near the Foundry drip's order of magnitude — the point is
-/// that a standing Crucible earns meaningful value from a fought-over
-/// battlefield without replacing a dedicated harvest line.
+/// Ticks between smelter pulses; each pulse melts one wreck unit into one
+/// scrap. The rate stays below a dedicated harvester working the same field.
 pub const CRUCIBLE_SMELT_PERIOD: u64 = 40;
 
 /// Hp each aura pulse offers each patient in the ring.
 pub const REPAIR_BAY_STEP: u32 = 1;
 
-/// Welding ramp for the Foundry, which has no construction stats to
-/// borrow one from.
+/// Welding ramp for Foundry repair, used instead of its build time.
 pub const FOUNDRY_REPAIR_TICKS: u32 = 400;
 
-/// Billing basis for Foundry repair, which has no purchase cost to
-/// price against. A full repair is intentionally expensive without
-/// making the victory structure impossible to restore during a siege.
+/// Billing basis for Foundry repair, used instead of its construction cost.
+/// A full repair is expensive without making the victory structure
+/// impossible to restore during a siege.
 pub const FOUNDRY_REPAIR_PRICE: u32 = 100;
 
-/// Scrap in a rich node (the `S` map legend) — a fought-over prize.
+/// Scrap in a rich node (the `S` map legend).
 pub const RICH_SCRAP_NODE_AMOUNT: u32 = 800;
 
 /// Maximum queued units per Foundry.
@@ -2301,8 +2230,8 @@ pub const EVICT_SCAN_RADIUS: i32 = 3;
 pub const COLLISION_ITERATIONS: u32 = 3;
 
 /// How close to a waypoint counts as "reached" when another waypoint
-/// follows (final waypoints are still landed exactly). Kills the
-/// push-off/re-seek oscillation that made crowds grind.
+/// follows (final waypoints are still landed exactly). Prevents the
+/// push-off/re-seek oscillation that makes crowds grind.
 pub const WAYPOINT_ACCEPT: Fx = Fx::lit("0.35");
 
 /// Heading error, in compass steps, beyond which a rolling ground chassis
@@ -2360,49 +2289,43 @@ pub const COLLISION_MAX_STEP: Fx = Fx::lit("0.155");
 
 /// Overlap two bodies may rest at without a correction. A correction lands
 /// a pair exactly at its spacing, and fixed-point rounding leaves the next
-/// check a hair inside it; without this allowance parked crowds were pushed
-/// apart by nothing on every pass of every tick.
+/// check a hair inside it; without this allowance parked crowds would be
+/// pushed apart by nothing on every pass of every tick.
 pub const COLLISION_SLOP: Fx = Fx::lit("0.00390625");
 
-/// The slide blend for a MOVING unit's collision correction: instead
-/// of a pure push along the contact normal (which a head-on pair's
-/// path following exactly undoes — the measured permanent freeze at
-/// 0.700 separation), a mover's correction is
-/// `RADIAL_SHARE * away + LATERAL_SHARE * sideways`, the sideways
-/// half picked toward the mover's own travel. Both constants are
-/// exactly representable in Q32.32 and their squares sum to
-/// 0.98828125 < 1, so the blended direction never exceeds unit
-/// length and [`COLLISION_MAX_STEP`] keeps meaning what it says.
-/// The radial share must stay well below the closing rate's half or
-/// the freeze returns; the lateral share is what converts a grind
-/// into a pass-by.
+/// The slide blend for a moving unit's collision correction. A pure push
+/// along the contact normal is exactly undone by a head-on pair's path
+/// following, freezing the pair, so a mover's correction is
+/// `RADIAL_SHARE * away + LATERAL_SHARE * sideways`, the sideways half
+/// picked toward the mover's own travel. Both constants are exactly
+/// representable in Q32.32 and their squares sum to 0.98828125 < 1, so the
+/// blended direction never exceeds unit length and [`COLLISION_MAX_STEP`]
+/// holds. The radial share must stay well below half the closing rate or
+/// the freeze returns; the lateral share converts a grind into a pass-by.
 pub const SLIDE_RADIAL_SHARE: Fx = Fx::lit("0.5");
 /// See [`SLIDE_RADIAL_SHARE`].
 pub const SLIDE_LATERAL_SHARE: Fx = Fx::lit("0.859375");
 
 /// How far from its anchor a self-acquired chase may reach before the
-/// guard breaks off and walks home, in tiles. MUST stay >= the
-/// Bombard's 9.5 weapon range: a shorter tether would let siege
-/// pieces shell a guard that turns back before ever answering
-/// (pinned by `retaliation_can_still_reach_a_bombard`).
+/// guard breaks off and walks home, in tiles. Must stay at least the
+/// Bombard's weapon range: a shorter tether would let siege pieces shell a
+/// guard that turns back before ever answering.
 pub const LEASH_RADIUS: Fx = Fx::lit("10");
 
-/// The warm-blood window, in ticks (3 s): how long a self-acquired
-/// chase may continue BEYOND the leash radius after the fight was
-/// actually joined (a shot fired or answered — each refreshes the
-/// window). Roughly 7 tiles of followthrough: enough to finish a
-/// wounded runner rotating to the rear, nothing like the door to a
-/// cross-map dive. A bait that never came in reach grants none, so
-/// the kited guard breaks at the radius line exactly.
+/// Ticks a self-acquired chase may continue beyond the leash radius after
+/// the fight was joined (a shot fired or answered, each refreshing the
+/// window): enough to finish a wounded runner, not enough for a cross-map
+/// dive. Bait that never came in reach grants none, so a kited guard
+/// breaks at the radius line.
 pub const LEASH_PATIENCE: u16 = 60;
 
-/// Ticks a returned guard stands at its post before re-acquiring
-/// (3 s). Without it, an enemy dancing at the aggro edge strips a
-/// picket in an endless acquire/return cycle.
+/// Ticks a returned guard stands at its post before re-acquiring. Without
+/// it, an enemy dancing at the aggro edge strips a picket in an endless
+/// acquire/return cycle.
 pub const LEASH_REACQUIRE_COOLDOWN: u16 = 60;
 
-/// Ticks of standing idle before a machine counts as STATIONED — only
-/// a stationed machine's self-acquired fights tether. A unit cycling
+/// Ticks of standing idle before a machine counts as stationed; only a
+/// stationed machine's self-acquired fights tether. A unit cycling
 /// through idle mid-battle (its target fell, the next is a tick away)
 /// re-acquires unleashed; otherwise unit-id ordering can decide which
 /// side's advancing army is tethered first.

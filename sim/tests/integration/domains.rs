@@ -337,8 +337,8 @@ fn splash_kills_the_cluster_in_one_shell() {
             .iter()
             .any(|event| matches!(event, Event::ShellLaunched { .. }))
     });
-    // Flight is real now: the cluster stands (idle scuttlers hold
-    // their ground) until the shell arrives.
+    // The shell is in flight: the cluster stands (idle scuttlers hold
+    // their ground) until it arrives.
     let mut died = 0;
     for _ in 0..40 {
         died += state
@@ -706,10 +706,10 @@ fn the_sidearm_fights_its_own_war_alongside_the_main_gun() {
 
 #[test]
 fn radar_blips_detect_without_identifying_or_authorizing() {
-    // Array mast at (4,2): true sight to 9, detection to 16. The enemy
-    // harvester at (12,7) sits outside every friendly eye but inside the
-    // ring — a blip. Blips are tiles: no kind, no owner, and no license
-    // to shoot.
+    // Array mast at (4,2): true sight to 9, detection to
+    // RADAR_DETECT_RADIUS. The enemy harvester at (12,7) sits outside
+    // every friendly eye but inside the ring: a blip. Blips are tiles: no
+    // kind, no owner, and no license to shoot.
     let mut scenario = arena(vec![
         unit(0, UnitKind::Harvester, 4, 1),
         unit(0, UnitKind::Sentinel, 5, 1),

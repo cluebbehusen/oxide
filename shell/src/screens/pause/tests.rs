@@ -50,9 +50,8 @@ fn drive(p: &mut PauseScreen, key: Key) -> Out {
     )
 }
 
-/// Moves the cursor to the labeled row and activates it — by
-/// label, never by raw Down counts, so the tests survive row-set
-/// changes the way the index math never did.
+/// Moves the cursor to the labeled row and activates it by label,
+/// never by raw Down counts, so the tests survive row-set changes.
 fn activate(p: &mut PauseScreen, label: &str) -> Out {
     let target = p
         .menu
@@ -334,8 +333,7 @@ fn save_game_never_confirms_and_bare_enter_saves_the_suggestion() {
         p.menu.items[0], "skirmish | t100_",
         "prefilled, with a static caret"
     );
-    // The Start-preselected doctrine: Enter alone commits the
-    // suggested name without any typing.
+    // Enter alone commits the suggested name without any typing.
     assert_eq!(
         drive(&mut p, Key::Enter),
         Out::Save("skirmish | t100".to_string())
@@ -349,8 +347,8 @@ fn the_name_field_edits_with_text_and_backspace_and_escape_cancels() {
     type_text(&mut p, "abc");
     assert_eq!(drive(&mut p, Key::Backspace), Out::Stay);
     assert_eq!(p.menu.items[0], "ab_");
-    // Letter KEYS are not text: only Text events edit the buffer,
-    // so an injected semantic H cannot type.
+    // Letter keys are not text: only Text events edit the buffer, so an
+    // injected semantic H cannot type.
     drive(&mut p, Key::H);
     assert_eq!(p.menu.items[0], "ab_");
     assert_eq!(drive(&mut p, Key::Escape), Out::Stay, "Escape abandons");

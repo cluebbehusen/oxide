@@ -1,7 +1,6 @@
-//! The record shelf: two sections over one menu — SAVES (resumable
-//! sessions, Enter loads) and REPLAYS (finished matches, Enter
-//! watches) — the second screen-object extraction. Windowless update;
-//! the main loop opens sessions and draws.
+//! The record shelf: two sections over one menu, SAVES (resumable
+//! sessions, Enter loads) and REPLAYS (finished matches, Enter watches).
+//! Windowless update; the main loop opens sessions and draws.
 
 use crate::game::SoundKind;
 use crate::menu::Menu;
@@ -27,10 +26,8 @@ pub enum Out {
     Delete(std::path::PathBuf),
 }
 
-/// What one menu row stands for. Rows are values, not arithmetic: the
-/// section headers shift every index below them, and a hand-shifted
-/// offset is exactly the class of bug the pause screen's row enum
-/// retired.
+/// What one menu row stands for. Rows are values, not index arithmetic,
+/// because the section headers shift every index below them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RowKind {
     /// A section label; the cursor skips it, clicks ignore it.
@@ -156,8 +153,7 @@ impl Shelf {
                 }
                 Some(entry) if entry.compatible => Out::Watch(entry.path.clone()),
                 Some(_) => {
-                    // The honest version badge already told this story;
-                    // the refusal just repeats it out loud.
+                    // The row's version badge already says why.
                     sounds.push((SoundKind::Denied, None));
                     Out::Stay
                 }

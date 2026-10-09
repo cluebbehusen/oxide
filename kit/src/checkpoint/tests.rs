@@ -2,7 +2,7 @@ use super::*;
 use oxide_sim::scenario::BotConfig;
 use oxide_sim::{Command, PlayerId};
 
-fn checkpoint() -> RecordedCheckpoint {
+fn checkpoint() -> SessionCheckpoint {
     let mut scenario = Scenario::skirmish();
     for seat in &mut scenario.players {
         seat.bot = false;
@@ -18,17 +18,16 @@ fn checkpoint() -> RecordedCheckpoint {
         player: PlayerId(0),
         command: Command::Stop { units: vec![] },
     }];
-    let core = SessionCheckpoint::capture(&scenario, &state, &[], &pending, Some(&stats)).unwrap();
-    RecordedCheckpoint::capture(core, &GameReplay::new(SIM_VERSION, scenario)).unwrap()
+    SessionCheckpoint::capture(&scenario, &state, &[], &pending, Some(&stats)).unwrap()
 }
 
 #[test]
 fn checkpoint_round_trip_is_observational_and_keeps_statistics_stride() {
     let original = checkpoint();
     let bytes = serde_json::to_vec(&original).unwrap();
-    let decoded = RecordedCheckpoint::from_bytes(&bytes).unwrap();
-    let (mut a, _) = original.restore().unwrap();
-    let (mut b, _) = decoded.restore().unwrap();
+    let decoded: SessionCheckpoint = serde_json::from_slice(&bytes).unwrap();
+    let mut a = original.restore().unwrap();
+    let mut b = decoded.restore().unwrap();
     assert_eq!(a.state.current_tick(), 105);
     assert_eq!(a.pending, b.pending);
     assert_eq!(a.state.hash(), b.state.hash());
@@ -72,25 +71,19 @@ fn checkpoint_rejects_incompatible_or_inconsistent_parts() {
     let original = checkpoint();
     for version in [1, 2, VERSION + 1] {
         let mut bad = original.clone();
-        bad.session.version = version;
+        bad.version = version;
         assert!(bad.restore().is_err());
     }
     let mut bad = original.clone();
-    bad.session.sim_version = "other".into();
+    bad.sim_version = "other".into();
     assert!(bad.restore().is_err());
     let mut bad = original.clone();
-    bad.session.pending[0].player = PlayerId(255);
+    bad.pending[0].player = PlayerId(255);
     assert!(bad.restore().is_err());
     let mut bad = original.clone();
-    bad.recorder.meta.ticks = Some(104);
+    bad.scenario.players[0].bot = true;
+    bad.scenario.players[0].bot_config = Some(BotConfig::default());
     assert!(bad.restore().is_err());
-    let mut bad = original.clone();
-    bad.recorder.setup.name.push('!');
-    assert!(bad.restore().is_err());
-    let mut bad = original.clone();
-    bad.session.scenario.players[0].bot = true;
-    bad.session.scenario.players[0].bot_config = Some(BotConfig::default());
-    assert!(bad.session.restore().is_err());
     let json = serde_json::to_value(original).unwrap();
     for (field, value) in [
         ("every", serde_json::json!(0)),
@@ -98,13 +91,13 @@ fn checkpoint_rejects_incompatible_or_inconsistent_parts() {
         ("stats", serde_json::json!({})),
     ] {
         let mut bad = json.clone();
-        bad["session"]["stats"][field] = value;
-        let result = serde_json::from_value::<RecordedCheckpoint>(bad)
+        bad["stats"][field] = value;
+        let result = serde_json::from_value::<SessionCheckpoint>(bad)
             .map_err(anyhow::Error::from)
-            .and_then(RecordedCheckpoint::restore);
+            .and_then(SessionCheckpoint::restore);
         assert!(result.is_err());
     }
-    assert!(RecordedCheckpoint::from_bytes(b"{}").is_err());
+    assert!(serde_json::from_slice::<SessionCheckpoint>(b"{}").is_err());
 }
 
 #[test]
@@ -113,14 +106,12 @@ fn checkpoint_rejects_changes_to_the_captured_setup_and_world_pair() {
     for change_world in [false, true] {
         let mut bad = original.clone();
         if change_world {
-            bad.session.state.tick(&[]);
-            bad.recorder.meta.ticks = Some(bad.session.state.current_tick());
+            bad.state.tick(&[]);
         } else {
-            bad.session.scenario.seed += 1;
-            bad.recorder.setup = bad.session.scenario.clone();
+            bad.scenario.name.push('!');
         }
         let bytes = serde_json::to_vec(&bad).unwrap();
-        let error = RecordedCheckpoint::from_bytes(&bytes)
+        let error = serde_json::from_slice::<SessionCheckpoint>(&bytes)
             .unwrap()
             .restore()
             .err()
@@ -131,14 +122,6 @@ fn checkpoint_rejects_changes_to_the_captured_setup_and_world_pair() {
                 .contains("scenario/world binding mismatch")
         );
     }
-    let mut bad = original.session;
-    bad.scenario.seed += 1;
-    let error = bad.restore().err().unwrap();
-    assert!(
-        error
-            .to_string()
-            .contains("scenario/world binding mismatch")
-    );
 }
 
 #[test]

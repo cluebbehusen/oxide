@@ -35,12 +35,10 @@ fn checkpoint_origin_replays_seeks_and_samples_only_its_suffix() {
     let (replay, start, end) = segment();
     let replay: GameReplay = serde_json::from_slice(&serde_json::to_vec(&replay).unwrap()).unwrap();
     assert_eq!(
-        crate::runner::run_replay(&replay, None, false)
-            .unwrap()
-            .hash(),
+        crate::runner::run_replay(&replay, None).unwrap().hash(),
         end.hash()
     );
-    assert!(crate::runner::run_replay(&replay, Some(36), false).is_err());
+    assert!(crate::runner::run_replay(&replay, Some(36)).is_err());
     let stats = crate::stats::compute(&replay, 3).unwrap();
     assert_eq!(stats.sample_ticks, [37, 40, 43, 46]);
     let partial = crate::stats::compute(&replay, 4).unwrap();

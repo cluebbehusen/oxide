@@ -48,10 +48,9 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
         | Action::DeleteSave => {}
         Action::Slot(n) => digit_action(game, input, (n - 1) as usize),
         Action::AssignGroup(n) => {
-            // Groups 1-5, like the recall side; the classic layout never
-            // had more. Only own units enter a group — an inspected
-            // ally in a control group would dead-lock recalls under
-            // own-gating, so foreign picks drop at ASSIGN time.
+            // Only own units enter a group: a recalled selection holding an
+            // ally would refuse every command under own-gating, so foreign
+            // picks drop at assign time.
             let slot = (n - 1) as usize;
             if slot < input.groups.len() {
                 let own: Vec<_> = game

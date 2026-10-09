@@ -123,7 +123,7 @@ impl RecoveryWriter {
         )
     }
 
-    /// A playback recording as earlier builds wrote them.
+    /// A playback recording, which production never writes.
     #[cfg(test)]
     pub(crate) fn start_playback(
         root: PathBuf,

@@ -175,10 +175,9 @@ fn now_unix() -> u64 {
 }
 
 /// Retention runs per record kind: live sessions and finished matches
-/// each rotate against their own budget, and anything else in the
-/// directory — explicit saves included — is never touched. A shared
-/// prefix-blind pool once let five quick quits evict every finished
-/// match.
+/// each rotate against their own budget, so quick quits never evict
+/// finished matches. Anything else in the directory, explicit saves
+/// included, is never touched.
 fn rotate(dir: &Path) {
     chassis::fsx::sweep_temps(dir, TEMP_ORPHAN_AGE);
     rotate_prefix(dir, "autosave-", KEEP_AUTOSAVES);

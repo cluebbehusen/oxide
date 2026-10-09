@@ -1,9 +1,8 @@
-//! Learn-by-doing onboarding: six steps, each advancing when the
-//! player actually demonstrates the action — never on a timer, never
-//! on "next". The card watches the same command stream the sim
-//! records, so a keyboard purist and a card-clicker graduate the same
-//! way. Dismissible at any time; re-entry is just starting another
-//! tutorial match from Home.
+//! Learn-by-doing onboarding: six steps, each advancing only when the
+//! player demonstrates the action. The card watches the same command
+//! stream the sim records, so hotkeys and card clicks count alike. It
+//! can be dismissed at any time; re-entry starts another tutorial match
+//! from Home.
 
 /// What the player has demonstrably done this session (flags set by
 /// `Game::do_tick` as accepted commands pass the recorder).
@@ -127,12 +126,11 @@ pub const STEPS: [Step; 6] = [
     },
 ];
 
-/// The tutorial's match: the embedded skirmish with the same scripted
-/// opponent as an ordinary match and a raised opening bank. The
-/// authored 150 ran dry after the lesson's prepaid spends and left
-/// the fighter lesson unpayable at zero income. The raise is
-/// tutorial-only, so the scenario file and its fixtures stay unchanged.
-/// The playthrough test in `input::tests` pins the arithmetic.
+/// The tutorial's match: the embedded skirmish with default opponents and
+/// a raised opening bank, so the lessons' prepaid spends leave the
+/// fighter lesson payable at zero income. The raise is tutorial-only, so
+/// the scenario file and its fixtures stay unchanged. The playthrough
+/// test in `input::tests` pins the arithmetic.
 pub fn tutorial_scenario() -> oxide_sim::Scenario {
     let mut scenario = oxide_sim::Scenario::skirmish();
     scenario.players[0].scrap = 260;
@@ -216,10 +214,8 @@ impl Tutorial {
     }
 
     /// The card's economy line: what the lesson costs, what the bank
-    /// holds, who is hauling. When the lesson is unaffordable and no
-    /// own harvester is mining, it becomes the recovery nudge instead
-    /// — the tutorial must never teach into a dead end it won't name
-    /// the exit of.
+    /// holds, who is hauling. When the lesson is unaffordable and no own
+    /// harvester is mining, it becomes the recovery nudge instead.
     pub fn coach(&self, game: &crate::game::Game) -> Option<CoachLine> {
         let cost = self.required_spend()?;
         let bank = game.state.player(game.presentation.human).scrap;

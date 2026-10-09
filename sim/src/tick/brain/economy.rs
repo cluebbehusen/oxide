@@ -17,14 +17,19 @@ use chassis::grid::TilePos;
 use std::cmp::Reverse;
 
 /// The live meter read for weld and salvage billing, saturated one shy
-/// of [`crate::state::PROGRESS_ENVELOPE`] — the ceiling the snapshot
-/// validator enforces and the ramp products are proven to fit under.
-/// The step math prices one tick as `ramp * (p + 1) / ramp_ticks` in
-/// `u32`; unbounded, the product overflows once a torch has held one
-/// job a few million ticks. Saturated, the meter parks at the ceiling
-/// and the torch keeps billing and welding its marginal step forever.
+/// of [`crate::state::PROGRESS_ENVELOPE`], the ceiling the snapshot
+/// validator enforces. Saturated, the meter parks at the ceiling and the
+/// torch keeps billing and welding its marginal step forever.
 fn metered(progress: u32) -> u32 {
     progress.min(crate::state::PROGRESS_ENVELOPE - 1)
+}
+
+/// The hp a `ramp` spread evenly over `ticks` gains between meter readings
+/// `from` and `to`. The products run in `u64`: a long-held weld meter times
+/// a large hp ramp passes `u32`.
+fn ramp_step(ramp: u32, from: u32, to: u32, ticks: u32) -> u32 {
+    let at = |meter: u32| u64::from(ramp) * u64::from(meter) / u64::from(ticks);
+    u32::try_from(at(to) - at(from)).expect("a step never exceeds its ramp")
 }
 
 /// Advance every committed building upgrade exactly once on the simulation
@@ -50,7 +55,7 @@ pub(super) fn advance_upgrades(state: &mut State, builds: &mut Vec<PendingHpGain
         let start_hp = stats.max_hp / 5;
         let ramp = stats.max_hp - start_hp;
         let advanced = progress.saturating_add(1).min(build_ticks);
-        let step = (ramp * advanced / build_ticks) - (ramp * progress / build_ticks);
+        let step = ramp_step(ramp, progress, advanced, build_ticks);
 
         state
             .building_mut(site)
@@ -84,8 +89,8 @@ pub(super) fn build(
 ) {
     let me = state.unit(id).expect("caller checked").player;
     // hp > 0 is defense in depth: with buffered damage nothing dies
-    // mid-brains anymore, but building on a corpse would resurrect it and
-    // swallow the destruction event, so the guard stays.
+    // mid-brains, but building on a corpse would resurrect it and swallow
+    // the destruction event.
     let Some(b) = state
         .building(site)
         .filter(|b| b.player == me && !b.built && b.tier == 0 && b.hp > 0)
@@ -105,8 +110,8 @@ pub(super) fn build(
     if !b.provisional && unit.work_stopped() && state.in_building_work_reach(unit, site) {
         let start_hp = stats.max_hp / 5;
         let ramp = stats.max_hp - start_hp;
-        // An Excavator's crew-tick counts double: same ramp, half the
-        // wall clock, telescoping exactly like a second pair of hands.
+        // An Excavator's crew-tick counts double: same ramp, half the wall
+        // clock, telescoping like a second builder.
         let rate = state
             .unit(id)
             .expect("caller checked")
@@ -116,7 +121,7 @@ pub(super) fn build(
         let b = state.building_mut(site).expect("just seen");
         let starts = b.progress == 0;
         let advanced = (b.progress + rate).min(build_ticks);
-        let step = (ramp * advanced / build_ticks) - (ramp * b.progress / build_ticks);
+        let step = ramp_step(ramp, b.progress, advanced, build_ticks);
         b.progress = advanced;
         // Both the hp gain and the completion are buffered and applied
         // after damage — see PendingHpGain. The builder learns the site is
@@ -224,11 +229,9 @@ pub(super) fn repair(
     // The active tier's row: a Bulwark's weld ramp, ceiling, and billing
     // basis are the Bulwark's, not the base Turret's.
     let stats = kind.tier_stats(tier);
-    // The welding rate is the construction ramp — except the Foundry,
-    // which keeps its authored ramp and billing basis: repairing the
-    // victory token stays the tuned defensive lever it always was, even
-    // now that expansions make Foundries purchasable at a price that
-    // would otherwise quadruple the weld bill.
+    // The welding rate is the construction ramp, except for the Foundry,
+    // which uses its own ramp and billing basis so its construction price
+    // does not inflate the repair bill for the victory structure.
     let (ramp_ticks, basis) = if kind == crate::stats::BuildingKind::Foundry {
         (
             crate::stats::FOUNDRY_REPAIR_TICKS,
@@ -278,7 +281,7 @@ pub(super) fn repair(
         let unit = state.unit_mut(id).expect("caller checked");
         unit.path = None;
         unit.progress = p + 1;
-        let step = (ramp * (p + 1) / ramp_ticks) - (ramp * p / ramp_ticks);
+        let step = ramp_step(ramp, p, p + 1, ramp_ticks);
         if step > 0 {
             builds.push(PendingHpGain {
                 starts: false,
@@ -307,13 +310,11 @@ pub(super) fn repair(
 /// Weld a wounded own ground machine: chase it to body contact, then
 /// feed it hp along its training ramp, billed per hp at
 /// [`crate::stats::REPAIR_COST_PERMILLE`] of proportional cost through
-/// the same prepaid milli-scrap meter buildings use. The torch holds
-/// only while both bodies stand still inside
-/// body-aware tool reach: a walking patient is chased, not
-/// welded — field sustain never rides along with a retreat. Heals
-/// buffer like every hp gain and resolve after damage (fire wins
-/// ties); several welders stack, each billing its own torch time.
-/// The patient's own orders are never touched.
+/// the same prepaid milli-scrap meter buildings use. The torch holds only
+/// while both bodies stand still inside body-aware tool reach: a walking
+/// patient is chased, not welded. Heals buffer like every hp gain and
+/// resolve after damage; several welders stack, each billing its own torch
+/// time. The patient's own orders are never touched.
 pub(super) fn repair_unit(
     state: &mut State,
     id: UnitId,
@@ -386,9 +387,9 @@ pub(super) fn commit_unit_welds(
             };
             let me = unit.player;
             if unit.drive_speed != Fx::ZERO || footprint_eviction_pending(state, weld.welder) {
-                // Phase 5, after weld resolution, will make this welder
-                // walk off newly claimed ground. It cannot light the
-                // torch and move in the same tick.
+                // The movement pre-pass, after weld resolution, will make
+                // this welder walk off newly claimed ground. It cannot light
+                // the torch and move in the same tick.
                 stationary[slot] = false;
                 continue;
             }
@@ -441,7 +442,7 @@ pub(super) fn commit_unit_welds(
         debug_assert!(unit.in_repair_reach(t));
         let t_kind = t.kind;
 
-        // The billing meter is the Harvester welder's, with the patient's
+        // The billing meter is the welder's, with the patient's
         // own numbers: ramp is full max_hp (machines have no one-fifth
         // foundation), the clock is its training time, the basis its
         // price. Same ceiling prepay, same survival of no-op reissues.
@@ -466,7 +467,7 @@ pub(super) fn commit_unit_welds(
         let unit = state.unit_mut(weld.welder).expect("just seen");
         unit.path = None;
         unit.progress = p + 1;
-        let step = (ramp * (p + 1) / ramp_ticks) - (ramp * p / ramp_ticks);
+        let step = ramp_step(ramp, p, p + 1, ramp_ticks);
         if step > 0 {
             heals.push(super::PendingUnitHeal {
                 unit: weld.patient,
@@ -479,9 +480,10 @@ pub(super) fn commit_unit_welds(
     }
 }
 
-/// Whether phase 5 will give this pathless body an escape path from a
-/// claimed building footprint. Weld settlement runs before that pre-pass,
-/// so it must predict the same move to uphold the both-bodies-still rule.
+/// Whether the movement pre-pass will give this pathless body an escape
+/// path from a claimed building footprint. Weld settlement runs before that
+/// pre-pass, so it must predict the same move to uphold the
+/// both-bodies-still rule.
 fn footprint_eviction_pending(state: &State, id: UnitId) -> bool {
     super::super::movement::claimed_ground_escape(state, id).is_some()
 }
@@ -579,7 +581,7 @@ pub(super) fn salvage(
         unit.path = None;
         let p = metered(unit.progress);
         unit.progress = p + 1;
-        let step = (ramp * (p + 1) / ramp_ticks) - (ramp * p / ramp_ticks);
+        let step = ramp_step(ramp, p, p + 1, ramp_ticks);
         if step > 0 {
             drains.push(super::PendingHpDrain { building, step });
         }
@@ -604,7 +606,7 @@ pub(super) fn harvest(
     danger: &GroundSalvageDanger,
     id: UnitId,
     node: TilePos,
-    anchor: Option<TilePos>,
+    anchor: TilePos,
     retiring: bool,
     events: &mut Vec<Event>,
 ) {
@@ -614,7 +616,6 @@ pub(super) fn harvest(
         state.unit_mut(id).expect("caller checked").clear_program();
         return;
     };
-    let anchor = anchor.unwrap_or(node);
     if unit.unloading.is_some() {
         deliver(state, danger, id, events, retiring);
         return;
@@ -702,20 +703,18 @@ type SourceScore = (i32, usize, Reverse<u32>, i32, u8, i32, i32);
 /// full path-length by threat-count scan.
 const HARVEST_DANGER_LOOKAHEAD: usize = 8;
 
-/// The near slice of the lookahead that always reacts immediately: a
-/// threat inside the first three route tiles replans this tick, exactly
-/// as it always did. Only a flag beyond this zone — a rumor four to
-/// eight tiles out that a hovering enemy re-raises every tick — defers
-/// to the staggered replan window below.
+/// The near slice of the lookahead that always reacts immediately: a threat
+/// inside these route tiles replans this tick. Only a flag beyond this zone
+/// defers to the staggered replan window below.
 const HARVEST_DANGER_REACT_ZONE: usize = 3;
 
-/// A worker whose retained route fails the danger lookahead only in
-/// the FAR zone does not re-plan every tick while the threat lingers —
-/// that thrashed a full multi-candidate A* per worker per tick and
-/// jittered the fleet between near-equal detours. Far-zone replans
-/// stagger on this period, keyed by owner-local unit rank so a fleet never
-/// re-plans in unison without making cross-seat production ids a tactical
-/// input; near-zone threats never wait.
+/// A worker whose retained route fails the danger lookahead only in the far
+/// zone does not re-plan every tick while the threat lingers; that would run
+/// a full multi-candidate A* per worker per tick and jitter the fleet
+/// between near-equal detours. Far-zone replans stagger on this period,
+/// keyed by owner-local unit rank so a fleet never re-plans in unison
+/// without making cross-seat production ids a tactical input; near-zone
+/// threats never wait.
 const HARVEST_REPLAN_PERIOD: u64 = 4;
 
 /// Whether this is the tick on which `id` may re-plan a retained route
@@ -1197,22 +1196,16 @@ struct DropOffScan {
     flood_exhausted: bool,
 }
 
-/// Approach one rectangle using only the worker's shared battlefield
-/// knowledge. A bounded near-path check reacts to newly known danger
-/// without rescanning a long route every tick; a full deterministic A*
-/// runs only when that check fails or no path exists yet.
-/// Walks the worker toward the nearest safely-approachable drop-off.
-/// The per-foundry semantics of the old single-pass scan are exact:
-/// the retained path is honored until the first failed safe route
-/// clears it, and the danger-ignoring classification that decides
-/// waiting-versus-stalling runs only after every safe attempt failed.
-/// Splitting the passes lets one exhausted flood answer every
-/// remaining foundry — a fully sealed worker floods twice per tick,
-/// not twice per foundry. Returns false only when no drop-off is
-/// reachable at all: the caller's stall.
 /// Ticks between repeated `DangerHold` reports for one waiting worker.
 const DANGER_HOLD_REPORT_PERIOD: u64 = 100;
 
+/// Walks the worker toward the nearest safely approachable drop-off. The
+/// retained path is honored until the first failed safe route clears it,
+/// and the danger-ignoring classification that decides waiting versus
+/// stalling runs only after every safe attempt failed. Splitting the passes
+/// lets one exhausted flood answer every remaining foundry, so a fully
+/// sealed worker floods twice per tick, not twice per foundry. Returns
+/// false only when no drop-off is reachable at all: the caller's stall.
 fn try_drop_offs(
     state: &mut State,
     danger: &GroundSalvageDanger,
@@ -1283,8 +1276,8 @@ fn try_drop_offs(
     false
 }
 
-/// A danger hold waits visibly: a silent wait scored as an employed worker to
-/// every counter, the bot's recovery logic included.
+/// A danger hold waits visibly: a silent wait would count as an employed
+/// worker to every observer, including bot recovery logic.
 fn report_danger_hold(state: &State, id: UnitId, events: &mut Vec<Event>) {
     if state
         .current_tick()
@@ -1300,6 +1293,10 @@ fn report_danger_hold(state: &State, id: UnitId, events: &mut Vec<Event>) {
     }
 }
 
+/// Approach one rectangle using only the worker's shared battlefield
+/// knowledge. A bounded near-path check reacts to newly known danger
+/// without rescanning a long route every tick; a full deterministic A*
+/// runs only when that check fails or no path exists yet.
 fn known_rect_route(
     state: &State,
     danger: &GroundSalvageDanger,
@@ -1397,7 +1394,7 @@ fn switch_source(state: &mut State, id: UnitId, node: TilePos, anchor: TilePos) 
     let unit = state.unit_mut(id).expect("caller checked");
     unit.order = Order::Harvest {
         node,
-        anchor: Some(anchor),
+        anchor,
         retiring: false,
     };
     unit.path = None;
@@ -1408,7 +1405,7 @@ fn begin_retirement(state: &mut State, id: UnitId, node: TilePos, anchor: TilePo
     let unit = state.unit_mut(id).expect("caller checked");
     unit.order = Order::Harvest {
         node,
-        anchor: Some(anchor),
+        anchor,
         retiring: true,
     };
     unit.path = None;
@@ -1436,8 +1433,8 @@ fn source_route_failed(
     }
 }
 
-/// Strip the wreck from beside it. Decay can beat the stripper to the
-/// last piece — the dry-source branch above handles the morning after.
+/// Strip the wreck from beside it. Decay can remove the last piece first;
+/// the dry-source branch above handles that.
 fn extract_wreck(state: &mut State, id: UnitId, node: TilePos, ticks_per_scrap: u32) {
     let unit = state.unit_mut(id).expect("caller checked");
     unit.path = None;

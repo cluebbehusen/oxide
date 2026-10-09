@@ -23,8 +23,8 @@ substitutes for listening.
    reopens it.
 3. Keep audition banks, rejected attempts, batch scripts, and review pages
    untracked. Never delete, ignore, move, or commit them as part of promotion.
-4. Generate only the requested event family. Do not revive the old goal of one
-   continuous loop or unique weapon voice per sprite.
+4. Generate only the requested event family. Do not aim for one continuous loop
+   or a unique weapon voice per sprite.
 
 ## Sound language
 
@@ -88,8 +88,7 @@ another layer.
 - Keep the generator, tests, approval ledger, and generated production WAVs in
   one reviewable change. Commit them together only when the user has explicitly
   authorized a commit. Do not stage or commit the source audition bank.
-- SFX are mono 16-bit PCM at 44,100 Hz. The temporary generated music beds stay
-  at 22,050 Hz until the licensed soundtrack replaces them.
+- SFX are mono 16-bit PCM at 44,100 Hz; generated music beds are 22,050 Hz.
 - Keep the sound-name bijection exact across generator output, loaded assets,
   event mapping, and mixer configuration.
 - Preserve the alert as a protected UI-level signal: camera distance, zoom
@@ -106,5 +105,5 @@ asset loading, event mapping, and mixer behavior. The mechanical gates must
 cover format, duration, peak, DC offset, spectral audibility, deterministic
 bytes, complete asset mapping, retrigger gaps, zoom weighting, coalescing, and
 the protected alert. Select the relevant cases for the changed event or mixer
-boundary; retain the existing deterministic asset gates. Required repository
-gates run locally or through CI under `AGENTS.md`, without duplicate CI runs.
+boundary; keep the deterministic asset gates passing. Required repository gates
+run locally or through CI under `AGENTS.md`, without duplicate CI runs.

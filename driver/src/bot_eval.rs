@@ -1,8 +1,7 @@
 //! Deterministic, player-facing bot match evaluation.
 //!
-//! This runner executes the bot
-//! configuration serialized in an ordinary scenario, stops when the match is
-//! decided, and emits one compact row suitable for JSONL comparison.
+//! Runs the bot configuration serialized in an ordinary scenario, stops when
+//! the match is decided, and emits one compact row for JSONL comparison.
 
 use anyhow::{Context, Result, ensure};
 use oxide_kit::GameReplay;
@@ -125,7 +124,7 @@ impl EvaluationGeometry {
     fn apply(self, scenario: &Scenario) -> Result<Scenario> {
         match self {
             Self::Authored => Ok(scenario.clone()),
-            Self::Rot180 => crate::factorial::rotate_180(scenario),
+            Self::Rot180 => crate::rotation::rotate_180(scenario),
         }
     }
 }
@@ -255,14 +254,14 @@ pub enum Termination {
     Decided,
     /// The configured tick ceiling was reached first.
     TickLimit,
-    /// One unit stalled the same way often enough to prove a controller
-    /// was re-issuing an impossible order; the leg stopped measuring.
+    /// One unit stalled the same way often enough to show a controller
+    /// re-issuing an impossible order; the leg stopped early.
     StallLoop,
 }
 
 /// Stalls of one reason on one unit that end a leg as a [`Termination::StallLoop`]
 /// when no explicit limit is given. A blocked order that a controller
-/// abandons stalls a handful of times; an order re-issued every think on a
+/// abandons stalls a handful of times; an order re-issued every decision on a
 /// severed map stalls hundreds of times and drowns every other metric.
 pub const DEFAULT_STALL_LOOP_LIMIT: u64 = 200;
 
@@ -324,8 +323,8 @@ impl ProfileMatchup {
 
     /// Returns the deterministic personality-seed base for `run`.
     ///
-    /// Distinct-seat cells retain the original consecutive-seat arithmetic.
-    /// Shared-seed comparisons consume one personality seed per run instead.
+    /// Distinct-seat cells advance by the seat count per run so every seat
+    /// gets a consecutive seed; shared-seed comparisons advance by one.
     pub fn personality_seed_base_for_run(
         self,
         initial_seed: u64,
@@ -616,7 +615,7 @@ pub fn evaluate_plan_artifact_with(
 /// diagnostics produced during that run.
 ///
 /// The returned replay and compact evaluation row are identical to those from
-/// [`evaluate_plan_artifact_with`]. Each current-controller seat emits decision traces.
+/// [`evaluate_plan_artifact_with`]. Every controlled seat emits decision traces.
 pub fn evaluate_plan_artifact_traced_with<F>(
     plan: &EvaluationPlan,
     tick_limit: u64,
@@ -894,7 +893,7 @@ pub fn configured_matchup_legs(
     ])
 }
 
-/// Builds a faction and geometry cell using complete current-controller profiles.
+/// Builds a faction and geometry cell's legs from complete controller profiles.
 /// Paired legs exchange the profiles while preserving the physical map and rosters.
 pub fn configured_matchup_plans(
     source: &Scenario,

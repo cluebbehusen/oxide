@@ -1,20 +1,19 @@
-//! Raw input events — the shell's single input funnel.
+//! Raw input events: the shell's single input funnel.
 //!
 //! Every frame the shell turns whatever macroquad reports (and whatever
 //! arrived via [`crate::Request::InjectEvent`]) into a list of these, then
 //! maps them to camera operations, selection changes, and sim commands.
-//! Injected and hardware events take the identical path, which is what makes
-//! presentation-layer tests trustworthy without OS-level input faking.
+//! Injected and hardware events take the same path, so presentation-layer
+//! tests need no OS-level input faking.
 //!
-//! Touch variants flow through the shell's real touch handling (tap
-//! select, drag pan, pinch zoom) — one funnel for every pointer
-//! species, sized for the mobile ports.
+//! Touch variants flow through the shell's touch handling (tap select, drag
+//! pan, pinch zoom).
 
 use serde::{Deserialize, Serialize};
 
-/// One input event, in window pixel coordinates where applicable.
+/// One input event, in logical window pixels where applicable.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RawEvent {
     /// Cursor moved.
     MouseMove {
@@ -84,11 +83,9 @@ pub enum RawEvent {
         y: f32,
     },
     /// A typed character, for text entry (save names). The shell emits
-    /// these only for printable ASCII: the menu font is Latin-1 and UI
-    /// strings stay ASCII, so the filter sits at ingest and every
-    /// consumer is safe by construction. Screens consume them only
-    /// while a text field has focus; letters stay semantic everywhere
-    /// else.
+    /// these only for printable ASCII, since UI strings stay ASCII and the
+    /// menu font is Latin-1. Screens consume them only while a text field
+    /// has focus; letters stay semantic everywhere else.
     Text {
         /// The character as typed (layout- and shift-resolved).
         ch: char,
@@ -106,12 +103,13 @@ pub enum MouseButton {
     Left,
     /// Context order (move / attack / harvest).
     Right,
-    /// Unused, reserved.
+    /// Camera drag-pan.
     Middle,
 }
 
-/// The keys the shell maps. Deliberately only what the game uses — extend
-/// alongside the input mapper.
+/// The keys the shell maps; extend alongside the input mapper. The shell's
+/// binding map assigns their actions, so variant docs describe default
+/// bindings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Key {
@@ -139,7 +137,7 @@ pub enum Key {
     B,
     /// Select and center the next idle own Harvester.
     N,
-    /// Scrap the selected construction site (partial refund).
+    /// Stop, scrap the selected construction site, or clear focus.
     X,
     /// Activate the highlighted menu item.
     Enter,

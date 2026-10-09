@@ -11,9 +11,8 @@ Same contract as gen_sprites.py: this script is the source of truth — edit,
 run `uv run tools/gen_sounds.py`, commit script and WAVs together. Output is
 deterministic (seeded noise, pure synthesis, no timestamps).
 
-The effects use dry, synth-first 8-bit-adjacent gestures at 44100 Hz. The
-temporary generated score remains 22050 Hz until the licensed soundtrack
-replaces it. Every file is mono 16-bit PCM.
+The effects use dry, synth-first 8-bit-adjacent gestures at 44100 Hz; the
+generated score is 22050 Hz. Every file is mono 16-bit PCM.
 
 Pass --out DIRECTORY to write a complete alternate bank for review without
 touching the checked-in assets.
@@ -41,7 +40,7 @@ MUSIC_MAX_PEAK = 0.82
 MUSIC_MAX_DC = 0.0005
 MUSIC_MAX_SEAM = 0.001
 # Five percent of full scale admits the authored upper partials but rejects
-# the one-sample edge that produced the combat-layer speaker pop.
+# a one-sample edge, which pops on speakers.
 MUSIC_MAX_DELTA = 0.05
 OUT = Path(__file__).resolve().parent.parent / "assets" / "sounds"
 GENERATED: dict[str, bytes] = {}
@@ -145,13 +144,13 @@ SFX_METADATA = (
         "01-flak-turret-paired-yokes.gif",
     ),
     ("attack_warden", "generic-weapon", 0.30, 0.10, None),
-    ("attack_breaker", "signature-weapon", 0.55, 0.15, None),
+    ("attack_breaker", "signature-weapon", 0.55, 0.20, None),
     ("avalanche_launch", "signature-weapon", 0.50, 0.20, None),
     ("avalanche_motor", "propulsion-loop", 0.35, 0.20, None),
     ("rocket_impact", "signature-weapon", 0.50, 0.20, None),
-    ("bomb_release", "signature-weapon", 0.45, 0.15, None),
-    ("demolition_boom", "destruction", 0.80, 0.20, None),
-    ("upgrade_done", "economy", 0.55, 0.10, None),
+    ("bomb_release", "signature-weapon", 0.45, 0.20, None),
+    ("demolition_boom", "destruction", 0.65, 0.20, None),
+    ("upgrade_done", "economy", 0.35, 0.30, None),
     (
         "attack_bombard",
         "signature-weapon",

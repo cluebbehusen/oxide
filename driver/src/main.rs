@@ -4,8 +4,9 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, builder::TypedValueParser};
 use oxide_driver::build_identity;
 use oxide_driver::client::Client;
-use oxide_driver::runner;
-use oxide_driver::{render, smoke};
+use oxide_driver::smoke;
+use oxide_kit::render;
+use oxide_kit::runner;
 use oxide_protocol::{Reply, StateFilter, hash_hex};
 use std::path::PathBuf;
 
@@ -18,25 +19,6 @@ use std::path::PathBuf;
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
-}
-
-#[derive(clap::Args)]
-struct MeasurementBotArgs {
-    /// Controller difficulty.
-    #[arg(long, default_value_t = oxide_sim::scenario::BotDifficulty::Standard)]
-    difficulty: oxide_sim::scenario::BotDifficulty,
-    /// Controller stance.
-    #[arg(long, default_value_t = oxide_sim::scenario::BotStance::Balanced)]
-    stance: oxide_sim::scenario::BotStance,
-    /// Fixed personality identity shared by every seat and simulation seed.
-    #[arg(long, default_value_t = 0)]
-    personality_seed: u64,
-}
-
-impl MeasurementBotArgs {
-    fn config(&self) -> oxide_sim::scenario::BotConfig {
-        oxide_sim::scenario::BotConfig::new(self.difficulty, self.stance, self.personality_seed)
-    }
 }
 
 #[derive(Subcommand)]
@@ -59,9 +41,8 @@ enum Cmd {
         /// Let scenario-configured bots play.
         #[arg(long)]
         bots: bool,
-        /// Hand every seat to the Standard, Balanced bot. This is the
-        /// complete-match evaluation path for shipped scenarios whose
-        /// first chair is normally human.
+        /// Hand every seat to the Standard, Balanced bot, so a shipped
+        /// scenario whose first seat is normally human plays to completion.
         #[arg(long, conflicts_with = "bots")]
         all_bots: bool,
         /// Record and save a replay here.
@@ -334,11 +315,7 @@ enum Cmd {
         /// two builds identical.
         #[arg(long)]
         hash_every: Option<std::num::NonZeroU64>,
-        /// Play a replay recorded on a different sim version anyway
-        /// (reproduction not guaranteed — archaeology only).
-        #[arg(long)]
-        allow_version_mismatch: bool,
-        /// Run past the built-in length bound (marathon reproductions).
+        /// Run past the built-in replay length bound.
         #[arg(long)]
         allow_long: bool,
     },
@@ -398,80 +375,6 @@ enum Cmd {
         #[arg(short, long)]
         out: PathBuf,
     },
-    /// Decisiveness seed sweep: N seeds of configured-bot mirror on one
-    /// 1v1 map. Measures endings and seat lean.
-    Sweep {
-        /// Scenario path, or "skirmish".
-        #[arg(long, default_value = "skirmish")]
-        scenario: String,
-        /// Seeds (one match per seed).
-        #[arg(long, default_value_t = 24, value_parser = clap::value_parser!(u64).range(1..))]
-        seeds: u64,
-        /// Tick cap per match.
-        #[arg(long, default_value_t = 40_000, value_parser = clap::value_parser!(u64).range(1..))]
-        ticks: u64,
-        /// First scenario seed; offsets count up from here.
-        #[arg(long, default_value_t = 7_000)]
-        seed_base: u64,
-        /// Raw JSON output path.
-        #[arg(long)]
-        out: Option<String>,
-        #[command(flatten)]
-        bot: MeasurementBotArgs,
-    },
-    /// Empirical pace measurement: the decisiveness sweep run over every
-    /// 1v1 map in a directory, tabling measured decision-tick quartiles
-    /// (ticks and clock) beside the geometric `pace` label and the
-    /// audited ground route. Measurement only — nothing gates on it.
-    PaceSweep {
-        /// Scenario directory to sweep (other formats are skipped).
-        #[arg(long, default_value = "scenarios")]
-        dir: String,
-        /// Seeds per map (one configured-bot mirror match per seed).
-        #[arg(long, default_value_t = 12, value_parser = clap::value_parser!(u64).range(1..))]
-        seeds: u64,
-        /// Tick cap per match; every map's slowest tail must fit under
-        /// it or its quantiles read censored.
-        #[arg(long, default_value_t = 40_000, value_parser = clap::value_parser!(u64).range(1..))]
-        ticks: u64,
-        /// First scenario seed; offsets count up from here.
-        #[arg(long, default_value_t = 7_000)]
-        seed_base: u64,
-        /// Raw JSON output path.
-        #[arg(long)]
-        out: Option<String>,
-        #[command(flatten)]
-        bot: MeasurementBotArgs,
-    },
-    /// Factorial matchup measurement: the factors the game binds to the
-    /// seat index — roster, geometry, id range, command order —
-    /// permuted as a full cross product on one seed set with the
-    /// same controller profile in both chairs. Reports per-factor marginals with
-    /// Wilson intervals and the whole cell table, because the
-    /// interactions are the finding.
-    SweepFactorial {
-        /// Scenario path, or "skirmish".
-        #[arg(long, default_value = "skirmish")]
-        scenario: String,
-        /// Factors in the design, comma-separated (default: all of
-        /// faction, spawn, command, geometry).
-        #[arg(long)]
-        factors: Option<String>,
-        /// Seeds per cell.
-        #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u64).range(1..))]
-        seeds: u64,
-        /// Tick cap per match.
-        #[arg(long, default_value_t = 40_000, value_parser = clap::value_parser!(u64).range(1..))]
-        ticks: u64,
-        /// First scenario seed; offsets count up from here.
-        #[arg(long, default_value_t = 7_000)]
-        seed_base: u64,
-        /// Raw JSON output path.
-        #[arg(long)]
-        out: Option<String>,
-        #[command(flatten)]
-        bot: MeasurementBotArgs,
-    },
     /// Timed mass-battle bench: ticks/second at scale, plus a hash
     /// self-check. Wall-clock stays local; CI asserts only correctness.
     Bench {
@@ -481,9 +384,8 @@ enum Cmd {
         /// Ticks to run.
         #[arg(long, default_value_t = 2_000)]
         ticks: u32,
-        /// Bench a shipped scenario with the current controller thinking in every
-        /// chair instead of the synthetic mass battle (e.g.
-        /// "scenarios/compass-grand.json" — eight bots).
+        /// Bench a scenario with a bot in every seat instead of the synthetic
+        /// mass battle (e.g. "scenarios/compass-grand.json").
         #[arg(long)]
         scenario: Option<String>,
         /// Controller difficulty for a scenario benchmark.
@@ -496,29 +398,6 @@ enum Cmd {
         #[arg(long, requires = "scenario")]
         personality_seed: Option<u64>,
     },
-    /// Paired, seat-neutral arena duel between two hand-picked armies
-    /// (no economy): the balance review's controlled experiment.
-    Matchup {
-        /// Side A, as "kind:count,kind:count".
-        #[arg(long)]
-        a: String,
-        /// Side B, same shape.
-        #[arg(long)]
-        b: String,
-        /// Pre-built structures for side B, as "kind:count" (defense
-        /// mode: the swarm-vs-fortification experiment).
-        #[arg(long)]
-        b_structures: Option<String>,
-        /// Seat rosters, west then east: ff, cc, fc or cf. Both seats
-        /// wear one roster by default, so a leg swap exchanges seat,
-        /// geometry and ID range and nothing else.
-        #[arg(long, default_value = "ff", value_parser = oxide_kit::matchup::parse_factions)]
-        factions: oxide_kit::matchup::SeatFactions,
-        /// Tile spacing of the garrison grid (must clear the widest
-        /// structure standing in it).
-        #[arg(long, default_value_t = 3)]
-        garrison_pitch: i32,
-    },
     /// Measure a map: room per seat, route lengths by domain, resources,
     /// artillery pressure, spawn spacing.
     MapAudit {
@@ -528,8 +407,8 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Recompute match statistics from a replay (scrap and army-value
-    /// series, losses) — the record is the match.
+    /// Recompute match statistics from a replay: scrap and army-value
+    /// series, and losses.
     ReplayStats {
         /// Replay JSON path.
         path: PathBuf,
@@ -591,9 +470,9 @@ enum Cmd {
         #[arg(long)]
         spawn: bool,
     },
-    /// Perceptual-diff screenshot suite: twelve canonical screens from a
-    /// spawned automation shell, compared against per-machine
-    /// references (gitignored — a local gate, never CI).
+    /// Perceptual-diff screenshot suite: canonical screens from a spawned
+    /// automation shell, compared against gitignored per-machine references.
+    /// A local gate, never CI.
     Shots {
         /// Debug-server port for the spawned shell.
         #[arg(long, default_value_t = 4151)]
@@ -605,9 +484,8 @@ enum Cmd {
         #[arg(long, default_value = "shots")]
         dir: PathBuf,
         /// Mean per-channel difference tolerated, in percent. The default
-        /// is calibrated: font AA jitter measures <= 0.003% run to run,
-        /// while a small UI element appearing or vanishing measures
-        /// ~0.02% — the gate must sit between them.
+        /// sits above run-to-run font antialiasing jitter and below a small
+        /// UI element appearing or vanishing.
         #[arg(long, default_value_t = 0.01)]
         threshold: f64,
     },
@@ -629,8 +507,8 @@ mod parse;
 
 use live_cli::{LiveCmd, capture_sequence, live_requests};
 
-/// Per-tick latency digest for bench output: mean, median, tail, and the
-/// worst tick with its index — the spike a throughput mean cannot see.
+/// Per-tick latency digest for bench output: mean, median, p99, and the
+/// worst tick with its index.
 fn latency_summary(samples_ns: &[u64]) -> String {
     if samples_ns.is_empty() {
         return "no samples".to_string();
@@ -1089,18 +967,12 @@ fn main() -> Result<()> {
             until,
             expect_hash,
             hash_every,
-            allow_version_mismatch,
             allow_long,
         } => {
             let replay = oxide_kit::load_replay(&path)?;
             let mut events = 0u64;
-            let state = runner::run_replay_observed(
-                &replay,
-                ticks,
-                until,
-                allow_version_mismatch,
-                allow_long,
-                |state, report| {
+            let state =
+                runner::run_replay_observed(&replay, ticks, until, allow_long, |state, report| {
                     let Some(every) = hash_every else {
                         return;
                     };
@@ -1115,8 +987,7 @@ fn main() -> Result<()> {
                             })
                         );
                     }
-                },
-            )?;
+                })?;
             let hash = hash_hex(state.hash());
             let mut summary = serde_json::json!({
                 "tick": state.current_tick(),
@@ -1190,67 +1061,6 @@ fn main() -> Result<()> {
             render::save_png(&outcome.state, &out)?;
             eprintln!("wrote {}", out.display());
         }
-        Cmd::Sweep {
-            scenario,
-            seeds,
-            ticks,
-            seed_base,
-            out,
-            bot,
-        } => {
-            oxide_driver::sweep::sweep_report(
-                &scenario,
-                seeds,
-                ticks,
-                seed_base,
-                out.as_deref(),
-                bot.config(),
-            )?;
-        }
-        Cmd::PaceSweep {
-            dir,
-            seeds,
-            ticks,
-            seed_base,
-            out,
-            bot,
-        } => {
-            oxide_driver::pace::pace_sweep_report(
-                &dir,
-                seeds,
-                ticks,
-                seed_base,
-                out.as_deref(),
-                bot.config(),
-            )?;
-        }
-        Cmd::SweepFactorial {
-            scenario,
-            factors,
-            seeds,
-            ticks,
-            seed_base,
-            out,
-            bot,
-        } => {
-            use oxide_driver::factorial::Factor;
-            let enabled: Vec<Factor> = match factors.as_deref() {
-                Some(list) => list
-                    .split(',')
-                    .map(|key| Factor::parse(key.trim()))
-                    .collect::<anyhow::Result<_>>()?,
-                None => Factor::ALL.to_vec(),
-            };
-            oxide_driver::factorial::factorial_report(
-                &scenario,
-                &enabled,
-                seeds,
-                ticks,
-                seed_base,
-                out.as_deref(),
-                bot.config(),
-            )?;
-        }
         Cmd::Bench {
             units,
             ticks,
@@ -1274,10 +1084,9 @@ fn main() -> Result<()> {
                     oxide_sim::SIM_VERSION,
                     sc.seed
                 );
-                // The timed loop stops at the decision: post-victory
-                // ticks simulate a world with nothing left to decide
-                // and average as free work, so a long --ticks quietly
-                // inflated ticks/s (the once-recorded 25k+ figures).
+                // The timed loop stops at the match result: post-victory
+                // ticks have nothing left to decide and would inflate
+                // ticks/s.
                 let start = std::time::Instant::now();
                 let mut ran: u64 = 0;
                 let mut tick_ns: Vec<u64> = Vec::with_capacity(ticks as usize);
@@ -1364,82 +1173,6 @@ fn main() -> Result<()> {
             );
             println!("bench-latency: whole tick {}", latency_summary(&tick_ns));
         }
-        Cmd::Matchup {
-            a,
-            b,
-            b_structures,
-            factions,
-            garrison_pitch,
-        } => {
-            let army_a = oxide_kit::matchup::parse_army(&a)?;
-            let army_b = if b.trim().is_empty() {
-                Vec::new()
-            } else {
-                oxide_kit::matchup::parse_army(&b)?
-            };
-            let garrison = match &b_structures {
-                Some(spec) => oxide_kit::matchup::parse_garrison(spec)?,
-                None => Vec::new(),
-            };
-            print!(
-                "A = {a} ({} scrap)   B = {b} ({} scrap)",
-                oxide_kit::matchup::army_cost(&army_a),
-                oxide_kit::matchup::army_cost(&army_b),
-            );
-            if let Some(spec) = &b_structures {
-                print!(
-                    "  + garrison {spec} ({} scrap, pitch {garrison_pitch})",
-                    oxide_kit::matchup::garrison_cost(&garrison)
-                );
-            }
-            println!();
-            println!("seats: {factions}");
-            let arena = oxide_kit::matchup::Arena {
-                factions,
-                garrison_pitch,
-                ..oxide_kit::matchup::Arena::default()
-            };
-            let out = oxide_kit::matchup::siege(&army_a, &army_b, &garrison, &arena)?;
-            for leg in out.legs() {
-                let verdict = leg
-                    .verdict()
-                    .map_or_else(|| "unresolved".to_string(), |v| v.to_string());
-                println!(
-                    "  A as player {} / B as player {}: A survives {:>4}  B survives {:>4}  \
-                     [hp-weighted A {:>4}  B {:>4}]  ({} ticks, {}, verdict {})",
-                    leg.a_player,
-                    1 - leg.a_player,
-                    leg.a_value,
-                    leg.b_value,
-                    leg.a_hp_value,
-                    leg.b_hp_value,
-                    leg.ticks,
-                    leg.termination,
-                    verdict,
-                );
-            }
-            let verdict = out
-                .verdict()
-                .map_or_else(|| "unresolved".to_string(), |v| v.to_string());
-            let flips = match out.verdict_flips_on_swap() {
-                Some(true) => "yes",
-                Some(false) => "no",
-                None => "unresolved",
-            };
-            println!(
-                "paired mean surviving purchase value  A {:.1}  B {:.1}  \
-                 (verdict {}, verdict flips on swap {})",
-                out.a_mean_value(),
-                out.b_mean_value(),
-                verdict,
-                flips,
-            );
-            println!(
-                "paired mean hp-weighted surviving value  A {:.1}  B {:.1}",
-                out.a_mean_hp_value(),
-                out.b_mean_hp_value(),
-            );
-        }
         Cmd::MapAudit { scenario, json } => {
             let scenario = runner::load_scenario(&scenario)?;
             let audit = oxide_driver::audit::audit(&scenario)?;
@@ -1452,7 +1185,7 @@ fn main() -> Result<()> {
         Cmd::ReplayStats { path, every } => {
             let replay = oxide_kit::load_replay(&path)
                 .with_context(|| format!("loading {}", path.display()))?;
-            let stats = oxide_driver::stats::compute(&replay, every)?;
+            let stats = oxide_kit::stats::compute(&replay, every)?;
             println!("{}", serde_json::to_string_pretty(&stats)?);
         }
         Cmd::Live { addr, cmd } => {

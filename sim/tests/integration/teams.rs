@@ -276,7 +276,7 @@ fn victory_takes_every_enemy_foundry_and_spectators_stay_muted() {
 fn an_omitted_team_can_never_alias_an_explicit_one() {
     // Seat 0 authors team 1 while seat 1 omits its team entirely. Raw
     // values would alias them onto one side (and reject the map as one
-    // team); normalization keeps the omitted seat a genuine team of one.
+    // team); normalization keeps the omitted seat a separate team of one.
     let mut scenario = arena4(vec![
         unit(0, UnitKind::Sentinel, 5, 5),
         unit(1, UnitKind::Sentinel, 18, 5),

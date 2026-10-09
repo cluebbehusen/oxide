@@ -1,13 +1,13 @@
 //! Deterministic, machine-readable replay inspection.
 //!
-//! This is deliberately a read-only view over the same replay execution path
-//! as the rest of the driver. A snapshot at tick `N` is the state whose
+//! A read-only view over `oxide-kit`'s shared replay execution path. A
+//! snapshot at tick `N` is the state whose
 //! [`oxide_sim::State::current_tick`] is exactly `N`: commands stamped `N`
 //! have not executed yet.
 
-use crate::runner::GameReplay;
 use anyhow::Result;
 use chassis::replay::ReplayMeta;
+use oxide_kit::runner::GameReplay;
 use oxide_protocol::{FogView, StateFilter, StateView, hash_hex};
 use oxide_sim::scenario::BotConfig;
 use oxide_sim::{Command, Faction, GameResult, PlayerId, SIM_VERSION};
@@ -64,8 +64,7 @@ pub struct ReplayPlayerSummary {
     pub team: u8,
     /// Whether the scenario assigns this seat to a built-in bot.
     pub bot: bool,
-    /// Authored bot configuration, or `None` for a human seat (or a
-    /// legacy replay recorded before configs were required).
+    /// Authored bot configuration, or `None` when the scenario records none.
     pub bot_config: Option<BotConfig>,
 }
 

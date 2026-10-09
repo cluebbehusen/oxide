@@ -937,9 +937,8 @@ fn pause_frame(app: &mut App, mut ps: PauseScreen, events: &[RawEvent]) -> Resul
             Screen::Playing
         }
         screens::pause::Out::WatchReplay => {
-            // The recorder IS the record — clone it, stamp
-            // its length, play it back. Non-destructive; the
-            // live match waits.
+            // Play back a clone of the recorder, stamped with
+            // its length; the live match waits untouched.
             let mut replay = app.game.recorder.clone();
             replay.meta.ticks = Some(app.game.state.current_tick());
             match PlaybackSession::from_replay(replay) {

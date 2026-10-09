@@ -1,4 +1,4 @@
-//! The top bar's control-group strip, by click and by tap.
+//! The control-group strip, by click and by tap.
 
 use super::*;
 use crate::layout::GroupSlot;

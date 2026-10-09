@@ -17,8 +17,8 @@ use std::{ops::Deref, sync::Arc};
 
 pub(crate) fn finish_recording(writer: &oxide_kit::recovery::RecoveryWriter, tick: u64) {
     writer.finish(tick);
-    // Only the existing explicit leave/save path waits. A failed or slow
-    // writer leaves an interrupted record, even if the ordinary save landed.
+    // Only the explicit leave/save path waits. A failed or slow writer
+    // leaves an interrupted record, even if the ordinary save landed.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
     while !writer.status().clean
         && writer.status().error.is_none()
@@ -77,8 +77,8 @@ impl std::ops::DerefMut for PendingCommands {
 /// What the player currently has selected.
 #[derive(Default)]
 pub struct Selection {
-    /// Selected units — single-allegiance by construction (own for
-    /// command, ally/enemy for read-only inspection).
+    /// Selected units, single-allegiance by construction (own for
+    /// command, ally or enemy for read-only inspection).
     pub units: Vec<UnitId>,
     /// Selected buildings of one owner (mutually exclusive with units
     /// in practice), kept in id order. Commands validate ownership at
@@ -119,7 +119,7 @@ pub struct Game {
     /// Command sources for bot-flagged players.
     bots: Vec<SeatController>,
     bot_decision: Option<oxide_kit::bot_execution::PendingDecision>,
-    /// Every command of the session, tick-stamped — always recording.
+    /// Every command of the session, tick-stamped.
     pub recorder: GameReplay,
     pub(crate) recovery_root: Option<std::path::PathBuf>,
     pub(crate) recovery: Option<std::sync::Arc<oxide_kit::recovery::RecoveryWriter>>,
@@ -137,15 +137,15 @@ pub struct Game {
     /// Tick-event totals and adaptively thinned graph samples. This is
     /// presentation bookkeeping and never feeds back into the sim.
     live_stats: oxide_kit::stats::LiveMatchStats,
-    /// The match in numbers at the moment the human conceded an
-    /// UNDECIDED team match — the exit offer's stats. Decided matches
-    /// (a 1v1 surrender included) go through `end_stats` instead.
+    /// Match statistics at the moment the human conceded an undecided team
+    /// match, shown with the exit offer. Decided matches (a 1v1 surrender
+    /// included) use `end_stats` instead.
     pub concede_stats: Option<oxide_kit::stats::MatchStats>,
-    /// What the player has demonstrably done — the tutorial's evidence.
+    /// What the player has demonstrably done, as evidence for the tutorial.
     pub demo: crate::tutorial::Demo,
     /// True during bulk fast-forwards: presentation (fx, sounds, facing)
-    /// is skipped entirely instead of accumulated-then-discarded — a
-    /// million-tick advance must not buffer a million battles.
+    /// is skipped instead of accumulated and discarded, so a long advance
+    /// does not buffer every effect it passes.
     suppress_presentation: bool,
     /// This machine's side of a lockstep session, whose ticks come from
     /// supplied batches rather than `do_tick`.
@@ -218,8 +218,7 @@ impl Game {
         Self::with_viewport(scenario, crate::render::viewport())
     }
 
-    /// `new` with the window injected — the only constructor tests use,
-    /// because it never touches macroquad.
+    /// `new` with an explicit viewport instead of the injected window size.
     pub fn with_viewport(scenario: Scenario, viewport: Vec2) -> Result<Self> {
         let human = Self::local_seat(&scenario);
         Self::assemble(scenario, viewport, human, true)
@@ -274,19 +273,18 @@ impl Game {
         })
     }
 
-    /// Resumes a session from a recorded replay: rebuild its scenario,
-    /// re-execute every recorded tick (headless-fast), and keep recording
-    /// onto the same log. In a deterministic sim a replay *is* a save file
-    /// — this is "load game".
+    /// Resumes a session from a recorded replay: rebuilds its scenario,
+    /// re-executes every recorded tick headlessly, and keeps recording
+    /// onto the same log.
     pub fn from_replay(replay: GameReplay) -> Result<Self> {
-        // Loading replays synchronously on the frame loop: a structurally
-        // valid file can still claim an absurd duration and freeze the UI
-        // for minutes. ~28 game-hours is beyond any honest session.
+        // Replays load synchronously on the frame loop, and a structurally
+        // valid file can still claim a duration long enough to freeze the
+        // UI for minutes.
         const MAX_LOAD_TICKS: u64 = oxide_kit::MAX_REPLAY_TICKS;
         let _load = oxide_kit::diagnostics::stage(Stage::ReplayLoad, 0);
         // Untrusted file: enforce the invariants recording guarantees, and
-        // refuse cross-version saves outright — resuming one would keep
-        // recording onto a log that can no longer reproduce.
+        // refuse cross-version saves outright, since resuming one would
+        // keep recording onto a log that can no longer reproduce.
         replay
             .validate(Some(SIM_VERSION))
             .map_err(|err| anyhow::anyhow!("{err}"))?;
@@ -498,9 +496,9 @@ impl Game {
             self.end_stats = Some(self.live_stats.snapshot(&self.state));
         }
 
-        // Income is evidence too: the mining lesson graduates on a
-        // load actually landing, not on the accepted order — so it
-        // rides the sim's event, outside the command gate below.
+        // The mining lesson completes when a load actually lands, not when
+        // the order is accepted, so it reads the sim's event outside the
+        // command gate below.
         if report
             .events
             .iter()
@@ -509,12 +507,12 @@ impl Game {
             self.demo.deposited = true;
         }
 
-        // A concession that did NOT decide the match (a team game, the
-        // ally fighting on) raises the surrender overlay: the human's
-        // match in numbers so far, with Esc-to-menu as the exit. A
-        // decisive surrender goes through the normal result flow, and a
-        // bulk fast-forward (replay load) keeps only the resigned fact —
-        // the banner is a fresh-concession moment, not standing state.
+        // A concession that did not decide the match (a team game with the
+        // ally fighting on) raises the surrender overlay with the human's
+        // statistics so far and Esc-to-menu as the exit. A decisive
+        // surrender goes through the normal result flow, and a bulk
+        // fast-forward (replay load) keeps only the resigned fact: the
+        // banner marks a fresh concession, not standing state.
         if !self.suppress_presentation
             && self.state.result().is_none()
             && report
@@ -526,10 +524,10 @@ impl Game {
             self.presentation.conceded_banner = true;
         }
 
-        // The tutorial's evidence: what the human actually asked for
-        // AND the sim accepted. A tick carrying any rejection for the
-        // human grades nothing — the deliberately-illegal placement
-        // the building lesson invites must not graduate it.
+        // Tutorial evidence is what the human asked for and the sim
+        // accepted. A tick carrying any rejection for the human grades
+        // nothing, so the illegal placement the building lesson invites
+        // cannot complete it.
         let human_rejected = report
             .events
             .iter()
@@ -566,10 +564,10 @@ impl Game {
             self.presentation
                 .observe_tick(&self.state, &report.events, &report.movement);
         }
-        // Dead units leave the selection — and so do HOSTILES whose
-        // ground fog has re-covered: the panel reads live hp from the
-        // selection, and an inspection must never become a tracking
-        // beacon into the dark. (Allies stay: team sight is standing.)
+        // Dead units leave the selection, and so do hostiles whose ground
+        // fog has returned: the panel reads live hp from the selection, so
+        // an inspection must not track a unit into fog. Allies stay
+        // because team sight is shared.
         let human = self.presentation.human;
         let all_seeing = self.presentation.all_seeing();
         {
@@ -656,8 +654,8 @@ impl Game {
             self.do_tick();
         }
         self.suppress_presentation = false;
-        // No cross-jump interpolation after a bulk advance — and whatever
-        // presentation slipped in beforehand doesn't survive the jump.
+        // No interpolation across a bulk advance, and presentation queued
+        // before it does not survive the jump.
         self.presentation.accum = 0.0;
         self.drop_presentation();
         self.presentation.remember_previous_tick(&self.state);
@@ -709,8 +707,8 @@ impl Game {
         hash_hex(self.state.hash())
     }
 
-    /// The transport's view of this session — also the live half of the
-    /// debug protocol's shared surface.
+    /// The transport's view of this session, which is also the live half
+    /// of the debug protocol's shared surface.
     pub fn status_view(&self) -> oxide_protocol::StatusView {
         oxide_protocol::StatusView {
             tick: self.state.current_tick(),

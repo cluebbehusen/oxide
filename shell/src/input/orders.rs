@@ -138,7 +138,7 @@ pub(super) fn digit_action(game: &mut Game, input: &mut InputState, slot: usize)
 /// the same slot centers the camera on the group.
 fn group_action(game: &mut Game, input: &mut InputState, slot: usize) {
     // Ownership, not mere existence: after a session change a stale id
-    // could name anyone's unit (belt to reset_session's suspenders).
+    // could name anyone's unit, should one survive `reset_session`.
     let alive: Vec<UnitId> = input.groups[slot]
         .iter()
         .copied()
@@ -213,11 +213,11 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
         .iter()
         .any(|id| game.state.unit(*id).is_some_and(|u| u.kind.stats().welder));
 
-    // Own-FOOTPRINT hits outrank enemy-RADIUS hits: a raider gnawing a
+    // Own-footprint hits outrank enemy-radius hits: a raider attacking a
     // wall sits inside the pick radius of a click on that wall, and the
-    // click's plain meaning is the building under the cursor, not the
-    // rat beside it. No visibility condition on own targets — ownership
-    // cannot probe fog, and own buildings always draw.
+    // click means the building under the cursor. Own targets need no
+    // visibility check, since ownership cannot probe fog and own
+    // buildings always draw.
     let own_building = game
         .state
         .buildings_at(tile)
@@ -347,12 +347,11 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
         game.presentation.ping_order(at, PingKind::Attack, queue);
         return;
     }
-    // A wounded own GROUND unit under the cursor takes the weld, the
-    // unit mirror of the damaged-building flow above — but only AFTER
-    // the enemy checks (attack intent stays reliable in a brawl) and
-    // never for a machine in the current selection, so ordering a
-    // group that contains its own wounded still reads as a move. The
-    // armed verb (the Weld card) reaches those.
+    // A wounded own ground unit under the cursor takes the weld, like the
+    // damaged-building flow above, but only after the enemy checks (attack
+    // intent stays reliable in a brawl) and never for a machine in the
+    // current selection, so ordering a group that contains its own wounded
+    // still reads as a move. The armed Weld verb reaches those.
     if has_welder {
         let patient = game
             .state

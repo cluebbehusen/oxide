@@ -262,17 +262,16 @@ impl MapModel {
         model
     }
 
-    /// The cuts across the seat's ground ways to each hostile start: for
-    /// every two-tile-deep band of ground at one distance from its start,
-    /// where the tiles on routes to that hostile start no more than
-    /// [`CUT_SLACK`] longer than the shortest fall in at most [`CUT_GATES`]
-    /// connected pieces of the band, each no more than [`GATE_WIDTH`]
-    /// across, together narrower than their distance from the start, off
-    /// the `fixed` ground the map puts buildings on, and with them closed no
-    /// ground way left from the start to that hostile start at all; a piece
-    /// the others close every way without is left out. Open
-    /// ground around a start at that distance is wider than that, even in a
-    /// corner.
+    /// The cuts across the seat's ground ways to each hostile start. A cut is
+    /// a two-tile-deep band of ground at one distance from the start where
+    /// the tiles on routes to that hostile start no more than [`CUT_SLACK`]
+    /// longer than the shortest fall in at most [`CUT_GATES`] connected
+    /// pieces, each no more than [`GATE_WIDTH`] across, together narrower
+    /// than their distance from the start and off the `fixed` ground the map
+    /// puts buildings on, and closing them leaves no ground way to that
+    /// hostile start. A piece the others close every way without is left
+    /// out. The width bound rules out open ground, which at that distance is
+    /// wider even in a corner.
     fn find_cuts(&self, player: PlayerId, fixed: &[TilePos]) -> Vec<Cut> {
         let seat = usize::from(player.0);
         let (Some(home), Some(start)) = (
@@ -562,8 +561,8 @@ impl MapModel {
     /// lane, slot by slot. Once those run out, any place off the lanes
     /// follows, so cramped ground still takes every building that fits. A
     /// spot is open ground on its Foundry's ground, off every frame and the
-    /// seat's gates and a tile clear of starting scrap. Within a gap, spots go in the seat's
-    /// frame, so mirrored seats list mirrored spots.
+    /// seat's gates and a tile clear of starting scrap. Within a gap, spots
+    /// go in the seat's frame, so mirrored seats list mirrored spots.
     pub(crate) fn spots(
         &self,
         player: PlayerId,
@@ -733,7 +732,7 @@ impl MapModel {
     }
 }
 
-/// Anchors of two-by-two footprints of open ground on one component, off
+/// Anchors of `size`-square footprints of open ground on one component, off
 /// every frame and a tile clear of starting scrap, where Harvesters still
 /// get through.
 fn spot_grid(map: &Map, components: &Grid<u32>, size: i32) -> Grid<bool> {

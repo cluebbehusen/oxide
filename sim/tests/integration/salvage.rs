@@ -478,7 +478,7 @@ fn a_flyer_downed_over_rock_leaves_no_wreck_bait() {
 }
 
 // ---------------------------------------------------------------------
-// Building salvage (0.11): stripping standing structures as labor.
+// Building salvage: stripping standing structures as labor.
 
 use oxide_sim::command::RejectReason;
 use oxide_sim::scenario::BuildingSpec;
@@ -616,9 +616,9 @@ fn an_interrupted_salvage_credits_only_the_hp_it_drained() {
 
 #[test]
 fn the_repair_salvage_pump_strictly_loses_scrap() {
-    // The printer configuration the 0.11 repricing exists to kill:
-    // strip hp out at 800 per mille, weld it back at 850 — the round
-    // trip must strictly lose money at any stopping point.
+    // A repair/salvage loop must not print scrap: strip hp out at 800 per
+    // mille, weld it back at 850, and the round trip must strictly lose
+    // money at any stopping point.
     let mut scenario = arena(vec![unit(0, UnitKind::Harvester, 7, 2)]);
     scenario
         .buildings
@@ -1087,9 +1087,8 @@ fn eviction_strips_queued_legs_but_spares_the_rest_of_the_program() {
 
 #[test]
 fn foundry_repair_bills_against_its_authored_price() {
-    // The Foundry keeps its authored welding ramp and billing basis even
-    // now that it is purchasable — repairing the victory token stays the
-    // tuned defensive lever. One prepaid coin covers exactly the hp
+    // The Foundry uses its own welding ramp and billing basis rather than
+    // its construction cost. One prepaid coin covers exactly the hp
     // whose milli-price ceils to one scrap, same derivation as buildable
     // kinds. The wound and the clock are staged directly so the whole
     // weld fits inside one drip period: passive income never touches
@@ -1145,10 +1144,10 @@ fn foundry_repair_bills_against_its_authored_price() {
 
 #[test]
 fn a_rejected_command_never_evicts_the_working_crew() {
-    // A salvage with no valid units (or a full queue) is DROPPED — and
-    // a dropped command must leave the world untouched: the old order
-    // ran the eviction before validating, so a misfiring client could
-    // cancel its own welders with a lancer-only salvage click.
+    // A salvage with no valid units (or a full queue) is dropped, and a
+    // dropped command must leave the world untouched: evicting before
+    // validating would let a lancer-only salvage click cancel the
+    // player's own welders.
     let mut scenario = arena(vec![
         unit(0, UnitKind::Harvester, 7, 2),
         unit(0, UnitKind::Sentinel, 8, 2),
@@ -1301,7 +1300,7 @@ fn eviction_reaches_a_looping_programs_rotation() {
     assert!(unit.looping, "the patrol itself survives");
 }
 
-// --- The anchored work-zone contract (0.14) ---
+// --- The anchored work-zone contract ---
 
 use oxide_sim::stats::HARVEST_ZONE_RADIUS;
 
@@ -1415,7 +1414,7 @@ fn a_dry_source_with_no_neighbor_retires_the_harvester_instead_of_marching() {
 #[test]
 fn a_work_zone_cleans_up_neighboring_wrecks_without_another_order() {
     // A second wreck lands two tiles from the first. Local battlefield
-    // salvage is part of the same anchored work contract now.
+    // salvage is part of the same anchored work contract.
     let mut state = arena(vec![
         unit(0, UnitKind::Harvester, 5, 5),
         unit(0, UnitKind::Harvester, 7, 5),

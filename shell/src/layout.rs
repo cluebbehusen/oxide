@@ -1,11 +1,8 @@
-//! The one description of where chrome sits this frame.
+//! Where the in-game HUD chrome sits this frame.
 //!
 //! The renderer computes a [`LayoutModel`] as it draws and publishes it
-//! on the `Game`; hit-testing reads the same model. There is no second
-//! copy of the geometry to fall out of sync — the 0.8 bug where clicks
-//! leaked through the palette's second row existed precisely because
-//! drawing and hit-testing each kept their own arithmetic. New screens
-//! and widgets grow this model rather than freehand math.
+//! on the `Game`; hit-testing reads the same model, so drawing and
+//! hit-testing never keep separate geometry that could disagree.
 
 use crate::numeric;
 use crate::panel::CardAction;
@@ -100,19 +97,17 @@ impl Default for LayoutModel {
     }
 }
 
-/// Top-bar height in logical px at 1x scale — the ONE source both the
-/// layout's hit-testing and the chrome's drawing read (the duplicated-
-/// geometry class stays structurally extinct only while it isn't
-/// duplicated).
+/// Top-bar height in logical px at 1x scale, read by both hit-testing
+/// and drawing.
 pub const TOP_BAR_H: f32 = 40.0;
 
 /// Minimum touch target edge in logical px (platform guidance says a
 /// fingertip needs ~44).
 pub const MIN_TOUCH_TARGET: f32 = 44.0;
 
-/// Pads a hit rect out to the minimum touch target, centered — the
-/// TOUCH paths hit-test through this so small chrome stays tappable;
-/// mouse paths keep the exact drawn rect.
+/// Pads a hit rect out to the minimum touch target, centered. Touch
+/// paths hit-test through this so small chrome stays tappable; mouse
+/// paths keep the exact drawn rect.
 pub fn touch_pad(rect: Rect, ui: f32) -> Rect {
     let min = MIN_TOUCH_TARGET * ui;
     let grow_w = (min - rect.w).max(0.0);
@@ -317,13 +312,13 @@ pub enum TooltipSide {
 }
 
 /// Places a tooltip box against the rect it describes. `gap` is the
-/// clearance from the anchor AND the margin held against the window
+/// clearance from the anchor and the margin held against the window
 /// edges, so callers pass it already ui-scaled.
 ///
-/// Clamping is the point: a tall box on a short window pins under the
-/// top bar rather than climbing off screen, and a wide box near the
-/// right edge slides back inside. A box with nowhere to fit pins to
-/// the top — a clipped tail beats a clipped header.
+/// The box is clamped on screen: a tall box on a short window pins under
+/// the top bar, and a wide box near the right edge slides back inside. A
+/// box with nowhere to fit pins to the top, clipping its tail rather than
+/// its header.
 pub fn tooltip_origin(
     anchor: Rect,
     size: Vec2,

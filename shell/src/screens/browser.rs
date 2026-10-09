@@ -71,8 +71,8 @@ pub struct Browser {
     touch_last_y: f32,
     touch_travel: f32,
     touch_pressed: Option<usize>,
-    /// The viewport the last frame handled — resize detection for the
-    /// snap-back guard, which must fire on resize and NEVER per frame.
+    /// The viewport the last frame handled, so the snap-back guard fires
+    /// only on resize.
     last_view: Vec2,
 }
 
@@ -156,12 +156,11 @@ fn metrics(view: Vec2, ui: f32) -> (f32, f32, f32, f32, f32, f32, f32) {
     // UI scale) compresses the title and hint zones first.
     let top = (108.0 * ui).min(view.y * 0.22);
     let bottom = view.y - (76.0 * ui).min(view.y * 0.14);
-    // At least one heading + card row must ALWAYS fit the window, or
+    // At least one heading and card row must always fit the window, or
     // the grid draws nothing while Enter still activates the hidden
-    // selection. The 16ui row gap below matches layout().
-    // The floor is PHYSICAL: when even compressed chrome can't afford
-    // it, cards run small but never to zero — a zero-height card is
-    // unclickable while Enter still fires the hidden selection.
+    // selection. The 16ui row gap matches `layout()`. The floor is
+    // physical: when even compressed chrome can't afford it, cards run
+    // small but never to zero.
     let card_h = (card_w * 0.5 + 26.0 * ui)
         .min(bottom - top - heading_h - 16.0 * ui)
         .max(40.0);
@@ -199,8 +198,8 @@ impl Browser {
         }
     }
 
-    /// Re-selects the remembered map by PATH (section sorts must never
-    /// move the highlight onto a different map).
+    /// Re-selects the remembered map by path, so section sorts never move
+    /// the highlight onto a different map.
     pub fn select_path(&mut self, entries: &[ScenarioEntry], path: Option<&std::path::Path>) {
         if let Some(i) = entries.iter().position(|e| e.path.as_deref() == path) {
             self.selected = i;
@@ -308,11 +307,10 @@ impl Browser {
         let view = crate::render::viewport();
         let ui = crate::render::ui_scale();
         let cols = columns(view.x, ui);
-        // A resize can shrink the window out from under the selection —
-        // layout() recomputes each frame but scroll state does not.
-        // The guard fires on RESIZE ONLY: run per frame it would snap
-        // every wheel scroll straight back to the selection, and the
-        // shelf's lower half could never be reached by trackpad.
+        // A resize can shrink the window out from under the selection:
+        // `layout()` recomputes each frame but scroll state does not. The
+        // guard fires on resize only; run per frame, it would snap every
+        // wheel scroll straight back to the selection.
         if self.last_view != view {
             self.last_view = view;
             let max = max_scroll(&lines(entries, cols), view, ui);
@@ -346,7 +344,7 @@ impl Browser {
                 RawEvent::KeyDown { key: Key::Enter } => {
                     // Enter never fires a card the player can't see:
                     // an off-screen selection scrolls into view first,
-                    // and the SECOND Enter commits.
+                    // and the second Enter commits.
                     let shown = self.layout(entries, view, ui);
                     if shown.cards.iter().any(|(entry, rect)| {
                         *entry == self.selected
@@ -400,11 +398,7 @@ impl Browser {
                     let wheel_pixels = 56.0 * ui;
                     self.scroll_y = (self.scroll_y - delta * wheel_pixels).clamp(0.0, max);
                     self.hover = card_at(self, *mouse);
-                    // Browsing is not choosing: the wheel moves the
-                    // window and ONLY the window. (The old drag-along
-                    // rule silently retargeted Enter while the player
-                    // was just looking; Enter now scrolls an
-                    // off-screen selection back instead.)
+                    // The wheel scrolls without moving the selection.
                 }
                 RawEvent::MouseMove { x, y } => {
                     *mouse = vec2(x, y);
@@ -566,9 +560,8 @@ impl Browser {
             title_size,
             TEXT_TITLE,
         );
-        // A draw-only scrollbar thumb: where the window sits in the
-        // shelf, at a glance. The wheel is the drag; this just tells
-        // the truth about how much shelf is off screen.
+        // A draw-only scrollbar thumb showing where the window sits in
+        // the shelf.
         if layout.more_above || layout.more_below {
             let track_h = bottom - top;
             let thumb_h = if layout.content_height > 0.0 {
@@ -585,7 +578,7 @@ impl Browser {
             draw_rectangle(x, top, 3.0 * ui, track_h, SURFACE_MENU);
             draw_rectangle(x, thumb_top, 3.0 * ui, thumb_h, TEXT_SECONDARY);
         }
-        // The selected map's story, above the hint line.
+        // The selected map's blurb, above the hint line.
         if let Some(entry) = entries.get(self.selected) {
             let blurb = entry
                 .blurb

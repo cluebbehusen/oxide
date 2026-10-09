@@ -9,7 +9,7 @@ fn an_append_a_full_queue_refuses_leaves_the_unit_untouched() {
     let unit = &mut state.units[0];
     let busy = Order::Harvest {
         node: TilePos::new(5, 5),
-        anchor: None,
+        anchor: TilePos::new(5, 5),
         retiring: false,
     };
     unit.order = busy;

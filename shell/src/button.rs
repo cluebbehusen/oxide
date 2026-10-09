@@ -1,5 +1,5 @@
-//! The labeled action button full-screen surfaces share, so every screen's
-//! buttons read, highlight, and hit the same way.
+//! The labeled action button full-screen surfaces share, and the top-left
+//! BACK button built from it.
 
 use crate::numeric;
 use crate::press::{Fed, Press};
@@ -63,8 +63,8 @@ pub(crate) fn draw(rect: Rect, label: &str, active: bool, s: f32) {
 
 /// The top-left BACK button full-screen menus leave through. It sees a
 /// frame's pointer events first, and the screen beneath gets only the
-/// ones it leaves alone, so a press on it never reaches a row. Living
-/// outside the rows, it survives every list rebuild.
+/// ones it leaves alone, so a press on it never reaches a row. It lives
+/// outside the rows, so list rebuilds do not disarm it.
 #[derive(Default)]
 pub(crate) struct BackButton {
     press: Press<()>,

@@ -1,6 +1,6 @@
 //! Scouting: a scout looks at each place the seat has not seen for a while,
-//! the most valuable first, hostile starts first. For places no scout can
-//! take it asks production for more.
+//! first the one whose time unseen weighted by its value is greatest. For
+//! places no scout can take it asks production for more.
 
 use super::Scratch;
 use super::air::{self, Hazard};
@@ -61,7 +61,7 @@ impl Missions {
     /// Keeps a scout looking at each stale place, no two at one place.
     /// Returns how many stale places no scout holds that the scout
     /// production would train could reach, which production trains scouts
-    /// for: an aircraft once an Airworks stands, else a Scuttler. None while
+    /// for: an aircraft once an Airworks stands, else a Scuttler. Zero while
     /// no mission could take another.
     pub(crate) fn scout(
         &mut self,

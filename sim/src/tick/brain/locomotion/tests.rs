@@ -144,93 +144,6 @@ fn sandbox(map: &[&str], units: &[(crate::UnitKind, i32, i32)]) -> crate::State 
     .expect("locomotion fixture builds")
 }
 
-/// The shape walking orders had when their goal was a bare tile.
-#[derive(serde::Serialize)]
-#[serde(tag = "order", rename_all = "snake_case")]
-enum LegacyOrder {
-    Run { goal: chassis::grid::TilePos },
-    Hunt { goal: chassis::grid::TilePos },
-    Advance { goal: chassis::grid::TilePos },
-    Unload { at: chassis::grid::TilePos },
-}
-
-#[test]
-fn a_reachable_routed_walk_serializes_exactly_like_the_legacy_tile_order() {
-    type Issue = fn(Vec<crate::UnitId>) -> Command;
-    use crate::{Command, Order, PlayerCommand, PlayerId, UnitKind};
-    use chassis::grid::TilePos;
-    let map = [".............."; 8];
-    let goal = TilePos::new(6, 4);
-    let commands: [(Issue, LegacyOrder); 3] = [
-        (
-            |units| Command::Run {
-                units,
-                goal: TilePos::new(6, 4),
-                queue: false,
-            },
-            LegacyOrder::Run { goal },
-        ),
-        (
-            |units| Command::Hunt {
-                units,
-                goal: TilePos::new(6, 4),
-                queue: false,
-            },
-            LegacyOrder::Hunt { goal },
-        ),
-        (
-            |units| Command::Advance {
-                units,
-                goal: TilePos::new(6, 4),
-                queue: false,
-            },
-            LegacyOrder::Advance { goal },
-        ),
-    ];
-    for (command, legacy) in commands {
-        let mut state = sandbox(&map, &[(UnitKind::Sentinel, 1, 1)]);
-        assert!(
-            state.vision(PlayerId(0)).explored(goal),
-            "premise: an explored click resolves at issue"
-        );
-        let walker = state.units()[0].id;
-        state.tick(&[PlayerCommand {
-            player: PlayerId(0),
-            command: command(vec![walker]),
-        }]);
-        let unit = state.unit(walker).unwrap();
-        assert!(unit.path.is_some(), "premise: the walk routed");
-        assert_eq!(unit.order.walk_goal().unwrap().endpoint, None);
-        assert_eq!(
-            chassis::hash::state_hash(&unit.order),
-            chassis::hash::state_hash(&legacy)
-        );
-        assert_eq!(
-            serde_json::to_value(unit.order).unwrap(),
-            serde_json::to_value(&legacy).unwrap()
-        );
-    }
-
-    let mut state = sandbox(&map, &[(UnitKind::Skyhook, 1, 1)]);
-    assert!(state.vision(PlayerId(0)).explored(goal));
-    let sling = state.units()[0].id;
-    state.tick(&[PlayerCommand {
-        player: PlayerId(0),
-        command: Command::Unload {
-            transport: sling,
-            at: goal,
-            queue: false,
-        },
-    }]);
-    let unit = state.unit(sling).unwrap();
-    assert!(unit.path.is_some(), "premise: the flight routed");
-    assert!(matches!(unit.order, Order::Unload { at } if at.endpoint.is_none()));
-    assert_eq!(
-        chassis::hash::state_hash(&unit.order),
-        chassis::hash::state_hash(&LegacyOrder::Unload { at: goal })
-    );
-}
-
 #[test]
 fn a_hovering_flier_sent_onto_a_raw_peak_stops_beside_it() {
     use crate::{Event, Order, StallReason, UnitKind};
@@ -248,7 +161,7 @@ fn a_hovering_flier_sent_onto_a_raw_peak_stops_beside_it() {
     for kind in [UnitKind::Wisp, UnitKind::Skyhook] {
         let mut state = sandbox(&map, &[(kind, 1, 1)]);
         let flier = state.units()[0].id;
-        // Commands snap peaks away; a forged or legacy order may not.
+        // Commands snap peaks away; a forged order may not.
         state.unit_mut(flier).unwrap().order = Order::Run { goal: peak.into() };
         let mut stalls = 0;
         for _ in 0..100 {

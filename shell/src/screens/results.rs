@@ -1,7 +1,6 @@
 //! The decided-match report: team-grouped scoreboard, match curve, and
-//! touchable next steps. It owns input instead of borrowing the pause menu,
-//! so a finished match has a real destination rather than a keyboard-only
-//! banner laid over gameplay.
+//! touchable next steps. It is its own screen with its own input, not an
+//! overlay on the pause menu.
 
 use crate::bot_label::{BotLabelStyle, bot_label};
 use crate::game::{Game, SoundKind};

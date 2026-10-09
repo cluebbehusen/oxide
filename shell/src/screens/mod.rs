@@ -1,10 +1,8 @@
-//! Per-screen state objects, extracted from the main loop's mode match.
+//! Per-screen state objects.
 //!
-//! The 0.9 endgame's lesson: every review-found shell bug lived in a
-//! mode arm no headless test could reach. Each screen here owns its
-//! menus and its update logic, takes raw events, and returns a
-//! transition — windowless by construction, so the whole flow drives
-//! in unit tests. The main loop keeps only drawing and session wiring.
+//! Each screen owns its menus and update logic, takes raw events, and
+//! returns a transition. Screens need no window, so unit tests can drive
+//! the whole flow; the main loop keeps drawing and session wiring.
 
 pub mod browser;
 pub mod codex;

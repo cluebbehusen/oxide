@@ -1,13 +1,11 @@
-//! Atomic, durable file writes — the one way anything lands on disk.
+//! Atomic, durable file writes for persisted records.
 //!
-//! Every persistence site shares the same failure modes: a crash
-//! mid-write must never publish a truncated file, a failed write must
-//! never leave a temp behind, and a rewrite must replace the previous
-//! record on every platform (std's `rename` replaces existing
-//! destinations on Windows too — `MoveFileExW` with
-//! `MOVEFILE_REPLACE_EXISTING`). [`write_atomic`] owns that contract
-//! once; [`sweep_temps`] reaps orphans left by crashes predating the
-//! guard.
+//! A crash mid-write must never publish a truncated file, a failed write
+//! must never leave a temp behind, and a rewrite must replace the previous
+//! record on every platform (std's `rename` replaces existing destinations
+//! on Windows too, via `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING`).
+//! [`write_atomic`] owns that contract; [`sweep_temps`] reaps temps orphaned
+//! by a crash, which skips the cleanup guard.
 
 use std::io::Write;
 use std::path::Path;
@@ -33,8 +31,8 @@ where
     E: From<std::io::Error>,
     F: FnOnce(&mut dyn Write) -> Result<(), E>,
 {
-    // Unique temp name: two sessions (or two threads of one) saving
-    // the same stem concurrently must not clobber each other.
+    // Two sessions, or two threads of one, saving the same stem
+    // concurrently must not clobber each other's temp.
     static NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     struct TempGuard<'a>(Option<&'a Path>);
     impl Drop for TempGuard<'_> {
@@ -60,14 +58,11 @@ where
     drop(writer);
     std::fs::rename(&tmp, path)?;
     guard.0 = None;
-    // The rename itself lives in the directory; without syncing it a
-    // power loss can roll the swap back to the OLD record (intact —
-    // never truncated — but stale). The failure propagates: a
-    // directory we just wrote into refusing to sync is a signal, and
-    // swallowing it would let a caller report durably-saved over a
-    // rename the disk never committed. Unix-only: Windows cannot open
-    // a directory for fsync, and there the rename's durability rides
-    // the OS.
+    // The rename lives in the directory; without syncing it a power loss
+    // can roll the swap back to the intact but stale previous record. A
+    // sync failure propagates so a caller never reports a durable save
+    // over a rename the disk never committed. Unix-only: Windows cannot
+    // open a directory for fsync.
     #[cfg(unix)]
     std::fs::File::open(parent).and_then(|d| d.sync_all())?;
     Ok(())

@@ -1,4 +1,4 @@
-//! The 0.15 roster additions: the Warden line, the Tender's torch, the
+//! Roster additions: the Warden line, the Tender's torch, the
 //! Excavator's double-pace labor and its tech gate, and the scout and
 //! interceptor wings.
 

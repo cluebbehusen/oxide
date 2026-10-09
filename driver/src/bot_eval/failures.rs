@@ -24,7 +24,7 @@ pub const REPEATED_ORDER_STALLS: usize = 5;
 pub const MAX_FAILURE_EXAMPLES: usize = 8;
 
 /// Stall reason the repeated-order detector ignores: a harvest line holding
-/// out of danger re-reports it every 100 ticks by design.
+/// out of danger re-reports it periodically by design.
 pub const EXEMPT_STALL_REASON: &str = "danger_hold";
 
 /// Ticks an armed unit must stay put, out of every enemy's reach, before it
@@ -106,7 +106,7 @@ pub struct SeatFailures {
     /// [`IDLE_ARMY_FLOOR`], had each rested at home out of every enemy's reach
     /// for [`IDLE_TICKS`]. The subject is the idle value and the detail the
     /// idle and whole army values; the episode ends once that no longer
-    /// holds. Absent from rows recorded before the detector existed.
+    /// holds. `None` for unwatched seats and rows that omit it.
     #[serde(default)]
     pub idle_army: Option<FailureTally>,
 }

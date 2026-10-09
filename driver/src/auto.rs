@@ -104,9 +104,8 @@ pub(crate) fn isolate_home(command: &mut std::process::Command, home: &std::path
 }
 
 /// Builds and spawns an automation-mode shell, then connects while the
-/// window boots. The window is pinned to 1280x800: the
-/// persisted config carries whatever size the user last dragged, and
-/// both suites depend on stable geometry.
+/// window boots. The window is pinned to 1280x800 because both suites
+/// depend on stable geometry and a persisted config may carry another size.
 pub fn spawn_shell(opts: &SpawnOptions) -> Result<(ShellGuard, Client)> {
     // Read-only resources stay rooted at the workspace even when the
     // writable working directory is isolated below.
@@ -129,9 +128,7 @@ pub fn spawn_shell(opts: &SpawnOptions) -> Result<(ShellGuard, Client)> {
     if let Some(home) = &opts.home {
         // HOME alone is not hermetic: Windows resolves config and
         // autosaves through APPDATA, and Linux prefers XDG_CONFIG_HOME
-        // / XDG_DATA_HOME over HOME when they are set — a host with
-        // those exported would leak its real settings into (or worse,
-        // take rebinds from) a supposedly throwaway shell. Point every
+        // and XDG_DATA_HOME over HOME when they are set. Point every
         // platform's root and all relative writable paths into the
         // scratch tree.
         isolate_home(&mut command, home);

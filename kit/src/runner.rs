@@ -28,9 +28,8 @@ pub struct TracedStep {
     pub traces: Vec<SeatTrace>,
 }
 
-/// Advances one tick: bots think, commands are recorded, the sim steps.
-/// This is the canonical composition — every runner and shell loop should
-/// look like this.
+/// Advances one headless tick: bots choose commands, the commands are
+/// recorded, then the sim steps.
 pub fn step(
     state: &mut State,
     bots: &mut [SeatController],
@@ -45,8 +44,8 @@ pub fn step(
 /// Advances one tick while collecting fresh player-facing decision traces.
 ///
 /// This uses the same command recording and state-transition path as [`step`].
-/// Callers that do not need diagnostics should keep using [`step`], which does
-/// not allocate a trace collection or ask bots to construct traces. Diagnostic
+/// Callers that do not need diagnostics should use [`step`], which neither
+/// allocates a trace collection nor asks bots to construct traces. Diagnostic
 /// collection runs serially; ordinary steps may think across seats in parallel.
 pub fn step_traced(
     state: &mut State,
@@ -105,65 +104,34 @@ pub fn run_scenario(
     Ok(RunOutcome { state, replay })
 }
 
-/// Longest replay the driver runs without an explicit override — a forged
-/// duration must not spin the process forever. ~28 game-hours.
+/// Longest replay the driver runs without an explicit override, so a forged
+/// duration cannot spin the process forever.
 pub use crate::MAX_REPLAY_TICKS;
 
 /// Re-executes a recorded run and returns the final state. With no override,
 /// the length comes from the replay's own metadata (falling back to the last
 /// command tick for hand-written files), bounded by [`MAX_REPLAY_TICKS`].
 ///
-/// The replay is validated first — structure always, version too unless
-/// `allow_version_mismatch` (which downgrades the mismatch to a warning for
-/// deliberate archaeology). Playback that fails to consume every command is
-/// an error, not a shrug.
-pub fn run_replay(
-    replay: &GameReplay,
-    ticks_override: Option<u64>,
-    allow_version_mismatch: bool,
-) -> Result<State> {
-    run_replay_bounded(replay, ticks_override, allow_version_mismatch, false)
+/// The replay is validated first, including that this sim version recorded
+/// it. Playback that fails to consume every command is an error.
+pub fn run_replay(replay: &GameReplay, ticks_override: Option<u64>) -> Result<State> {
+    run_replay_observed(replay, ticks_override, None, false, |_, _| {})
 }
 
-/// [`run_replay`] with the length bound overridable (`allow_long`) for
-/// deliberate marathon reproductions.
-pub fn run_replay_bounded(
-    replay: &GameReplay,
-    ticks_override: Option<u64>,
-    allow_version_mismatch: bool,
-    allow_long: bool,
-) -> Result<State> {
-    run_replay_observed(
-        replay,
-        ticks_override,
-        None,
-        allow_version_mismatch,
-        allow_long,
-        |_, _| {},
-    )
-}
-
-/// [`run_replay_bounded`], stopping at `until` when it falls short of the run's
+/// [`run_replay`], stopping at `until` when it falls short of the run's
 /// length and handing the state after each tick and that tick's report to
 /// `observe`. A stop short of the length is a prefix: commands after it stay
 /// unplayed. Only a run to its full length must consume every command.
+/// `allow_long` lifts the [`MAX_REPLAY_TICKS`] bound for marathon
+/// reproductions.
 pub fn run_replay_observed(
     replay: &GameReplay,
     ticks_override: Option<u64>,
     until: Option<u64>,
-    allow_version_mismatch: bool,
     allow_long: bool,
     mut observe: impl FnMut(&State, &oxide_sim::TickReport),
 ) -> Result<State> {
-    match replay.validate(Some(SIM_VERSION)) {
-        Ok(()) => {}
-        Err(err @ chassis::replay::ReplayError::VersionMismatch { .. })
-            if allow_version_mismatch =>
-        {
-            eprintln!("warning: {err}; reproduction is not guaranteed");
-        }
-        Err(err) => return Err(err.into()),
-    }
+    replay.validate(Some(SIM_VERSION))?;
     let length = ticks_override.unwrap_or_else(|| crate::replay_duration(replay));
     let total = until.map_or(length, |until| until.min(length));
     anyhow::ensure!(

@@ -148,8 +148,8 @@ pub(crate) fn train(
     }
 }
 
-/// Brings workers away from home back from armed enemies in sight, sends a
-/// worker to each unattended construction site, welds a damaged building,
+/// Brings workers away from home back out of known enemy fire, sends a
+/// worker to each unattended construction site, welds damaged buildings,
 /// then sends idle workers to the least-worked node whose route and site are
 /// clear of known danger.
 pub(crate) fn run(

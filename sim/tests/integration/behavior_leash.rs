@@ -1,13 +1,12 @@
-//! The pursuit tether (0.12): a STATIONED machine's self-acquired
-//! fight carries a leash — inside [`LEASH_RADIUS`] of its anchor it
-//! hunts freely, beyond it every chase tick spends a warm-blood
-//! window only a joined fight refreshes — then it walks home and
-//! stands a re-acquire cooldown. Station keeping takes
-//! [`LEASH_STATION_TICKS`] of standing idle: a unit cycling through
-//! idle mid-battle hunts unleashed, like it always did. Player
-//! attacks are commitments and never tethered; any command clears
-//! the tether. The counter to the measured 222-tile chase and the
-//! one-harvester picket strip.
+//! The pursuit tether: a stationed machine's self-acquired fight carries
+//! a leash. Inside [`LEASH_RADIUS`] of its anchor it hunts freely; beyond
+//! it every chase tick spends a patience window only a joined fight
+//! refreshes, then it walks home and stands a re-acquire cooldown.
+//! Station keeping takes [`LEASH_STATION_TICKS`] of standing idle: a unit
+//! cycling through idle mid-battle hunts unleashed. Player attacks are
+//! commitments and never tethered; any command clears the tether. The
+//! leash bounds cross-map chases and stops a lone bait from stripping a
+//! picket.
 
 use crate::common;
 
@@ -135,9 +134,9 @@ fn a_guard_breaks_off_at_the_leash_and_walks_home() {
     // The guard stands its post long enough to be stationed, then the
     // bait strolls past and KEEPS RUNNING — faster than every line
     // fighter, the chase can never end by catching it, and the queued
-    // legs matter: a bait that parks at a reachable goal gets caught
-    // and killed, and a victory stands its ground instead of walking
-    // home (a different, also-correct story).
+    // legs matter: a bait that parks at a reachable goal gets caught and
+    // killed, and the winner then holds its ground instead of walking
+    // home (a different, also-correct outcome).
     settle(&mut state, 60);
     state.tick(&[cmd(
         1,
@@ -177,10 +176,9 @@ fn a_guard_breaks_off_at_the_leash_and_walks_home() {
         max_drift > 2_000,
         "the fixture must actually produce a chase (drift {max_drift} milli)"
     );
-    // This bait clips weapon range on its way past, so blood is drawn
-    // and the guard legally follows one warm window past the radius
-    // (60 ticks at 0.11 ≈ 6.6 tiles). The bound is the ZONE, not the
-    // line — against the un-tethered baseline's 222 tiles.
+    // This bait clips weapon range on its way past, so the fight is
+    // joined and the guard may follow one patience window past the radius
+    // (60 ticks at 0.11 ≈ 6.6 tiles). The bound is the zone, not the line.
     assert!(
         max_drift <= milli(LEASH_RADIUS) + 8_000,
         "the tether binds: the guard drifted {max_drift} millitiles from its post"
@@ -217,9 +215,9 @@ fn a_dancing_harasser_cannot_hold_the_post_forever() {
     .expect("builds");
     let guard = state.units()[0].id;
     let bait = state.units()[1].id;
-    // Stationed first; then the bait patrols a lane clipping the
-    // guard's aggro edge — the kiting exploit that held the baseline
-    // picket off its post 99.6% of the time.
+    // Stationed first; then the bait patrols a lane clipping the guard's
+    // aggro edge, a kiting pattern that would otherwise hold an untethered
+    // picket off its post.
     settle(&mut state, 60);
     state.tick(&[cmd(
         1,
@@ -233,9 +231,9 @@ fn a_dancing_harasser_cannot_hold_the_post_forever() {
         state.tick(&[]);
         max_drift = max_drift.max(guard_dist(&state, guard, station));
     }
-    // Inside its zone the guard may shadow the intruder indefinitely —
-    // that ground is what it defends — but the ZONE bounds it: the
-    // baseline guard followed this same dance wherever it led.
+    // Inside its zone the guard may shadow the intruder indefinitely, but
+    // the zone bounds it; an untethered guard would follow wherever the
+    // bait led.
     assert!(
         max_drift <= milli(LEASH_RADIUS) + 2_000,
         "even a dancer cannot drag the guard far past the tether ({max_drift} milli)"
@@ -253,10 +251,10 @@ fn a_dancing_harasser_cannot_hold_the_post_forever() {
     for _ in 0..1_200u64 {
         state.tick(&[]);
         let u = state.units().iter().find(|u| u.id == guard).unwrap();
-        // Two honest endings: the bait escaped and the guard walked
-        // home (break-off), or a turnaround carried the bait through
-        // weapon range once too often and the guard killed it —
-        // victory stands its ground, still inside the zone.
+        // Two valid endings: the bait escaped and the guard walked home
+        // (break-off), or a turnaround carried the bait through weapon
+        // range and the guard killed it, holding its ground inside the
+        // zone.
         let bait_dead = state
             .units()
             .iter()
@@ -343,11 +341,10 @@ fn a_returning_guard_answers_fire() {
         answered,
         "the guard turned on the raider that hit it instead of eating the walk home"
     );
-    // Victory stands its ground: the raider dies (60 hp sentinel vs a
-    // fragile shredder) and the survivor holds where the fight ended —
-    // inside the zone, still stationed, so the next intruder tethers
-    // it right there. (Walking home after every kill was measured to
-    // lose base defenses; only BREAK-offs walk home.)
+    // The winner holds its ground: the raider dies (60 hp sentinel vs a
+    // fragile shredder) and the survivor stays where the fight ended,
+    // inside the zone and still stationed, so the next intruder tethers it
+    // right there. Only break-offs walk home.
     let raider_dead = state
         .units()
         .iter()
@@ -418,10 +415,10 @@ fn a_player_attack_is_never_leashed() {
 
 #[test]
 fn a_battle_cycling_unit_hunts_unleashed() {
-    // Mid-battle idles re-acquire without a tether: leashing them once
-    // turned scripted army fights into seat-parity coin flips. A unit
-    // that JUST went idle (settled below the station threshold) picks
-    // its next fight exactly like the pre-tether sim.
+    // Mid-battle idles re-acquire without a tether; leashing them would
+    // let the tether decide army fights. A unit that just went idle
+    // (settled below the station threshold) picks its next fight with no
+    // leash.
     let mut state = open_arena(
         41,
         21,
@@ -478,9 +475,9 @@ fn reissuing_the_selfsame_attack_clears_the_tether() {
         matches!(u.order, Order::Attack { target, resume: None, .. } if state.attack_view(u.player, target).and_then(|view| view.entity) == Some(Target::Unit(prey))),
         "the guard self-acquired its visitor"
     );
-    // The player blesses the same fight: the order compares equal (the
-    // no-op path — path and progress survive), but the tether must
-    // clear — this is now a commitment.
+    // The player orders the same fight: the order compares equal (the
+    // no-op path, so path and progress survive), but the tether must
+    // clear because the fight is now a player commitment.
     state.tick(&[cmd(
         0,
         Command::Attack {

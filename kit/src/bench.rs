@@ -1,7 +1,6 @@
-//! The scale bench: a mass battle big enough to make performance and
-//! determinism claims repeatable. CI asserts correctness at scale
-//! (hashes, briefly); wall-clock numbers stay a local report so
-//! machine noise can never flake a suite.
+//! The scale bench: a mass battle for repeatable performance and
+//! determinism measurements. Tests assert hashes at scale; wall-clock
+//! numbers stay a local report so machine noise cannot flake a suite.
 
 use chassis::grid::TilePos;
 use chassis::grid::as_index;
@@ -95,14 +94,13 @@ pub fn mass_battle(per_side: u32, seed: u64) -> Scenario {
     }
 }
 
-/// Sends both armies through each other with crossing hunt orders —
-/// the same opening the hash-identity test uses. Without it a "bench"
-/// times parked idle armies: deployment sits outside aggro range, so
-/// no movement, fire, splash, or collision ever runs.
+/// Sends both armies through each other with crossing hunt orders. Without
+/// it a bench times parked idle armies: deployment sits outside aggro range,
+/// so no movement, fire, splash, or collision runs.
 pub fn engage(state: &mut oxide_sim::State) {
-    // The crossing goals are exact 180-degree images on the 96x56
-    // arena — anything less hands the two armies different path and
-    // collision geometry and the "symmetric workload" claim is void.
+    // The crossing goals are exact 180-degree images on the arena;
+    // anything else gives the two armies different path and collision
+    // geometry, and the workload is no longer symmetric.
     let goal_a = TilePos::new(80, 28);
     let goal_b = TilePos::new(96 - 1 - goal_a.x, 56 - 1 - goal_a.y);
     debug_assert_eq!((goal_b.x, goal_b.y), (15, 27));
@@ -141,7 +139,7 @@ pub fn engage(state: &mut oxide_sim::State) {
     ]);
 }
 
-/// Flags every chair as a configured Standard, Balanced, seed-zero bot.
+/// Flags every chair as a bot with the default configuration.
 pub fn all_bots(scenario: &mut Scenario) {
     all_bots_with_config(scenario, oxide_sim::scenario::BotConfig::default());
 }

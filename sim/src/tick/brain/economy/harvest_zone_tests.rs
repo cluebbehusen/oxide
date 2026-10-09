@@ -202,8 +202,8 @@ fn a_failed_safe_search_settles_repeats_until_a_watched_node_drains() {
 }
 
 /// Two workers of one seat bound for the same drop-off spot: the nearer
-/// keeps its route, the farther yields. Yielding to every arrival made
-/// each give the spot up to the other.
+/// keeps its route, the farther yields. Yielding to every arrival would
+/// make each give the spot up to the other.
 #[test]
 fn a_held_drop_off_route_yields_only_to_a_nearer_worker() {
     let scenario = serde_json::json!({
@@ -308,7 +308,7 @@ fn held_worker(wall: Option<(usize, usize)>) -> (State, UnitId, KnownSource, Pat
     let source = known_source(&state, PlayerId(0), node).expect("the node is in sight");
     state.units[0].order = Order::Harvest {
         node,
-        anchor: None,
+        anchor: node,
         retiring: false,
     };
     let ordered = PathFollow {
@@ -367,15 +367,6 @@ fn a_danger_retry_round_trips_up_to_its_bound() {
     state.units[0].danger_retry_at = Some(bound);
     let restored: State = serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
     assert_eq!(restored.units[0].danger_retry_at, Some(bound));
-    let renamed = serde_json::to_string(&state)
-        .unwrap()
-        .replace("danger_retry_at", "detour_retry_at");
-    let restored: State = serde_json::from_str(&renamed).unwrap();
-    assert_eq!(
-        restored.units[0].danger_retry_at,
-        Some(bound),
-        "saves from before the rename keep their retry"
-    );
     state.units[0].danger_retry_at = Some(bound + 1);
     assert!(serde_json::from_str::<State>(&serde_json::to_string(&state).unwrap()).is_err());
 }
@@ -528,7 +519,7 @@ fn arriving_at_the_source_ends_a_route_hold() {
         &danger,
         worker,
         node,
-        None,
+        node,
         false,
         &mut Vec::new(),
     );

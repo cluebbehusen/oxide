@@ -151,9 +151,9 @@ fn collision_never_pushes_through_rock() {
 
 #[test]
 fn congested_harvesters_keep_depositing() {
-    // Six harvesters on one node, one Foundry: the deadlock regression.
-    // Symmetric collision cancellation once froze exactly this setup with
-    // full loads at the doorstep. Progress must continue, not just start.
+    // Six harvesters on one node, one Foundry. Symmetric collision
+    // cancellation can freeze this setup with full loads at the doorstep.
+    // Progress must continue, not just start.
     let mut state = arena(vec![
         unit(0, UnitKind::Harvester, 4, 2),
         unit(0, UnitKind::Harvester, 5, 2),
@@ -344,10 +344,10 @@ fn congestion_survives_nonconsecutive_unit_ids() {
 
 #[test]
 fn dense_stacks_respect_the_per_tick_displacement_cap() {
-    // 100 units spawned on one tile. Per-pair clamping once let a unit in
-    // k overlaps drift k × COLLISION_MAX_STEP in a single tick (measured
-    // 1.8+ tiles), and resetting the budget between relaxation passes still
-    // allowed three caps. One budget now spans the whole tick.
+    // 100 units spawned on one tile. Per-pair clamping would let a unit in
+    // k overlaps drift k × COLLISION_MAX_STEP in a single tick, and
+    // resetting the budget between relaxation passes would allow three
+    // caps. One budget spans the whole tick.
     let units = (0..100)
         .map(|_| unit(0, UnitKind::Harvester, 8, 3))
         .collect();

@@ -16,7 +16,7 @@ pub struct Fixture {
 /// cannot choose compatibility policy; changing versions or overriding it
 /// requires explicit approval from the human user. A missing, pre-stamp, or
 /// other-version fixture licenses the bless; new and removed rows never block
-/// (maps come and go without a version story).
+/// (maps come and go without a version change).
 pub fn bless_gate(
     stored: Option<&Fixture>,
     actual: &BTreeMap<String, String>,

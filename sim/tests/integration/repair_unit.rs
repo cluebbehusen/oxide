@@ -356,11 +356,10 @@ fn a_walking_patient_is_chased_not_welded() {
 
 #[test]
 fn a_move_landing_mid_weld_rides_no_farewell_heal() {
-    // Stationarity is intent: the tick a Run lands, the patient's
-    // order is set but its path is not built until its own brain runs
-    // — on the parity where the welder thinks first, path.is_none()
-    // used to let one heal ride the departure. Both parities must
-    // refuse it.
+    // Stationarity is intent: the tick a Run lands, the patient's order
+    // is set but its path is not built until its own brain runs. On the
+    // parity where the welder thinks first, checking only path.is_none()
+    // would let one heal ride the departure. Both parities must refuse it.
     for offset in [0u32, 1u32] {
         let mut state = arena(cast()).build().unwrap();
         let (welder, patient, raider) = (

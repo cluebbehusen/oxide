@@ -260,7 +260,7 @@ fn the_fixed_anchor_reaches_the_widest_deposit_but_cannot_chain_past_it() {
         vec![
             unit(0, UnitKind::Harvester, 4, 5),
             // The zone only considers visible or remembered salvage.
-            // A harmless air scout establishes honest knowledge of both
+            // A harmless air scout establishes fog-honest knowledge of both
             // boundary probes without changing their routes.
             unit(0, UnitKind::Talon, 12, 2),
         ],
@@ -329,7 +329,7 @@ fn a_dry_node_adopts_a_neighboring_wreck_inside_the_same_contract() {
         panic!("the local cleanup should still be the active work contract")
     };
     assert_eq!(node, wreck);
-    assert_eq!(work_anchor, Some(anchor));
+    assert_eq!(work_anchor, anchor);
     assert!(!retiring);
 }
 
@@ -397,7 +397,7 @@ fn a_delivery_returns_to_the_same_zone_while_salvage_remains() {
         state.unit(worker).unwrap().order,
         Order::Harvest {
             node,
-            anchor: Some(anchor),
+            anchor,
             retiring: false,
         } if node == source && anchor == source
     ));
@@ -506,7 +506,7 @@ fn shared_sight_retires_an_autonomous_retarget_but_not_before_it_is_known() {
                 state.unit(worker).unwrap().order,
                 Order::Harvest {
                     node,
-                    anchor: Some(work_anchor),
+                    anchor: work_anchor,
                     retiring: false,
                 } if node == fallback && work_anchor == anchor
             )
@@ -588,7 +588,7 @@ fn a_hidden_artillery_hit_diverts_autonomous_work_without_revealing_the_gun() {
             state.unit(worker).unwrap().order,
             Order::Harvest {
                 node,
-                anchor: Some(work_anchor),
+                anchor: work_anchor,
                 retiring: false,
             } if node == exposed && work_anchor == anchor
         ) && state.unit(worker).unwrap().path.is_none()
@@ -649,7 +649,7 @@ fn a_hidden_artillery_hit_diverts_autonomous_work_without_revealing_the_gun() {
         state.unit(worker).unwrap().order,
         Order::Harvest {
             node,
-            anchor: Some(work_anchor),
+            anchor: work_anchor,
             retiring: false,
         } if node == safe && work_anchor == anchor
     ));
@@ -981,7 +981,7 @@ fn an_explicit_anchor_remains_authoritative_inside_a_local_radar_contact() {
             state.unit(worker).unwrap().order,
             Order::Harvest {
                 node,
-                anchor: Some(work_anchor),
+                anchor: work_anchor,
                 retiring: false,
             } if node == source && work_anchor == source
         ),
@@ -1271,7 +1271,7 @@ fn a_remembered_armed_structure_blocks_an_autonomous_retarget_after_sight_is_los
             state.unit(worker).unwrap().order,
             Order::Harvest {
                 node,
-                anchor: Some(work_anchor),
+                anchor: work_anchor,
                 retiring: true,
             } if node == anchor && work_anchor == anchor
         )
@@ -1313,7 +1313,7 @@ fn an_autonomous_retarget_routes_around_known_danger() {
             state.unit(worker).unwrap().order,
             Order::Harvest {
                 node,
-                anchor: Some(work_anchor),
+                anchor: work_anchor,
                 retiring: false,
             } if node == fallback && work_anchor == anchor
         ) && state.unit(worker).unwrap().path.is_some()
@@ -1366,23 +1366,6 @@ fn never_seen_live_salvage_is_not_a_command_oracle() {
         reason: RejectReason::NotANode,
     }));
     assert_eq!(state.unit(worker).unwrap().order, Order::Idle);
-}
-
-#[test]
-fn legacy_harvest_orders_default_the_anchor_to_their_current_node() {
-    let order: Order = serde_json::from_value(json!({
-        "order": "harvest",
-        "node": {"x": 7, "y": 5}
-    }))
-    .unwrap();
-    assert_eq!(
-        order,
-        Order::Harvest {
-            node: TilePos::new(7, 5),
-            anchor: None,
-            retiring: false,
-        }
-    );
 }
 
 #[test]

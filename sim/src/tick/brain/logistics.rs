@@ -1,14 +1,12 @@
 //! Transport logistics: boarding walks, the unload disgorge, and their
 //! deferred resolution.
 //!
-//! Cargo lives OUTSIDE the world's unit list (see
-//! [`crate::state::Unit::cargo`]), so the moment a machine embarks
-//! nothing can see, target, or command it. But the brain phase decides
-//! against the start-of-tick world — the unit list must hold still
-//! under it, or every spatial-index slot behind the acting unit goes
-//! stale. Board and unload therefore only BUFFER intent here, exactly
-//! like damage; [`resolve`] mutates the list after the last brain has
-//! decided.
+//! Cargo lives outside the world's unit list (see
+//! [`crate::state::Unit::cargo`]), so once a machine embarks nothing can
+//! see, target, or command it. The unit list must hold still during the
+//! brain phase, or every spatial-index slot behind the acting unit goes
+//! stale, so board and unload only buffer intent here, like damage;
+//! [`resolve`] mutates the list after the last brain has decided.
 
 use super::super::route_for;
 use crate::event::{Event, StallReason};
@@ -16,7 +14,7 @@ use crate::ids::UnitId;
 use crate::state::{Order, PathFollow, State, Unit};
 use chassis::grid::TilePos;
 
-/// Embarkations and landings one tick's brains asked for, applied by
+/// Boardings and unloads one tick's brains asked for, applied by
 /// [`resolve`] once the decision loop is over.
 #[derive(Default)]
 pub(in crate::tick) struct Pending {
@@ -73,9 +71,9 @@ pub(super) fn board(
         return;
     }
     if pos.dist_sq(carrier_pos) <= crate::stats::LOAD_REACH * crate::stats::LOAD_REACH {
-        // In reach: stop walking and ask for the sling. The list itself
-        // must not change under the other brains, so the embark waits
-        // for resolution.
+        // In reach: stop walking and ask for the sling. The embark waits
+        // for resolution so the unit list holds still under the other
+        // brains.
         let unit = state.unit_mut(id).expect("caller checked");
         unit.path = None;
         pending.boardings.push((id, transport));
@@ -189,10 +187,10 @@ pub(super) fn unload(
     }
 }
 
-/// Applies the tick's buffered embarkations and landings, after every
-/// brain has decided and before anything moves. Buffers are re-sorted
-/// by id: the brain loop alternates direction by tick parity, and the
-/// list mutations here must not inherit that swing.
+/// Applies the tick's buffered boardings and unloads, after every brain has
+/// decided and before anything moves. Buffers are re-sorted by id: the
+/// brain loop alternates direction by tick parity, and the list mutations
+/// here must not inherit that swing.
 pub(in crate::tick) fn resolve(state: &mut State, mut pending: Pending, events: &mut Vec<Event>) {
     pending.boardings.sort_unstable_by_key(|&(rider, _)| rider);
     for (rider_id, transport) in pending.boardings {
@@ -203,8 +201,8 @@ pub(in crate::tick) fn resolve(state: &mut State, mut pending: Pending, events: 
         let held = cargo_load(carrier);
         let carrier_pos = carrier.pos;
         // hp > 0 mirrors the carrier filter above: a rider dealt lethal
-        // damage this same tick must die in cleanup, not be entombed in
-        // the sling as a zero-hp corpse the death pass can no longer see.
+        // damage this same tick must die in cleanup, not ride in the sling
+        // as a zero-hp corpse the death pass can no longer see.
         let Some(rider) = state.unit(rider_id).filter(|r| r.hp > 0) else {
             continue;
         };
@@ -251,8 +249,8 @@ pub(in crate::tick) fn resolve(state: &mut State, mut pending: Pending, events: 
             continue;
         };
         let (pos, player) = (carrier.pos, carrier.player);
-        // Claim drop tiles in the deterministic ring order every scan in
-        // this sim uses — (chebyshev, y, x), center first.
+        // Claim drop tiles in square rings outward from the drop point,
+        // center first, row-major (y, then x) within each ring.
         let mut open: Vec<TilePos> = Vec::new();
         for r in 0..=crate::stats::UNLOAD_SCAN_RADIUS {
             for dy in -r..=r {
@@ -277,8 +275,7 @@ pub(in crate::tick) fn resolve(state: &mut State, mut pending: Pending, events: 
             let spot = open[placed];
             rider.pos = spot.center();
             let rider_id = rider.id;
-            // The unit list stays sorted by id: the rider's id predates
-            // every machine spawned while it flew.
+            // Reinsert in id order to keep the unit list sorted.
             let slot = state
                 .units
                 .iter()

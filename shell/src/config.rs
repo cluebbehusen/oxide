@@ -1,12 +1,10 @@
 //! Persisted presentation config: bindings, volumes, UI scale, camera
-//! feel, window size, and the opponent AI for new matches.
+//! feel, accessibility, touch timing, and window size.
 //!
-//! Nothing here may affect a running match: the opponent AI is copied into
-//! each new match's scenario, which saves and replays then carry. The config
-//! versions independently of replays and loses nothing when it
-//! resets. Any read problem (missing file, old version, parse error)
-//! falls back to defaults silently: a bad config file must never keep
-//! the game from starting.
+//! Nothing here may affect a running match. The config versions
+//! independently of replays. Any read problem (missing file, old version,
+//! parse error) falls back to defaults silently: a bad config file must
+//! never keep the game from starting.
 
 use crate::action::BindingMap;
 use serde::{Deserialize, Serialize};
@@ -205,8 +203,7 @@ pub struct Config {
     pub bindings: BindingMap,
     /// Bus volumes.
     pub volumes: Volumes,
-    /// User UI scale factor, multiplied with DPI exactly once by the
-    /// layout model.
+    /// User UI scale factor, applied through `render::ui_scale`.
     pub ui_scale: f32,
     /// Camera feel.
     pub camera: CameraPrefs,
@@ -228,11 +225,10 @@ pub struct Config {
     /// Touch gesture timing (absent in configs saved before touch).
     #[serde(default)]
     pub touch: TouchPrefs,
-    /// Actions the player EXPLICITLY unbound (Controls > X). A missing
-    /// binding row alone is ambiguous — it also means "verb added
-    /// after this config was saved" — and the migration that adopts
-    /// classic chords for new verbs must not resurrect a deliberate
-    /// unbinding on every restart.
+    /// Actions the player explicitly unbound (Controls > X). A missing
+    /// binding row alone is ambiguous (it also means "verb added after
+    /// this config was saved"), and the migration that adopts classic
+    /// chords for new verbs must not restore a deliberate unbinding.
     #[serde(default)]
     pub unbound: Vec<crate::action::Action>,
     /// The host address the last LAN join used.
@@ -271,9 +267,9 @@ impl Config {
         Self::load_from(config_path())
     }
 
-    /// Clamps a persisted window size into the envelope the CLI
-    /// enforces — a hand-edited config must not hand the native
-    /// backend an i32-overflowing dimension.
+    /// Clamps a persisted window size into the envelope the CLI enforces,
+    /// so a hand-edited config cannot hand the native backend an
+    /// i32-overflowing dimension.
     fn sane_window(window: (u32, u32)) -> (u32, u32) {
         (window.0.clamp(640, 16_384), window.1.clamp(400, 16_384))
     }

@@ -17,13 +17,9 @@
 //!   overlay, and native-frame profiling. [`dispatch_shared`] returns
 //!   `None`; the shell answers them against the screen the window shows,
 //!   the headless session refuses them in words.
-//! * **Mutating** — commands and scenario/replay swaps. Also `None`
-//!   here: live and headless sessions implement them, the replay viewer
-//!   refuses them wholesale.
-//!
-//! Splitting this way is what retired the twin dispatchers whose
-//! near-identical arms kept drifting apart — `PresentTicks` shipped
-//! hand-copied twice on the day it was born.
+//! * **Mutating** — commands, scenario and replay loads, and replay
+//!   saves. Also `None` here: live and headless sessions implement them,
+//!   the replay viewer refuses them.
 
 use crate::{
     AdvancedView, FogView, HashView, PresentedView, Reply, Request, StateView, StatusView,
@@ -32,9 +28,9 @@ use oxide_sim::State;
 
 /// A world the debug protocol can be served against: the live shell's
 /// `Game`, the replay viewer, or the headless session. Implementations
-/// keep their own clock semantics — the viewer's `advance` seeks its
-/// record instead of simulating, and may run fewer ticks than asked
-/// near the record's end — but every reply shape is the trait's.
+/// keep their own clock semantics (the viewer's `advance` seeks its record
+/// instead of simulating, and may run fewer ticks than asked near the
+/// record's end), but every reply shape is the trait's.
 pub trait DebugSession {
     /// Transport identity: tick, clock stance, scenario, result.
     fn status(&self) -> StatusView;
@@ -59,8 +55,8 @@ pub trait DebugSession {
     fn set_speed(&mut self, multiplier: f64) -> Result<(), String>;
 }
 
-/// Validates a wall-clock speed multiplier — one range, one refusal
-/// message, however many sessions carry a clock.
+/// Validates a wall-clock speed multiplier against the range and refusal
+/// message every clocked session shares.
 pub fn check_speed(multiplier: f64) -> Result<(), String> {
     if multiplier.is_finite() && (0.05..=64.0).contains(&multiplier) {
         Ok(())
@@ -70,8 +66,8 @@ pub fn check_speed(multiplier: f64) -> Result<(), String> {
 }
 
 /// Answers a shared request against any session. Returns `None` for the
-/// window-shaped and mutating requests, which stay with the caller —
-/// that boundary IS the capability split documented on this module.
+/// window-shaped and mutating requests, which stay with the caller (see the
+/// module docs).
 pub fn dispatch_shared(
     session: &mut dyn DebugSession,
     request: &Request,

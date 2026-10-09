@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 /// An instruction from one player.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
     /// Run to a tile without firing or engaging. Once the issuer's team has
     /// explored the tile, an impassable one snaps to the nearest open tile
@@ -118,11 +118,11 @@ pub enum Command {
         /// The site to abandon.
         building: BuildingId,
     },
-    /// Send harvesters to weld a damaged own built building back toward
-    /// full. Repair bills per hp welded, prepaid at whole-scrap
-    /// boundaries.
+    /// Send welders (harvest-capable machines and the Tender) to weld a
+    /// damaged own built building back toward full. Repair bills per hp
+    /// welded, prepaid at whole-scrap boundaries.
     Repair {
-        /// The units to commit (only harvesters are accepted).
+        /// The units to commit (only welders are accepted).
         units: Vec<UnitId>,
         /// The patient.
         building: BuildingId,
@@ -164,16 +164,15 @@ pub enum Command {
     /// [`RejectReason::Eliminated`]; units already in the world keep
     /// executing their brains, like any eliminated seat's remnants.
     Surrender,
-    /// Send harvesters to weld a wounded own GROUND unit back toward
-    /// full. Billed per hp against the patient's cost at repair
-    /// pricing, prepaid at whole-scrap boundaries like a building weld.
-    /// Air patients refuse — a harvester cannot service a machine
-    /// hovering where it cannot stand. The patient's own orders are
-    /// untouched: a fleeing machine keeps fleeing and simply goes
-    /// unwelded while out of reach.
+    /// Send welders to weld a wounded own ground unit back toward full.
+    /// Billed per hp against the patient's cost at repair pricing, prepaid
+    /// at whole-scrap boundaries like a building weld. Airborne patients
+    /// are refused, since a welder cannot stand where they hover. The
+    /// patient's own orders are untouched: a fleeing machine keeps fleeing
+    /// and goes unwelded while out of reach.
     RepairUnit {
-        /// The units to commit (only harvesters are accepted; the
-        /// patient itself never joins its own crew).
+        /// The units to commit (only welders are accepted; the patient
+        /// itself never joins its own crew).
         units: Vec<UnitId>,
         /// The wounded machine.
         target: UnitId,
@@ -320,8 +319,8 @@ pub enum RejectReason {
     /// command envelope. Hostile or corrupt input — honest clients clamp to
     /// the map.
     OutOfBounds,
-    /// The issuer has been eliminated (no buildings left); spectators
-    /// don't give orders.
+    /// The issuer holds no Foundry or has conceded; spectators don't give
+    /// orders.
     Eliminated,
     /// The named tile holds no scrap.
     NotANode,

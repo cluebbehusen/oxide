@@ -1,44 +1,11 @@
 //! The tick pipeline.
 //!
-//! Phase order is part of the sim's contract — changing it changes game
-//! outcomes (and therefore every regression hash):
+//! `State::tick` fixes the phase order, which is part of the simulation
+//! contract: reordering phases changes outcomes and state hashes. The
+//! phase list lives in `docs/simulation-architecture.md`.
 //!
-//! 1. **Recovery and commands** — capture any newly stranded economy's
-//!    finite entitlement, resolve visible provisional sites, then apply this
-//!    tick's [`PlayerCommand`]s and refund abandoned unstarted sites.
-//! 2. **Production** — Foundries advance queues and spawn finished units
-//!    (before brains, so a fresh unit acts on its birth tick).
-//! 3. **Brains** — each unit, in id order, turns intent into action:
-//!    acquiring targets, pathing, attacking, extracting, depositing. Shots
-//!    are *buffered*, not applied — every machine decides against the same
-//!    start-of-tick world, so seat order grants no reaction edge and
-//!    mutual kills are possible.
-//! 4. **Resolution** — buffered damage lands (decision order), then
-//!    surviving victims retaliate against their earliest attacker.
-//! 5. **Movement** — a pre-pass walks pathless ground bodies off claimed
-//!    building footprints (path only — programs survive; brains may null
-//!    the path each tick, so the pre-pass re-arms it), then units
-//!    advance along their paths.
-//! 6. **Collision** — overlapping bodies are pushed apart until they fit;
-//!    units are solid to each other but never block tiles.
-//! 7. **Cleanup** — entities at 0 hp are removed, with events; every
-//!    death deposits wreck salvage on its ground. Due aircraft crashes
-//!    damage post-movement ground targets before charges and cleanup;
-//!    cleanup schedules new crashes with their retained flight momentum and
-//!    refunds unstarted sites whose last committed worker is gone.
-//! 8. **Decay** — on its global cadence, every wreck tile loses one
-//!    salvage. Cleanup and decay share the tick, so a wreck born on a
-//!    cadence tick pays its first salvage immediately.
-//! 9. **Vision** — every player's fog-of-war visible set is rebuilt from
-//!    their surviving entities (explored only accumulates). Newly visible
-//!    provisional sites activate or refund against the revealed ground, and
-//!    tile goals whose clicked tile the owner's team has now explored take
-//!    their spread slots.
-//! 10. **Victory** — a player with no Foundry (or who conceded) is out;
-//!     last standing wins immediately; remaining aircraft crashes are discarded.
-//!
-//! After [`GameResult`] is set the world freezes: ticks still count up (so
-//! timelines stay aligned) but nothing moves and commands are ignored.
+//! After [`GameResult`] is set the world freezes: ticks still count up so
+//! timelines stay aligned, but nothing moves and commands are ignored.
 
 pub(crate) use crate::geometry::{
     group_spread_scan_reversed, rect_adjacent_tiles, rect_approach_key_from,
@@ -141,7 +108,7 @@ fn harvester_recovery_needed(state: &State, player: crate::ids::PlayerId) -> boo
 }
 
 impl State {
-    /// Inspects a private clone after applying only phase-one commands.
+    /// Inspects a private clone after applying only this tick's commands.
     ///
     /// This is the non-authoritative prediction seam for shells and tools:
     /// command validation, ordering, charges, sites, and unit programs match
@@ -169,10 +136,9 @@ impl State {
         let mut events = Vec::new();
         let mut motion = Vec::new();
         if self.result.is_none() {
-            // One spatial index serves the tick's unit-neighborhood
-            // queries (acquisition windows, collision pairs). A scratch
-            // local on purpose: the pipeline rebuilds it at each use
-            // point, and it must never ride on `State` (see `spatial`).
+            // One scratch spatial index serves the tick's neighborhood
+            // queries. It is rebuilt at each use point and must never be
+            // stored on `State` (see `spatial`).
             let mut index = spatial::UnitIndex::new();
             production::capture_recovery_entitlements(self);
             construction::reveal(self, &mut events);
@@ -181,9 +147,9 @@ impl State {
             charges::cancel_discovered(self, &mut events);
             production::decay_abandoned_sites(self);
             let boardings = brain::run(self, &mut index, &mut events);
-            // Embarkations and landings mutate the unit list, which must
-            // hold still under the brains; they land here, between the
-            // last decision and the first movement.
+            // Boarding and unloading mutate the unit list, which must hold
+            // still under the brains, so they resolve between the last
+            // decision and the first movement.
             brain::logistics::resolve(self, boardings, &mut events);
             movement::evict_claimed_ground(self);
             let air_positions = aircraft_crashes::capture_positions(self);
@@ -230,10 +196,9 @@ impl State {
     }
 }
 
-/// Removes entities that hit 0 hp this tick, reporting each — and leaves
-/// their price on the ground: a fraction of every destroyed machine's
-/// cost lands as wreck salvage (buildings split theirs across the
-/// footprint). Battles literally feed the salvagers.
+/// Removes entities that hit 0 hp this tick, reporting each, and leaves a
+/// fraction of every destroyed entity's cost on the ground as wreck salvage
+/// (buildings split theirs across the footprint).
 fn cleanup(state: &mut State, events: &mut Vec<Event>) {
     let dead_charges: Vec<_> = state
         .buildings
@@ -257,9 +222,7 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
         let value =
             unit.kind.stats().cost * crate::stats::WRECK_VALUE_NUM / crate::stats::WRECK_VALUE_DEN;
         deposits.push((unit.tile(), value));
-        // Cargo dies with the airframe, and its price falls at the
-        // crash tile with everything else (a crash over the Pit is
-        // swallowed by the standing wreck rule).
+        // Cargo dies with the airframe and deposits at its tile.
         for rider in &unit.cargo {
             events.push(Event::UnitDied {
                 unit: rider.id,
@@ -297,6 +260,7 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
         events.push(Event::BuildingDestroyed {
             building: building.id,
             player: building.player,
+            tier: building.tier,
             pos: building.center(),
         });
         let stats = building.stats();
@@ -322,12 +286,10 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
     }
 
     for (tile, value) in deposits {
-        // A tile under a surviving building swallows its deposit — a
-        // flyer downed over a roof leaves nothing strippable, and wreck
-        // must never coexist with a standing footprint (harvesters
+        // Wreck must never coexist with a standing footprint: harvesters
         // cannot reach it, and the building's own eventual wreck would
-        // double-stack). Buildings that died this tick are already gone
-        // from the vec, so their footprints take deposits normally.
+        // double-stack. Buildings that died this tick are already removed,
+        // so their footprints take deposits normally.
         if state
             .buildings
             .iter()
@@ -335,10 +297,9 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
         {
             continue;
         }
-        // Rock and peaks never open up, so salvage there is bait no
-        // harvester can ever strip — a downed flyer's value is simply
-        // lost. Scrap node tiles keep their deposits: they become
-        // standable the moment the node exhausts.
+        // Salvage on rock, peaks, or pits could never be harvested, so it is
+        // dropped. Scrap node tiles keep their deposits: they become standable
+        // when the node exhausts.
         if state
             .map
             .tile(tile)
@@ -352,21 +313,19 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
 
 /// Declares the result once at least one team has been eliminated.
 ///
-/// Elimination is Foundry-based: a team lives while *any* of its seats
-/// holds a Foundry — no Foundry anywhere, no comeback; turrets and
-/// factories left standing do not keep a team in the game.
-/// A resigned seat's Foundries stop counting the tick it concedes, so
-/// a fully-resigned team is eliminated on the spot. The per-seat
-/// command gate in `commands::apply` deliberately stays player-scoped:
-/// a foundry-less or resigned seat on a living team spectates while
-/// its team plays on.
+/// Elimination is Foundry-based: a team lives while any of its seats holds a
+/// Foundry; other standing buildings do not keep it in the game. A resigned
+/// seat's Foundries stop counting the tick it concedes, so a fully resigned
+/// team is eliminated immediately. The command gate in `commands::apply` stays
+/// player-scoped: a Foundry-less or resigned seat on a living team spectates
+/// while its team plays on.
 fn victory(state: &mut State, events: &mut Vec<Event>) {
     if state.mode == crate::scenario::ScenarioMode::Sandbox || state.result.is_some() {
         return;
     }
-    // Stamp each seat's first tick out of the match — resigned, or
-    // holding no Foundry at all (sites count). Recorded once, never
-    // cleared: the FFA scoreboard's placement key.
+    // Stamp each seat's first tick out of the match: resigned, or holding no
+    // Foundry (sites count). Recorded once and never cleared; it is the FFA
+    // scoreboard's placement key.
     for index in 0..state.players.len() {
         if state.players[index].eliminated_at.is_some() {
             continue;
@@ -444,11 +403,9 @@ pub(crate) fn route_for_position(
     match kind.stats().domain {
         crate::stats::Domain::Ground => astar_for(state, from_tile, to),
         crate::stats::Domain::Air => {
-            // Goals ring-snap off peaks here, at the one funnel every
-            // air route passes: walks already route to open sky, but other
-            // callers may name a peak — and line_blocked ignores endpoints
-            // by design, so an unsnapped peak goal would hand the flyer the
-            // mountain itself.
+            // Every air route passes here, so peak goals snap here.
+            // `line_blocked` ignores endpoints, so an unsnapped peak goal
+            // would route the flyer onto the peak.
             let to = if state.passable_for(crate::stats::Domain::Air, to) {
                 to
             } else {
@@ -475,9 +432,9 @@ pub(crate) fn route_for_position(
     }
 }
 
-/// The nearest air-passable tile to `goal`, ring-scanned outward in the
-/// same deterministic order group goals use. `None` when nothing within
-/// reach is open sky (a map that is all mountain has bigger problems).
+/// The first air-passable tile in square rings around `goal`, scanned outward
+/// by Chebyshev radius and row-major (y, then x) within each ring. `None` when
+/// nothing within reach is open sky.
 fn snap_air_goal(state: &State, goal: TilePos) -> Option<TilePos> {
     for r in 0..=crate::stats::GOAL_SNAP_RADIUS + 3 {
         for dy in -r..=r {
