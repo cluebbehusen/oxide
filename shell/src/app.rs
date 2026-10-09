@@ -786,10 +786,10 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         let input_diagnostic_scope = visible_stage(&screen, &app, Stage::Input);
         app.game.poll_recovery();
         let time = FrameTime::measure(get_frame_time());
-        if !rerun_pass {
+        let first_pass = !std::mem::take(&mut rerun_pass);
+        if first_pass {
             began_playing = matches!(screen, Screen::Playing);
         }
-        rerun_pass = false;
         if let Some(rx) = &debug_rx {
             while let Ok(incoming) = rx.try_recv() {
                 // An injected event is consumed by the NEXT frame; any
@@ -832,11 +832,9 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         app.game.presentation.camera.update(time.presentation);
 
         let input_diagnostic_scope = visible_stage(&screen, &app, Stage::Input);
-        let mut events = if app.args.automation {
-            Vec::new()
-        } else {
+        let mut events = hardware_events(first_pass && !app.args.automation, || {
             input::poll_events(text_entry(&screen))
-        };
+        });
         if let Some((frame, last_top)) = trace_frames.as_mut() {
             *frame += 1;
             let now = std::time::Instant::now();
@@ -895,6 +893,11 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         )?;
         gl_use_default_material();
         screen = screen_frame.screen;
+        // Before any rerun: the next pass belongs to the new screen.
+        if std::mem::discriminant(&screen) != screen_before {
+            app.input.reset_transient();
+            macroquad::miniquad::window::set_mouse_cursor(macroquad::miniquad::CursorIcon::Default);
+        }
         if !screen_holds_live_match(&screen)
             && let Some(link) = app.net.take()
         {
@@ -944,9 +947,6 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             }
         }
 
-        if std::mem::discriminant(&screen) != screen_before {
-            app.input.reset_transient();
-        }
         // A touch-only player types through the on-screen keyboard, which
         // follows the name field: every way out of naming hides it, and a
         // tap on the field brings back one the player dismissed.
@@ -1308,6 +1308,13 @@ fn next_live_streak(streak: u8, began_playing: bool, ended_playing: bool) -> u8 
     } else {
         0
     }
+}
+
+/// This pass's hardware input. Macroquad reports a frame's key presses until
+/// the frame is presented, so a rerun pass inside the same frame must not read
+/// them again: the screen a key opened would receive that key too.
+fn hardware_events(poll_hardware: bool, poll: impl FnOnce() -> Vec<RawEvent>) -> Vec<RawEvent> {
+    if poll_hardware { poll() } else { Vec::new() }
 }
 
 /// A top-bar control's rect for the automation surface: reported only
