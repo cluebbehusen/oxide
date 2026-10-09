@@ -56,16 +56,7 @@ pub struct Volumes {
     /// Chrome sounds.
     pub ui: f32,
     /// Music and ambient beds.
-    #[serde(default = "default_volume")]
     pub music: f32,
-}
-
-fn default_on() -> bool {
-    true
-}
-
-fn default_volume() -> f32 {
-    1.0
 }
 
 impl Default for Volumes {
@@ -100,10 +91,8 @@ impl Default for CameraPrefs {
     }
 }
 
-/// Touch gesture preferences. Fields a config predates take their
-/// defaults, so adding one never resets the rest of the settings.
+/// Touch gesture preferences.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct TouchPrefs {
     /// Two taps inside this window read as a double-tap.
     pub double_tap_ms: u32,
@@ -137,7 +126,6 @@ impl TouchPrefs {
 
 /// Strategic marker transition and size in logical screen pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct MarkerPrefs {
     pub start: f32,
     pub end: f32,
@@ -192,10 +180,9 @@ impl MarkerPrefs {
 /// The whole persisted surface.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
-    #[serde(default)]
+    /// Strategic marker timing and size.
     pub markers: MarkerPrefs,
-    /// Optional performance HUD; older configs leave it disabled.
-    #[serde(default)]
+    /// Optional performance HUD.
     pub performance_display: PerformanceDisplay,
     /// Shape version; mismatch resets to defaults.
     pub version: u32,
@@ -212,21 +199,16 @@ pub struct Config {
     /// Accessibility: damp decorative animation (alert pulses, ping
     /// rings, muzzle flashes). Informational motion — unit movement,
     /// shell arcs — always stays.
-    #[serde(default)]
     pub reduced_motion: bool,
     /// Accessibility: colorblind-safe allegiance accents (indicator
     /// colors only; sprite art is untouched).
-    #[serde(default)]
     pub colorblind: bool,
     /// Show the control-group column above the minimap. Hiding it
     /// leaves keyboard groups working.
-    #[serde(default = "default_on")]
     pub control_groups: bool,
-    /// Touch gesture timing (absent in configs saved before touch).
-    #[serde(default)]
+    /// Touch gesture timing.
     pub touch: TouchPrefs,
     /// The host address the last LAN join used.
-    #[serde(default)]
     pub last_join_address: Option<String>,
 }
 

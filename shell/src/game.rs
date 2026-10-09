@@ -248,7 +248,11 @@ impl Game {
         } else {
             Vec::new()
         };
-        let recorder = Replay::new(SIM_VERSION, scenario.clone());
+        let recorder = Replay::new(
+            SIM_VERSION,
+            crate::build_identity().label(),
+            scenario.clone(),
+        );
         let presentation = Presentation::new(&state, human, viewport);
         Ok(Self {
             scenario,

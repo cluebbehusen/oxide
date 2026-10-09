@@ -168,7 +168,7 @@ fn successful_scenario_replacement_resets_the_entire_session() {
 
 #[test]
 fn replay_without_duration_resumes_through_its_last_command() {
-    let mut replay = GameReplay::new(SIM_VERSION, human_scenario("legacy"));
+    let mut replay = GameReplay::new(SIM_VERSION, "test", human_scenario("legacy"));
     replay.record(
         3,
         PlayerCommand {

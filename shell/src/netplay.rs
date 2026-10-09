@@ -501,8 +501,8 @@ impl HostLobby {
                 Ok(Some(line)) => {
                     let matching = matches!(
                         JoinMessage::decode(&line),
-                        Ok(JoinMessage::Hello { protocol, commit })
-                            if same_build(protocol, &commit, &self.commit)
+                        Ok(JoinMessage::Hello { protocol, sim, commit })
+                            if same_build(protocol, sim, &commit, &self.commit)
                     );
                     if matching {
                         self.joined.push(connection);
@@ -678,9 +678,11 @@ impl ClientLobby {
             Joining::Greeting(connection) => match connection.try_recv() {
                 Ok(None) => (Joining::Greeting(connection), None),
                 Ok(Some(line)) => match LobbyMessage::decode(&line) {
-                    Ok(LobbyMessage::Hello { protocol, commit })
-                        if same_build(protocol, &commit, &self.commit) =>
-                    {
+                    Ok(LobbyMessage::Hello {
+                        protocol,
+                        sim,
+                        commit,
+                    }) if same_build(protocol, sim, &commit, &self.commit) => {
                         (Joining::Waiting(connection), None)
                     }
                     Ok(LobbyMessage::Hello { commit, .. }) => refused(&format!(

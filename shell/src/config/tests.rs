@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn marker_preferences_migrate_round_trip_and_clamp_without_resetting_other_settings() {
+fn marker_preferences_round_trip_and_clamp_without_resetting_other_settings() {
     let dir = std::env::temp_dir().join(format!("oxide-config-markers-{}", std::process::id()));
     let path = dir.join("config.json");
     let mut config = Config {
@@ -9,9 +9,6 @@ fn marker_preferences_migrate_round_trip_and_clamp_without_resetting_other_setti
         ..Config::default()
     };
     config.save_to(&path).unwrap();
-    let mut legacy = serde_json::to_value(&config).unwrap();
-    legacy.as_object_mut().unwrap().remove("markers");
-    std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
     assert_eq!(Config::load_from(Some(path.clone())), config);
 
     config.markers = MarkerPrefs {
@@ -155,7 +152,7 @@ fn a_config_round_trips_through_disk() {
 }
 
 #[test]
-fn performance_modes_persist_and_old_configs_keep_preferences() {
+fn performance_modes_and_the_last_join_address_persist() {
     let dir = std::env::temp_dir().join(format!("oxide-config-performance-{}", std::process::id()));
     let path = dir.join("config.json");
     let mut config = Config {
@@ -174,77 +171,8 @@ fn performance_modes_persist_and_old_configs_keep_preferences() {
     }
     config.last_join_address = Some("connor-mbp:4200".to_owned());
     config.save_to(&path).unwrap();
-    assert_eq!(Config::load_from(Some(path.clone())), config);
-    let mut old = serde_json::to_value(&config).unwrap();
-    old.as_object_mut().unwrap().remove("performance_display");
-    old.as_object_mut().unwrap().remove("last_join_address");
-    std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
-    config.performance_display = PerformanceDisplay::Off;
-    config.last_join_address = None;
     assert_eq!(Config::load_from(Some(path)), config);
     std::fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
-fn a_config_from_before_the_music_bus_keeps_every_other_setting() {
-    let dir = std::env::temp_dir().join(format!("oxide-config-pre-music-{}", std::process::id()));
-    let path = dir.join("config.json");
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut old = serde_json::to_value(Config {
-        ui_scale: 1.25,
-        volumes: Volumes {
-            effects: 0.5,
-            ..Volumes::default()
-        },
-        ..Config::default()
-    })
-    .unwrap();
-    old["volumes"].as_object_mut().unwrap().remove("music");
-    std::fs::write(&path, serde_json::to_vec_pretty(&old).unwrap()).unwrap();
-
-    let loaded = Config::load_from(Some(path));
-    assert_eq!(loaded.volumes.music, 1.0);
-    assert_eq!(loaded.volumes.effects, 0.5);
-    assert_eq!(loaded.ui_scale, 1.25);
-    std::fs::remove_dir_all(&dir).ok();
-}
-
-#[test]
-fn a_touch_preference_the_config_predates_keeps_every_other_setting() {
-    let dir = std::env::temp_dir().join(format!("oxide-config-pre-touch-{}", std::process::id()));
-    let path = dir.join("config.json");
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut old = serde_json::to_value(Config {
-        ui_scale: 1.25,
-        touch: TouchPrefs {
-            double_tap_ms: 280,
-            ..TouchPrefs::default()
-        },
-        ..Config::default()
-    })
-    .unwrap();
-    old["touch"]
-        .as_object_mut()
-        .unwrap()
-        .remove("long_press_ms");
-    std::fs::write(&path, serde_json::to_vec_pretty(&old).unwrap()).unwrap();
-
-    let loaded = Config::load_from(Some(path));
-    assert_eq!(loaded.ui_scale, 1.25, "the rest of the config survives");
-    assert_eq!(loaded.touch.double_tap_ms, 280);
-    assert_eq!(
-        loaded.touch.long_press_ms,
-        TouchPrefs::default().long_press_ms
-    );
-    std::fs::remove_dir_all(&dir).ok();
-}
-
-#[test]
-fn a_config_saved_before_the_group_column_shows_it() {
-    let mut old = serde_json::to_value(Config::default()).unwrap();
-    old.as_object_mut().unwrap().remove("control_groups");
-    let loaded: Config = serde_json::from_value(old).unwrap();
-    assert!(loaded.control_groups);
 }
 
 #[test]
@@ -283,4 +211,14 @@ fn an_empty_secondary_slot_and_rebound_primary_survive_reload() {
     let loaded = Config::load_from(Some(path));
     assert_eq!(loaded.bindings, config.bindings);
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn the_driver_quiet_config_has_the_current_shape() {
+    // Driver captures install this file as the shell's settings, and a
+    // stale shape would silently fall back to defaults.
+    let config: Config =
+        serde_json::from_str(include_str!("../../../driver/src/quiet_config.json")).unwrap();
+    assert_eq!(config.version, CONFIG_VERSION);
+    assert_eq!(config.volumes.master, 0.0);
 }

@@ -65,7 +65,7 @@ impl Probe {
             state: scenario.build().unwrap(),
             twin: scenario.build().unwrap(),
             restored: scenario.build().unwrap(),
-            replay: GameReplay::new(oxide_sim::SIM_VERSION, scenario),
+            replay: GameReplay::new(oxide_sim::SIM_VERSION, "test", scenario),
             events: Vec::new(),
             ticks: Vec::new(),
             milestones: BTreeMap::new(),

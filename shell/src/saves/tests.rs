@@ -26,9 +26,9 @@ fn the_shelf_badge_compares_versions_and_never_guesses() {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let scenario = oxide_sim::Scenario::skirmish();
-    let ours: GameReplay = chassis::replay::Replay::new(SIM_VERSION, scenario.clone());
+    let ours: GameReplay = chassis::replay::Replay::new(SIM_VERSION, "test", scenario.clone());
     ours.save(dir.join("ours.json")).unwrap();
-    let mut foreign: GameReplay = chassis::replay::Replay::new(SIM_VERSION, scenario);
+    let mut foreign: GameReplay = chassis::replay::Replay::new(SIM_VERSION, "test", scenario);
     foreign.meta.sim_version = SIM_VERSION + 1;
     foreign.save(dir.join("foreign.json")).unwrap();
 
@@ -67,11 +67,11 @@ fn kinds_read_the_metadata_tag() {
     std::fs::create_dir_all(&dir).unwrap();
     let scenario = oxide_sim::Scenario::skirmish();
     // A tagged save under a neutral filename: the tag wins.
-    let mut named: GameReplay = chassis::replay::Replay::new(SIM_VERSION, scenario.clone());
+    let mut named: GameReplay = chassis::replay::Replay::new(SIM_VERSION, "test", scenario.clone());
     named.meta.kind = Some("save".to_string());
     named.meta.description = Some("before the push".to_string());
     named.save(dir.join("anything.json")).unwrap();
-    let finished: GameReplay = chassis::replay::Replay::new(SIM_VERSION, scenario);
+    let finished: GameReplay = chassis::replay::Replay::new(SIM_VERSION, "test", scenario);
     finished.save(dir.join("match-0000000099.json")).unwrap();
 
     let mut out = Vec::new();
@@ -104,7 +104,7 @@ fn shelf_skips_oversized_records_without_hiding_valid_neighbors() {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let valid: GameReplay =
-        chassis::replay::Replay::new(SIM_VERSION, oxide_sim::Scenario::skirmish());
+        chassis::replay::Replay::new(SIM_VERSION, "test", oxide_sim::Scenario::skirmish());
     valid.save(dir.join("valid.json")).unwrap();
     std::fs::File::create(dir.join("oversized.json"))
         .unwrap()
@@ -202,7 +202,7 @@ fn scan_uses_record_metadata_without_trusting_malformed_neighbors() {
     ));
     std::fs::create_dir_all(&dir).expect("temp directory");
     let scenario = oxide_sim::Scenario::skirmish();
-    let mut save: GameReplay = chassis::replay::Replay::new(SIM_VERSION, scenario);
+    let mut save: GameReplay = chassis::replay::Replay::new(SIM_VERSION, "test", scenario);
     save.meta.kind = Some("save".to_string());
     save.meta.description = Some("before the push".to_string());
     save.meta.sim_version = SIM_VERSION + 1;

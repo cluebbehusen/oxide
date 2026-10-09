@@ -19,7 +19,7 @@ fn recording(root: &Path) -> Arc<RecoveryWriter> {
     let writer = Arc::new(
         RecoveryWriter::start(
             root.to_owned(),
-            GameReplay::new(SIM_VERSION, Scenario::skirmish()),
+            GameReplay::new(SIM_VERSION, "test", Scenario::skirmish()),
             0,
             build(),
         )
@@ -130,7 +130,7 @@ fn an_incident_before_a_recording_is_ready_still_sets_its_ending() {
     let writer = Arc::new(
         RecoveryWriter::start(
             root.clone(),
-            GameReplay::new(SIM_VERSION, Scenario::skirmish()),
+            GameReplay::new(SIM_VERSION, "test", Scenario::skirmish()),
             0,
             build(),
         )

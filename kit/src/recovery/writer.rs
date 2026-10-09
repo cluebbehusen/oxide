@@ -92,7 +92,7 @@ impl RecoveryWriter {
         checkpoint: crate::checkpoint::SessionCheckpoint,
         build: BuildIdentity,
     ) -> Result<Self> {
-        let base = checkpoint.recording()?;
+        let base = checkpoint.recording(&build)?;
         Self::start_recovered_checkpoint(
             root,
             base.clone(),

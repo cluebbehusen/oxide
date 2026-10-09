@@ -13,7 +13,11 @@ fn until(mut condition: impl FnMut() -> bool) {
 fn home_exports_the_interrupted_match_instead_of_its_empty_active_backdrop() {
     use oxide_kit::recovery::{RecoveryWriter, inspect};
     let root = std::env::temp_dir().join(format!("oxide-report-home-{}", std::process::id()));
-    let base = oxide_kit::GameReplay::new(oxide_sim::SIM_VERSION, oxide_sim::Scenario::skirmish());
+    let base = oxide_kit::GameReplay::new(
+        oxide_sim::SIM_VERSION,
+        "test",
+        oxide_sim::Scenario::skirmish(),
+    );
     let interrupted =
         RecoveryWriter::start(root.clone(), base, 0, crate::build_identity()).unwrap();
     interrupted.prepared(0, &[]);

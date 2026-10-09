@@ -317,7 +317,7 @@ fn a_straight_mover_is_led_hit_and_replayed_bit_exactly() {
             units: vec![bombard],
         },
     );
-    let mut replay = Replay::new(SIM_VERSION, scenario);
+    let mut replay = Replay::new(SIM_VERSION, "test", scenario);
     for command in &setup_commands {
         replay.record(0, command.clone());
     }

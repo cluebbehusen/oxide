@@ -609,8 +609,13 @@ fn main() -> Result<()> {
             if all_bots {
                 oxide_kit::bench::all_bots(&mut scenario);
             }
-            let outcome =
-                runner::run_scenario(&scenario, ticks, bots || all_bots, save_replay.is_some())?;
+            let build = build_identity();
+            let outcome = runner::run_scenario(
+                &scenario,
+                ticks,
+                bots || all_bots,
+                save_replay.is_some().then_some(&build),
+            )?;
             if let (Some(path), Some(replay)) = (&save_replay, &outcome.replay) {
                 replay.save(path)?;
                 eprintln!(
@@ -946,9 +951,13 @@ fn main() -> Result<()> {
                 }
                 (None, None) => bail!("name a workload or pass --scenario"),
             };
-            let mut replay = save_replay
-                .as_ref()
-                .map(|_| oxide_kit::GameReplay::new(oxide_sim::SIM_VERSION, scenario.clone()));
+            let mut replay = save_replay.as_ref().map(|_| {
+                oxide_kit::GameReplay::new(
+                    oxide_sim::SIM_VERSION,
+                    build_identity().label(),
+                    scenario.clone(),
+                )
+            });
             let report =
                 oxide_driver::bot_cost::measure(&label, &scenario, window, replay.as_mut())?;
             if let (Some(path), Some(replay)) = (&save_replay, &replay) {
@@ -1057,7 +1066,7 @@ fn main() -> Result<()> {
             if all_bots {
                 oxide_kit::bench::all_bots(&mut scenario);
             }
-            let outcome = runner::run_scenario(&scenario, ticks, bots || all_bots, false)?;
+            let outcome = runner::run_scenario(&scenario, ticks, bots || all_bots, None)?;
             render::save_png(&outcome.state, &out)?;
             eprintln!("wrote {}", out.display());
         }

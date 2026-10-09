@@ -16,7 +16,7 @@ fn checkpoint_origins_reach_every_read_only_replay_surface() {
         state.tick(&[]);
     }
     let origin = oxide_kit::recording::WorldOrigin::capture(&scenario, &state).unwrap();
-    let mut replay = GameReplay::with_origin(SIM_VERSION, scenario, origin).unwrap();
+    let mut replay = GameReplay::with_origin(SIM_VERSION, "test", scenario, origin).unwrap();
     replay.meta.ticks = Some(43);
     let id = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
     let file = TempReplay(
@@ -97,6 +97,7 @@ fn checkpoint_exploration_deltas_count_only_new_scouting() {
     let initial = explored(&state);
     let mut replay = GameReplay::with_origin(
         SIM_VERSION,
+        "test",
         scenario.clone(),
         oxide_kit::recording::WorldOrigin::capture(&scenario, &state).unwrap(),
     )
@@ -147,7 +148,7 @@ fn checkpoint_exploration_deltas_count_only_new_scouting() {
         report.digests.last().unwrap().rows[0].explored_tiles,
         final_explored
     );
-    let mut from_start = GameReplay::new(SIM_VERSION, scenario);
+    let mut from_start = GameReplay::new(SIM_VERSION, "test", scenario);
     from_start.meta.ticks = Some(1);
     let report = oxide_driver::replay_summary::summarize(&from_start, &options).unwrap();
     assert_eq!(
@@ -165,7 +166,7 @@ impl Drop for TempReplay {
 }
 
 fn foreign_version_replay() -> TempReplay {
-    let replay: GameReplay = GameReplay::new(SIM_VERSION + 1, Scenario::skirmish());
+    let replay: GameReplay = GameReplay::new(SIM_VERSION + 1, "test", Scenario::skirmish());
     let id = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
         "oxide-foreign-version-replay-{}-{id}.json",
@@ -203,7 +204,7 @@ fn a_foreign_version_replay_is_refused_at_version_validation() {
 
 #[test]
 fn hash_every_lines_repeat_exactly_and_end_at_the_final_hash() {
-    let mut replay = GameReplay::new(SIM_VERSION, Scenario::skirmish());
+    let mut replay = GameReplay::new(SIM_VERSION, "test", Scenario::skirmish());
     replay.meta.ticks = Some(25);
     let id = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
     let file = TempReplay(
@@ -243,7 +244,7 @@ fn hash_every_lines_repeat_exactly_and_end_at_the_final_hash() {
 fn until_runs_a_prefix_while_a_short_ticks_override_still_refuses() {
     use chassis::replay::Replay;
     use oxide_sim::{Command, PlayerCommand, PlayerId, UnitId};
-    let mut replay: GameReplay = Replay::new(SIM_VERSION, Scenario::skirmish());
+    let mut replay: GameReplay = Replay::new(SIM_VERSION, "test", Scenario::skirmish());
     replay.record(
         100,
         PlayerCommand {

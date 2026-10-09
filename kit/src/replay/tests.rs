@@ -24,7 +24,7 @@ fn write_fixture(bytes: &[u8]) -> TempReplay {
 }
 
 fn current_document() -> Value {
-    serde_json::to_value(GameReplay::new(SIM_VERSION, Scenario::skirmish()))
+    serde_json::to_value(GameReplay::new(SIM_VERSION, "test", Scenario::skirmish()))
         .expect("current replay serializes")
 }
 
@@ -35,7 +35,7 @@ fn sandbox_replay_preserves_rules_through_the_strict_wire() {
     for row in &mut setup.map {
         *row = row.replace(['1', '2'], ".");
     }
-    let mut replay = GameReplay::new(SIM_VERSION, setup.clone());
+    let mut replay = GameReplay::new(SIM_VERSION, "test", setup.clone());
     replay.meta.ticks = Some(20);
     let fixture = write_fixture(&serde_json::to_vec(&replay).unwrap());
     let loaded = load_replay(&fixture.0).unwrap();
@@ -88,7 +88,7 @@ fn current_replay_rejects_unknown_fields_at_strict_setup_boundaries() {
 
 #[test]
 fn current_replay_rejects_duplicate_bot_config_fields() {
-    let json = serde_json::to_string(&GameReplay::new(SIM_VERSION, Scenario::skirmish()))
+    let json = serde_json::to_string(&GameReplay::new(SIM_VERSION, "test", Scenario::skirmish()))
         .expect("current replay serializes");
     let needle = r#""bot_config":{}"#;
     let replacement = concat!(r#""bot_config":{},"#, r#""bot_config":{}"#);

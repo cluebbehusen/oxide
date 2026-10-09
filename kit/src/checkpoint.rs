@@ -52,11 +52,12 @@ impl SessionCheckpoint {
         )
     }
 
-    /// Starts a world-only recording at this session boundary.
-    pub fn recording(&self) -> Result<GameReplay> {
+    /// Starts a world-only recording by `build` at this session boundary.
+    pub fn recording(&self, build: &crate::recovery::BuildIdentity) -> Result<GameReplay> {
         self.validate_world()?;
         Ok(GameReplay::with_origin(
             SIM_VERSION,
+            build.label(),
             self.scenario.clone(),
             crate::recording::WorldOrigin::capture(&self.scenario, &self.state)?,
         )?)

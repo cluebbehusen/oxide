@@ -42,7 +42,7 @@ fn save_fixture() -> TempReplay {
             .expect("each seat starts with a unit")
             .id
     };
-    let mut replay: GameReplay = Replay::new(SIM_VERSION, scenario);
+    let mut replay: GameReplay = Replay::new(SIM_VERSION, "test", scenario);
     replay.record(0, stop(0, unit(0)));
     replay.record(7, stop(1, unit(1)));
     replay.record(118, stop(1, unit(1)));
@@ -127,7 +127,7 @@ fn replay_summary_text_carries_header_digests_and_legend() {
 
 fn save_surrender_fixture() -> TempReplay {
     let scenario = Scenario::skirmish();
-    let mut replay: GameReplay = Replay::new(SIM_VERSION, scenario);
+    let mut replay: GameReplay = Replay::new(SIM_VERSION, "test", scenario);
     replay.record(
         5,
         PlayerCommand {

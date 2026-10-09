@@ -416,10 +416,10 @@ fn nominal_axis_aliases_share_one_execution_identity_and_are_refused() {
 
 #[test]
 fn command_hash_ignores_setup_seed_but_covers_ticks_and_commands() {
-    let mut first = GameReplay::new(SIM_VERSION, Scenario::skirmish());
+    let mut first = GameReplay::new(SIM_VERSION, "test", Scenario::skirmish());
     let mut second_setup = Scenario::skirmish();
     second_setup.seed = second_setup.seed.wrapping_add(1);
-    let mut second = GameReplay::new(SIM_VERSION, second_setup);
+    let mut second = GameReplay::new(SIM_VERSION, "test", second_setup);
     let stop = PlayerCommand {
         player: PlayerId(0),
         command: Command::Stop { units: Vec::new() },
