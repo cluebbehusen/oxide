@@ -77,7 +77,7 @@ fn ids(state: &State, player: u8) -> Vec<UnitId> {
 fn goal(state: &State, id: UnitId) -> Option<Goal> {
     match state.unit(id)?.order {
         Order::Run { goal } | Order::Hunt { goal } | Order::Advance { goal } => Some(goal),
-        Order::Unload { at } => Some(at),
+        Order::Unload { at, .. } => Some(at),
         _ => None,
     }
 }

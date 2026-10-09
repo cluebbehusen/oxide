@@ -323,7 +323,7 @@ fn resolve_hits(
         match hit.victim {
             Target::Unit(uid) => {
                 if let Some(v) = state.unit_mut(uid) {
-                    let relevant_hit = v.kind == crate::stats::UnitKind::Harvester;
+                    let relevant_hit = v.kind.stats().harvest.is_some();
                     let relevant_loss =
                         hit.damage >= v.hp && v.domain() == crate::stats::Domain::Ground;
                     if v.hp > 0 && hit.damage > 0 && (relevant_hit || relevant_loss) {

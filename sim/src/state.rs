@@ -191,6 +191,11 @@ pub enum Order {
     Unload {
         /// The drop point.
         at: Goal,
+        /// Whether the drop ring scans half-turned, in the frame of the
+        /// transport's approach when the order was issued, so mirrored
+        /// drops set riders on mirrored tiles.
+        #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+        reverse: bool,
     },
     /// Fly a run-in onto a ground tile and set the airframe down on its
     /// center.
@@ -216,7 +221,7 @@ impl Order {
     pub(crate) fn walk_goal(&self) -> Option<Goal> {
         match *self {
             Order::Run { goal } | Order::Hunt { goal } | Order::Advance { goal } => Some(goal),
-            Order::Unload { at } => Some(at),
+            Order::Unload { at, .. } => Some(at),
             _ => None,
         }
     }
@@ -225,7 +230,7 @@ impl Order {
     pub(crate) fn walk_goal_mut(&mut self) -> Option<&mut Goal> {
         match self {
             Order::Run { goal } | Order::Hunt { goal } | Order::Advance { goal } => Some(goal),
-            Order::Unload { at } => Some(at),
+            Order::Unload { at, .. } => Some(at),
             _ => None,
         }
     }
@@ -239,17 +244,21 @@ impl Order {
             (Order::Run { goal: a }, Order::Run { goal: b })
             | (Order::Hunt { goal: a }, Order::Hunt { goal: b })
             | (Order::Advance { goal: a }, Order::Advance { goal: b })
-            | (Order::Unload { at: a }, Order::Unload { at: b }) => a.tile() == b.tile(),
+            | (Order::Unload { at: a, .. }, Order::Unload { at: b, .. }) => a.tile() == b.tile(),
             _ => self == other,
         }
     }
 
     /// Continues this order as the matching re-issue `other`: a walk takes
     /// the new aim and keeps its endpoint only while its target is
-    /// unchanged. Callers check [`Order::reissue_matches`] first.
+    /// unchanged, and an unload takes the new drop frame. Callers check
+    /// [`Order::reissue_matches`] first.
     pub(crate) fn reissue(&mut self, other: Order) {
         if let (Some(goal), Some(new)) = (self.walk_goal_mut(), other.walk_goal()) {
             goal.adopt(new);
+        }
+        if let (Order::Unload { reverse, .. }, Order::Unload { reverse: new, .. }) = (self, other) {
+            *reverse = new;
         }
     }
 }
@@ -845,9 +854,11 @@ impl State {
                 }))
     }
 
-    /// Whether a living Foundry owns neither a live Harvester nor a prepaid
-    /// one in a live production queue.
+    /// Whether a living Foundry owns no machine that can harvest: none in the
+    /// world, none riding a transport, and none prepaid in a live production
+    /// queue.
     pub(crate) fn harvester_recovery_needed(&self, player: PlayerId) -> bool {
+        let harvests = |kind: UnitKind| kind.stats().harvest.is_some();
         !self.player(player).resigned
             && self.buildings.iter().any(|building| {
                 building.player == player
@@ -855,17 +866,16 @@ impl State {
                     && building.built
                     && building.kind == BuildingKind::Foundry
             })
-            && !self.units.iter().any(|unit| {
-                unit.player == player && unit.hp > 0 && unit.kind == UnitKind::Harvester
-            })
+            && !self
+                .units
+                .iter()
+                .flat_map(|unit| core::iter::once(unit).chain(&unit.cargo))
+                .any(|unit| unit.player == player && unit.hp > 0 && harvests(unit.kind))
             && !self.buildings.iter().any(|building| {
                 building.player == player
                     && building.hp > 0
                     && building.built
-                    && building
-                        .queue
-                        .iter()
-                        .any(|kind| *kind == UnitKind::Harvester)
+                    && building.queue.iter().any(|kind| harvests(*kind))
             })
     }
 
@@ -2298,7 +2308,7 @@ fn goal_inside_envelope(goal: &Goal) -> bool {
 fn order_goals_canonical(order: &Order) -> bool {
     match order {
         Order::Run { goal } | Order::Hunt { goal } | Order::Advance { goal } => goal.canonical(),
-        Order::Unload { at } => at.canonical(),
+        Order::Unload { at, .. } => at.canonical(),
         Order::Attack { resume, .. } => resume.as_ref().is_none_or(Goal::canonical),
         _ => true,
     }
@@ -2324,7 +2334,7 @@ fn order_inside_envelope(order: &Order) -> bool {
         Order::Attack { resume, .. } => resume.as_ref().is_none_or(goal_inside_envelope),
         Order::Found { anchor, .. } => tile_inside_envelope(*anchor),
         Order::Board { .. } => true,
-        Order::Unload { at } => goal_inside_envelope(at),
+        Order::Unload { at, .. } => goal_inside_envelope(at),
         Order::Land { goal, from } => {
             tile_inside_envelope(*goal) && from.is_none_or(tile_inside_envelope)
         }

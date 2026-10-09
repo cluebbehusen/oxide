@@ -897,7 +897,10 @@ fn every_own_chip_removes_its_order_but_sites_cancel_outright() {
                 pursue: true,
                 resume: None,
             },
-            Order::Unload { at: goal },
+            Order::Unload {
+                at: goal,
+                reverse: false,
+            },
             Order::Harvest {
                 node: TilePos::new(4, 4),
                 anchor: tile,

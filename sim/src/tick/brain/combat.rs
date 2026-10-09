@@ -654,9 +654,7 @@ fn retreat_to_firing_stand(
     victim_domain: Domain,
     weapon: &WeaponStats,
 ) -> bool {
-    let unit = state.unit(id).expect("caller checked");
-    let (from, from_tile, kind, domain) =
-        (unit.pos, unit.tile(), unit.kind, unit.kind.stats().domain);
+    let domain = state.unit(id).expect("caller checked").kind.stats().domain;
     let full = traces_terrain(weapon, domain, victim_domain);
     let legal = |state: &State, tile: TilePos| {
         if !state.passable_for(domain, tile) {
@@ -683,57 +681,70 @@ fn retreat_to_firing_stand(
             && !chassis::path::line_blocked(position, aim, shot_open)
     };
 
-    if state
-        .unit(id)
-        .expect("caller checked")
+    let footprint = match target {
+        Target::Unit(target) => (state.unit(target).expect("resolved target").tile(), (1, 1)),
+        Target::Building(target) => {
+            let building = state.building(target).expect("resolved target");
+            (building.anchor, building.kind.size())
+        }
+    };
+    let reach = weapon.range.ceil().to_num::<i32>();
+    route_to_stand(state, id, footprint, reach, legal)
+}
+
+/// Routes a unit to the nearest tile within `reach` tiles of a footprint
+/// that `legal` accepts and a route reaches, keeping a path whose goal is
+/// still legal. Equally near stands rank in the unit's approach frame around
+/// the footprint, so mirrored units take mirrored stands. Clears the path
+/// and returns `false` when no stand routes.
+fn route_to_stand(
+    state: &mut State,
+    id: UnitId,
+    (anchor, size): (TilePos, (i32, i32)),
+    reach: i32,
+    legal: impl Fn(&State, TilePos) -> bool,
+) -> bool {
+    let unit = state.unit(id).expect("caller checked");
+    if unit
         .path
         .as_ref()
         .is_some_and(|path| legal(state, path.goal))
     {
         return true;
     }
-
-    let (min_x, min_y, max_x, max_y) = match target {
-        Target::Unit(target) => {
-            let tile = state.unit(target).expect("resolved target").tile();
-            (tile.x, tile.y, tile.x, tile.y)
-        }
-        Target::Building(target) => {
-            let building = state.building(target).expect("resolved target");
-            let (width, height) = building.kind.size();
-            (
-                building.anchor.x,
-                building.anchor.y,
-                building.anchor.x + width - 1,
-                building.anchor.y + height - 1,
-            )
-        }
-    };
-    let reach = weapon.range.ceil().to_num::<i32>();
+    let (from, from_tile, kind, player) = (unit.pos, unit.tile(), unit.kind, unit.player);
+    let frame = crate::tick::rect_approach_origin(state, player, from_tile, anchor, size);
+    let (width, height) = size;
     let mut candidates = Vec::new();
-    for y in (min_y - reach).max(0)..=(max_y + reach).min(state.map().height() - 1) {
-        for x in (min_x - reach).max(0)..=(max_x + reach).min(state.map().width() - 1) {
+    for y in
+        (anchor.y - reach).max(0)..=(anchor.y + height - 1 + reach).min(state.map().height() - 1)
+    {
+        for x in
+            (anchor.x - reach).max(0)..=(anchor.x + width - 1 + reach).min(state.map().width() - 1)
+        {
             let tile = TilePos::new(x, y);
             if legal(state, tile) {
-                candidates.push((from.dist_sq(tile.center()), y, x, tile));
+                candidates.push(tile);
             }
         }
     }
-    candidates.sort_unstable_by_key(|candidate| (candidate.0, candidate.1, candidate.2));
-    let routed = candidates.into_iter().find_map(|(_, _, _, goal)| {
-        route_for(state, kind, from_tile, goal).map(|waypoints| (goal, waypoints))
+    candidates.sort_unstable_by_key(|&tile| {
+        (
+            from.dist_sq(tile.center()),
+            crate::geometry::rect_approach_key_from(from_tile, frame, anchor, size, tile),
+        )
     });
-    let Some((goal, waypoints)) = routed else {
-        state.unit_mut(id).expect("caller checked").path = None;
-        return false;
-    };
-    state.unit_mut(id).expect("caller checked").path = Some(PathFollow {
-        final_point: None,
-        goal,
-        waypoints,
-        next: 0,
+    let path = candidates.into_iter().find_map(|goal| {
+        route_for(state, kind, from_tile, goal).map(|waypoints| PathFollow {
+            final_point: None,
+            goal,
+            waypoints,
+            next: 0,
+        })
     });
-    true
+    let found = path.is_some();
+    state.unit_mut(id).expect("caller checked").path = path;
+    found
 }
 
 /// The nearest enemy this unit's weapons can cover, in its autonomous
@@ -1125,41 +1136,44 @@ fn sapper_attack(
         unit.path = None;
         return;
     }
-    // Not there yet: chase without a firing stance.
+    // Not there yet: chase without a firing stance. A path still pressing
+    // the victim's tile or any doorstep around its footprint stays.
+    let size = match target {
+        Target::Unit(_) => (1, 1),
+        Target::Building(bid) => state.building(bid).expect("resolved target").kind.size(),
+    };
     let stale = state
         .unit(id)
         .expect("caller checked")
         .path
         .as_ref()
-        .is_none_or(|p| p.goal != target_tile && p.goal.chebyshev(target_tile) > 1);
+        .is_none_or(|p| {
+            p.goal != target_tile && !super::super::tile_adjacent_to_rect(p.goal, target_tile, size)
+        });
     if !stale {
         return;
     }
-    let goal = if state.passable_for(Domain::Ground, target_tile) {
-        Some(target_tile)
+    let routed = if state.passable_for(Domain::Ground, target_tile) {
+        route_for(state, kind, tile, target_tile).map(|w| (target_tile, w))
+    } else if let Target::Building(_) = target {
+        // A building's tiles are closed ground: press to the nearest open
+        // doorstep that routes, equally near ones ranked in the Sapper's
+        // approach frame so mirrored Sappers take mirrored doorsteps.
+        let frame = crate::tick::rect_approach_origin(state, me, tile, target_tile, size);
+        let mut doorsteps: Vec<TilePos> = super::super::rect_adjacent_tiles(target_tile, size)
+            .filter(|&t| state.passable_for(Domain::Ground, t))
+            .collect();
+        doorsteps.sort_unstable_by_key(|&t| {
+            (
+                pos.dist_sq(t.center()),
+                crate::geometry::rect_approach_key_from(tile, frame, target_tile, size, t),
+            )
+        });
+        doorsteps
+            .into_iter()
+            .find_map(|t| route_for(state, kind, tile, t).map(|w| (t, w)))
     } else {
-        // A building's tiles are closed ground: press to the first open
-        // tile around the footprint, scanned row-major, that routes.
         None
-    };
-    let routed = if let Some(goal) = goal {
-        route_for(state, kind, tile, goal).map(|w| (goal, w))
-    } else {
-        let mut best: Option<(TilePos, Vec<TilePos>)> = None;
-        if let Target::Building(bid) = target
-            && let Some(b) = state.building(bid)
-        {
-            for t in super::super::rect_adjacent_tiles(b.anchor, b.kind.size()) {
-                if !state.passable_for(Domain::Ground, t) {
-                    continue;
-                }
-                if let Some(w) = route_for(state, kind, tile, t) {
-                    best = Some((t, w));
-                    break;
-                }
-            }
-        }
-        best
     };
     if let Some((goal, waypoints)) = routed {
         let unit = state.unit_mut(id).expect("caller checked");

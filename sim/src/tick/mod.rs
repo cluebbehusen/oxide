@@ -101,8 +101,8 @@ impl CommandPhaseView<'_> {
 ///
 /// Keep every automatic consumer of the recovery reserve on this one
 /// predicate: a living, completed Foundry can rebuild an economy only when
-/// its owner has neither a Harvester in the world nor one prepaid in a live
-/// production queue.
+/// its owner has no machine that can harvest, whether in the world, aboard a
+/// transport, or prepaid in a live production queue.
 fn harvester_recovery_needed(state: &State, player: crate::ids::PlayerId) -> bool {
     state.harvester_recovery_needed(player)
 }
@@ -409,7 +409,17 @@ pub(crate) fn route_for_position(
             let to = if state.passable_for(crate::stats::Domain::Air, to) {
                 to
             } else {
-                snap_air_goal(state, to)?
+                // The flyer's own approach sets the scan frame, so mirrored
+                // flights snap to mirrored sky. A flyer already over the goal
+                // tile falls back to the map-center frame.
+                let reverse = group_spread_scan_reversed(
+                    to,
+                    [from_tile],
+                    None,
+                    (state.map.width(), state.map.height()),
+                    crate::ids::PlayerId(0),
+                );
+                goals::group_domain_goal(state, to, crate::stats::Domain::Air, reverse)?
             };
             let sky_open = |t: TilePos| {
                 state
@@ -430,26 +440,6 @@ pub(crate) fn route_for_position(
             )
         }
     }
-}
-
-/// The first air-passable tile in square rings around `goal`, scanned outward
-/// by Chebyshev radius and row-major (y, then x) within each ring. `None` when
-/// nothing within reach is open sky.
-fn snap_air_goal(state: &State, goal: TilePos) -> Option<TilePos> {
-    for r in 0..=crate::stats::AIR_GOAL_SNAP_RADIUS {
-        for dy in -r..=r {
-            for dx in -r..=r {
-                if dx.abs().max(dy.abs()) != r {
-                    continue;
-                }
-                let t = goal.offset(dx, dy);
-                if state.passable_for(crate::stats::Domain::Air, t) {
-                    return Some(t);
-                }
-            }
-        }
-    }
-    None
 }
 
 /// A nonzero local frame for doorstep ties. Most bodies supply their own

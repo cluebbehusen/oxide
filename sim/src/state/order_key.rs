@@ -113,7 +113,7 @@ impl Order {
                 from: Some(tile), ..
             } => OrderKey::Walk { tile },
             Order::Land { goal, from: None } => OrderKey::Land { pad: goal },
-            Order::Unload { at } => OrderKey::Unload { tile: at.tile() },
+            Order::Unload { at, .. } => OrderKey::Unload { tile: at.tile() },
             Order::Harvest { anchor, .. } => OrderKey::Harvest { anchor },
             Order::ReturnCargo { .. } => OrderKey::ReturnCargo,
             Order::Build { site } => OrderKey::Build { site },

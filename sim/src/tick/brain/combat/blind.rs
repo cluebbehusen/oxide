@@ -523,48 +523,15 @@ fn route_to_firing_stand(
     view: AttackView,
     weapon: &WeaponStats,
 ) -> bool {
-    let unit = state.unit(id).expect("live unit");
-    let (kind, from, start) = (unit.kind, unit.pos, unit.tile());
-    let domain = kind.stats().domain;
-    let legal = |state: &State, tile| {
+    let domain = state.unit(id).expect("live unit").kind.stats().domain;
+    let legal = |state: &State, tile: TilePos| {
         state.passable_for(domain, tile) && solution(state, tile.center(), domain, view, weapon)
     };
-    if unit
-        .path
-        .as_ref()
-        .is_some_and(|path| legal(state, path.goal))
-    {
-        return true;
-    }
-    let (anchor, (width, height)) = view
+    let footprint = view
         .footprint
         .unwrap_or((TilePos::containing(view.position), (1, 1)));
     let reach = weapon.range.ceil().to_num::<i32>();
-    let mut candidates = Vec::new();
-    for y in
-        (anchor.y - reach).max(0)..=(anchor.y + height - 1 + reach).min(state.map().height() - 1)
-    {
-        for x in
-            (anchor.x - reach).max(0)..=(anchor.x + width - 1 + reach).min(state.map().width() - 1)
-        {
-            let tile = TilePos::new(x, y);
-            if legal(state, tile) {
-                candidates.push((from.dist_sq(tile.center()), y, x, tile));
-            }
-        }
-    }
-    candidates.sort_unstable_by_key(|candidate| (candidate.0, candidate.1, candidate.2));
-    let routed = candidates.into_iter().find_map(|(_, _, _, goal)| {
-        route_for(state, kind, start, goal).map(|waypoints| PathFollow {
-            final_point: None,
-            goal,
-            waypoints,
-            next: 0,
-        })
-    });
-    let found = routed.is_some();
-    state.unit_mut(id).expect("live unit").path = routed;
-    found
+    route_to_stand(state, id, footprint, reach, legal)
 }
 
 pub(in crate::tick::brain) fn normalize_order(state: &mut State, id: UnitId) {

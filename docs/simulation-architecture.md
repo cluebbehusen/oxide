@@ -206,7 +206,9 @@ knowledge, so a group never spreads before its owner's team has seen the clicked
 tile. Patrols spread each leg the same way. A rally walk, the walk a unit that
 cannot hit an attack target takes to that target's tile, and an `Unload` drop
 point each resolve as rank 0, so a rally's newborns and a group's pacifists
-share one tile.
+share one tile. Every air route snaps a peak goal to open sky with the same
+scan, framed by the flyer's own approach, so mirrored flights snap to mirrored
+sky.
 
 When the target lies outside the unit's reachable ground, the unit routes to the
 reachable tile nearest it by squared distance instead, and stores that tile as
@@ -233,7 +235,10 @@ touching bodies within `CROWD_CHAIN_REACH`, to one within `ARRIVAL_NEAR` of the
 endpoint. Only bodies of the walker's own team count toward that chain, so a
 hostile body that may be out of sight never changes where a short walk stops. A
 crowd therefore never makes a goal count as unreachable. An unreachable `Unload`
-sets its riders down where the flight ended.
+sets its riders down where the flight ended. Riders take the open tiles
+ring-scanned outward from where the transport stopped, framed by the transport's
+approach when the order was issued, so mirrored drops set riders on mirrored
+tiles.
 
 ## Movement and collision
 
@@ -382,7 +387,9 @@ approach frame, so rotating the map rotates the fallback destinations too.
 Relocation happens only after acceptance and payment.
 
 Approaching a footprint orders passable doorsteps in the body's local approach
-frame, then uses an owner-local unit rank to spread equivalent workers.
+frame, then uses an owner-local unit rank to spread equivalent workers. A Sapper
+pressing a building and a long gun backing out of its dead zone take the nearest
+doorstep or firing stand, with equal distances ranked in that same frame.
 Ground-production orders spawn doorsteps in the producer's radial frame around
 the map. In both cases, dot and cross products replace an absolute scan
 direction, so half-turned producers and workers receive corresponding geometric
@@ -473,11 +480,12 @@ movement. Recurring economy runs in the production phase: Reclaimers and
 Refineries pay on their cadences, restored Extractors provide fixed remote
 income, and a completed same-owner Foundry within the support radius raises an
 Extractor's fixed yield without stacking. Completed Foundries also provide the
-baseline drip and a finite recovery entitlement for a stranded seat. Crucibles
-consume nearby wreck salvage for income, nearest tile first and then the richer
-one, with exact ties ordered in the crucible's half-turn frame so mirrored
-crucibles burn mirrored tiles. These are ordinary authoritative rules, not shell
-conveniences.
+baseline drip and a finite recovery entitlement for a stranded seat: one with no
+machine that can harvest, whether in the world, aboard a transport, or prepaid
+in a live production queue. Crucibles consume nearby wreck salvage for income,
+nearest tile first and then the richer one, with exact ties ordered in the
+crucible's half-turn frame so mirrored crucibles burn mirrored tiles. These are
+ordinary authoritative rules, not shell conveniences.
 
 Extractor frames are immutable authored map features. Only an Extractor may
 claim one, other foundations cannot cover one, and destroying an Extractor
@@ -712,14 +720,14 @@ ranked by predicted distance, previous distance, contact id, and coordinates.
 Visible identity can link visible observations; radar matching uses only
 reported movement. Unmatched tracks end immediately, and ids are never reused.
 
-Salvage-relevant hostile incidents, such as a Harvester hit or an allied loss,
-remember only the victim's tile for a bounded caution period, never the
-attacker's identity or location. Only fire from an attacker the victim's team
-cannot see leaves an incident; a visible attacker is live danger that ends when
-it dies or leaves sight. A worker already inside a remembered static firing
-envelope may retreat laterally or outward, without approaching any overlapping
-gun. This escape rule never makes the source eligible for work and does not
-permit crossing mobile or radar pressure.
+Salvage-relevant hostile incidents, such as a hit on any machine that can
+harvest or an allied loss, remember only the victim's tile for a bounded caution
+period, never the attacker's identity or location. Only fire from an attacker
+the victim's team cannot see leaves an incident; a visible attacker is live
+danger that ends when it dies or leaves sight. A worker already inside a
+remembered static firing envelope may retreat laterally or outward, without
+approaching any overlapping gun. This escape rule never makes the source
+eligible for work and does not permit crossing mobile or radar pressure.
 
 All allegiance checks route through normalized team ids. Teammates share vision,
 cannot target one another, and win or lose as a team. Resignation makes a seat

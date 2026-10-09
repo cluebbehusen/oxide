@@ -284,6 +284,43 @@ fn a_paid_ground_screen_reduces_the_captured_package_to_one_worker() {
 }
 
 #[test]
+fn any_harvesting_machine_keeps_its_seat_off_recovery() {
+    let mut scenario = arena(vec![unit(0, UnitKind::Excavator, 6, 2)]);
+    scenario.players[0].scrap = 0;
+    let mut state = scenario.build().unwrap();
+    state.tick(&[]);
+    assert!(
+        state.player(PlayerId(0)).recovery_ready,
+        "an Excavator gathers, so its seat is not stranded"
+    );
+    assert_eq!(state.player(PlayerId(0)).scrap, 0);
+
+    let mut scenario = arena(vec![
+        unit(0, UnitKind::Skyhook, 6, 2),
+        unit(0, UnitKind::Harvester, 7, 2),
+    ]);
+    scenario.players[0].scrap = 0;
+    let mut state = scenario.build().unwrap();
+    let (sky, worker) = (state.units()[0].id, state.units()[1].id);
+    state.tick(&[cmd(
+        0,
+        Command::Load {
+            units: vec![worker],
+            transport: sky,
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 200, |state, _| state.unit(worker).is_none());
+    for _ in 0..20 {
+        state.tick(&[]);
+        assert!(
+            state.player(PlayerId(0)).recovery_ready,
+            "a Harvester riding a transport still belongs to the economy"
+        );
+    }
+}
+
+#[test]
 fn artillery_anti_air_and_flyers_do_not_count_as_recovery_screens() {
     for kind in [
         UnitKind::Bombard,

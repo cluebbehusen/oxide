@@ -176,7 +176,7 @@ pub(crate) fn breadcrumb_points(
             oxide_sim::Order::Board { transport } => {
                 tile_center(game.state.unit(*transport)?.tile())
             }
-            oxide_sim::Order::Unload { at } => tile_center(at.tile()),
+            oxide_sim::Order::Unload { at, .. } => tile_center(at.tile()),
             // A landing that took over a walk marks the walk's click.
             oxide_sim::Order::Land { goal, from } => tile_center(from.unwrap_or(*goal)),
             oxide_sim::Order::Attack { target, .. } => world_vec(
