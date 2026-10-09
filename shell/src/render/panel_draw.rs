@@ -484,6 +484,7 @@ fn published_action(card: &crate::panel::Card) -> crate::panel::CardAction {
 fn draw_catalog(
     panel: &crate::panel::Panel,
     input: &InputState,
+    bindings: &crate::action::BindingMap,
     minimap: Rect,
     draw_icon: &impl Fn(Rect, &crate::panel::CardIcon, Color),
 ) -> PanelGeometry {
@@ -516,12 +517,8 @@ fn draw_catalog(
         .into_iter()
         .enumerate()
         {
-            let key = input
-                .bindings
-                .label(crate::action::Action::BuildCategory(category.fit::<u8>()));
-            let palette_key = input
-                .bindings
-                .label(crate::action::Action::ToggleBuildPalette);
+            let key = bindings.label(crate::action::Action::BuildCategory(category.fit::<u8>()));
+            let palette_key = bindings.label(crate::action::Action::ToggleBuildPalette);
             let label = category_label(
                 label,
                 input.build_category == Some(category.fit::<u8>()),
@@ -646,6 +643,7 @@ pub(crate) fn draw_panel(
     game: &crate::game::Scene<'_>,
     sprites: &Sprites,
     input: &InputState,
+    bindings: &crate::action::BindingMap,
     panel: &crate::panel::Panel,
 ) -> PanelGeometry {
     use crate::panel::{CardAction, CardIcon};
@@ -773,7 +771,7 @@ pub(crate) fn draw_panel(
             )
         })
     {
-        return draw_catalog(panel, input, mini, &draw_icon);
+        return draw_catalog(panel, input, bindings, mini, &draw_icon);
     }
 
     for rect in [info_rect, action_rect] {

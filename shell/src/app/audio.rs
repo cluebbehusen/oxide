@@ -9,28 +9,21 @@ use macroquad::prelude::Vec2;
 pub(super) fn frame(app: &mut App, screen: &mut Screen, dt: f32) {
     // The mixer serves whichever session is visible; playback owns a
     // separate presentation game and therefore a separate sound queue.
-    let (queued, cam_center, cam_half_extents, cam_zoom): (
-        Vec<(SoundKind, Option<Vec2>)>,
-        Vec2,
-        Vec2,
-        f32,
-    ) = match &mut *screen {
-        Screen::Playback(pb) => (
-            std::mem::take(&mut pb.presentation.sounds_pending),
-            pb.presentation.camera.center,
-            pb.presentation.camera.viewport() / pb.presentation.camera.zoom * 0.5,
-            pb.presentation.camera.zoom,
-        ),
-        _ => (
-            std::mem::take(&mut app.game.presentation.sounds_pending),
-            app.game.presentation.camera.center,
-            app.game.presentation.camera.viewport() / app.game.presentation.camera.zoom * 0.5,
-            app.game.presentation.camera.zoom,
-        ),
-    };
+    let presentation = screen.visible_presentation(&mut app.game);
+    let mut queued: Vec<(SoundKind, Option<Vec2>)> = std::mem::take(&mut app.ui_sounds);
+    queued.append(&mut presentation.sounds_pending);
+    let camera = &presentation.camera;
+    let (cam_center, cam_half_extents, cam_zoom) = (
+        camera.center,
+        camera.viewport() / camera.zoom * 0.5,
+        camera.zoom,
+    );
     let (motor_game, motor_running) = match &*screen {
-        Screen::Playback(pb) => (pb.view(), !pb.paused && pb.seeking.is_none()),
-        Screen::Playing => (app.game.view(), !app.game.presentation.paused),
+        Screen::Playback { session, .. } => (
+            session.view(),
+            !session.clock.paused && session.seeking.is_none(),
+        ),
+        Screen::Playing => (app.game.view(), !app.game.clock.paused),
         _ => (app.game.view(), false),
     };
     app.mixer.rocket_loops.update(
@@ -63,15 +56,13 @@ pub(super) fn frame(app: &mut App, screen: &mut Screen, dt: f32) {
 pub(super) fn soundtrack_scene(screen: &Screen, game: &Game) -> crate::soundtrack::Scene {
     match screen {
         Screen::Playing => crate::soundtrack::match_scene(&game.view(), false),
-        Screen::Playback(playback) => crate::soundtrack::match_scene(
-            &playback.view(),
-            playback.paused || playback.seeking.is_some(),
+        Screen::Playback { session, .. } => crate::soundtrack::match_scene(
+            &session.view(),
+            session.clock.paused || session.seeking.is_some(),
         ),
         Screen::FinalMap(_) => crate::soundtrack::match_scene(&game.view(), true),
         Screen::Busy(_) | Screen::Pause(_) => crate::soundtrack::match_scene(&game.view(), true),
-        Screen::Settings { back, .. } | Screen::Codex { back, .. }
-            if matches!(**back, Screen::Pause(_)) =>
-        {
+        Screen::Settings { .. } | Screen::Codex { .. } if screen.over_pause() => {
             crate::soundtrack::match_scene(&game.view(), true)
         }
         Screen::Results(_) => crate::soundtrack::match_scene(&game.view(), false),

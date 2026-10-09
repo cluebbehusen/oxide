@@ -111,7 +111,7 @@ impl Pacing {
             self.moved = now;
         }
         game.state.result().is_none()
-            && !game.presentation.paused
+            && !game.clock.paused
             && now.saturating_sub(self.moved) >= WAIT_NOTICE
     }
 }

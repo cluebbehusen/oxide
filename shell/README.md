@@ -12,26 +12,30 @@ crate-level rustdoc.
 ## Main pieces
 
 - `main` handles CLI arguments, window configuration, and startup.
-- `app` owns frame orchestration; `app/screen_flow` owns cross-screen
-  transitions and draws one active screen. `app/debug` answers debug requests,
-  `app/ui_view` reports what the window shows, and `app/audio` feeds the visible
-  session's sounds to the mixer.
+- `app` owns frame orchestration and the one install path for a new match;
+  `app/screen` answers every per-screen question; `app/screen_flow` owns
+  cross-screen transitions, settles each one through its enter and exit steps,
+  delivers notices, and draws one active screen. `app/debug` answers debug
+  requests, `app/ui_view` reports what the window shows, and `app/audio` feeds
+  the visible session's sounds to the mixer.
 - `screens/wizard` owns New Match seat, team, faction, and opponent choices, and
   `screens/wizard/launch` turns a finished draft into a match; `bot_label` keeps
   configured opponent names consistent across the wizard, HUD, and result
   report. Every bot seat of a new match runs `oxide-opponent`; rematches, saves
   and replays keep their recorded configuration.
-- `game` owns one live session, its recorder, and bots. `game::Presentation`
-  holds camera, interpolation, effects, and UI state; rendering borrows the
-  active live or replay world through `game::Scene`. Its checkpoint adapter
-  restores the shared session, tutorial progress, concession report, and
-  decorative boundary exploration. Restoration opens paused and rebuilds
-  transient presentation at the current viewport.
+- `game` owns one live session, its recorder, bots, and `game::Clock` (pause,
+  speed, and tick debt). `game::Presentation` holds camera, interpolation,
+  effects, and UI state; rendering borrows the active live or replay world and
+  its clock through `game::Scene`. Its checkpoint adapter restores the shared
+  session, tutorial progress, concession report, and decorative boundary
+  exploration. Restoration opens paused and rebuilds transient presentation at
+  the current viewport.
 - `input` and `action` form the single hardware and injected-input funnel.
   `press` is the press-then-release-in-place gesture that menus and screen
   buttons share, and `button` draws the shared action and BACK buttons; the map
-  browser's scrolling card grid tracks its own taps. `viewer_touch` pans and
-  pinches the read-only viewers.
+  browser's scrolling card grid tracks its own taps. `camera::controls` holds
+  the camera hands every view shares; `viewer_touch` pans and pinches the
+  read-only viewers. Key bindings live only in the configuration.
 - `platform` states whether the build is touch-only (iOS).
 - `building_actions` derives single and grouped building controls from their
   capabilities, using projected pending orders for eligibility and spending.

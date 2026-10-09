@@ -457,9 +457,9 @@ impl SettingsScreen {
         }
     }
 
-    /// Applies a frame's events. `live` is the in-play binding map,
-    /// kept in lockstep with the config's; `ctrl0`/`shift0` are the
-    /// frame-start modifier truth a chord capture replays from.
+    /// Applies a frame's events, editing the config's binding map, the
+    /// only one; `ctrl0`/`shift0` are the frame-start modifier truth a
+    /// chord capture replays from.
     #[allow(clippy::too_many_arguments)]
     pub fn update(
         &mut self,
@@ -467,7 +467,6 @@ impl SettingsScreen {
         mouse: &mut Vec2,
         sounds: &mut Vec<(SoundKind, Option<Vec2>)>,
         config: &mut Config,
-        live: &mut BindingMap,
         ctrl0: bool,
         shift0: bool,
     ) -> Update {
@@ -516,7 +515,6 @@ impl SettingsScreen {
                         // Reset row walks back to Classic).
                         config.bindings = BindingMap::left_handed();
                         update.dirty = true;
-                        *live = config.bindings.clone();
                         self.notice = Some(Notice {
                             text: "left-handed profile applied".to_string(),
                             danger: false,
@@ -574,7 +572,6 @@ impl SettingsScreen {
                             .rebind_slot(target, self.binding_slot, chord)
                         {
                             update.dirty = true;
-                            *live = config.bindings.clone();
                             self.goto_controls(config, row);
                         } else {
                             // Refused: name the holder, so the player
@@ -627,7 +624,6 @@ impl SettingsScreen {
                     let target = control_rows()[self.menu.selected].expect("action row");
                     config.bindings.unbind_slot(target, self.binding_slot);
                     update.dirty = true;
-                    *live = config.bindings.clone();
                     let row = self.menu.selected;
                     self.goto_controls(config, row);
                 } else if let Some(row) = self.menu.handle(events, mouse) {
@@ -653,7 +649,6 @@ impl SettingsScreen {
                         // Reset to defaults.
                         config.bindings = BindingMap::classic();
                         update.dirty = true;
-                        *live = config.bindings.clone();
                         self.goto_controls(config, row);
                     }
                 }

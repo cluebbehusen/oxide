@@ -12,16 +12,18 @@ commands and review procedures belong in the
 ## Session ownership
 
 `Game` owns one live session: its starting `Scenario`, authoritative `State`,
-bot controllers, pending commands, replay recorder, and presentation state. The
-`Presentation` member holds camera, selection, interpolation, effects, and audio
-cues. Statistics, recording, and bot execution stay with the live session.
-Rendering and read-only UI queries receive a borrowed `Scene`: the active world,
-scenario, pending commands, and presentation. Neither `Presentation` nor `Scene`
-owns or advances a simulation. Each view prepares a small stack-resident
-seat-style table from the current viewer, teams, factions, and colorblind
-setting. World, minimap, and result rendering share those lookups; no per-entity
-player scan or mutable identity cache is needed. The table supports the scenario
-seat limit.
+bot controllers, pending commands, replay recorder, clock, and presentation
+state. The `Clock` holds whether time runs, its speed, and the tick debt a frame
+carries; the live match and the replay viewer each own one. The `Presentation`
+member holds camera, selection, interpolation, effects, and audio cues, and
+learns only where between ticks its picture is drawn. Statistics, recording, and
+bot execution stay with the live session. Rendering and read-only UI queries
+receive a borrowed `Scene`: the active world, scenario, pending commands,
+presentation, and clock. Neither `Presentation` nor `Scene` owns or advances a
+simulation. Each view prepares a small stack-resident seat-style table from the
+current viewer, teams, factions, and colorblind setting. World, minimap, and
+result rendering share those lookups; no per-entity player scan or mutable
+identity cache is needed. The table supports the scenario seat limit.
 
 `Game::do_tick` is the only local live-shell path that advances state. It
 collects pending human/debug commands and bot commands, records them at the
@@ -89,15 +91,28 @@ change authoritative state. Seeks clear or rebuild timeline-local presentation.
 `App` owns resources that outlive a screen: the live `Game`, configuration,
 input funnel, New Match draft, tutorial, assets, audio services, debug channels,
 and profiling collectors. Each `Screen` variant owns its local interaction
-state. Settings and the Codex retain their return screen; Playback retains an
-explicit return destination. The live game supplies the backdrop for pause,
-results, and final-map inspection.
+state. Settings, the Codex, the lobby, a save or load in flight, and Playback
+hold the screen they displaced in `back` and restore it wholesale on leave, so a
+pause menu comes back with its cursor and notice. The live game supplies the
+backdrop for pause, results, and final-map inspection.
 
+`app/screen.rs` answers every per-screen question in one place, each with one
+exhaustive match: the visible session (a replay viewer's own, or the live
+match), whether the screen is gameplay or a menu, whether it holds a live match,
+whether its backdrop runs, whether a text field owns input, and its mode names.
 Screen modules consume `RawEvent` values and return semantic outcomes.
-`app/screen_flow.rs` applies those outcomes and draws the active screen.
-`app.rs` owns frame orchestration; `app/debug.rs` handles debug requests. Screen
-update logic accepts injected viewport/input state so navigation can be tested
-without a GPU window.
+`app/screen_flow.rs` applies those outcomes and draws the active screen. Every
+place the frame replaces the screen, including debug requests, the end of a LAN
+match, a quit, and a finished save or load, then calls `screen_flow::settle`. It
+runs the left screen's exit step and the new screen's enter step, resets
+transient input and the cursor, and releases a LAN link no screen holds: the
+pause menu freezes the match on entry, and the final map freezes and spectates
+it on entry and ends spectating on every way out. Every new match, whether
+launched, hosted, restarted, rematched, loaded or loaded over the debug socket,
+arrives through `App::install`, which retires the replaced match on the
+persistence worker when it is free. `app.rs` owns frame orchestration;
+`app/debug.rs` handles debug requests. Screen update logic accepts injected
+viewport/input state so navigation can be tested without a GPU window.
 
 The New Match draft records each seat's difficulty and stance. Successful launch
 materializes distinct personality seeds into the `Scenario`. Ordinary launches
@@ -112,10 +127,19 @@ The frame loop:
 
 1. Drains debug requests, deferring screenshot replies until rendering
    completes.
-2. Polls hardware input, appends injected input, and routes the events.
-3. Advances the live or playback clock unless paused or seeking.
-4. Renders the active screen from interpolated presentation state.
-5. Captures requested screenshots, replies, and yields to presentation.
+2. Polls the persistence worker and feeds the viewport to the camera.
+3. Polls hardware input, appends injected input, and routes the events.
+4. Pumps a running LAN link, which runs its match's ticks before any screen.
+5. Updates and draws the active screen, which advances the live or playback
+   clock unless paused or seeking, then settles any change of screen and
+   delivers the frame's notices.
+6. Captures requested screenshots, mixes audio, replies, and yields to
+   presentation.
+
+A transition that must show its destination at once asks for a rerun pass: the
+loop re-enters inside the same presented frame under the new screen. A rerun
+pass reads no hardware input, so the key that opened a screen never reaches it,
+and the camera glide moves once per presented frame.
 
 Presentation (camera glides, held pans, effects, and music) reads frame time
 clamped to `MAX_PRESENTATION_DT`. The live and replay clocks read the unclamped
@@ -128,8 +152,13 @@ and loads from reading as suspensions. Debug-server sessions are exempt.
 
 `oxide_protocol::RawEvent` is the common hardware and injected-input vocabulary.
 `input::apply_events` maps gameplay events into camera/selection changes and
-staged commands. Cross-frame gestures, held keys, touch state, control groups,
-and bindings belong to the input layer. The debug protocol's `SendCommand`
+staged commands. Cross-frame gestures, held keys, touch state, and control
+groups belong to the input layer. Bindings belong to the configuration alone:
+the input layer, the menus, Settings, and both read-only viewers borrow
+`Config::bindings`, and the input layer never reads the configuration from disk.
+`camera::controls` holds the camera hands every view shares: held-key panning
+and wheel zoom everywhere, and for the two read-only viewers, middle-drag,
+minimap steering, and finger pan and pinch. The debug protocol's `SendCommand`
 stages an already-semantic command and does not exercise UI mapping.
 
 `action::BindingMap` owns contextual primary and secondary bindings shared by
@@ -249,6 +278,12 @@ still marks the walk's click. Markers are numbered by program position like the
 dock's chips, so a leg with nothing left to draw at, such as a lost attack
 contact, leaves a gap. A foreign unit's program draws nothing.
 
+Notices from outside a screen's own controls, such as a failed save, a finished
+diagnostic export, or the end of a LAN match, go through `App::notify` and land
+where the player is looking: the HUD toast strip in live play or a replay, the
+Settings and pause menus' own notice lines, and one shared menu line elsewhere,
+including over the final map, which has no running clock to age a toast.
+
 Toasts report refusals and outcomes, not armed modes, which the ribbon already
 names, or their cancellation; only Patrol coaches its two-step start.
 `Presentation::toast` and the tooltip's refusal line capitalize the first
@@ -281,9 +316,10 @@ roster, and the replay shelf draw a top-left BACK button instead of a Back row,
 and playback adds Play/Pause. These ride `Press::feed`, which also tells the
 screen when a button claimed an event; the menus share `button::BackButton`,
 which acts as Escape does on each face. Menu lists scroll by touch drag, and the
-read-only viewers pan and pinch through `ViewerTouch`. The save-name field has
-Save and Cancel; on touch-only builds the frame loop raises and hides the
-on-screen keyboard to follow it.
+read-only viewers pan and pinch through `ViewerTouch`, within the shared
+`camera::controls::ViewerHands`. The save-name field has Save and Cancel; on
+touch-only builds the frame loop raises and hides the on-screen keyboard to
+follow it.
 
 Hints, toasts, card descriptions, and the tutorial speak touch on touch-only
 builds, and panel cards drop their hotkeys. A finger resting on chrome for
@@ -474,14 +510,14 @@ seeks restore an earlier in-memory checkpoint and replay the suffix. Checkpoint
 storage is bounded, and the shell slices seeks across frames.
 
 While Playback is visible, `App` retains a hidden live game. `PlaybackSession`
-owns the playback engine and its own `Presentation`. Rendering borrows the
-engine state directly; stepping keeps only the previous positions, headings, and
-effect metadata needed for interpolation and casualties. It neither clones the
-world into a render vehicle nor constructs live bots or a live recorder. Live
-and playback ticks use the same presentation update. Debug state and clock
-requests target the engine; camera and overlay requests target presentation. UI,
-profiling, and diagnostic context describe the visible session. Authoritative
-session mutations are refused.
+owns the playback engine, its own `Clock`, and its own `Presentation`. Rendering
+borrows the engine state directly; stepping keeps only the previous positions,
+headings, and effect metadata needed for interpolation and casualties. It
+neither clones the world into a render vehicle nor constructs live bots or a
+live recorder. Live and playback ticks use the same presentation update. Debug
+state and clock requests target the engine; camera and overlay requests target
+presentation. UI, profiling, and diagnostic context describe the visible
+session. Authoritative session mutations are refused.
 
 Playback writes no recording, since a watched replay is already a file on disk.
 Incidents while viewing go to the recovery root's log. Playback recordings left
@@ -569,8 +605,8 @@ its simulation position and lean its hull off the simulation heading within
 small fixed bounds, while selection, targeting, and turret aim keep reading
 simulation truth. Presentation derives from authoritative events and state;
 seeks reset interpolation and rebuild any persistent effects needed at the new
-tick. Pause, speed, and reduced-motion behavior follow those presentation
-clocks.
+tick. Pause and speed follow each session's `Clock`; reduced motion follows the
+render preference.
 
 Destruction and projectile caches retain the pre-removal identity, pose, and
 visibility needed to present an event after its entity has gone. Cosmetic

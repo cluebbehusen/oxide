@@ -844,8 +844,12 @@ pub fn build_for_palette(
     Some(panel)
 }
 
-pub(crate) fn build_for_input(game: &Scene<'_>, input: &crate::input::InputState) -> Option<Panel> {
-    let mut panel = build_for_palette(game, &input.bindings, input.construction_open())?;
+pub(crate) fn build_for_input(
+    game: &Scene<'_>,
+    bindings: &BindingMap,
+    input: &crate::input::InputState,
+) -> Option<Panel> {
+    let mut panel = build_for_palette(game, bindings, input.construction_open())?;
     let construction_scrap = input
         .construction_open()
         .then(|| crate::input::available_construction_scrap(game, input));
@@ -857,7 +861,7 @@ pub(crate) fn build_for_input(game: &Scene<'_>, input: &crate::input::InputState
                 card.why = (!card.enabled).then(|| format!("needs {cost} scrap"));
             }
             let category = crate::action::building_category(kind);
-            let key = input.bindings.labels(Action::Build(kind));
+            let key = bindings.labels(Action::Build(kind));
             card.hotkey = if input.build_category == Some(category) {
                 key
             } else if input.build_category.is_some() {
@@ -865,7 +869,7 @@ pub(crate) fn build_for_input(game: &Scene<'_>, input: &crate::input::InputState
             } else {
                 format!(
                     "{} > {}",
-                    input.bindings.label(Action::BuildCategory(category)),
+                    bindings.label(Action::BuildCategory(category)),
                     key
                 )
             };

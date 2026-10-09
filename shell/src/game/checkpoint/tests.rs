@@ -56,7 +56,7 @@ fn checkpoint_recovery_restores_the_shell_without_replaying_the_opening() {
         serde_json::to_value(&original.recorder.commands).unwrap()
     );
     let mut restored = prepared.install();
-    assert!(restored.presentation.paused);
+    assert!(restored.clock.paused);
     assert!(restored.pending.is_empty());
     assert_eq!(restored.state.hash(), original.state.hash());
     for _ in 0..24 {
@@ -107,7 +107,7 @@ fn checkpoint_preserves_pending_input_memory_and_statistics() {
     let mut restored: Game = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(before, restored.state.hash());
     assert_eq!(*original.pending, *restored.pending);
-    assert!(restored.presentation.paused);
+    assert!(restored.clock.paused);
     let start = restored.state.current_tick();
     assert_eq!(restored.recorder.start_tick(), start);
     assert!(restored.recorder.commands.is_empty());

@@ -485,6 +485,7 @@ pub(crate) fn draw_hud(
     game: &crate::game::Scene<'_>,
     sprites: &Sprites,
     input: &InputState,
+    bindings: &crate::action::BindingMap,
     performance: Option<&crate::performance::PerformanceView>,
 ) {
     let s = ui_scale();
@@ -507,8 +508,7 @@ pub(crate) fn draw_hud(
             PANEL,
         );
         let label = |action| {
-            input
-                .bindings
+            bindings
                 .chord_for(action)
                 .map(BindingMap::chord_label)
                 .unwrap_or_default()
@@ -542,10 +542,10 @@ pub(crate) fn draw_hud(
         let alert_text = (!game.presentation.alerts.is_empty()).then(|| {
             alert_badge_text(&label(Action::JumpToLastAlert), crate::platform::TOUCH_ONLY)
         });
-        let status = if game.presentation.paused {
+        let status = if game.clock.paused {
             paused_status(&label(Action::TogglePause), crate::platform::TOUCH_ONLY)
-        } else if (game.presentation.speed - 1.0).abs() > f64::EPSILON {
-            format!("x{:.2}", game.presentation.speed)
+        } else if (game.clock.speed - 1.0).abs() > f64::EPSILON {
+            format!("x{:.2}", game.clock.speed)
         } else {
             let seconds = game.state.current_tick() / u64::from(oxide_sim::TICKS_PER_SECOND);
             format!("{}:{:02}", seconds / 60, seconds % 60)
@@ -610,7 +610,8 @@ pub(crate) fn draw_hud(
         pause_status = bar.pause_status;
     }
 
-    *game.presentation.panel_model.borrow_mut() = crate::panel::build_for_input(game, input);
+    *game.presentation.panel_model.borrow_mut() =
+        crate::panel::build_for_input(game, bindings, input);
     let panel = game.presentation.panel_model.borrow();
     let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
     let mut roster_slots = [(zero, crate::panel::CardAction::None); 8];
@@ -626,7 +627,7 @@ pub(crate) fn draw_hud(
     let mut minimap = minimap_rect(game);
     let mut panel_regions = [zero; 2];
     if let Some(panel) = panel.as_ref() {
-        let geometry = draw_panel(game, sprites, input, panel);
+        let geometry = draw_panel(game, sprites, input, bindings, panel);
         roster_slots = geometry.roster_slots;
         roster_count = geometry.roster_count;
         cards = geometry.cards;

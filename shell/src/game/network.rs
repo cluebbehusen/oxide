@@ -55,8 +55,8 @@ impl Game {
     /// tick. The gate or a decided match declines a tick without building
     /// debt.
     pub(crate) fn host_frame(&mut self, session: &mut HostSession, dt: f32, now: Duration) {
-        session.set_paused(self.presentation.paused);
-        if self.presentation.paused {
+        session.set_paused(self.clock.paused);
+        if self.clock.paused {
             return;
         }
         self.pace(dt, |game| {
@@ -73,7 +73,7 @@ impl Game {
             session.executed(|| state.hash());
             true
         });
-        if self.presentation.accum < TICK_DT {
+        if self.clock.accum < TICK_DT {
             self.prepare_bot_decision();
         }
     }

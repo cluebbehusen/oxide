@@ -22,7 +22,7 @@ fn pause_save_bulk_advance_and_replacement_keep_the_settled_boundary() {
         std::thread::yield_now();
     }
     game.prepare_bot_decision();
-    game.presentation.paused = true;
+    game.clock.paused = true;
     assert!(!game.advance_wall_clock(1.0, None));
     assert!(game.bot_decision.is_some());
     assert_eq!(serde_json::to_vec(&game).unwrap(), settled);

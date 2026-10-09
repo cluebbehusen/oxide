@@ -481,19 +481,25 @@ fn view_height() -> f32 {
 }
 
 /// Draws one frame.
-pub fn draw(game: &crate::game::Scene<'_>, sprites: &Sprites, input: &InputState) {
-    draw_with_performance(game, sprites, input, None);
+pub fn draw(
+    game: &crate::game::Scene<'_>,
+    sprites: &Sprites,
+    input: &InputState,
+    bindings: &crate::action::BindingMap,
+) {
+    draw_with_performance(game, sprites, input, bindings, None);
 }
 
 pub(crate) fn draw_with_performance(
     game: &crate::game::Scene<'_>,
     sprites: &Sprites,
     input: &InputState,
+    bindings: &crate::action::BindingMap,
     performance: Option<&crate::performance::PerformanceView>,
 ) {
     clear_background(OUTSIDE);
     environment::draw_backdrop(game);
-    let alpha = game.presentation.render_alpha();
+    let alpha = game.clock.render_alpha();
     draw_tiles(game, sprites);
     pits::draw_pits(game, sprites.quarry_dressing(0).is_some());
     crate::render::world::draw_extractor_frames(game, sprites);
@@ -533,7 +539,7 @@ pub(crate) fn draw_with_performance(
     draw_touch_box(game, input);
     draw_long_press_ring(input);
     draw_salvage_tooltip(game, input);
-    draw_hud(game, sprites, input, performance);
+    draw_hud(game, sprites, input, bindings, performance);
     if game.presentation.overlay {
         draw_overlay_info(game);
     }

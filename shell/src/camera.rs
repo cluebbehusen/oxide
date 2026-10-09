@@ -124,5 +124,7 @@ impl Camera {
     }
 }
 
+pub(crate) mod controls;
+
 #[cfg(test)]
 mod tests;

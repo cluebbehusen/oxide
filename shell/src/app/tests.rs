@@ -2,15 +2,6 @@ use super::*;
 use crate::screens::wizard::launch::launch;
 
 #[test]
-fn keyboard_is_wanted_only_while_naming() {
-    let mut pause = PauseScreen::open(false, true);
-    assert!(!text_entry(&Screen::Pause(PauseScreen::open(false, true))));
-    pause.begin_naming("Skirmish | t40");
-    assert!(text_entry(&Screen::Pause(pause)));
-    assert!(!text_entry(&Screen::Playing));
-}
-
-#[test]
 fn the_live_streak_counts_only_unbroken_live_frames() {
     let mut streak = 0;
     for _ in 0..3 {
@@ -20,31 +11,6 @@ fn the_live_streak_counts_only_unbroken_live_frames() {
     assert_eq!(next_live_streak(streak, true, false), 0, "leaving play");
     assert_eq!(next_live_streak(streak, false, true), 0, "arriving in play");
     assert_eq!(next_live_streak(u8::MAX, true, true), u8::MAX);
-}
-
-#[test]
-fn frame_context_follows_playback_speed_instead_of_the_hidden_live_clock() {
-    use oxide_protocol::DebugSession;
-
-    let mut live = Game::new(Scenario::skirmish()).unwrap();
-    live.presentation.speed = 4.0;
-    let replay = oxide_kit::GameReplay::new(oxide_sim::SIM_VERSION, "test", Scenario::skirmish());
-    let mut playback = PlaybackSession::from_replay(replay).unwrap();
-    for speed in [0.5, 1.0, 8.0, 64.0] {
-        playback.set_speed(speed).unwrap();
-        let screen = Screen::Playback(Box::new(playback));
-        assert_eq!(visible_speed(&screen, &live), speed);
-        assert_eq!(live.presentation.speed, 4.0);
-        let Screen::Playback(session) = screen else {
-            unreachable!()
-        };
-        playback = *session;
-    }
-    assert_eq!(visible_speed(&Screen::Playing, &live), 4.0);
-    assert_eq!(
-        visible_speed(&Screen::Pause(PauseScreen::open(false, true)), &live),
-        4.0
-    );
 }
 
 /// The routing guards, row by row: frozen-map precedence and the
@@ -109,8 +75,8 @@ fn wizard_seat_swap_opens_on_the_new_humans_foundry() {
     backdrop_draft.set_scenario(scenario.clone(), None);
     let mut backdrop = launch(&backdrop_draft, 0x2000).expect("backdrop match");
     backdrop.presentation.camera.pan(vec2(-1000.0, -1000.0));
-    backdrop.presentation.paused = true;
-    backdrop.presentation.speed = 4.0;
+    backdrop.clock.paused = true;
+    backdrop.clock.speed = 4.0;
     backdrop.presentation.overlay = true;
     let backdrop_center = backdrop.presentation.camera.center;
 
@@ -134,8 +100,8 @@ fn wizard_seat_swap_opens_on_the_new_humans_foundry() {
         game.presentation.camera.center, backdrop_center,
         "session flags must not carry the backdrop camera into the new match"
     );
-    assert!(game.presentation.paused);
-    assert_eq!(game.presentation.speed, 4.0);
+    assert!(game.clock.paused);
+    assert_eq!(game.clock.speed, 4.0);
     assert!(game.presentation.overlay);
 
     let opening_center = game.presentation.camera.center;
@@ -144,55 +110,6 @@ fn wizard_seat_swap_opens_on_the_new_humans_foundry() {
         game.presentation.camera.center, opening_center,
         "edge pan must not mistake the menu click for a pointer at (0, 0)"
     );
-}
-
-#[test]
-fn result_replay_returns_to_the_report() {
-    let game = Game::new(Scenario::skirmish()).expect("game");
-
-    let watch = result_playback(&game).expect("watch replay");
-    assert_eq!(watch.return_to, PlaybackReturn::Results);
-    assert!(!watch.paused);
-    assert!(watch.seeking.is_none());
-}
-
-#[test]
-fn failed_quit_dialogs_return_to_every_hidden_live_match() {
-    let home = || Screen::Home(HomeScreen::with_resumable(false));
-    let pause = || Screen::Pause(PauseScreen::open(false, true));
-
-    assert!(!screen_holds_live_match(&home()));
-    assert!(screen_holds_live_match(&Screen::Playing));
-    assert!(screen_holds_live_match(&pause()));
-    assert!(screen_holds_live_match(&Screen::Results(
-        ResultsScreen::open()
-    )));
-    assert!(screen_holds_live_match(&Screen::FinalMap(
-        FinalMapScreen::open()
-    )));
-
-    let settings_from_home = Screen::Settings {
-        screen: SettingsScreen::open(&config::Config::default()),
-        back: Box::new(home()),
-    };
-    let settings_from_pause = Screen::Settings {
-        screen: SettingsScreen::open(&config::Config::default()),
-        back: Box::new(pause()),
-    };
-    assert!(!screen_holds_live_match(&settings_from_home));
-    assert!(screen_holds_live_match(&settings_from_pause));
-
-    let game = Game::new(Scenario::skirmish()).expect("game");
-    let mut playback = result_playback(&game).expect("viewer");
-    playback.return_to = PlaybackReturn::Home;
-    assert!(!screen_holds_live_match(&Screen::Playback(Box::new(
-        playback
-    ))));
-    let mut playback = result_playback(&game).expect("viewer");
-    playback.return_to = PlaybackReturn::Pause;
-    assert!(screen_holds_live_match(&Screen::Playback(Box::new(
-        playback
-    ))));
 }
 
 #[test]

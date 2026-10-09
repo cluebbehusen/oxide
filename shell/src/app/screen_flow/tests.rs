@@ -90,27 +90,6 @@ fn configured_new_match_draft() -> NewMatchDraft {
 }
 
 #[test]
-fn backdrop_animation_freezes_only_when_a_live_match_is_paused() {
-    let home = || Screen::Home(HomeScreen::with_resumable(false));
-    let pause = || Screen::Pause(PauseScreen::open(false, true));
-
-    assert!(backdrop_fx_advances(&home()));
-    assert!(!backdrop_fx_advances(&Screen::Playing));
-    assert!(!backdrop_fx_advances(&pause()));
-
-    let settings_from_home = Screen::Settings {
-        screen: SettingsScreen::open(&config::Config::default()),
-        back: Box::new(home()),
-    };
-    let settings_from_pause = Screen::Settings {
-        screen: SettingsScreen::open(&config::Config::default()),
-        back: Box::new(pause()),
-    };
-    assert!(backdrop_fx_advances(&settings_from_home));
-    assert!(!backdrop_fx_advances(&settings_from_pause));
-}
-
-#[test]
 fn escape_clears_a_selection_before_pausing_except_for_terminal_overlays() {
     assert!(!playing_escape_opens_pause(false, false, false, false));
     assert!(playing_escape_opens_pause(true, false, false, false));
@@ -126,7 +105,8 @@ fn opening_pause_freezes_play_and_ends_the_concede_banner() {
     game.presentation.conceded_banner = true;
     let screen = open_pause(&mut game, PauseCause::Player);
     assert!(matches!(screen, Screen::Pause(_)));
-    assert!(game.presentation.paused);
+    enter(&mut game, &screen);
+    assert!(game.clock.paused);
     assert!(!game.presentation.conceded_banner);
     assert!(
         game.demo.paused_menu,
@@ -159,10 +139,12 @@ fn a_suspension_gap_pauses_only_a_running_live_match() {
 fn a_suspension_pause_explains_itself_without_teaching_the_lesson() {
     let mut game =
         Game::with_viewport(oxide_sim::Scenario::skirmish(), vec2(1280.0, 800.0)).unwrap();
-    let Screen::Pause(pause) = open_pause(&mut game, PauseCause::Suspension) else {
+    let screen = open_pause(&mut game, PauseCause::Suspension);
+    enter(&mut game, &screen);
+    let Screen::Pause(pause) = screen else {
         panic!("a suspension opens the pause menu");
     };
-    assert!(game.presentation.paused);
+    assert!(game.clock.paused);
     assert!(!game.demo.paused_menu);
     assert_eq!(pause.subtitle("Skirmish"), "paused after an interruption");
 }
@@ -272,4 +254,99 @@ fn restart_and_rematch_rebuild_the_exact_opponents_without_rerolling() {
         next_base,
         "rebuilding an existing scenario never consumes New Match entropy"
     );
+}
+
+#[test]
+fn a_viewer_restores_the_exact_screen_that_opened_it() {
+    let game = Game::new(Scenario::skirmish()).expect("game");
+    let mut pause = PauseScreen::open(false, true);
+    pause.begin_naming("Skirmish | t40");
+    let viewer = open_playback(live_playback(&game).expect("viewer"), Screen::Pause(pause));
+    let Screen::Playback { session, back } = viewer else {
+        panic!("a viewer opens");
+    };
+    assert!(!session.clock.paused);
+    assert!(session.seeking.is_none());
+    assert_eq!(
+        back.mode(),
+        "save_name",
+        "leaving lands on the same pause menu, mid-edit, not a fresh one"
+    );
+}
+
+#[test]
+fn every_way_out_of_the_final_map_ends_inspection() {
+    let mut game =
+        Game::with_viewport(oxide_sim::Scenario::skirmish(), vec2(1280.0, 800.0)).unwrap();
+    game.presentation.selection.units.push(oxide_sim::UnitId(1));
+    let final_map = Screen::FinalMap(FinalMapScreen::open());
+    enter(&mut game, &final_map);
+    assert!(game.clock.paused);
+    assert!(game.presentation.spectate);
+    assert!(game.presentation.selection.units.is_empty());
+    // The step keys on the screen left, so a quit-save or a debug load
+    // ends inspection as surely as the Back button.
+    exit(&mut game, ScreenKind::FinalMap);
+    assert!(!game.presentation.spectate);
+}
+
+#[test]
+fn a_notice_lands_where_the_player_is_looking() {
+    let mut game =
+        Game::with_viewport(oxide_sim::Scenario::skirmish(), vec2(1280.0, 800.0)).unwrap();
+    let notice = || Notice {
+        text: "could not save settings: disk full".to_owned(),
+        danger: true,
+    };
+    let deliver = |game: &mut Game, screen: &mut Screen| {
+        let mut menu = None;
+        deliver_notices(&mut vec![notice()], game, &mut menu, screen, 10.0);
+        menu
+    };
+
+    assert!(deliver(&mut game, &mut Screen::Playing).is_none());
+    assert_eq!(
+        game.presentation.toasts.len(),
+        1,
+        "live play: the HUD toast"
+    );
+
+    let mut settings = Screen::Settings {
+        screen: SettingsScreen::open(&config::Config::default()),
+        back: Box::new(Screen::Home(HomeScreen::open())),
+    };
+    assert!(deliver(&mut game, &mut settings).is_none());
+    let Screen::Settings { screen, .. } = settings else {
+        unreachable!()
+    };
+    assert!(
+        screen.notice.is_some_and(|notice| notice.danger),
+        "its own line"
+    );
+
+    let mut pause = Screen::Pause(PauseScreen::open(false, true));
+    assert!(deliver(&mut game, &mut pause).is_none());
+    let Screen::Pause(pause) = pause else {
+        unreachable!()
+    };
+    assert_eq!(
+        pause.subtitle("Skirmish"),
+        "could not save settings: disk full",
+        "the pause menu shows it above the veil"
+    );
+
+    for mut screen in [
+        Screen::Home(HomeScreen::open()),
+        Screen::Results(ResultsScreen::open()),
+        Screen::FinalMap(FinalMapScreen::open()),
+    ] {
+        let menu = deliver(&mut game, &mut screen);
+        assert_eq!(
+            menu,
+            Some(("could not save settings: disk full".to_owned(), 18.0)),
+            "{}",
+            screen.mode()
+        );
+    }
+    assert_eq!(game.presentation.toasts.len(), 1, "nothing else toasts");
 }

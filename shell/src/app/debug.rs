@@ -1,7 +1,7 @@
 //! Answers debug-socket requests against whichever session owns the screen.
 
 use super::screenshot::PendingScreenshot;
-use super::{App, Screen, keep_flags};
+use super::{App, Install, Screen, ScreenKind};
 use crate::debug_server::IncomingRequest;
 use crate::game::Game;
 use macroquad::prelude::{screen_height, screen_width};
@@ -107,7 +107,7 @@ pub(super) fn handle_request(
     ui_view: &UiView,
 ) {
     let IncomingRequest { id, request, reply } = incoming;
-    if matches!(screen, Screen::Busy(_)) && frozen_map_refuses(&request) {
+    if screen.kind() == ScreenKind::Busy && frozen_map_refuses(&request) {
         reply
             .send(ResponseEnvelope::err(
                 id,
@@ -116,8 +116,8 @@ pub(super) fn handle_request(
             .ok();
         return;
     }
-    let playback = matches!(&*screen, Screen::Playback(_));
-    let final_map = matches!(&*screen, Screen::FinalMap(_));
+    let playback = screen.kind() == ScreenKind::Playback;
+    let final_map = screen.kind() == ScreenKind::FinalMap;
     let net = app
         .game
         .net_role()
@@ -143,32 +143,16 @@ pub(super) fn handle_request(
         }
         Route::RefuseViewer | Route::Local => {}
     }
-    let shared = {
-        // A viewer-bound `AdvanceTicks` sent to the hidden live match
-        // would advance it silently.
-        let session: &mut dyn oxide_protocol::DebugSession = match &mut *screen {
-            Screen::Playback(pb) => &mut **pb,
-            _ => &mut app.game,
-        };
-        oxide_protocol::dispatch_shared(session, &request)
-    };
+    // A viewer-bound `AdvanceTicks` sent to the hidden live match would
+    // advance it silently.
+    let shared = oxide_protocol::dispatch_shared(screen.visible_session(&mut app.game), &request);
     if let Some(outcome) = shared {
         // Resuming implies gameplay: leave the pause menu too (including
         // Settings or the Codex opened over it), or the sim runs behind a
         // menu that still claims it is paused. This is a screen
         // transition, so it lives here rather than in the session trait.
-        if matches!(request, Request::Resume) && outcome.is_ok() {
-            let over_pause = match &*screen {
-                Screen::Pause(_) => true,
-                Screen::Settings { back, .. } | Screen::Codex { back, .. } => {
-                    matches!(**back, Screen::Pause(_))
-                }
-                _ => false,
-            };
-            if over_pause {
-                *screen = Screen::Playing;
-                app.input.reset_transient();
-            }
+        if matches!(request, Request::Resume) && outcome.is_ok() && screen.over_pause() {
+            *screen = Screen::Playing;
         }
         let envelope = match outcome {
             Ok(inner) => ResponseEnvelope::ok(id, inner),
@@ -190,10 +174,7 @@ pub(super) fn handle_request(
             Request::QueryCamera => {
                 // Window-shaped answers describe the screen the window
                 // shows — the viewer's render vehicle during playback.
-                let game = match &*screen {
-                    Screen::Playback(pb) => &pb.presentation.camera,
-                    _ => &game.presentation.camera,
-                };
+                let game = &screen.visible(game).presentation().camera;
                 let (lo, hi) = game.world_rect();
                 Ok(Reply::Camera(CameraView {
                     center: [f64::from(game.center.x), f64::from(game.center.y)],
@@ -217,9 +198,9 @@ pub(super) fn handle_request(
                 }
             }
             Request::BeginPerformanceWindow { from_tick, to_tick } => {
-                if !matches!(&*screen, Screen::Playing) {
+                if screen.kind() != ScreenKind::Playing {
                     Err("exact frame windows require the live Playing screen".to_string())
-                } else if !game.presentation.paused {
+                } else if !game.clock.paused {
                     Err("pause the live match before arming a frame window".to_string())
                 } else if game.state.current_tick() != from_tick {
                     Err(format!(
@@ -233,10 +214,7 @@ pub(super) fn handle_request(
                 }
             }
             Request::ToggleOverlay => {
-                let game = match &mut *screen {
-                    Screen::Playback(pb) => &mut pb.presentation,
-                    _ => &mut game.presentation,
-                };
+                let game = screen.visible_presentation(game);
                 game.overlay = !game.overlay;
                 Ok(Reply::Overlay(OverlayView {
                     enabled: game.overlay,
@@ -270,10 +248,7 @@ pub(super) fn handle_request(
             Request::Screenshot { path } => {
                 // The default name carries the tick of the world the frame
                 // will actually show — the replayed one during playback.
-                let shown_tick = match &*screen {
-                    Screen::Playback(pb) => pb.engine.state.current_tick(),
-                    _ => game.state.current_tick(),
-                };
+                let shown_tick = screen.visible(game).state().current_tick();
                 let path = path.unwrap_or_else(|| format!("screenshots/tick-{shown_tick}.png"));
                 app.pending_shots
                     .push(PendingScreenshot { id, path, reply });
@@ -285,11 +260,9 @@ pub(super) fn handle_request(
                     Game::new(scenario).map_err(|err| format!("building scenario: {err:#}"))
                 })
                 .map(|fresh| {
-                    app.tutorial = None;
-                    *game = keep_flags(fresh, game);
-                    app.performance.reset();
+                    let paused = app.game.clock.paused;
+                    app.install(fresh, Install::local(paused));
                     *screen = Screen::Playing;
-                    app.input.reset_session();
                     Reply::Ok
                 }),
             Request::LoadReplay { path } => oxide_kit::load_replay(&path)
@@ -298,12 +271,10 @@ pub(super) fn handle_request(
                     Game::from_replay(replay).map_err(|err| format!("resuming replay: {err:#}"))
                 })
                 .map(|fresh| {
-                    app.tutorial = None;
-                    *game = keep_flags(fresh, game);
-                    app.performance.reset();
+                    let paused = app.game.clock.paused;
+                    app.install(fresh, Install::local(paused));
                     *screen = Screen::Playing;
-                    app.input.reset_session();
-                    Reply::Status(game.status_view())
+                    Reply::Status(app.game.status_view())
                 }),
             Request::SaveReplay { path } => {
                 game.recorder.meta.ticks = Some(game.state.current_tick());

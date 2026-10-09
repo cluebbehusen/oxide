@@ -12,7 +12,12 @@ use macroquad::prelude::{Vec2, vec2};
 use oxide_sim::Command;
 
 #[expect(clippy::too_many_lines, reason = "one arm per action")]
-pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: Action) {
+pub(super) fn dispatch_action(
+    game: &mut Game,
+    input: &mut InputState,
+    bindings: &crate::action::BindingMap,
+    action: Action,
+) {
     if input.construction_open()
         && matches!(
             action,
@@ -114,7 +119,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
         | Action::SetRally
         | Action::ClearRally
         | Action::Unload
-        | Action::Build(_) => super::activate_action_card(game, input, action),
+        | Action::Build(_) => super::activate_action_card(game, input, bindings, action),
         Action::BuildCategory(category) => {
             input.disarm_click_verbs();
             input.patrol_route = None;
@@ -125,7 +130,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             if game.net_role() == Some(crate::game::network::NetRole::Client) {
                 game.presentation.toast("Only the host can pause");
             } else {
-                game.presentation.paused = !game.presentation.paused;
+                game.clock.paused = !game.clock.paused;
             }
         }
         Action::ToggleBuildPalette => {
@@ -192,7 +197,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                     input.disarm_click_verbs();
                     input.patrol_route = Some(Vec::new());
                     game.presentation.toast(super::patrol_arm_toast(
-                        &input.bindings.label(Action::Patrol),
+                        &bindings.label(Action::Patrol),
                         crate::platform::TOUCH_ONLY,
                     ));
                 }

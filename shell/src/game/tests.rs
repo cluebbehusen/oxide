@@ -204,13 +204,13 @@ fn wall_clock_pause_and_hitch_rules_bound_simulation_debt() {
         macroquad::prelude::vec2(1280.0, 800.0),
     )
     .expect("game");
-    game.presentation.paused = true;
+    game.clock.paused = true;
     assert!(!game.advance_wall_clock(10.0, None));
     assert_eq!(game.state.current_tick(), 0);
-    assert_eq!(game.presentation.render_alpha(), 1.0);
+    assert_eq!(game.clock.render_alpha(), 1.0);
 
-    game.presentation.paused = false;
-    game.presentation.speed = 64.0;
+    game.clock.paused = false;
+    game.clock.speed = 64.0;
     assert!(!game.advance_wall_clock(1.0, None));
     assert_eq!(game.state.current_tick(), u64::from(MAX_TICKS_PER_FRAME));
     assert!(
@@ -502,9 +502,9 @@ fn externally_driven_tick_fractions_are_clamped_to_one_frame() {
         macroquad::prelude::vec2(1280.0, 800.0),
     )
     .expect("game");
-    game.presentation.sync_external_tick_fraction(2.0);
+    game.presentation.set_tick_fraction(2.0);
     assert_eq!(game.presentation.tick_fraction(), 1.0);
-    game.presentation.sync_external_tick_fraction(-1.0);
+    game.presentation.set_tick_fraction(-1.0);
     assert_eq!(game.presentation.tick_fraction(), 0.0);
 }
 
@@ -659,7 +659,7 @@ fn paused_wall_time_freezes_presentation() {
         age: 0.0,
     });
 
-    game.presentation.paused = true;
+    game.clock.paused = true;
     game.update_wall_clock_fx(0.25);
     assert_eq!(
         game.presentation.fx_time(),
@@ -671,7 +671,7 @@ fn paused_wall_time_freezes_presentation() {
         "transient effects must hold too"
     );
 
-    game.presentation.paused = false;
+    game.clock.paused = false;
     game.update_wall_clock_fx(0.25);
     assert_eq!(game.presentation.fx_time(), 0.25);
     assert_eq!(game.presentation.fx[0].age, 0.25);
@@ -684,7 +684,7 @@ fn wall_clock_profile_bound_cannot_overshoot_inside_a_multi_tick_frame() {
         macroquad::prelude::vec2(1280.0, 800.0),
     )
     .expect("skirmish builds");
-    game.presentation.speed = 8.0;
+    game.clock.speed = 8.0;
 
     assert!(game.advance_wall_clock(1.0, Some(5)));
     assert_eq!(game.state.current_tick(), 5);

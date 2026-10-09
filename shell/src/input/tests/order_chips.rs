@@ -9,7 +9,7 @@ use oxide_sim::{OrderKey, PlayerId, State, UnitId};
 /// Publishes the selection's orders dock inside the panel band, as drawing
 /// does, and returns each chip's rect.
 fn publish_dock(game: &mut Game, input: &InputState) -> Vec<Rect> {
-    let panel = crate::panel::build_for_input(&game.view(), input).expect("a panel");
+    let panel = crate::panel::build_for_input(&game.view(), &classic(), input).expect("a panel");
     let mut layout = bare_layout(680.0, 900.0);
     let rects: Vec<Rect> = (0..panel.queue.len())
         .map(|slot| Rect::new(20.0 + 52.0 * slot as f32, 700.0, 48.0, 48.0))
@@ -25,7 +25,7 @@ fn publish_dock(game: &mut Game, input: &InputState) -> Vec<Rect> {
 
 /// The dock's walk chips: each one's clicked tile and later repeats.
 fn dock_walks(game: &Game, input: &InputState) -> Vec<(TilePos, u8)> {
-    crate::panel::build_for_input(&game.view(), input)
+    crate::panel::build_for_input(&game.view(), &classic(), input)
         .expect("a panel")
         .queue
         .iter()
@@ -80,7 +80,7 @@ fn paused_chip_clicks_remove_the_legs_they_show() {
     game.presentation.selection.units = vec![fighter];
     let [a, b, c, d] = [(12, 2), (16, 2), (20, 2), (24, 2)].map(|(x, y)| TilePos::new(x, y));
     game.state.tick(&legs(human, fighter, &[a, b, c, d]));
-    game.presentation.paused = true;
+    game.clock.paused = true;
     assert_eq!(dock_walks(&game, &input), [(a, 0), (b, 0), (c, 0), (d, 0)]);
 
     let chips = publish_dock(&mut game, &input);
@@ -171,7 +171,7 @@ fn a_staged_sites_chip_cancels_it_by_kind_and_anchor_whoever_takes_its_id() {
             .id
     });
     assert!(client.state.building(projected).is_none(), "premise");
-    let panel = crate::panel::build_for_input(&client.view(), &input).expect("a panel");
+    let panel = crate::panel::build_for_input(&client.view(), &classic(), &input).expect("a panel");
     assert_eq!(
         panel.queue[0].action,
         CardAction::CancelFound(Turret, anchor)
@@ -226,7 +226,7 @@ fn a_chip_answers_a_slow_tap_but_not_a_lift_after_a_hold() {
     game.presentation.selection.units = vec![fighter];
     let [a, b] = [(12, 2), (16, 2)].map(|(x, y)| TilePos::new(x, y));
     game.state.tick(&legs(human, fighter, &[a, b]));
-    game.presentation.paused = true;
+    game.clock.paused = true;
     let chips = publish_dock(&mut game, &input);
     let p = chips[1].center();
     let hold = f64::from(input.touch_prefs.long_press_ms) / 1000.0;
@@ -313,7 +313,7 @@ fn a_held_site_chip_scraps_nothing_but_a_tap_cancels_the_site() {
         .expect("the site stands")
         .id;
     game.presentation.selection.units = vec![worker];
-    game.presentation.paused = true;
+    game.clock.paused = true;
 
     let (held, tapped) = hold_then_tap(&mut game, &mut input);
 
@@ -334,7 +334,7 @@ fn a_held_production_chip_cancels_nothing_but_a_tap_does() {
     let staged: Vec<PlayerCommand> = game.pending.drain(..).collect();
     assert_eq!(staged.len(), 1, "premise: one job queued");
     game.state.tick(&staged);
-    game.presentation.paused = true;
+    game.clock.paused = true;
 
     let (held, tapped) = hold_then_tap(&mut game, &mut input);
 

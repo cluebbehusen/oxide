@@ -154,7 +154,7 @@ impl Match {
 
     /// Pauses the host and lets the client execute what is in flight.
     fn drain(&mut self) {
-        self.host.0.presentation.paused = true;
+        self.host.0.clock.paused = true;
         wait(|| {
             assert_eq!(self.step(), (None, None));
             (self.client.0.state.current_tick() == self.host.0.state.current_tick()).then_some(())

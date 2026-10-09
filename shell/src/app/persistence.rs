@@ -94,6 +94,24 @@ impl Worker {
     pub(super) fn busy(&self) -> bool {
         self.active.is_some()
     }
+
+    /// Lets a replaced match wind down here: its recording finishes and
+    /// its bots stop off the frame thread, since finishing a recording may
+    /// wait on its writer. A worker busy with other work leaves the game to
+    /// drop on the caller's thread, its recording already told to finish.
+    pub(super) fn retire(&mut self, old: Game) {
+        if self.busy() {
+            drop(old);
+            return;
+        }
+        let retired = old.retire();
+        if let Err(error) = self.start(Box::new(move |_| {
+            retired();
+            Ok(Output::Retired)
+        })) {
+            eprintln!("Retiring the previous match failed: {error:#}");
+        }
+    }
     fn poll(&mut self) -> Option<(u64, Result<Output>)> {
         match self.receiver.try_recv() {
             Ok(result) => {
@@ -145,7 +163,7 @@ impl Busy {
 
 impl App {
     pub(super) fn persistence_screen(&mut self, intent: Intent, back: Screen) -> Screen {
-        self.game.presentation.paused = true;
+        self.game.clock.paused = true;
         if self.catalog_id.take().is_some() {
             self.persistence.cancel();
         }
@@ -181,10 +199,7 @@ impl App {
         if self.catalog_id == Some(id) {
             self.catalog_id = None;
             if let Err(error) = &result {
-                self.menu_notice = Some((
-                    format!("Could not refresh saves: {error:#}"),
-                    get_time() + 8.0,
-                ));
+                self.notify(format!("Could not refresh saves: {error:#}"), true);
             }
             if let Ok(Output::Catalog { entries, recovery }) = result {
                 match screen {
@@ -223,7 +238,7 @@ impl App {
         });
         match self.persistence.start(task) {
             Ok(id) => self.catalog_id = Some(id),
-            Err(error) => self.menu_notice = Some((error.to_string(), get_time() + 5.0)),
+            Err(error) => self.notify(error.to_string(), true),
         }
     }
 }
@@ -257,7 +272,12 @@ fn load_candidates(
 }
 
 pub(super) fn frame(app: &mut App, mut busy: Box<Busy>, events: &[RawEvent]) -> Result<Screen> {
-    render::draw(&app.game.view(), &app.sprites, &app.input);
+    render::draw(
+        &app.game.view(),
+        &app.sprites,
+        &app.input,
+        &app.config.bindings,
+    );
     veil();
     let loading = busy.intent.loading();
     let dots = match numeric::to_u32(numeric::to_f32(get_time()) * 3.0) % 3 {
@@ -296,16 +316,7 @@ pub(super) fn frame(app: &mut App, mut busy: Box<Busy>, events: &[RawEvent]) -> 
     if let Some(result) = app.persistence_result.take() {
         match result {
             Ok(Output::Loaded(loaded)) => {
-                let fresh = keep_flags(loaded.install(), &app.game);
-                let retired = std::mem::replace(&mut app.game, fresh).retire();
-                app.game.presentation.paused = true;
-                app.tutorial = None;
-                app.performance.reset();
-                app.input.reset_session();
-                app.persistence.start(Box::new(move |_| {
-                    retired();
-                    Ok(Output::Retired)
-                }))?;
+                app.install(loaded.install(), Install::local(true));
                 if busy.quit_after {
                     return Ok(app.persistence_screen(
                         Intent::Leave(screens::pause::LeaveVerb::Quit, false),
@@ -334,11 +345,8 @@ pub(super) fn frame(app: &mut App, mut busy: Box<Busy>, events: &[RawEvent]) -> 
                     Intent::Leave(screens::pause::LeaveVerb::Quit, _) => std::process::exit(0),
                     Intent::Leave(_, _) => Screen::Home(HomeScreen::open()),
                     Intent::Rematch => {
-                        app.install_session(
-                            Game::new(app.game.scenario.clone())?,
-                            app.args.paused,
-                            None,
-                        );
+                        let fresh = super::screen_flow::rebuild_match(&app.game)?;
+                        app.install(fresh, Install::local(app.args.paused));
                         Screen::Playing
                     }
                     _ => unreachable!(),
@@ -368,14 +376,14 @@ pub(super) fn frame(app: &mut App, mut busy: Box<Busy>, events: &[RawEvent]) -> 
                 {
                     home.clear_recovery();
                 }
-                app.menu_notice = Some((
+                app.notify(
                     if loading {
                         format!("Load failed: {error}")
                     } else {
                         error.to_string()
                     },
-                    get_time() + 8.0,
-                ));
+                    true,
+                );
                 if let Screen::Pause(ref mut pause) = *busy.back {
                     pause.end_naming(error.to_string());
                 }

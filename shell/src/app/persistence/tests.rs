@@ -96,3 +96,26 @@ fn continue_skips_a_corrupt_newest_payload_and_reuses_the_restored_older_save() 
     assert!(!dir.join("recovery").exists());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn a_replaced_match_retires_on_the_worker_when_it_is_free() {
+    let mut worker = Worker::new().expect("worker");
+    worker.retire(Game::new(oxide_sim::Scenario::skirmish()).expect("game"));
+    assert!(
+        worker.busy(),
+        "the old match winds down off the frame thread"
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let result = loop {
+        if let Some((_, result)) = worker.poll() {
+            break result;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the retire job finishes"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    assert!(matches!(result, Ok(Output::Retired)));
+    assert!(!worker.busy());
+}
