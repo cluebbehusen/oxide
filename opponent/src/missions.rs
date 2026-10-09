@@ -756,7 +756,7 @@ fn approach(
     building: BuildingKind,
     anchor: TilePos,
 ) -> Option<TilePos> {
-    ring(anchor, building.base_stats().size)
+    ring(anchor, building.size())
         .filter(|tile| map.distance(me, *tile) != UNREACHABLE)
         .min_by_key(|tile| {
             (
@@ -874,7 +874,7 @@ fn standing(observation: &ObservationData, target: Objective) -> bool {
         (building.player, building.kind, building.anchor)
             == (target.owner, target.building, target.anchor)
     });
-    let (width, height) = target.building.base_stats().size;
+    let (width, height) = target.building.size();
     let seen = (0..height)
         .any(|dy| (0..width).any(|dx| observation.visible(target.anchor.offset(dx, dy))));
     known || !seen

@@ -9,7 +9,6 @@ fn against_ridge(waypoint: TilePos) -> (Unit, Map) {
     let state = Scenario {
         mode: ScenarioMode::Match,
         name: "ridge".into(),
-        seed: 1,
         map: vec![
             "1...............".into(),
             "......^.........".into(),

@@ -25,7 +25,6 @@ fn firing_squad() -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "firing-squad".into(),
-        seed: 7,
         map: vec![
             ground.clone(),
             ground.clone(),
@@ -87,7 +86,6 @@ fn opponent_controller() -> EvaluationController {
 fn one_evaluation_trace() -> EvaluationTraceRow {
     let plan = configured_matchup_plans(
         &Scenario::skirmish(),
-        73,
         prime_matchup(),
         prime_config().personality_seed,
         false,
@@ -112,7 +110,6 @@ fn profile_pair_swaps_only_controllers_on_one_transformed_scenario() {
     let source = Scenario::skirmish();
     let plans = configured_matchup_plans(
         &source,
-        91,
         prime_matchup(),
         prime_config().personality_seed,
         true,
@@ -130,7 +127,6 @@ fn profile_pair_swaps_only_controllers_on_one_transformed_scenario() {
     assert_eq!(forward.faction_cell, EvaluationFactionCell::Cf);
     assert_eq!(swapped.faction_cell, EvaluationFactionCell::Cf);
     assert_eq!(forward.scenario, swapped.scenario);
-    assert_eq!(forward.scenario.seed, 91);
     assert_eq!(
         forward
             .scenario
@@ -169,7 +165,6 @@ fn controlled_faction_cells_retint_players_and_starting_rosters() {
     let source = Scenario::skirmish();
     let fc = configured_matchup_plans(
         &source,
-        source.seed,
         prime_matchup(),
         prime_config().personality_seed,
         false,
@@ -180,7 +175,6 @@ fn controlled_faction_cells_retint_players_and_starting_rosters() {
     .remove(0);
     let cf = configured_matchup_plans(
         &source,
-        source.seed,
         prime_matchup(),
         prime_config().personality_seed,
         false,
@@ -220,7 +214,6 @@ fn controlled_geometry_records_and_applies_the_exact_half_turn() {
     let source = Scenario::skirmish();
     let authored = configured_matchup_plans(
         &source,
-        31,
         prime_matchup(),
         prime_config().personality_seed,
         false,
@@ -231,7 +224,6 @@ fn controlled_geometry_records_and_applies_the_exact_half_turn() {
     .remove(0);
     let rotated = configured_matchup_plans(
         &source,
-        31,
         prime_matchup(),
         prime_config().personality_seed,
         false,
@@ -255,7 +247,6 @@ fn controlled_geometry_records_and_applies_the_exact_half_turn() {
 fn configured_evaluation_records_exact_controller_and_roster_provenance() {
     let plans = configured_matchup_plans(
         &Scenario::skirmish(),
-        73,
         prime_matchup(),
         prime_config().personality_seed,
         true,
@@ -311,7 +302,6 @@ fn configured_evaluation_records_exact_controller_and_roster_provenance() {
 fn traced_evaluation_is_deterministic_and_does_not_change_authoritative_evidence() {
     let plan = configured_matchup_plans(
         &Scenario::skirmish(),
-        73,
         prime_matchup(),
         prime_config().personality_seed,
         false,
@@ -374,7 +364,6 @@ fn nominal_axis_aliases_share_one_execution_identity_and_are_refused() {
     let source = Scenario::skirmish();
     let authored = configured_matchup_plans(
         &source,
-        source.seed,
         prime_matchup(),
         prime_config().personality_seed,
         false,
@@ -385,7 +374,6 @@ fn nominal_axis_aliases_share_one_execution_identity_and_are_refused() {
     .remove(0);
     let explicit = configured_matchup_plans(
         &source,
-        source.seed,
         prime_matchup(),
         prime_config().personality_seed,
         false,
@@ -415,10 +403,10 @@ fn nominal_axis_aliases_share_one_execution_identity_and_are_refused() {
 }
 
 #[test]
-fn command_hash_ignores_setup_seed_but_covers_ticks_and_commands() {
+fn command_hash_ignores_setup_but_covers_ticks_and_commands() {
     let mut first = GameReplay::new(SIM_VERSION, "test", Scenario::skirmish());
     let mut second_setup = Scenario::skirmish();
-    second_setup.seed = second_setup.seed.wrapping_add(1);
+    second_setup.name.push('!');
     let mut second = GameReplay::new(SIM_VERSION, "test", second_setup);
     let stop = PlayerCommand {
         player: PlayerId(0),
@@ -442,7 +430,6 @@ fn command_hash_ignores_setup_seed_but_covers_ticks_and_commands() {
 fn controller_swaps_have_one_scenario_but_distinct_evidence_identities() {
     let plans = configured_matchup_plans(
         &Scenario::skirmish(),
-        73,
         prime_matchup(),
         prime_config().personality_seed,
         true,
@@ -461,10 +448,8 @@ fn controller_swaps_have_one_scenario_but_distinct_evidence_identities() {
         evaluation_fingerprint(forward).unwrap(),
         evaluation_fingerprint(swapped).unwrap()
     );
-    let forward_name =
-        evaluation_replay_filename(0, 0, 73, 60_000, "candidate-a", forward).unwrap();
-    let swapped_name =
-        evaluation_replay_filename(0, 0, 73, 60_000, "candidate-a", swapped).unwrap();
+    let forward_name = evaluation_replay_filename(0, 0, 60_000, "candidate-a", forward).unwrap();
+    let swapped_name = evaluation_replay_filename(0, 0, 60_000, "candidate-a", swapped).unwrap();
     assert_ne!(forward_name, swapped_name);
     assert!(forward_name.contains("-forward-"));
     assert!(swapped_name.contains("-swapped-"));
@@ -516,7 +501,6 @@ fn controlled_plans_refuse_non_duel_scenarios_before_transforming_them() {
     for scenario in [&too_few, &too_many] {
         let error = configured_matchup_plans(
             scenario,
-            1,
             prime_matchup(),
             prime_config().personality_seed,
             true,
@@ -539,7 +523,6 @@ fn controlled_plans_refuse_two_seats_on_the_same_team() {
 
     let error = configured_matchup_plans(
         &allied,
-        1,
         prime_matchup(),
         prime_config().personality_seed,
         true,
@@ -550,29 +533,6 @@ fn controlled_plans_refuse_two_seats_on_the_same_team() {
     assert!(
         error.to_string().contains("two opposing teams"),
         "allied-seat refusal should explain the competitive invariant: {error:#}"
-    );
-}
-
-#[test]
-fn replay_filename_refuses_a_seed_outside_its_plan() {
-    let plan = configured_matchup_plans(
-        &Scenario::skirmish(),
-        73,
-        prime_matchup(),
-        prime_config().personality_seed,
-        false,
-        EvaluationFactionCell::Fc,
-        EvaluationGeometry::Authored,
-    )
-    .unwrap()
-    .remove(0);
-
-    let error = evaluation_replay_filename(0, 0, 74, 60_000, "candidate-a", &plan).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("does not match evaluation scenario seed 73"),
-        "filename provenance mismatch should fail clearly: {error:#}"
     );
 }
 
@@ -635,7 +595,6 @@ fn rows_record_teams_eliminations_detectors_income_and_provenance() {
 
     let plan = configured_matchup_plans(
         &Scenario::skirmish(),
-        73,
         ProfileMatchup::uniform(BotDifficulty::Standard, BotStance::Balanced),
         8_100,
         false,
@@ -700,7 +659,7 @@ fn saved_replay_preserves_the_exact_compared_configs() {
         opponent_stance: Some(BotStance::Turtle),
         same_personality_seed: true,
     };
-    let scenario = configured_matchup_legs(&firing_squad(), 91, matchup, 400, false)
+    let scenario = configured_matchup_legs(&firing_squad(), matchup, 400, false)
         .unwrap()
         .remove(0)
         .1;
@@ -722,7 +681,6 @@ fn saved_replay_preserves_the_exact_compared_configs() {
     std::fs::remove_file(&replay_path).unwrap();
 
     assert_eq!(row.replay.as_deref(), replay_path.to_str());
-    assert_eq!(replay.setup.seed, 91);
     assert_eq!(replay.setup.players, scenario.players);
     let description = replay.meta.description.as_deref().unwrap();
     assert!(description.contains("candidate=candidate-a"));
@@ -735,7 +693,6 @@ fn replay_filenames_distinguish_matchups_with_the_same_numeric_seed_cell() {
     let source = firing_squad();
     let prime_scrapheap = configured_matchup_legs(
         &source,
-        13,
         ProfileMatchup {
             difficulty: BotDifficulty::Prime,
             stance: BotStance::Balanced,
@@ -749,7 +706,6 @@ fn replay_filenames_distinguish_matchups_with_the_same_numeric_seed_cell() {
     .unwrap();
     let veteran_standard = configured_matchup_legs(
         &source,
-        13,
         ProfileMatchup {
             difficulty: BotDifficulty::Veteran,
             stance: BotStance::Balanced,
@@ -765,10 +721,9 @@ fn replay_filenames_distinguish_matchups_with_the_same_numeric_seed_cell() {
     for leg in 0..2 {
         let (first_leg, first) = &prime_scrapheap[leg];
         let (second_leg, second) = &veteran_standard[leg];
-        let first_name =
-            replay_filename(0, 0, 13, 48_000, *first_leg, "candidate-a", first).unwrap();
+        let first_name = replay_filename(0, 0, 48_000, *first_leg, "candidate-a", first).unwrap();
         let second_name =
-            replay_filename(0, 0, 13, 48_000, *second_leg, "candidate-a", second).unwrap();
+            replay_filename(0, 0, 48_000, *second_leg, "candidate-a", second).unwrap();
         assert_ne!(first_name, second_name);
     }
 }
@@ -777,7 +732,6 @@ fn replay_filenames_distinguish_matchups_with_the_same_numeric_seed_cell() {
 fn replay_filenames_distinguish_extended_tick_limits() {
     let scenario = configured_legs(
         &firing_squad(),
-        13,
         BotDifficulty::Prime,
         BotStance::Balanced,
         40,
@@ -786,36 +740,17 @@ fn replay_filenames_distinguish_extended_tick_limits() {
     .unwrap()
     .remove(0)
     .1;
-    let short =
-        replay_filename(0, 0, 13, 1, EvaluationLeg::Single, "candidate-a", &scenario).unwrap();
+    let short = replay_filename(0, 0, 1, EvaluationLeg::Single, "candidate-a", &scenario).unwrap();
     let extended =
-        replay_filename(0, 0, 13, 2, EvaluationLeg::Single, "candidate-a", &scenario).unwrap();
+        replay_filename(0, 0, 2, EvaluationLeg::Single, "candidate-a", &scenario).unwrap();
     assert_ne!(short, extended);
 }
 
 #[test]
 fn replay_filenames_distinguish_candidate_builds() {
     let scenario = firing_squad();
-    let first = replay_filename(
-        0,
-        0,
-        scenario.seed,
-        1,
-        EvaluationLeg::Single,
-        "candidate-a",
-        &scenario,
-    )
-    .unwrap();
-    let second = replay_filename(
-        0,
-        0,
-        scenario.seed,
-        1,
-        EvaluationLeg::Single,
-        "candidate-b",
-        &scenario,
-    )
-    .unwrap();
+    let first = replay_filename(0, 0, 1, EvaluationLeg::Single, "candidate-a", &scenario).unwrap();
+    let second = replay_filename(0, 0, 1, EvaluationLeg::Single, "candidate-b", &scenario).unwrap();
     assert_ne!(first, second);
 }
 
@@ -877,7 +812,6 @@ fn a_trace_publication_collision_rolls_back_the_compact_index() {
     let trace_path = dir.join("trace.jsonl");
     let plan = configured_matchup_plans(
         &Scenario::skirmish(),
-        73,
         prime_matchup(),
         prime_config().personality_seed,
         false,
@@ -1111,7 +1045,6 @@ fn candidate_provenance_refuses_empty_padded_control_and_overlong_values() {
 fn paired_legs_exchange_profiles_without_changing_the_match_seed() {
     let legs = configured_legs(
         &firing_squad(),
-        91,
         BotDifficulty::Prime,
         BotStance::Aggressive,
         400,
@@ -1123,7 +1056,6 @@ fn paired_legs_exchange_profiles_without_changing_the_match_seed() {
     let (swapped_leg, swapped) = &legs[1];
     assert_eq!(*forward_leg, EvaluationLeg::Forward);
     assert_eq!(*swapped_leg, EvaluationLeg::Swapped);
-    assert_eq!((forward.seed, swapped.seed), (91, 91));
     assert_eq!(forward.players[0].bot_config.unwrap().personality_seed, 400);
     assert_eq!(forward.players[1].bot_config.unwrap().personality_seed, 401);
     assert_eq!(swapped.players[0].bot_config, forward.players[1].bot_config);
@@ -1147,7 +1079,7 @@ fn cross_difficulty_legs_share_identity_and_swap_complete_configs() {
         same_personality_seed: true,
     };
     let source = firing_squad();
-    let legs = configured_matchup_legs(&source, 91, matchup, 400, true).unwrap();
+    let legs = configured_matchup_legs(&source, matchup, 400, true).unwrap();
     let forward = &legs[0].1;
     let swapped = &legs[1].1;
     let prime = forward.players[0].bot_config.unwrap();
@@ -1267,7 +1199,7 @@ fn comparison_only_options_refuse_ambiguous_multiseat_scenarios() {
         ("paired", uniform, true),
     ];
     for (label, matchup, paired) in cases {
-        let error = configured_matchup_legs(&scenario, 1, matchup, 2, paired).unwrap_err();
+        let error = configured_matchup_legs(&scenario, matchup, 2, paired).unwrap_err();
         assert!(
             error.to_string().contains("exactly two seats"),
             "{label} produced an unclear error: {error:#}"
@@ -1281,7 +1213,6 @@ fn paired_legs_refuse_a_shape_that_cannot_be_exchanged() {
     scenario.players.push(scenario.players[0].clone());
     let error = configured_legs(
         &scenario,
-        1,
         BotDifficulty::Standard,
         BotStance::Balanced,
         2,

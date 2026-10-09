@@ -774,7 +774,7 @@ fn a_lift_at_the_member_cap_boards_no_more_and_still_restores() {
     let taken = |tile: TilePos| {
         state.units().iter().any(|unit| unit.tile() == tile)
             || state.buildings().iter().any(|building| {
-                let (width, height) = building.stats().size;
+                let (width, height) = building.kind.size();
                 crate::frame::gap(building.anchor, (width, height), tile, (1, 1)) < 2
             })
     };
@@ -870,7 +870,7 @@ fn mirrored_lifts_issue_mirrored_commands() {
     let mut scenario = strait();
     let (width, height) = (40, 24);
     for (kind, x, y) in TECH {
-        let (w, h) = kind.base_stats().size;
+        let (w, h) = kind.size();
         scenario.buildings.push(BuildingSpec {
             player: 1,
             kind,

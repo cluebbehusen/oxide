@@ -147,7 +147,7 @@ fn repair_bay_uses_the_exact_footprint_offset_aura() {
     };
     assert_eq!(range.kind, BuildingRangeKind::Repair);
     let radius = oxide_sim::stats::REPAIR_BAY_RADIUS.to_num::<f32>();
-    let size = oxide_sim::BuildingKind::RepairBay.base_stats().size;
+    let size = oxide_sim::BuildingKind::RepairBay.size();
     let footprint_max = anchor + vec2(size.0 as f32, size.1 as f32);
     assert_eq!(
         range.shape,
@@ -180,7 +180,7 @@ fn foundries_and_extractors_use_the_exact_square_support_footprint() {
             .find(|range| range.kind == BuildingRangeKind::EconomySupport)
             .expect("economic endpoints expose their support footprint");
         let radius = footprint_distance_aura(oxide_sim::stats::EXTRACTOR_SUPPORT_RADIUS);
-        let size = kind.base_stats().size;
+        let size = kind.size();
         let footprint_max = anchor + vec2(size.0 as f32, size.1 as f32);
         assert_eq!(
             support.shape,
@@ -215,7 +215,7 @@ fn weapon_ranges_remain_centered_circles() {
         .iter()
         .find(|range| range.kind == BuildingRangeKind::Weapon)
         .expect("a Turret exposes its weapon range");
-    let size = kind.base_stats().size;
+    let size = kind.size();
     assert_eq!(
         weapon.shape,
         BuildingRangeShape::Circle {
@@ -242,7 +242,7 @@ fn bastion_dead_zone_is_a_shaded_inner_circle() {
         .iter()
         .find(|range| range.kind == BuildingRangeKind::DeadZone)
         .expect("a Bastion exposes its close-pressure counter");
-    let size = kind.base_stats().size;
+    let size = kind.size();
     assert_eq!(
         dead_zone.shape,
         BuildingRangeShape::Circle {
@@ -341,8 +341,7 @@ fn anti_air_buildings_use_the_weapon_domain_at_every_tier_and_in_placement() {
 #[test]
 fn flakhound_and_sentinel_use_consistent_colors_and_marks_for_each_target_domain() {
     let scenario: oxide_sim::Scenario = serde_json::from_value(serde_json::json!({
-        "name": "Weapon indicator fixture", "seed": 1,
-        "map": ["....................", "....................", "..1.................",
+        "name": "Weapon indicator fixture", "map": ["....................", "....................", "..1.................",
             "....................", "....................", "....................",
             "....................", "....................", "....................",
             "....................", "....................", "...................."],
@@ -557,7 +556,7 @@ fn range_occluders_exclude_offscreen_and_unseen_buildings() {
         .find(|building| building.player != game.presentation.human)
         .unwrap();
     assert!(!hostile.tiles().any(|tile| game.my_vision().visible(tile)));
-    let (width, height) = hostile.stats().size;
+    let (width, height) = hostile.kind.size();
     game.presentation.camera.center = vec2(
         hostile.anchor.x as f32 + width as f32 * 0.5,
         hostile.anchor.y as f32 + height as f32 * 0.5,

@@ -47,9 +47,9 @@ exporter's identity. Source archives report unknown provenance.
   stall-loop anomaly, and emits compact JSONL with candidate, scenario,
   tick-ceiling, exact-profile, and anomaly provenance. It can exchange complete
   controller configurations between seats for paired controller, personality or
-  difficulty comparisons, including crossed exact simulation seeds, personality
-  seeds, faction assignments, and geometry cells. Persisted batches are staged
-  and never replace earlier evidence. Optional decision traces stream fog-honest
+  difficulty comparisons, including crossed personality seeds, faction
+  assignments, and geometry cells. Persisted batches are staged and never
+  replace earlier evidence. Optional decision traces stream fog-honest
   controller diagnostics to a separate JSONL sidecar without entering compact
   rows or replays. A returned publication error rolls back files created by that
   invocation. Abrupt process termination can leave hidden staging files or a

@@ -38,7 +38,8 @@ remembered-world case so the fix cannot become an information oracle.
 
 - Use integers or `chassis::fx::Fx`; floats do not enter `chassis` or
   `oxide-sim`.
-- Use `chassis::rng::Pcg32` with an explicit stream derived from the scenario.
+- Draw any randomness from `chassis::rng::Pcg32` with a seed the scenario
+  records.
 - Preserve canonical entity iteration and complete stable choice keys. For
   geometric ties, reuse the query-, footprint-, or owner-relative ranks in
   `chassis::path` and `oxide_sim::geometry`; deterministic absolute ordering

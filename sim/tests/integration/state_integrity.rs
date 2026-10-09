@@ -48,7 +48,6 @@ fn arena() -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "integrity-arena".into(),
-        seed: 11,
         map: vec![
             "####################".into(),
             "#1.................#".into(),
@@ -213,6 +212,7 @@ fn shell(shooter: &Value, player: u32, impact_bits: i64) -> Value {
         "player": player,
         "launch": {"x": {"bits": 0}, "y": {"bits": 0}},
         "impact": {"x": {"bits": impact_bits}, "y": {"bits": 0}},
+        "launched_at": 0,
         "arrival": 40,
         "damage": 40,
         "targets": {"ground": true, "air": false},
@@ -240,7 +240,7 @@ fn the_base_snapshot_is_accepted() {
 }
 
 #[test]
-fn projectile_kind_checks_include_shooters_inside_transports() {
+fn a_carried_shooters_shell_stays_valid_and_must_launch_before_it_lands() {
     let mut scenario = arena();
     scenario.units = vec![
         UnitSpec {
@@ -264,11 +264,9 @@ fn projectile_kind_checks_include_shooters_inside_transports() {
     let restored: State =
         serde_json::from_value(base.clone()).expect("a carried shooter's shell remains valid");
     assert_eq!(doc(&restored), base);
-    for kind in ["bomb", "missile"] {
-        let mut forged = base.clone();
-        forged["shells"][0]["kind"] = json!(kind);
-        assert!(refusal(forged).contains("projectile kind inconsistent with its shooter"));
-    }
+    let mut forged = base.clone();
+    forged["shells"][0]["launched_at"] = json!(41);
+    assert!(refusal(forged).contains("lands before it launched"));
     base["units"][0]["cargo"] = json!([]);
     serde_json::from_value::<State>(base).expect("a shell outlives its destroyed shooter");
 }
@@ -386,7 +384,7 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::LandedUnescapable(_) => 64,
         E::LandedOnUnstandableGround(_) => 65,
         E::LandedOverlap(..) => 66,
-        E::ShellKindMismatch(_) => 67,
+        E::ShellLaunchedAfterArrival(_) => 67,
         E::InvalidUnitBraces(_) => 68,
         E::InvalidTurretHeading(_) => 69,
         E::InvalidGroundSpeed(_) => 70,
@@ -487,7 +485,7 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::LandedUnescapable(UnitId(0)),
         E::LandedOnUnstandableGround(UnitId(0)),
         E::LandedOverlap(UnitId(0), UnitId(1)),
-        E::ShellKindMismatch(0),
+        E::ShellLaunchedAfterArrival(0),
         E::InvalidUnitBraces(UnitId(0)),
         E::InvalidTurretHeading(UnitId(0)),
         E::InvalidGroundSpeed(UnitId(0)),
@@ -613,19 +611,6 @@ fn scrap_load_is_bounded_for_walking_and_carried_units() {
             }
         }
     }
-}
-
-#[test]
-fn state_deserialization_checks_the_rng_stream() {
-    let state = arena().build().unwrap();
-    let mut data = serde_json::to_value(&state).unwrap();
-    data["rng"]["inc"] = json!(2);
-    assert!(
-        serde_json::from_value::<State>(data)
-            .unwrap_err()
-            .to_string()
-            .contains("PCG stream increment must be odd")
-    );
 }
 
 /// Reshapes unit 0 into a Condor parked on a tile center, facing east
@@ -1321,13 +1306,13 @@ fn every_checklist_row_refuses_its_forgery() {
             "shell 0 was fired by an id the run never minted",
         ),
         (
-            "a shell carrying a payload its shooter cannot launch",
+            "a shell that lands before it launched",
             |d| {
                 let mut projectile = shell(&json!({"kind": "unit", "id": 1}), 0, 4_294_967_296);
-                projectile["kind"] = json!("bomb");
+                projectile["launched_at"] = json!(41);
                 d["shells"].as_array_mut().unwrap().insert(0, projectile);
             },
-            "shell 0 has a projectile kind inconsistent with its shooter",
+            "shell 0 lands before it launched",
         ),
         (
             "an overflowing contact identity counter",

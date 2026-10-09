@@ -55,7 +55,7 @@ pub(super) fn pad(
 ) -> Option<TilePos> {
     let start = map.start(observation.me)?;
     let home = map.component(start)?;
-    ring(start, BuildingKind::Foundry.base_stats().size)
+    ring(start, BuildingKind::Foundry.size())
         .filter(|tile| map.component(*tile) == Some(home))
         .min_by_key(|tile| {
             let (x, y) = doubled(*tile);
@@ -147,7 +147,7 @@ pub(crate) fn hazards(
             return None;
         }
         let range = reach(building.kind.tier_stats(building.tier).weapons)?;
-        let (width, height) = building.kind.base_stats().size;
+        let (width, height) = building.kind.size();
         Some(Hazard {
             centre: footprint_centre(building.kind, building.anchor),
             reach: i64::from(2 * (range + CLEARANCE) + width.max(height)),

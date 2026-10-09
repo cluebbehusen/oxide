@@ -24,8 +24,6 @@ fn bot_eval_parses_exact_profile_and_paired_seed_cell() {
         "scenarios/powder-keg.json",
         "--ticks",
         "50000",
-        "--scenario-seed-base",
-        "71",
         "--personality-seed-base",
         "900",
         "--difficulty",
@@ -41,7 +39,6 @@ fn bot_eval_parses_exact_profile_and_paired_seed_cell() {
         scenarios,
         ticks,
         runs,
-        scenario_seed_base,
         personality_seed_base,
         difficulty,
         stance,
@@ -57,7 +54,6 @@ fn bot_eval_parses_exact_profile_and_paired_seed_cell() {
     };
     assert_eq!(scenarios, ["skirmish", "scenarios/powder-keg.json"]);
     assert_eq!((ticks, runs), (50_000, 1));
-    assert_eq!(scenario_seed_base, Some(71));
     assert_eq!(personality_seed_base, Some(900));
     assert_eq!(difficulty, oxide_sim::scenario::BotDifficulty::Prime);
     assert_eq!(stance, oxide_sim::scenario::BotStance::Aggressive);

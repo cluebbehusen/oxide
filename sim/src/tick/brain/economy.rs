@@ -101,7 +101,7 @@ pub(super) fn build(
     };
     let (anchor, kind) = (b.anchor, b.kind);
     let stats = b.stats();
-    let size = stats.size;
+    let size = kind.size();
     let build_ticks = stats
         .construction
         .expect("sites only exist for buildable kinds")
@@ -186,7 +186,7 @@ pub(super) fn found(
         return;
     }
     let tile = state.unit(id).expect("caller checked").tile();
-    let size = kind.base_stats().size;
+    let size = kind.size();
     if state.building(site).expect("found site").contains(tile)
         || tile_adjacent_to_rect(tile, anchor, size)
     {
@@ -697,26 +697,6 @@ struct KnownSource {
 
 type SourceScore = (i32, usize, Reverse<u32>, i32, u8, i32, i32);
 
-/// Existing routes re-check only this near segment each tick. A Harvester
-/// needs 64 ticks to traverse eight clear cardinal tiles, so this is
-/// ample deterministic warning without turning every worker tick into a
-/// full path-length by threat-count scan.
-const HARVEST_DANGER_LOOKAHEAD: usize = 8;
-
-/// The near slice of the lookahead that always reacts immediately: a threat
-/// inside these route tiles replans this tick. Only a flag beyond this zone
-/// defers to the staggered replan window below.
-const HARVEST_DANGER_REACT_ZONE: usize = 3;
-
-/// A worker whose retained route fails the danger lookahead only in the far
-/// zone does not re-plan every tick while the threat lingers; that would run
-/// a full multi-candidate A* per worker per tick and jitter the fleet
-/// between near-equal detours. Far-zone replans stagger on this period,
-/// keyed by owner-local unit rank so a fleet never re-plans in unison
-/// without making cross-seat production ids a tactical input; near-zone
-/// threats never wait.
-const HARVEST_REPLAN_PERIOD: u64 = 4;
-
 /// Whether this is the tick on which `id` may re-plan a retained route
 /// the danger lookahead has flagged beyond the react zone.
 fn danger_replan_window(state: &State, id: UnitId) -> bool {
@@ -727,7 +707,7 @@ fn danger_replan_window(state: &State, id: UnitId) -> bool {
         state.units.iter().map(|unit| (unit.id, unit.player)),
     );
     (state.tick + u64::try_from(rank).expect("unit rank fits u64"))
-        .is_multiple_of(HARVEST_REPLAN_PERIOD)
+        .is_multiple_of(crate::stats::HARVEST_REPLAN_PERIOD)
 }
 
 /// Whether the retained route may be kept this tick: clear routes and
@@ -741,13 +721,15 @@ fn keep_flagged_route(
 ) -> bool {
     match first_flagged_waypoint(path, safe) {
         None => true,
-        Some(index) => index >= HARVEST_DANGER_REACT_ZONE && !danger_replan_window(state, id),
+        Some(index) => {
+            index >= crate::stats::HARVEST_DANGER_REACT_ZONE && !danger_replan_window(state, id)
+        }
     }
 }
 
 /// Index (relative to the walker's next waypoint) of the first
 /// lookahead tile `safe` rejects, or `None` for a clear near segment.
-/// The scan touches at most [`HARVEST_DANGER_LOOKAHEAD`] tiles however
+/// The scan touches at most [`crate::stats::HARVEST_DANGER_LOOKAHEAD`] tiles however
 /// long the route is.
 fn first_flagged_waypoint(
     path: &PathFollow,
@@ -756,7 +738,7 @@ fn first_flagged_waypoint(
     path.waypoints
         .iter()
         .skip(path.next as usize)
-        .take(HARVEST_DANGER_LOOKAHEAD)
+        .take(crate::stats::HARVEST_DANGER_LOOKAHEAD)
         .position(|waypoint| !safe(*waypoint))
 }
 
@@ -1058,7 +1040,7 @@ fn source_route_avoiding_danger(
         (1, 1),
         crate::geometry::work_approach_distance(unit.kind.stats().radius)
             + const { Fx::lit("0.06") },
-        unit.kind.stats().radius * crowding::compression(),
+        unit.kind.stats().radius * crate::stats::SAME_OWNER_COMPRESSION,
     )
     .into_iter()
     .map(|point| crowding::Position {
@@ -1196,9 +1178,6 @@ struct DropOffScan {
     flood_exhausted: bool,
 }
 
-/// Ticks between repeated `DangerHold` reports for one waiting worker.
-const DANGER_HOLD_REPORT_PERIOD: u64 = 100;
-
 /// Walks the worker toward the nearest safely approachable drop-off. The
 /// retained path is honored until the first failed safe route clears it,
 /// and the danger-ignoring classification that decides waiting versus
@@ -1222,7 +1201,7 @@ fn try_drop_offs(
     let mut path_cleared = false;
     for &foundry_id in drop_offs {
         let foundry = state.building(foundry_id).expect("collected live drop-off");
-        let (anchor, size) = (foundry.anchor, foundry.stats().size);
+        let (anchor, size) = (foundry.anchor, foundry.kind.size());
         if !path_cleared {
             let unit = state.unit(id).expect("caller checked");
             let player = unit.player;
@@ -1261,7 +1240,7 @@ fn try_drop_offs(
     let mut scan = DropOffScan::default();
     for &foundry_id in drop_offs {
         let foundry = state.building(foundry_id).expect("collected live drop-off");
-        let (anchor, size) = (foundry.anchor, foundry.stats().size);
+        let (anchor, size) = (foundry.anchor, foundry.kind.size());
         if known_rect_route(state, danger, id, anchor, size, false, Some(&mut scan)).is_some() {
             // Danger-blocked, not sealed: stand and wait for the window,
             // checking again only after the retry period.
@@ -1281,7 +1260,7 @@ fn try_drop_offs(
 fn report_danger_hold(state: &State, id: UnitId, events: &mut Vec<Event>) {
     if state
         .current_tick()
-        .is_multiple_of(DANGER_HOLD_REPORT_PERIOD)
+        .is_multiple_of(crate::stats::DANGER_HOLD_REPORT_PERIOD)
     {
         let unit = state.unit(id).expect("caller checked");
         events.push(Event::OrderStalled {
@@ -1313,12 +1292,12 @@ fn known_rect_route(
     let building = state
         .buildings()
         .iter()
-        .find(|b| b.anchor == anchor && b.stats().size == size && b.player == player);
+        .find(|b| b.anchor == anchor && b.kind.size() == size && b.player == player);
     let mut candidates: Vec<_> = crate::geometry::work_positions(
         anchor,
         size,
         contact::clearance(unit),
-        unit.kind.stats().radius * crowding::compression(),
+        unit.kind.stats().radius * crate::stats::SAME_OWNER_COMPRESSION,
     )
     .into_iter()
     .filter_map(|entry| {
@@ -1532,7 +1511,7 @@ fn finish_delivery(state: &mut State, id: UnitId, foundry: BuildingId) {
     }
     let building = state.building(foundry).expect("live drop-off");
     let center = unit.tile().center();
-    let edge = crate::geometry::footprint_contact(center, building.anchor, building.stats().size);
+    let edge = crate::geometry::footprint_contact(center, building.anchor, building.kind.size());
     let outward = center - edge;
     let goal = unit
         .tile()
@@ -1564,7 +1543,7 @@ pub(in crate::tick) fn return_cargo_destination(
                     danger,
                     id,
                     foundry.anchor,
-                    foundry.stats().size,
+                    foundry.kind.size(),
                     avoid_danger,
                     Some(&mut scan),
                 )
@@ -1699,7 +1678,7 @@ fn retire(state: &mut State, danger: &GroundSalvageDanger, id: UnitId, events: &
         let foundry = state
             .building(*foundry_id)
             .expect("collected live drop-off");
-        tile_adjacent_to_rect(tile, foundry.anchor, foundry.stats().size)
+        tile_adjacent_to_rect(tile, foundry.anchor, foundry.kind.size())
     }) {
         finish_delivery(state, id, foundry);
         return;

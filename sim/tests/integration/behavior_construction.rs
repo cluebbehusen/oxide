@@ -384,7 +384,6 @@ fn sealed_apart_scenarios_refuse_to_build() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "sealed".into(),
-        seed: 1,
         map: vec![
             "#####^######".into(),
             "#1...^.....#".into(),
@@ -630,7 +629,6 @@ fn unreachable_sites_are_rejected_before_charging() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "sealed-doorstep".into(),
-        seed: 42,
         map: vec![
             "##############".into(),
             "#1...........#".into(),
@@ -782,7 +780,6 @@ fn a_fresh_site_cannot_be_corner_cut_diagonally() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "corner-cut".into(),
-        seed: 42,
         map: vec![
             "###############".into(),
             "#1............#".into(),
@@ -868,7 +865,6 @@ fn a_rejected_build_leaves_no_trace_on_the_hash() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "sealed-doorstep".into(),
-        seed: 42,
         map: vec![
             "##############".into(),
             "#1...........#".into(),
@@ -1047,7 +1043,6 @@ fn a_doomed_site_never_comes_online() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "doomed-site".into(),
-        seed: 42,
         map: vec![
             "####################".into(),
             "#1.................#".into(),
@@ -1634,7 +1629,7 @@ fn friendly_machines_make_way_for_foundations() {
             prev[i] = now;
         }
     }
-    let (w, h) = BuildingKind::Fabricator.base_stats().size;
+    let (w, h) = BuildingKind::Fabricator.size();
     let inside =
         |t: TilePos| t.x >= anchor.x && t.x < anchor.x + w && t.y >= anchor.y && t.y < anchor.y + h;
     assert!(
@@ -1680,7 +1675,6 @@ fn an_allied_machine_makes_way_like_your_own() {
     let scenario = oxide_sim::Scenario::from_json(
         &serde_json::json!({
             "name": "Team Yard",
-            "seed": 11,
             "players": [
                 {"name": "West", "faction": "ferrous", "team": 1, "scrap": 300, "bot": false},
                 {"name": "East", "faction": "cupric", "team": 1, "scrap": 0, "bot": true,
@@ -1737,7 +1731,7 @@ fn an_allied_machine_makes_way_like_your_own() {
         );
         prev = now;
     }
-    let (w, h) = BuildingKind::Fabricator.base_stats().size;
+    let (w, h) = BuildingKind::Fabricator.size();
     let t = state.unit(ally).unwrap().tile();
     assert!(
         !(t.x >= anchor.x && t.x < anchor.x + w && t.y >= anchor.y && t.y < anchor.y + h),
@@ -1807,7 +1801,6 @@ fn a_walled_in_machine_takes_the_instant_deal() {
     let scenario = Scenario::from_json(
         &serde_json::json!({
             "name": "Pocket Yard",
-            "seed": 7,
             "players": [
                 {"name": "West", "faction": "ferrous", "scrap": 300, "bot": false},
                 {"name": "East", "faction": "cupric", "scrap": 0, "bot": false}
@@ -1849,7 +1842,7 @@ fn a_walled_in_machine_takes_the_instant_deal() {
         state.buildings().iter().any(|b| b.anchor == anchor),
         "the pocketed footprint still accepts the site"
     );
-    let (w, h) = BuildingKind::Fabricator.base_stats().size;
+    let (w, h) = BuildingKind::Fabricator.size();
     let inside =
         |t: TilePos| t.x >= anchor.x && t.x < anchor.x + w && t.y >= anchor.y && t.y < anchor.y + h;
     let t = state.unit(sealed).unwrap().tile();

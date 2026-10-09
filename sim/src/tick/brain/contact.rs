@@ -14,7 +14,7 @@ pub(super) fn approach(state: &mut State, id: UnitId, building: BuildingId) -> b
 
 fn approach_building(state: &mut State, id: UnitId, building: BuildingId) -> bool {
     let b = state.building(building).expect("live target");
-    let (anchor, size) = (b.anchor, b.stats().size);
+    let (anchor, size) = (b.anchor, b.kind.size());
     let unit = state.unit(id).expect("contact unit");
     let (from, pos, player, kind) = (unit.tile(), unit.pos, unit.player, unit.kind);
     if pos.dist_sq(crate::geometry::footprint_contact(pos, anchor, size))
@@ -38,7 +38,7 @@ fn approach_building(state: &mut State, id: UnitId, building: BuildingId) -> boo
         anchor,
         size,
         clearance(unit),
-        unit.kind.stats().radius * crowding::compression(),
+        unit.kind.stats().radius * crate::stats::SAME_OWNER_COMPRESSION,
     )
     .into_iter()
     .filter(|entry| state.passable(crate::geometry::work_tile(*entry, pos, b.center())))
@@ -147,7 +147,7 @@ pub(in crate::tick) fn surface_for(
                             && b.player == unit.player
                             && b.kind.is_drop_off()
                             && unit.path.as_ref().is_some_and(|p| {
-                                crate::tick::tile_adjacent_to_rect(p.goal, b.anchor, b.stats().size)
+                                crate::tick::tile_adjacent_to_rect(p.goal, b.anchor, b.kind.size())
                             })
                     })
                     .map(|b| b.id)

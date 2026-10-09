@@ -22,7 +22,6 @@ use chassis::grid::TilePos;
 
 use oxide_sim::observation::{BuildingObs, ObservationData, UnitObs};
 use oxide_sim::scenario::BotStance;
-use oxide_sim::stats::SAPPER_STRUCTURE_DAMAGE;
 use oxide_sim::{AttackTarget, BuildingKind, Command, RememberedBuilding, UnitId, UnitKind};
 use std::cmp::Reverse;
 
@@ -365,7 +364,7 @@ impl Foray<'_> {
             .filter_map(|target| {
                 let goal = match kind {
                     Raider::Bomber => {
-                        let size = target.building.base_stats().size;
+                        let size = target.building.size();
                         ring(target.anchor, size).min_by_key(|tile| {
                             (
                                 centre_distance(home, doubled(*tile)),
@@ -405,8 +404,12 @@ impl Foray<'_> {
                                 == (target.owner, target.building, target.anchor)
                         })
                         .map_or(1, |building| building.hp);
-                    let blasts = u64::from(hp.div_ceil(SAPPER_STRUCTURE_DAMAGE).max(1));
-                    let need = blasts * u64::from(UnitKind::Sapper.stats().cost);
+                    let sapper = UnitKind::Sapper.stats();
+                    let blast = sapper
+                        .demolition
+                        .map_or(1, |charge| charge.structure_damage);
+                    let blasts = u64::from(hp.div_ceil(blast).max(1));
+                    let need = blasts * u64::from(sapper.cost);
                     (need <= strength).then_some((target, goal, need))
                 })
                 .max_by_key(|(target, _, _)| {

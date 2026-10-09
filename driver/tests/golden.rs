@@ -335,7 +335,6 @@ fn showcase_scenario() -> (Scenario, Cast) {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "renderer showcase".into(),
-        seed: 20_130,
         map: SHOWCASE_MAP.iter().map(|r| (*r).to_string()).collect(),
         players: vec![
             seat("West Ferrous", Faction::Ferrous, 700),

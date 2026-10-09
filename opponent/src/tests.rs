@@ -81,7 +81,6 @@ fn arena(scrap: u32) -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "opponent arena".into(),
-        seed: 5,
         map: ARENA.map(str::to_owned).to_vec(),
         players: vec![
             seat("west", Faction::Ferrous),
@@ -440,7 +439,7 @@ fn mirror(state: &State, commands: Vec<PlayerCommand>) -> Vec<PlayerCommand> {
                     queue,
                     defer,
                 } => {
-                    let (w, h) = kind.base_stats().size;
+                    let (w, h) = kind.size();
                     Command::Build {
                         units: units(sent),
                         kind,

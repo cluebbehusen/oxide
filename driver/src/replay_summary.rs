@@ -107,8 +107,6 @@ pub struct ScenarioLine {
     pub start_tick: u64,
     /// Scenario display name.
     pub name: String,
-    /// Deterministic scenario seed.
-    pub seed: u64,
     /// Map width in tiles.
     pub map_width: i32,
     /// Map height in tiles.
@@ -1071,7 +1069,6 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
         scenario: ScenarioLine {
             start_tick: replay.start_tick(),
             name: replay.setup.name.clone(),
-            seed: replay.setup.seed,
             map_width: state.map().width(),
             map_height: state.map().height(),
             effective_ticks: effective,
@@ -1463,9 +1460,8 @@ impl SummaryReport {
         let scenario = &self.scenario;
         let _ = writeln!(
             out,
-            "{} — seed {}, {}x{}, {} ticks ({}), digest every {} ({})",
+            "{} — {}x{}, {} ticks ({}), digest every {} ({})",
             scenario.name,
-            scenario.seed,
             scenario.map_width,
             scenario.map_height,
             scenario.effective_ticks,

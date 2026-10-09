@@ -323,7 +323,7 @@ fn scan_reversed(
                 && !building.provisional
                 && building.kind == crate::stats::BuildingKind::Foundry
         })
-        .map(|building| (building.anchor, building.kind.base_stats().size));
+        .map(|building| (building.anchor, building.kind.size()));
     super::group_spread_scan_reversed(
         center,
         [from],

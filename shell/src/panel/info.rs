@@ -6,8 +6,7 @@ use oxide_sim::stats::{
     BuildingKind, CHARGE_ARRAY_DETECT_RADIUS, CHARGE_BASE_ARRAY_DETECT_RADIUS, CHARGE_BLAST_RADIUS,
     CHARGE_DAMAGE, CHARGE_SCOUT_DETECT_RADIUS, CHARGE_TRIGGER_RADIUS, CRUCIBLE_SMELT_RADIUS,
     Domain, FOUNDRY_DRIP_START_TICK, RADAR_DETECT_RADIUS, REPAIR_BAY_PERIOD, REPAIR_BAY_RADIUS,
-    REPAIR_BAY_STEP, SAPPER_BLAST_RADIUS, SAPPER_SPLASH_DAMAGE, SAPPER_STRUCTURE_DAMAGE, UnitKind,
-    WeaponStats,
+    REPAIR_BAY_STEP, UnitKind, WeaponStats,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -304,20 +303,20 @@ pub(crate) fn selection_info(game: &Scene<'_>, panel: &Panel) -> SelectionInfo {
                 None,
             );
         }
-        if stats.demolition {
+        if let Some(demolition) = stats.demolition {
             info.row(
                 "Structure hit",
-                format!("{SAPPER_STRUCTURE_DAMAGE} damage"),
+                format!("{} damage", demolition.structure_damage),
                 Some(Cap(CapabilityIcon::Weapon)),
             );
             info.row(
                 "Ground blast",
-                format!("{SAPPER_SPLASH_DAMAGE} damage"),
+                format!("{} damage", demolition.splash_damage),
                 None,
             );
             info.row(
                 "Blast radius",
-                format!("{:.1} tiles", SAPPER_BLAST_RADIUS.to_num::<f32>()),
+                format!("{:.1} tiles", demolition.blast_radius.to_num::<f32>()),
                 None,
             );
         }

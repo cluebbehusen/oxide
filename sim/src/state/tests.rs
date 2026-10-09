@@ -52,7 +52,6 @@ fn tiny_state() -> State {
             resigned: false,
             eliminated_at: None,
         }],
-        7,
     )
 }
 

@@ -24,7 +24,6 @@ fn an_obstruction_never_shrinks_the_reported_air_route() {
         Scenario {
             mode: ScenarioMode::Match,
             name: "detour".into(),
-            seed: 5,
             map: rows,
             players: Scenario::skirmish().players,
             units: Vec::new(),
@@ -67,7 +66,6 @@ fn a_peak_detour_never_reads_shorter_than_the_straight_line() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "detour".into(),
-        seed: 5,
         map: rows,
         players: Scenario::skirmish().players,
         units: Vec::new(),

@@ -268,8 +268,8 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
             .construction
             .map_or(crate::stats::FOUNDRY_WRECK_VALUE, |c| c.cost);
         let value = price * crate::stats::WRECK_VALUE_NUM / crate::stats::WRECK_VALUE_DEN;
-        let tiles = u32::try_from(stats.size.0 * stats.size.1)
-            .expect("building footprints have positive area");
+        let (width, height) = building.kind.size();
+        let tiles = u32::try_from(width * height).expect("building footprints have positive area");
         for tile in building.tiles() {
             deposits.push((tile, value / tiles));
         }
@@ -436,7 +436,7 @@ pub(crate) fn route_for_position(
 /// by Chebyshev radius and row-major (y, then x) within each ring. `None` when
 /// nothing within reach is open sky.
 fn snap_air_goal(state: &State, goal: TilePos) -> Option<TilePos> {
-    for r in 0..=crate::stats::GOAL_SNAP_RADIUS + 3 {
+    for r in 0..=crate::stats::AIR_GOAL_SNAP_RADIUS {
         for dy in -r..=r {
             for dx in -r..=r {
                 if dx.abs().max(dy.abs()) != r {
@@ -472,7 +472,7 @@ pub(crate) fn rect_approach_origin(
                 && building.kind == crate::stats::BuildingKind::Foundry
         })
         .min_by_key(|building| building.id)
-        .map(|foundry| (foundry.anchor, foundry.kind.base_stats().size));
+        .map(|foundry| (foundry.anchor, foundry.kind.size()));
     rect_approach_origin_for_map(
         (state.map.width(), state.map.height()),
         player,

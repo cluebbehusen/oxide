@@ -1218,7 +1218,7 @@ fn share(observation: &ObservationData, profile: &ResolvedProfile) -> u32 {
         .filter(|unit| armed(unit.kind))
         .filter(|unit| {
             observation.my_buildings.iter().any(|building| {
-                let size = building.kind.base_stats().size;
+                let size = building.kind.size();
                 gap(building.anchor, size, unit.tile, (1, 1)) < 12
             })
         })

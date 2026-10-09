@@ -13,7 +13,6 @@ fn scenario(count: usize, team: impl Fn(usize) -> Option<u8>) -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "Seat presentation".into(),
-        seed: 1,
         map: map
             .into_iter()
             .map(|row| row.into_iter().collect())

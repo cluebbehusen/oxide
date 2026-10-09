@@ -95,7 +95,7 @@ pub(crate) fn doubled(tile: TilePos) -> (i64, i64) {
 
 /// A building footprint's centre in doubled coordinates.
 pub(crate) fn footprint_centre(kind: BuildingKind, anchor: TilePos) -> (i64, i64) {
-    let (width, height) = kind.base_stats().size;
+    let (width, height) = kind.size();
     (
         i64::from(anchor.x) * 2 + i64::from(width),
         i64::from(anchor.y) * 2 + i64::from(height),

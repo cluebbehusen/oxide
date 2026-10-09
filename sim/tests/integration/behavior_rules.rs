@@ -90,7 +90,6 @@ fn ghost_memory_survives_unseen_demolition_until_revisited() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "ghost-lab".into(),
-        seed: 7,
         map: vec![
             "################".into(),
             "#1.............#".into(),
@@ -315,7 +314,6 @@ fn eliminated_players_cannot_command_survivors() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "elimination".into(),
-        seed: 3,
         map: vec![
             "##############".into(),
             "#1...........#".into(),

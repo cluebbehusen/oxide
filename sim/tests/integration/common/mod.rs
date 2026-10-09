@@ -12,7 +12,6 @@ pub fn arena(units: Vec<UnitSpec>) -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "test-arena".into(),
-        seed: 42,
         map: vec![
             "################".into(),
             "#1.............#".into(),
@@ -83,7 +82,6 @@ pub fn open_arena_with(
     Scenario {
         mode: ScenarioMode::Match,
         name: "open-arena".into(),
-        seed: 42,
         map: rows.into_iter().map(|r| r.into_iter().collect()).collect(),
         players: vec![
             PlayerSpec {

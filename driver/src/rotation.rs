@@ -50,7 +50,7 @@ pub fn rotate_180(base: &Scenario) -> Result<Scenario> {
     // its rotation lands a footprint in from the rotated corner. That
     // target sits inside the original footprint and is therefore open
     // ground the symmetry check already cleared.
-    let (fw, fh) = BuildingKind::Foundry.base_stats().size;
+    let (fw, fh) = BuildingKind::Foundry.size();
     let (fw, fh) = (as_index(fw), as_index(fh));
     for (y, row) in rows.iter().enumerate() {
         for (x, &c) in row.iter().enumerate() {
@@ -71,7 +71,7 @@ pub fn rotate_180(base: &Scenario) -> Result<Scenario> {
     }
     // `E` likewise names the top-left of a 2x2 Extractor frame. Rotating
     // the marker as a point would shift the gameplay footprint by one tile.
-    let (ew, eh) = BuildingKind::Extractor.base_stats().size;
+    let (ew, eh) = BuildingKind::Extractor.size();
     let (ew, eh) = (as_index(ew), as_index(eh));
     for (y, row) in rows.iter().enumerate() {
         for (x, &c) in row.iter().enumerate() {
@@ -102,7 +102,7 @@ pub fn rotate_180(base: &Scenario) -> Result<Scenario> {
         unit.y = h - 1 - unit.y;
     }
     for building in &mut out.buildings {
-        let (bw, bh) = building.kind.base_stats().size;
+        let (bw, bh) = building.kind.size();
         building.x = w - building.x - bw;
         building.y = h - building.y - bh;
     }

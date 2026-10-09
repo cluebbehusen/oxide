@@ -603,9 +603,9 @@ impl MapModel {
             .map(|(_, _, reach)| *reach)
             .max()
             .unwrap_or(0);
-        let size = kind.base_stats().size;
+        let size = kind.size();
         let small = size.0 < 2 || size.1 < 2;
-        let foundry_size = BuildingKind::Foundry.base_stats().size;
+        let foundry_size = BuildingKind::Foundry.size();
         // A smaller building packs into a slot's tiles, listed slot by slot.
         let listed = if packed && small { foundry_size } else { size };
         (FIRST_GAP..=furthest).flat_map(move |gap| {

@@ -216,7 +216,7 @@ fn air_route(state: &State, a: &oxide_sim::Building, b: &oxide_sim::Building) ->
     // reports the same tile unit as the straight line.
     const SQRT2: f64 = std::f64::consts::SQRT_2;
     let center = |f: &oxide_sim::Building| {
-        let (w, h) = f.stats().size;
+        let (w, h) = f.kind.size();
         (
             f64::from(f.anchor.x) + f64::from(w) / 2.0,
             f64::from(f.anchor.y) + f64::from(h) / 2.0,
@@ -339,7 +339,7 @@ pub fn audit(scenario: &Scenario) -> Result<MapAudit> {
         steps.push((
             u8::try_from(i).expect("seat indices fit in u8"),
             foundry,
-            doorsteps(&state, foundry.anchor, foundry.stats().size),
+            doorsteps(&state, foundry.anchor, foundry.kind.size()),
         ));
     }
 
@@ -389,7 +389,7 @@ pub fn audit(scenario: &Scenario) -> Result<MapAudit> {
                 .iter()
                 .find(|b| b.player.0 == *seat && b.kind == BuildingKind::Foundry)
                 .map_or((0.0, 0.0), |b| {
-                    let size = b.stats().size;
+                    let size = b.kind.size();
                     (
                         f64::from(b.anchor.x) + f64::from(size.0) / 2.0,
                         f64::from(b.anchor.y) + f64::from(size.1) / 2.0,

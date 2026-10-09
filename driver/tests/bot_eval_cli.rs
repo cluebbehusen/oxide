@@ -15,8 +15,6 @@ fn controlled_matrix_keeps_controller_faction_and_geometry_provenance_separate()
             "--opponent-difficulty",
             "veteran",
             "--paired",
-            "--scenario-seeds",
-            "13",
             "--personality-seeds",
             "40",
             "--difficulty",
@@ -49,8 +47,6 @@ fn controlled_matrix_keeps_controller_faction_and_geometry_provenance_separate()
     for legs in paired_cells {
         assert_eq!(legs[0]["leg"], "forward");
         assert_eq!(legs[1]["leg"], "swapped");
-        assert_eq!(legs[0]["scenario_seed"], 13);
-        assert_eq!(legs[1]["scenario_seed"], 13);
         assert_eq!(legs[0]["geometry"], legs[1]["geometry"]);
         assert_eq!(legs[0]["faction_cell"], legs[1]["faction_cell"]);
         assert_eq!(
@@ -100,15 +96,13 @@ fn controlled_matrix_keeps_controller_faction_and_geometry_provenance_separate()
 }
 
 #[test]
-fn controlled_seed_lists_form_a_cartesian_product() {
+fn controlled_personality_seed_lists_run_one_cell_each() {
     let output = Command::new(env!("CARGO_BIN_EXE_oxide-driver"))
         .args([
             "bot-eval",
             "skirmish",
             "--ticks",
             "1",
-            "--scenario-seeds",
-            "13,17",
             "--personality-seeds",
             "40,42,44",
         ])
@@ -125,26 +119,20 @@ fn controlled_seed_lists_form_a_cartesian_product() {
         .lines()
         .map(|line| serde_json::from_str(line).expect("each line is one JSON object"))
         .collect();
-    assert_eq!(rows.len(), 6, "two scenario seeds x three personalities");
+    assert_eq!(rows.len(), 3, "one cell per personality seed");
 
-    let observed: BTreeSet<(u64, u64)> = rows
+    let observed: BTreeSet<u64> = rows
         .iter()
         .map(|row| {
             assert_eq!(row["leg"], "single");
             assert_eq!(row["geometry"], "authored");
             assert_eq!(row["faction_cell"], "authored");
-            (
-                row["scenario_seed"].as_u64().unwrap(),
-                row["seats"][0]["config"]["personality_seed"]
-                    .as_u64()
-                    .unwrap(),
-            )
+            row["seats"][0]["config"]["personality_seed"]
+                .as_u64()
+                .unwrap()
         })
         .collect();
-    assert_eq!(
-        observed,
-        BTreeSet::from([(13, 40), (13, 42), (13, 44), (17, 40), (17, 42), (17, 44),])
-    );
+    assert_eq!(observed, BTreeSet::from([40, 42, 44]));
 }
 
 #[test]
@@ -161,31 +149,23 @@ fn retired_controller_flags_are_rejected() {
 
 #[test]
 fn controlled_exact_seed_lists_refuse_bases() {
-    for (args, exact_option, base_option) in [
-        (
-            &["--scenario-seeds", "13", "--scenario-seed-base", "17"][..],
-            "--scenario-seeds",
-            "--scenario-seed-base",
-        ),
-        (
-            &["--personality-seeds", "40", "--personality-seed-base", "44"][..],
+    assert_skirmish_bot_eval_refuses(
+        &["--personality-seeds", "40", "--personality-seed-base", "44"],
+        &[
             "--personality-seeds",
             "--personality-seed-base",
-        ),
-    ] {
-        assert_skirmish_bot_eval_refuses(args, &[exact_option, base_option, "cannot be used with"]);
-    }
-
+            "cannot be used with",
+        ],
+    );
     assert_skirmish_bot_eval_refuses(
-        &["--scenario-seeds", "13", "--runs", "2"],
-        &["--scenario-seeds", "--runs", "cannot be used with"],
+        &["--personality-seeds", "40", "--runs", "2"],
+        &["--personality-seeds", "--runs", "cannot be used with"],
     );
 }
 
 #[test]
 fn controlled_axes_refuse_duplicate_cells() {
     for (args, option) in [
-        (&["--scenario-seeds", "13,13"][..], "--scenario-seeds"),
         (&["--personality-seeds", "40,40"][..], "--personality-seeds"),
         (&["--faction-cells", "fc,fc"][..], "--faction-cells"),
         (&["--geometries", "authored,authored"][..], "--geometries"),
@@ -236,8 +216,6 @@ fn controlled_mode_supports_a_severed_ground_map() {
             concat!(env!("CARGO_MANIFEST_DIR"), "/../scenarios/severance.json"),
             "--ticks",
             "1",
-            "--scenario-seeds",
-            "13",
         ])
         .output()
         .expect("run an current-controller evaluation on a severed map");
@@ -279,7 +257,7 @@ fn controlled_mode_refuses_a_non_two_seat_scenario() {
     let output = Command::new(env!("CARGO_BIN_EXE_oxide-driver"))
         .arg("bot-eval")
         .arg(scenario)
-        .args(["--ticks", "1", "--scenario-seeds", "13"])
+        .args(["--ticks", "1", "--personality-seeds", "40"])
         .output()
         .expect("run invalid multiseat current-controller evaluation");
     assert!(!output.status.success());
@@ -315,8 +293,6 @@ fn paired_cell_emits_two_compact_rows_with_profiles_exchanged() {
             "skirmish",
             "--ticks",
             "1",
-            "--scenario-seed-base",
-            "13",
             "--personality-seed-base",
             "40",
             "--difficulty",
@@ -343,7 +319,6 @@ fn paired_cell_emits_two_compact_rows_with_profiles_exchanged() {
     assert_eq!(rows[1]["leg"], "swapped");
     for row in &rows {
         assert_eq!(row["candidate"], "ad-hoc");
-        assert_eq!(row["scenario_seed"], 13);
         assert_eq!(row["tick_limit"], 1);
         assert!(
             row["scenario_fingerprint"]
@@ -386,8 +361,6 @@ fn cross_difficulty_cells_share_personality_and_swap_complete_configs() {
             "1",
             "--runs",
             "2",
-            "--scenario-seed-base",
-            "13",
             "--personality-seed-base",
             "40",
             "--difficulty",
@@ -415,12 +388,9 @@ fn cross_difficulty_cells_share_personality_and_swap_complete_configs() {
     let (cells, remainder) = rows.as_chunks::<2>();
     assert!(remainder.is_empty());
     for (run, legs) in cells.iter().enumerate() {
-        let expected_scenario_seed = 13 + run as u64;
         let expected_personality_seed = 40 + run as u64;
         assert_eq!(legs[0]["leg"], "forward");
         assert_eq!(legs[1]["leg"], "swapped");
-        assert_eq!(legs[0]["scenario_seed"], expected_scenario_seed);
-        assert_eq!(legs[1]["scenario_seed"], expected_scenario_seed);
 
         let config = |leg: usize, seat: usize| &legs[leg]["seats"][seat]["config"];
         assert_eq!(config(0, 0)["difficulty"], "prime");
@@ -459,8 +429,6 @@ fn every_persisted_row_replays_to_its_reported_terminal_state() {
             "3",
             "--runs",
             "2",
-            "--scenario-seed-base",
-            "13",
             "--personality-seed-base",
             "40",
             "--difficulty",
@@ -503,7 +471,6 @@ fn every_persisted_row_replays_to_its_reported_terminal_state() {
         let replay = oxide_kit::load_replay(&replay_path).expect("published replay loads");
 
         assert_eq!(replay.setup.name, row["scenario"]);
-        assert_eq!(replay.setup.seed, row["scenario_seed"]);
         assert_eq!(
             oxide_driver::bot_eval::scenario_fingerprint(&replay.setup).unwrap(),
             row["scenario_fingerprint"]
@@ -557,8 +524,6 @@ fn controlled_replay_and_sidecar_preserve_exact_controller_identity() {
             "1",
             "--opponent-difficulty",
             "veteran",
-            "--scenario-seeds",
-            "13",
             "--personality-seeds",
             "40",
             "--candidate",
@@ -689,20 +654,12 @@ fn a_later_invalid_scenario_publishes_no_partial_evidence() {
 
 #[test]
 fn overflowing_seed_ranges_publish_no_partial_evidence() {
-    let cases = [
-        (
-            "scenario",
-            "--scenario-seed-base",
-            u64::MAX.to_string(),
-            "scenario seed range overflows",
-        ),
-        (
-            "personality",
-            "--personality-seed-base",
-            (u64::MAX - 1).to_string(),
-            "personality seed range overflows",
-        ),
-    ];
+    let cases = [(
+        "personality",
+        "--personality-seed-base",
+        (u64::MAX - 1).to_string(),
+        "personality seed range overflows",
+    )];
 
     for (name, option, seed, expected) in cases {
         let dir = scratch(&format!("{name}-seed-overflow"));
@@ -850,8 +807,6 @@ fn decision_trace_is_deterministic_opt_in_evidence_for_both_seats() {
                 "--ticks",
                 "25",
                 "--paired",
-                "--scenario-seeds",
-                "13",
                 "--personality-seeds",
                 "40",
                 "--candidate",
@@ -889,8 +844,6 @@ fn decision_trace_is_deterministic_opt_in_evidence_for_both_seats() {
             "--ticks",
             "25",
             "--paired",
-            "--scenario-seeds",
-            "13",
             "--personality-seeds",
             "40",
             "--candidate",
@@ -1036,7 +989,7 @@ fn scenario_bench_reports_profile_and_separate_bot_and_simulation_phases() {
         "personality_seed: 31",
         "bot phase",
         "simulation phase",
-        &format!("sim {};", oxide_sim::SIM_VERSION),
+        &format!("sim version {}", oxide_sim::SIM_VERSION),
     ] {
         assert!(text.contains(expected), "missing {expected}: {text}");
     }

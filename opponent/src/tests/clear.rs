@@ -185,7 +185,7 @@ fn mirrored_seats_clear_alike() {
     let flip = |(x, y): (i32, i32)| (width - 1 - x, height - 1 - y);
     let mut scenario = with_bombers(strait());
     for (kind, x, y) in super::lift::TECH {
-        let (w, h) = kind.base_stats().size;
+        let (w, h) = kind.size();
         scenario.buildings.push(BuildingSpec {
             player: 1,
             kind,

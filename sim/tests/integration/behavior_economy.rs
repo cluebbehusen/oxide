@@ -837,7 +837,7 @@ fn harvesters_deposit_only_at_built_foundries() {
         .iter()
         .find(|b| b.player == PlayerId(0) && b.kind == oxide_sim::BuildingKind::Foundry)
         .unwrap();
-    let (f_anchor, f_size) = (foundry.anchor, foundry.kind.base_stats().size);
+    let (f_anchor, f_size) = (foundry.anchor, foundry.kind.size());
     let mut deposit_tile = None;
     for _ in 0..1200u32 {
         let report = state.tick(&[]);

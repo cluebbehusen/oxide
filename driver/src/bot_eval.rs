@@ -486,8 +486,6 @@ pub struct EvaluationRow {
     /// Axis labels and leg names are excluded so aliased matrix cells can be
     /// detected before execution.
     pub execution_fingerprint: String,
-    /// Exact scenario seed.
-    pub scenario_seed: u64,
     /// Requested simulation tick ceiling.
     pub tick_limit: u64,
     /// Stalls of one reason on one unit that end the leg early; `None` when
@@ -779,7 +777,6 @@ fn evaluate_plan_artifact_impl(
         scenario_fingerprint,
         evaluation_fingerprint,
         execution_fingerprint,
-        scenario_seed: scenario.seed,
         tick_limit,
         stall_loop_limit,
         leg: plan.leg,
@@ -825,14 +822,13 @@ fn record_evidence_event(evidence: &mut [SeatEvidence], event: &Event) -> Option
     evidence.get_mut(usize::from(seat))?.observe(event)
 }
 
-/// Builds the single or paired all-bot legs for one exact seed cell.
+/// Builds the single or paired all-bot legs for one cell.
 ///
 /// A paired cell is defined only for two-player scenarios. The second leg
 /// exchanges the two complete controller configurations while preserving
-/// map geometry, factions, teams, starting rosters, and simulation seed.
+/// map geometry, factions, teams and starting rosters.
 pub fn configured_legs(
     source: &Scenario,
-    scenario_seed: u64,
     difficulty: BotDifficulty,
     stance: BotStance,
     personality_seed_base: u64,
@@ -840,7 +836,6 @@ pub fn configured_legs(
 ) -> Result<Vec<(EvaluationLeg, Scenario)>> {
     configured_matchup_legs(
         source,
-        scenario_seed,
         ProfileMatchup::uniform(difficulty, stance),
         personality_seed_base,
         paired,
@@ -855,7 +850,6 @@ pub fn configured_legs(
 /// state remains fixed.
 pub fn configured_matchup_legs(
     source: &Scenario,
-    scenario_seed: u64,
     matchup: ProfileMatchup,
     personality_seed_base: u64,
     paired: bool,
@@ -869,7 +863,6 @@ pub fn configured_matchup_legs(
     }
 
     let mut forward = source.clone();
-    forward.seed = scenario_seed;
     for (seat, player) in forward.players.iter_mut().enumerate() {
         let offset = u64::try_from(seat).expect("seat count fits u64");
         let personality_seed = if matchup.same_personality_seed {
@@ -901,7 +894,6 @@ pub fn configured_matchup_legs(
 /// Paired legs exchange the profiles while preserving the physical map and rosters.
 pub fn configured_matchup_plans(
     source: &Scenario,
-    scenario_seed: u64,
     matchup: ProfileMatchup,
     personality_seed_base: u64,
     paired: bool,
@@ -919,25 +911,19 @@ pub fn configured_matchup_plans(
     );
     let mut scenario = geometry.apply(source)?;
     faction_cell.apply(&mut scenario)?;
-    configured_matchup_legs(
-        &scenario,
-        scenario_seed,
-        matchup,
-        personality_seed_base,
-        paired,
-    )?
-    .into_iter()
-    .map(|(leg, scenario)| {
-        let mut plan = EvaluationPlan::from_scenario(scenario, leg);
-        for player in &mut plan.scenario.players {
-            player.bot = false;
-            player.bot_config = None;
-        }
-        plan.geometry = geometry;
-        plan.faction_cell = faction_cell;
-        Ok(plan)
-    })
-    .collect()
+    configured_matchup_legs(&scenario, matchup, personality_seed_base, paired)?
+        .into_iter()
+        .map(|(leg, scenario)| {
+            let mut plan = EvaluationPlan::from_scenario(scenario, leg);
+            for player in &mut plan.scenario.players {
+                player.bot = false;
+                player.bot_config = None;
+            }
+            plan.geometry = geometry;
+            plan.faction_cell = faction_cell;
+            Ok(plan)
+        })
+        .collect()
 }
 
 /// Atomically writes compact evaluation records as one JSON object per line.
@@ -1284,9 +1270,8 @@ pub fn ensure_unique_execution_plans<'a>(
     for plan in plans {
         let identity = execution_identity_bytes(plan)?;
         let label = format!(
-            "scenario {:?} seed {} {:?}/{:?}/{}",
+            "scenario {:?} {:?}/{:?}/{}",
             plan.scenario.name,
-            plan.scenario.seed,
             plan.geometry,
             plan.faction_cell,
             plan.leg.name()
@@ -1341,44 +1326,30 @@ fn validate_candidate(candidate: &str) -> Result<()> {
 pub fn replay_filename(
     scenario_index: usize,
     run: u64,
-    scenario_seed: u64,
     tick_limit: u64,
     leg: EvaluationLeg,
     candidate: &str,
     scenario: &Scenario,
 ) -> Result<String> {
     let plan = EvaluationPlan::from_scenario(scenario.clone(), leg);
-    evaluation_replay_filename(
-        scenario_index,
-        run,
-        scenario_seed,
-        tick_limit,
-        candidate,
-        &plan,
-    )
+    evaluation_replay_filename(scenario_index, run, tick_limit, candidate, &plan)
 }
 
 /// Builds a replay filename for one exact evaluation plan.
 pub fn evaluation_replay_filename(
     scenario_index: usize,
     run: u64,
-    scenario_seed: u64,
     tick_limit: u64,
     candidate: &str,
     plan: &EvaluationPlan,
 ) -> Result<String> {
     validate_candidate(candidate)?;
     plan.validate()?;
-    ensure!(
-        scenario_seed == plan.scenario.seed,
-        "replay filename seed {scenario_seed} does not match evaluation scenario seed {}",
-        plan.scenario.seed
-    );
     let configured = serde_json::to_vec(&(candidate, SIM_VERSION, tick_limit, plan))
         .context("serializing replay filename input")?;
     let digest = chassis::hash::fnv1a(&configured);
     Ok(format!(
-        "{scenario_index:03}-{run:03}-s{scenario_seed}-{}-c{digest:016x}.json",
+        "{scenario_index:03}-{run:03}-{}-c{digest:016x}.json",
         plan.leg.name()
     ))
 }

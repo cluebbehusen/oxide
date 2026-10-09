@@ -787,7 +787,7 @@ fn first_foundries(state: &State) -> Vec<Option<Start>> {
                 .min_by_key(|building| building.id)
                 .map(|building| Start {
                     anchor: building.anchor,
-                    size: building.stats().size,
+                    size: building.kind.size(),
                 })
         })
         .collect()

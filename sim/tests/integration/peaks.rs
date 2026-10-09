@@ -40,7 +40,6 @@ fn ridge(gap: bool, units: Vec<UnitSpec>) -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "ridge".into(),
-        seed: 9,
         map,
         players: players(300),
         units,
@@ -379,7 +378,6 @@ fn a_building_flush_against_the_ridge_is_safe_from_the_far_side() {
     let mut state = Scenario {
         mode: ScenarioMode::Match,
         name: "flush".into(),
-        seed: 9,
         map,
         players: players(300),
         units: vec![unit(0, UnitKind::Lancer, 14, 5)],

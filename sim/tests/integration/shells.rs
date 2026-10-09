@@ -444,7 +444,13 @@ fn neighbor_shot(
         );
     }
     let mut value = serde_json::to_value(&state).unwrap();
-    value["units"][0]["brace_ticks"] = serde_json::json!(oxide_sim::stats::BOMBARD_BRACE_TICKS);
+    value["units"][0]["brace_ticks"] = serde_json::json!(
+        oxide_sim::UnitKind::Bombard
+            .stats()
+            .brace
+            .expect("the bombard braces")
+            .deploy_ticks
+    );
     // Start at cruise speed to keep the shot on the authored visibility boundary.
     value["units"][2]["drive_speed"] = serde_json::json!(UnitKind::Harvester.stats().speed);
     if !air {
@@ -712,7 +718,6 @@ fn team_range(kind: UnitKind, with_spotter: bool) -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "team-shell-range".into(),
-        seed: 9,
         map: vec![
             "##############################".into(),
             "#1.........................2.#".into(),
@@ -856,7 +861,6 @@ fn peak_prediction_range() -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "peak-prediction-range".into(),
-        seed: 11,
         map: vec![
             "########################".into(),
             "#1.....................#".into(),

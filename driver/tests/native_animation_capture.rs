@@ -1030,7 +1030,6 @@ fn empty_map(scrap: &[TilePos]) -> Vec<String> {
 fn scenario(name: &str, scrap: &[TilePos], units: &[Value], buildings: &[Value]) -> Value {
     json!({
         "name": name,
-        "seed": 20_260_802,
         "players": [
             { "name": "Ferrous", "faction": "ferrous", "scrap": 5000, "bot": false },
             {

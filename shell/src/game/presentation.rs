@@ -494,7 +494,7 @@ impl Presentation {
         for unit in state.units() {
             if unit.kind.stats().turn_rate > 0
                 || unit.kind.ground_turn_rate() > 0
-                || unit.kind.cruise_turn_rate() > 0
+                || unit.kind.stats().cruise_turn_rate > 0
             {
                 let angle = f32::from(unit.heading) * std::f32::consts::TAU / 256.0;
                 self.facing
