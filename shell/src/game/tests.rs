@@ -178,7 +178,7 @@ fn local_sessions_accept_any_bot_roster_and_resume() {
 #[test]
 fn replay_without_duration_infers_its_tail_and_restores_finished_stats() {
     let scenario = Scenario::skirmish();
-    let mut replay = GameReplay::new(SIM_VERSION, scenario);
+    let mut replay = GameReplay::new(SIM_VERSION, "test", scenario);
     replay.record(
         0,
         PlayerCommand {

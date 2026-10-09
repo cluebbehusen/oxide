@@ -44,7 +44,11 @@ impl Session {
     pub fn new(scenario: Scenario) -> Result<Self> {
         let state = scenario.build().context("building scenario")?;
         let bots = seat_controllers(&scenario).context("building public bot map briefing")?;
-        let recorder = Replay::new(SIM_VERSION, scenario.clone());
+        let recorder = Replay::new(
+            SIM_VERSION,
+            crate::build_identity().label(),
+            scenario.clone(),
+        );
         Ok(Self {
             scenario,
             state,

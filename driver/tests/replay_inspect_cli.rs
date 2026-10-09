@@ -36,7 +36,7 @@ fn save_fixture() -> TempReplay {
             .expect("each seat starts with a unit")
             .id
     };
-    let mut replay: GameReplay = Replay::new(SIM_VERSION, scenario);
+    let mut replay: GameReplay = Replay::new(SIM_VERSION, "test", scenario);
     replay.record(0, stop(0, unit(0)));
     replay.record(7, stop(1, unit(1)));
     replay.record(118, stop(1, unit(1)));

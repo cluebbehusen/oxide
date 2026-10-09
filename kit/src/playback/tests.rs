@@ -26,10 +26,15 @@ use oxide_sim::Scenario;
 fn recorded_match() -> GameReplay {
     let mut scenario = Scenario::skirmish();
     crate::bench::all_bots(&mut scenario);
-    runner::run_scenario(&scenario, 900, true, true)
-        .unwrap()
-        .replay
-        .unwrap()
+    runner::run_scenario(
+        &scenario,
+        900,
+        true,
+        Some(&crate::recovery::BuildIdentity::default()),
+    )
+    .unwrap()
+    .replay
+    .unwrap()
 }
 
 #[test]

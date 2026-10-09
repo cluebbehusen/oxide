@@ -81,12 +81,13 @@ pub fn record_and_tick(
 }
 
 /// Runs `scenario` for `ticks` ticks (frozen post-victory ticks included, so
-/// the count always lands where asked).
+/// the count always lands where asked), keeping a replay stamped with
+/// `record`'s build when one is given.
 pub fn run_scenario(
     scenario: &Scenario,
     ticks: u64,
     with_bots: bool,
-    record: bool,
+    record: Option<&crate::recovery::BuildIdentity>,
 ) -> Result<RunOutcome> {
     let mut state = scenario.build().context("building scenario")?;
     let mut bots = if with_bots {
@@ -94,7 +95,7 @@ pub fn run_scenario(
     } else {
         Vec::new()
     };
-    let mut replay = record.then(|| Replay::new(SIM_VERSION, scenario.clone()));
+    let mut replay = record.map(|build| Replay::new(SIM_VERSION, build.label(), scenario.clone()));
     for _ in 0..ticks {
         step(&mut state, &mut bots, replay.as_mut());
     }

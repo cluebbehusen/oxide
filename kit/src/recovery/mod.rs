@@ -44,6 +44,15 @@ impl Default for BuildIdentity {
 }
 
 impl BuildIdentity {
+    /// The commit, marked `-dirty` when the build had local changes.
+    pub fn label(&self) -> String {
+        if self.dirty == "true" {
+            format!("{}-dirty", self.revision)
+        } else {
+            self.revision.clone()
+        }
+    }
+
     /// Identity captured by the host executable's build script.
     pub fn new(version: &str, revision: &str, dirty: &str) -> Self {
         Self {

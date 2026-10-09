@@ -658,7 +658,11 @@ fn evaluate_plan_artifact_impl(
         .build()
         .context("building bot evaluation scenario")?;
     let mut bots = plan.seat_controllers()?;
-    let mut replay = GameReplay::new(SIM_VERSION, scenario.clone());
+    let mut replay = GameReplay::new(
+        SIM_VERSION,
+        crate::build_identity().label(),
+        scenario.clone(),
+    );
     replay.meta.kind = Some("bot-eval".into());
     let controllers = serde_json::to_string(&plan.controllers)
         .context("serializing replay controller provenance")?;

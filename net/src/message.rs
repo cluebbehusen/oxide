@@ -3,18 +3,20 @@
 //! [`ClientMessage`] and [`HostMessage`].
 
 use crate::PROTOCOL_VERSION;
-use oxide_sim::{Command, PlayerCommand, PlayerId, Scenario, Tick};
+use oxide_sim::{Command, PlayerCommand, PlayerId, SIM_VERSION, Scenario, Tick};
 use serde::{Deserialize, Serialize};
 
 /// A line a joining client sends before the match starts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum JoinMessage {
-    /// The client's wire protocol and build commit. Its shape never
+    /// The client's wire protocol, sim and build commit. Its shape never
     /// changes, so mismatched builds can still read each other's Hello.
     Hello {
         /// The client's [`PROTOCOL_VERSION`].
         protocol: u32,
+        /// The client's [`SIM_VERSION`].
+        sim: u32,
         /// The commit the client was built from.
         commit: String,
     },
@@ -30,11 +32,13 @@ pub enum JoinMessage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum LobbyMessage {
-    /// The host's wire protocol and build commit, in the same fixed shape
-    /// as the client's Hello.
+    /// The host's wire protocol, sim and build commit, in the same fixed
+    /// shape as the client's Hello.
     Hello {
         /// The host's [`PROTOCOL_VERSION`].
         protocol: u32,
+        /// The host's [`SIM_VERSION`].
+        sim: u32,
         /// The commit the host was built from.
         commit: String,
     },
@@ -55,6 +59,7 @@ impl JoinMessage {
     pub fn hello(commit: &str) -> Self {
         Self::Hello {
             protocol: PROTOCOL_VERSION,
+            sim: SIM_VERSION,
             commit: commit.to_owned(),
         }
     }
@@ -65,15 +70,16 @@ impl LobbyMessage {
     pub fn hello(commit: &str) -> Self {
         Self::Hello {
             protocol: PROTOCOL_VERSION,
+            sim: SIM_VERSION,
             commit: commit.to_owned(),
         }
     }
 }
 
-/// Whether a peer's Hello matches this build: the same protocol version and
-/// the same commit.
-pub fn same_build(protocol: u32, peer_commit: &str, commit: &str) -> bool {
-    protocol == PROTOCOL_VERSION && peer_commit == commit
+/// Whether a peer's Hello matches this build: the same protocol and sim
+/// versions and, before launch, the same commit.
+pub fn same_build(protocol: u32, sim: u32, peer_commit: &str, commit: &str) -> bool {
+    protocol == PROTOCOL_VERSION && sim == SIM_VERSION && peer_commit == commit
 }
 
 /// A line a client sends to the host.

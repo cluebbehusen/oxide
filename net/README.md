@@ -27,11 +27,12 @@ bot commands, then record, then `State::tick`.
 
 ## Joining and starting
 
-- Each side opens with `Hello`, carrying `PROTOCOL_VERSION` and the build
-  commit, and hangs up if the other side's does not match. Hello's shape never
-  changes, so mismatched builds can still explain the refusal; any other wire
-  change bumps `PROTOCOL_VERSION`. Local changes on top of a matching commit are
-  the players' responsibility.
+- Each side opens with `Hello`, carrying `PROTOCOL_VERSION`, `SIM_VERSION` and
+  the build commit, and hangs up if the other side's do not match. Hello's shape
+  never changes, so mismatched builds can still explain the refusal. Before
+  launch the versions stay fixed and the commit decides
+  ([versioning](../docs/versioning.md)). Local changes on top of a matching
+  commit are the players' responsibility.
 - The host freezes the roster, which must hold exactly the scenario's human
   seats, and `StartBarrier` sends each client its seat and the `Scenario`. Each
   client builds the match and replies `Ready` with its tick-zero `State::hash`.

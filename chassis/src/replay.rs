@@ -59,6 +59,9 @@ pub struct ReplayMeta {
     /// Version of the sim that recorded this replay. Replays are only
     /// guaranteed to reproduce on the version that wrote them.
     pub sim_version: u32,
+    /// The build that recorded this replay: its commit, marked `-dirty` when
+    /// it had local changes. Provenance only; loading never checks it.
+    pub build: String,
     /// Free-form context (who played, what was being tested).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -110,10 +113,11 @@ pub enum ReplayError {
 
 impl<S, C, O: RecordingOrigin<S>> Replay<S, C, O> {
     /// Starts an empty replay for a run of `setup`.
-    pub fn new(sim_version: u32, setup: S) -> Self {
+    pub fn new(sim_version: u32, build: impl Into<String>, setup: S) -> Self {
         Self {
             meta: ReplayMeta {
                 sim_version,
+                build: build.into(),
                 description: None,
                 ticks: None,
                 kind: None,
@@ -126,8 +130,13 @@ impl<S, C, O: RecordingOrigin<S>> Replay<S, C, O> {
     }
 
     /// Starts a segment at a validated snapshot, keeping absolute command ticks.
-    pub fn with_origin(sim_version: u32, setup: S, origin: O) -> Result<Self, ReplayError> {
-        let mut replay = Self::new(sim_version, setup);
+    pub fn with_origin(
+        sim_version: u32,
+        build: impl Into<String>,
+        setup: S,
+        origin: O,
+    ) -> Result<Self, ReplayError> {
+        let mut replay = Self::new(sim_version, build, setup);
         replay.meta.ticks = Some(origin.start_tick());
         replay.origin = Some(origin);
         replay.validate(None)?;

@@ -129,7 +129,13 @@ pub fn run(
     );
     let mut state = scenario.build().context("building pressure scenario")?;
     let mut bots = seat_controllers(&scenario).context("building pressure controllers")?;
-    let mut replay = record.then(|| GameReplay::new(oxide_sim::SIM_VERSION, scenario.clone()));
+    let mut replay = record.then(|| {
+        GameReplay::new(
+            oxide_sim::SIM_VERSION,
+            crate::build_identity().label(),
+            scenario.clone(),
+        )
+    });
     let mut script = pressure.script.clone();
     script.sort_by_key(|scripted| scripted.tick);
     let mut script = script.into_iter().peekable();

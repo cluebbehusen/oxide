@@ -33,7 +33,7 @@ impl SoakTrace {
         Self {
             stem: stem.to_owned(),
             hashes: String::new(),
-            replay: chassis::replay::Replay::new(oxide_sim::SIM_VERSION, scenario.clone()),
+            replay: chassis::replay::Replay::new(oxide_sim::SIM_VERSION, "test", scenario.clone()),
         }
     }
 
@@ -152,7 +152,7 @@ fn recorded_scenario_run_reproduces_from_its_replay() {
     let scenario = bot_skirmish();
     let mut state = scenario.build().unwrap();
     let mut bots = oxide_kit::controller::seat_controllers(&scenario).unwrap();
-    let mut replay: oxide_kit::GameReplay = Replay::new(SIM_VERSION, scenario);
+    let mut replay: oxide_kit::GameReplay = Replay::new(SIM_VERSION, "test", scenario);
     for _ in 0..900 {
         let mut commands = Vec::new();
         for bot in &mut bots {
@@ -223,7 +223,13 @@ fn assert_scenarios_preserve_state_integrity(paths: &[PathBuf]) {
 
 #[test]
 fn run_without_bots_is_quiet_but_valid() {
-    let outcome = runner::run_scenario(&Scenario::skirmish(), 100, false, true).unwrap();
+    let outcome = runner::run_scenario(
+        &Scenario::skirmish(),
+        100,
+        false,
+        Some(&oxide_kit::recovery::BuildIdentity::default()),
+    )
+    .unwrap();
     let replay = outcome.replay.unwrap();
     assert!(replay.commands.is_empty(), "nobody issued commands");
     assert_eq!(outcome.state.current_tick(), 100);
@@ -233,7 +239,7 @@ fn run_without_bots_is_quiet_but_valid() {
 fn forged_marathon_replays_are_refused() {
     use chassis::replay::Replay;
     use oxide_sim::{SIM_VERSION, Scenario};
-    let mut replay: oxide_kit::GameReplay = Replay::new(SIM_VERSION, Scenario::skirmish());
+    let mut replay: oxide_kit::GameReplay = Replay::new(SIM_VERSION, "test", Scenario::skirmish());
     replay.meta.ticks = Some(u64::MAX - 1);
     let err = runner::run_replay(&replay, None).unwrap_err();
     assert!(err.to_string().contains("--allow-long"), "{err}");
@@ -273,7 +279,7 @@ fn run_scenario_surfaces_a_build_failure_with_context() {
         bot: false,
         bot_config: None,
     });
-    let Err(err) = runner::run_scenario(&scenario, 10, false, false) else {
+    let Err(err) = runner::run_scenario(&scenario, 10, false, None) else {
         panic!("an anchorless seat must fail the build");
     };
     assert!(err.to_string().contains("building scenario"), "{err}");
@@ -281,7 +287,7 @@ fn run_scenario_surfaces_a_build_failure_with_context() {
 
 #[test]
 fn an_unfought_match_reports_no_result() {
-    let outcome = runner::run_scenario(&Scenario::skirmish(), 300, false, false).unwrap();
+    let outcome = runner::run_scenario(&Scenario::skirmish(), 300, false, None).unwrap();
     assert!(
         outcome.state.result().is_none(),
         "nobody fought, so the match stays undecided"
@@ -350,7 +356,7 @@ fn a_decided_match_latches_its_result_and_keeps_ticking() {
     };
 
     let budget = 3_000;
-    let outcome = runner::run_scenario(&scenario, budget, false, false).unwrap();
+    let outcome = runner::run_scenario(&scenario, budget, false, None).unwrap();
     assert_eq!(
         outcome.state.result(),
         Some(GameResult::Victory { team: 0 }),
@@ -367,7 +373,7 @@ fn a_decided_match_latches_its_result_and_keeps_ticking() {
 fn a_version_mismatched_replay_is_refused() {
     use chassis::replay::Replay;
     let replay: oxide_kit::GameReplay =
-        Replay::new(oxide_sim::SIM_VERSION + 1, Scenario::skirmish());
+        Replay::new(oxide_sim::SIM_VERSION + 1, "test", Scenario::skirmish());
     let err = runner::run_replay(&replay, None).unwrap_err();
     assert!(err.to_string().contains("recorded on sim"), "{err}");
 }
@@ -376,7 +382,7 @@ fn a_version_mismatched_replay_is_refused() {
 fn overriding_the_tick_count_below_the_commands_is_rejected() {
     use chassis::replay::Replay;
     use oxide_sim::{Command, PlayerCommand, PlayerId, SIM_VERSION, UnitId};
-    let mut replay: oxide_kit::GameReplay = Replay::new(SIM_VERSION, Scenario::skirmish());
+    let mut replay: oxide_kit::GameReplay = Replay::new(SIM_VERSION, "test", Scenario::skirmish());
     replay.record(
         100,
         PlayerCommand {

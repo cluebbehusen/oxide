@@ -86,7 +86,7 @@ fn the_session_advances_exactly_like_the_canonical_runner() {
     else {
         panic!("expected an advanced reply");
     };
-    let outcome = runner::run_scenario(&scenario, 1500, true, false).expect("run scenario");
+    let outcome = runner::run_scenario(&scenario, 1500, true, None).expect("run scenario");
     assert_eq!(view.tick, outcome.state.current_tick());
     assert_eq!(
         view.hash,

@@ -10,6 +10,7 @@ fn segment() -> (GameReplay, State, State) {
     let start = state.clone();
     let mut replay = GameReplay::with_origin(
         SIM_VERSION,
+        "test",
         scenario.clone(),
         WorldOrigin::capture(&scenario, &state).unwrap(),
     )

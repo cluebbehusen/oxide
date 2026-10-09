@@ -98,7 +98,7 @@ impl GameCheckpoint {
 
     pub(crate) fn restore(self) -> Result<RestoredGame> {
         let checkpoint = self;
-        let recorder = checkpoint.session.recording()?;
+        let recorder = checkpoint.session.recording(&crate::build_identity())?;
         let recovery_origin = Some(checkpoint.session.clone());
         let core = checkpoint.session.restore()?;
         anyhow::ensure!(

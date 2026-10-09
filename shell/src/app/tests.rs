@@ -27,7 +27,7 @@ fn frame_context_follows_playback_speed_instead_of_the_hidden_live_clock() {
 
     let mut live = Game::new(Scenario::skirmish()).unwrap();
     live.presentation.speed = 4.0;
-    let replay = oxide_kit::GameReplay::new(oxide_sim::SIM_VERSION, Scenario::skirmish());
+    let replay = oxide_kit::GameReplay::new(oxide_sim::SIM_VERSION, "test", Scenario::skirmish());
     let mut playback = PlaybackSession::from_replay(replay).unwrap();
     for speed in [0.5, 1.0, 8.0, 64.0] {
         playback.set_speed(speed).unwrap();

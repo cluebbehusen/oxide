@@ -85,7 +85,9 @@ fn snapshots_save_and_recover_while_running_and_ready() {
     assert_eq!(Arc::strong_count(&state), 1);
     let prepared = capture(&bots);
     assert_eq!(checkpoint(&bots), before);
-    let mut replay = prepared.recording().unwrap();
+    let mut replay = prepared
+        .recording(&crate::recovery::BuildIdentity::default())
+        .unwrap();
     let mut commands = human.clone();
     commands.extend(job.finish(&state, &mut bots));
     for command in &commands {
@@ -94,7 +96,9 @@ fn snapshots_save_and_recover_while_running_and_ready() {
     Arc::get_mut(&mut state).unwrap().tick(&commands);
     replay.meta.ticks = Some(state.current_tick());
     for saved in [idle, running, prepared] {
-        let empty = saved.recording().unwrap();
+        let empty = saved
+            .recording(&crate::recovery::BuildIdentity::default())
+            .unwrap();
         let mut restored = saved.clone().resume_recording(&empty).unwrap();
         assert_eq!(restored.pending, human);
         let mut restored_commands = std::mem::take(&mut restored.pending);

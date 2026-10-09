@@ -10,8 +10,8 @@ fn traced_step_preserves_the_authoritative_command_and_tick_path() {
         let mut traced_state = scenario.build().unwrap();
         let mut ordinary_bots = seat_controllers(&scenario).unwrap();
         let mut traced_bots = seat_controllers(&scenario).unwrap();
-        let mut ordinary_replay = GameReplay::new(SIM_VERSION, scenario.clone());
-        let mut traced_replay = GameReplay::new(SIM_VERSION, scenario);
+        let mut ordinary_replay = GameReplay::new(SIM_VERSION, "test", scenario.clone());
+        let mut traced_replay = GameReplay::new(SIM_VERSION, "test", scenario);
         let mut traces = Vec::new();
 
         for _ in 0..25 {

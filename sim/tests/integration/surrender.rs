@@ -148,7 +148,7 @@ fn a_team_concession_is_seat_scoped_until_the_whole_team_resigns() {
 #[test]
 fn a_record_with_a_surrender_reproduces_headlessly() {
     let mut replay: Replay<Scenario, PlayerCommand> =
-        Replay::new(SIM_VERSION, Scenario::skirmish());
+        Replay::new(SIM_VERSION, "test", Scenario::skirmish());
     replay.record(4, cmd(1, Command::Surrender));
     replay.meta.ticks = Some(10);
     let json = serde_json::to_string(&replay).unwrap();

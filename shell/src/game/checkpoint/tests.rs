@@ -20,7 +20,9 @@ fn checkpoint_recovery_restores_the_shell_without_replaying_the_opening() {
         Some(&original.live_stats),
     )
     .unwrap();
-    original.recorder = checkpoint.recording().unwrap();
+    original.recorder = checkpoint
+        .recording(&oxide_kit::recovery::BuildIdentity::default())
+        .unwrap();
     original.do_tick();
     let mut replay = original.recorder.clone();
     replay.meta.ticks = Some(original.state.current_tick());

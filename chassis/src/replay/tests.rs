@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn cursor_yields_commands_grouped_by_tick() {
-    let mut replay: Replay<(), &str> = Replay::new(0, ());
+    let mut replay: Replay<(), &str> = Replay::new(0, "test", ());
     replay.record(3, "a");
     replay.record(3, "b");
     replay.record(10, "c");
@@ -18,7 +18,7 @@ fn cursor_yields_commands_grouped_by_tick() {
 
 #[test]
 fn cursor_skips_commands_from_ticks_the_caller_skipped() {
-    let mut replay: Replay<(), &str> = Replay::new(0, ());
+    let mut replay: Replay<(), &str> = Replay::new(0, "test", ());
     replay.record(1, "missed-a");
     replay.record(2, "missed-b");
     replay.record(5, "current");
@@ -36,14 +36,14 @@ fn cursor_skips_commands_from_ticks_the_caller_skipped() {
 #[test]
 #[should_panic(expected = "tick order")]
 fn recording_out_of_order_panics() {
-    let mut replay: Replay<(), u8> = Replay::new(0, ());
+    let mut replay: Replay<(), u8> = Replay::new(0, "test", ());
     replay.record(5, 1);
     replay.record(4, 2);
 }
 
 #[test]
 fn validate_accepts_what_record_produces() {
-    let mut replay: Replay<(), u8> = Replay::new(1, ());
+    let mut replay: Replay<(), u8> = Replay::new(1, "test", ());
     replay.record(3, 1);
     replay.record(3, 2);
     replay.record(9, 3);
@@ -56,7 +56,7 @@ fn validate_accepts_what_record_produces() {
 fn validate_rejects_a_command_at_the_tick_ceiling() {
     // Playback computes "last tick + 1"; u64::MAX must die here, not
     // overflow there.
-    let mut replay: Replay<(), u8> = Replay::new(1, ());
+    let mut replay: Replay<(), u8> = Replay::new(1, "test", ());
     replay.commands = vec![TimedCommand {
         tick: u64::MAX,
         command: 1,
@@ -70,7 +70,7 @@ fn validate_rejects_a_command_at_the_tick_ceiling() {
 #[test]
 fn validate_rejects_tampered_files() {
     // Hand-built (bypassing record) the way a corrupt file would be.
-    let mut replay: Replay<(), u8> = Replay::new(1, ());
+    let mut replay: Replay<(), u8> = Replay::new(1, "test", ());
     replay.commands = vec![
         TimedCommand {
             tick: 9,
@@ -87,7 +87,7 @@ fn validate_rejects_tampered_files() {
     ));
 
     // Duration that doesn't cover its own commands.
-    let mut replay: Replay<(), u8> = Replay::new(1, ());
+    let mut replay: Replay<(), u8> = Replay::new(1, "test", ());
     replay.record(9, 1);
     replay.meta.ticks = Some(0);
     assert!(matches!(
@@ -96,7 +96,7 @@ fn validate_rejects_tampered_files() {
     ));
 
     // Wrong sim version.
-    let replay: Replay<(), u8> = Replay::new(2, ());
+    let replay: Replay<(), u8> = Replay::new(2, "test", ());
     assert!(matches!(
         replay.validate(Some(1)),
         Err(ReplayError::VersionMismatch { .. })
@@ -111,7 +111,7 @@ fn save_creates_parent_directories() {
         .join("nested");
     std::fs::remove_dir_all(&dir).ok();
     let path = dir.join("out.json");
-    let replay: Replay<u8, u8> = Replay::new(1, 1);
+    let replay: Replay<u8, u8> = Replay::new(1, "test", 1);
     replay.save(&path).unwrap();
     assert!(path.exists());
 }
@@ -125,10 +125,10 @@ fn saving_twice_to_one_path_replaces_the_record() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("session.json");
 
-    let mut first: Replay<u8, &str> = Replay::new(1, 1);
+    let mut first: Replay<u8, &str> = Replay::new(1, "test", 1);
     first.record(1, "early");
     first.save(&path).unwrap();
-    let mut second: Replay<u8, &str> = Replay::new(1, 1);
+    let mut second: Replay<u8, &str> = Replay::new(1, "test", 1);
     second.record(1, "early");
     second.record(7, "late");
     second.save(&path).unwrap();
@@ -143,15 +143,15 @@ fn saving_twice_to_one_path_replaces_the_record() {
 fn absent_metadata_stays_out_of_the_file_and_present_metadata_survives() {
     // Unset optional metadata is omitted from the file, and a file
     // without those fields loads with them absent.
-    let bare: Replay<u8, u8> = Replay::new(1, 1);
+    let bare: Replay<u8, u8> = Replay::new(1, "test", 1);
     let json = serde_json::to_string(&bare).unwrap();
     assert!(!json.contains("kind") && !json.contains("saved_at"));
-    let bare_file = r#"{"meta":{"sim_version":1},"setup":1,"commands":[]}"#;
+    let bare_file = r#"{"meta":{"sim_version":1,"build":"test"},"setup":1,"commands":[]}"#;
     let loaded: Replay<u8, u8> = serde_json::from_str(bare_file).unwrap();
     assert_eq!(loaded.meta.kind, None);
     assert_eq!(loaded.meta.saved_at, None);
 
-    let mut tagged: Replay<u8, u8> = Replay::new(1, 1);
+    let mut tagged: Replay<u8, u8> = Replay::new(1, "test", 1);
     tagged.meta.kind = Some("save".to_string());
     tagged.meta.saved_at = Some(1_784_721_600);
     let json = serde_json::to_string(&tagged).unwrap();
@@ -166,7 +166,7 @@ fn save_load_roundtrip() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("roundtrip.json");
 
-    let mut replay: Replay<u32, String> = Replay::new(3, 77);
+    let mut replay: Replay<u32, String> = Replay::new(3, "test", 77);
     replay.record(1, "move".to_string());
     replay.save(&path).unwrap();
 
@@ -197,7 +197,7 @@ fn load_rejects_too_many_commands_at_the_shared_boundary() {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("commands.json");
-    let mut replay: Replay<(), ()> = Replay::new(1, ());
+    let mut replay: Replay<(), ()> = Replay::new(1, "test", ());
     for tick in 0..3 {
         replay.record(tick, ());
     }

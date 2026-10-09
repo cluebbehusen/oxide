@@ -81,7 +81,7 @@ impl Probe {
             state,
             bots,
             twin_bots: seat_controllers(&scenario).unwrap(),
-            replay: GameReplay::new(oxide_sim::SIM_VERSION, scenario),
+            replay: GameReplay::new(oxide_sim::SIM_VERSION, "test", scenario),
             history: Vec::new(),
             command_fold: 0,
         }
