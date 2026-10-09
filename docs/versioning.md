@@ -19,6 +19,9 @@ already has the job it will need afterwards.
 Each file type carries one format number, owned by the code that writes it, and
 one sim version check.
 
+Only builds archived from `main` go to App Store Connect: the commit count rises
+along `main` but can repeat across branches.
+
 ## Before launch
 
 - Never change a version, and never add code that reads another build's files.
