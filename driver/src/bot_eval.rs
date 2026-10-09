@@ -470,7 +470,7 @@ impl SeatEvidence {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EvaluationRow {
     /// Simulation version that produced the record.
-    pub sim_version: &'static str,
+    pub sim_version: u32,
     /// The driver build that produced the record.
     pub build: oxide_kit::recovery::BuildIdentity,
     /// User-supplied candidate or build identifier.

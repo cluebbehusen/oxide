@@ -515,7 +515,6 @@ impl SettingsScreen {
                         // profile (custom rebinds included — Controls'
                         // Reset row walks back to Classic).
                         config.bindings = BindingMap::left_handed();
-                        config.unbound.clear();
                         update.dirty = true;
                         *live = config.bindings.clone();
                         self.notice = Some(Notice {
@@ -574,8 +573,6 @@ impl SettingsScreen {
                             .bindings
                             .rebind_slot(target, self.binding_slot, chord)
                         {
-                            // Bound again: the unbind tombstone lifts.
-                            config.unbound.retain(|a| *a != target);
                             update.dirty = true;
                             *live = config.bindings.clone();
                             self.goto_controls(config, row);
@@ -626,14 +623,9 @@ impl SettingsScreen {
                         .is_some_and(Option::is_some)
                 {
                     // X on a row unbinds it (outside capture mode, so the
-                    // key is free to mean this). The tombstone records the
-                    // choice so the new-verb migration does not restore
-                    // the classic chord on the next load.
+                    // key is free to mean this).
                     let target = control_rows()[self.menu.selected].expect("action row");
                     config.bindings.unbind_slot(target, self.binding_slot);
-                    if !config.unbound.contains(&target) {
-                        config.unbound.push(target);
-                    }
                     update.dirty = true;
                     *live = config.bindings.clone();
                     let row = self.menu.selected;
@@ -658,9 +650,8 @@ impl SettingsScreen {
                             rebinding: Some(row),
                         };
                     } else if row == control_rows().len() {
-                        // Reset to defaults — tombstones included.
+                        // Reset to defaults.
                         config.bindings = BindingMap::classic();
-                        config.unbound.clear();
                         update.dirty = true;
                         *live = config.bindings.clone();
                         self.goto_controls(config, row);

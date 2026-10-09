@@ -693,7 +693,7 @@ impl oxide_protocol::DebugSession for PlaybackSession {
             paused: self.paused,
             speed: f64::from(self.speed),
             scenario: self.replay.setup.name.clone(),
-            sim_version: SIM_VERSION.to_string(),
+            sim_version: SIM_VERSION,
             result: self.engine.state.result(),
             recorded_commands: 0,
         }

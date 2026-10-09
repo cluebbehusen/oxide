@@ -1,5 +1,5 @@
 use super::*;
-use oxide_sim::{Command, PlayerCommand, PlayerId};
+use oxide_sim::{Command, PlayerCommand, PlayerId, SIM_VERSION};
 
 fn segment() -> (GameReplay, State, State) {
     let scenario = Scenario::skirmish();
@@ -74,14 +74,4 @@ fn checkpoint_origin_validates_absolute_bounds_and_world_identity() {
     let mut bad = replay.clone();
     bad.origin.as_mut().unwrap().state.tick(&[]);
     assert!(bad.validate(None).is_err());
-    for change in [0, 1] {
-        let mut bad = replay.clone();
-        let origin = bad.origin.as_mut().unwrap();
-        if change == 0 {
-            origin.version += 1;
-        } else {
-            origin.sim_version = "other".into();
-        }
-        assert!(bad.validate(None).is_err());
-    }
 }

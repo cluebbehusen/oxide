@@ -715,7 +715,7 @@ impl Game {
             paused: self.presentation.paused,
             speed: self.presentation.speed,
             scenario: self.scenario.name.clone(),
-            sim_version: SIM_VERSION.to_string(),
+            sim_version: SIM_VERSION,
             result: self.state.result(),
             recorded_commands: self.recorder.commands.len(),
         }

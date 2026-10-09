@@ -8,14 +8,7 @@ fn shelf_hints_offer_only_the_gestures_the_build_has() {
         "{confirm} watches | {delete} twice deletes"
     );
     assert_eq!(entry_hint(None, false), "{delete} twice deletes");
-    for action in [
-        ("watches", "watch"),
-        ("loads paused", "load paused"),
-        (
-            "reconstructs and loads paused",
-            "reconstruct and load paused",
-        ),
-    ] {
+    for action in [("watches", "watch"), ("loads paused", "load paused")] {
         crate::platform::assert_touch_copy(&entry_hint(Some(action), true));
     }
     assert_eq!(entry_hint(None, true), "");
@@ -36,7 +29,7 @@ fn the_shelf_badge_compares_versions_and_never_guesses() {
     let ours: GameReplay = chassis::replay::Replay::new(SIM_VERSION, scenario.clone());
     ours.save(dir.join("ours.json")).unwrap();
     let mut foreign: GameReplay = chassis::replay::Replay::new(SIM_VERSION, scenario);
-    foreign.meta.sim_version = "0.0.1".to_string();
+    foreign.meta.sim_version = SIM_VERSION + 1;
     foreign.save(dir.join("foreign.json")).unwrap();
 
     let mut out = Vec::new();
@@ -51,7 +44,10 @@ fn the_shelf_badge_compares_versions_and_never_guesses() {
     let foreign = entry("foreign");
     assert!(!foreign.compatible, "a foreign version never does");
     assert!(
-        foreign.blurb.contains("0.0.1") && foreign.blurb.contains(SIM_VERSION),
+        foreign.blurb.contains(&format!(
+            "recorded on sim {}, this is {SIM_VERSION}",
+            SIM_VERSION + 1
+        )),
         "the honest badge names both versions: {}",
         foreign.blurb
     );
@@ -59,7 +55,7 @@ fn the_shelf_badge_compares_versions_and_never_guesses() {
 }
 
 #[test]
-fn kinds_read_the_metadata_tag_and_fall_back_to_the_0_12_filename_prefix() {
+fn kinds_read_the_metadata_tag() {
     let dir = std::env::temp_dir().join(format!(
         "oxide-kinds-test-{}-{}",
         std::process::id(),
@@ -75,9 +71,6 @@ fn kinds_read_the_metadata_tag_and_fall_back_to_the_0_12_filename_prefix() {
     named.meta.kind = Some("save".to_string());
     named.meta.description = Some("before the push".to_string());
     named.save(dir.join("anything.json")).unwrap();
-    // Untagged records fall back to their filename prefix.
-    let old: GameReplay = chassis::replay::Replay::new(SIM_VERSION, scenario.clone());
-    old.save(dir.join("autosave-0000000042.json")).unwrap();
     let finished: GameReplay = chassis::replay::Replay::new(SIM_VERSION, scenario);
     finished.save(dir.join("match-0000000099.json")).unwrap();
 
@@ -95,7 +88,6 @@ fn kinds_read_the_metadata_tag_and_fall_back_to_the_0_12_filename_prefix() {
         "a named save leads with its name: {}",
         entry("anything").label
     );
-    assert_eq!(entry("autosave-0000000042").kind, RecordKind::Autosave);
     assert_eq!(entry("match-0000000099").kind, RecordKind::Match);
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -213,7 +205,7 @@ fn scan_uses_record_metadata_without_trusting_malformed_neighbors() {
     let mut save: GameReplay = chassis::replay::Replay::new(SIM_VERSION, scenario);
     save.meta.kind = Some("save".to_string());
     save.meta.description = Some("before the push".to_string());
-    save.meta.sim_version = "0.0.1".to_string();
+    save.meta.sim_version = SIM_VERSION + 1;
     save.meta.saved_at = Some(u64::MAX);
     save.record(
         42,

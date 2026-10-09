@@ -225,12 +225,6 @@ pub struct Config {
     /// Touch gesture timing (absent in configs saved before touch).
     #[serde(default)]
     pub touch: TouchPrefs,
-    /// Actions the player explicitly unbound (Controls > X). A missing
-    /// binding row alone is ambiguous (it also means "verb added after
-    /// this config was saved"), and the migration that adopts classic
-    /// chords for new verbs must not restore a deliberate unbinding.
-    #[serde(default)]
-    pub unbound: Vec<crate::action::Action>,
     /// The host address the last LAN join used.
     #[serde(default)]
     pub last_join_address: Option<String>,
@@ -251,7 +245,6 @@ impl Default for Config {
             colorblind: false,
             control_groups: true,
             touch: TouchPrefs::default(),
-            unbound: Vec::new(),
             last_join_address: None,
         }
     }
@@ -283,10 +276,8 @@ impl Config {
         };
         match serde_json::from_str::<Self>(&text) {
             Ok(mut config) if config.version == CONFIG_VERSION => {
-                config.bindings.migrate(&config.unbound);
                 if !config.bindings.valid() {
                     config.bindings = BindingMap::classic();
-                    config.unbound.clear();
                 }
                 config.window = Self::sane_window(config.window);
                 config.touch = config.touch.clamped();

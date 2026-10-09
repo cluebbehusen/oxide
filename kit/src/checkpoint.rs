@@ -10,7 +10,7 @@ use oxide_sim::{PlayerCommand, PlayerId, SIM_VERSION, Scenario, State};
 use serde::{Deserialize, Serialize};
 
 /// Session envelope revision, separate from simulation and controller revisions.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 1;
 /// Encoded checkpoint load bound.
 pub const MAX_BYTES: usize = 256 * 1024 * 1024;
 
@@ -19,7 +19,7 @@ pub const MAX_BYTES: usize = 256 * 1024 * 1024;
 #[serde(deny_unknown_fields)]
 pub struct SessionCheckpoint {
     version: u32,
-    sim_version: String,
+    sim_version: u32,
     scenario: Scenario,
     state: State,
     snapshot_binding: u64,
@@ -152,7 +152,7 @@ impl SessionCheckpoint {
     ) -> Result<Self> {
         let checkpoint = Self {
             version: VERSION,
-            sim_version: SIM_VERSION.into(),
+            sim_version: SIM_VERSION,
             scenario: scenario.clone(),
             state: state.clone(),
             snapshot_binding: snapshot_binding(scenario, state),

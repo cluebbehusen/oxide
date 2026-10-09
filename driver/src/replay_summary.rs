@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 /// Version of the serialized [`SummaryReport`] contract.
-pub const REPLAY_SUMMARY_SCHEMA_VERSION: u32 = 4;
+pub const REPLAY_SUMMARY_SCHEMA_VERSION: u32 = 1;
 
 /// Space gate: a loss joins an active battle when within this many tiles
 /// (Chebyshev) of the battle's first loss. Above the longest direct-fire

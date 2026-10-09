@@ -76,100 +76,18 @@ fn a_customized_map_survives_the_round_trip() {
 
 #[test]
 fn an_explicit_unbinding_survives_the_restart() {
-    // Controls > X removes the row and records the choice; without the
-    // tombstone the new-verb migration would read the missing row as an
-    // old config and restore the classic chord on every load.
     let dir = std::env::temp_dir().join(format!("oxide-config-unbind-{}", std::process::id()));
     let path = dir.join("config.json");
     let mut config = Config::default();
-    config.bindings.unbind(crate::action::Action::Patrol);
-    config.unbound.push(crate::action::Action::Patrol);
+    config
+        .bindings
+        .unbind_slot(crate::action::Action::Patrol, 0);
     config.save_to(&path).expect("save");
     let loaded = Config::load_from(Some(path));
     assert_eq!(
         loaded.bindings.chord_for(crate::action::Action::Patrol),
         None,
         "the deliberate unbinding persisted"
-    );
-    std::fs::remove_dir_all(&dir).ok();
-}
-
-#[test]
-fn a_config_saved_before_a_new_verb_adopts_its_classic_chord() {
-    // A config saved before an action existed has no row for it.
-    // Loading must graft the classic chord in when free instead of
-    // leaving the verb keyboardless, without stealing a claimed chord.
-    let dir = std::env::temp_dir().join(format!("oxide-config-newverb-{}", std::process::id()));
-    let path = dir.join("config.json");
-    let mut config = Config {
-        bindings: BindingMap::legacy(),
-        ..Config::default()
-    };
-    config.bindings.unbind(crate::action::Action::Salvage);
-    config.save_to(&path).expect("save");
-    let loaded = Config::load_from(Some(path.clone()));
-    assert_eq!(
-        loaded.bindings.chord_for(crate::action::Action::Salvage),
-        Some(crate::action::Chord::bare(oxide_protocol::Key::V)),
-        "the missing verb adopted its classic chord"
-    );
-
-    // Same again, but the player owns V: the verb stays unbound.
-    let mut config = Config {
-        bindings: BindingMap::legacy(),
-        ..Config::default()
-    };
-    config.bindings.unbind(crate::action::Action::Salvage);
-    assert!(config.bindings.rebind(
-        crate::action::Action::Patrol,
-        crate::action::Chord::bare(oxide_protocol::Key::V)
-    ));
-    config.save_to(&path).expect("save");
-    let loaded = Config::load_from(Some(path));
-    assert_eq!(
-        loaded.bindings.chord_for(crate::action::Action::Salvage),
-        None,
-        "a claimed chord is never stolen back"
-    );
-    assert_eq!(
-        loaded.bindings.chord_for(crate::action::Action::Patrol),
-        Some(crate::action::Chord::bare(oxide_protocol::Key::V)),
-    );
-    std::fs::remove_dir_all(&dir).ok();
-}
-
-#[test]
-fn stale_group_chords_drop_without_resetting_the_profile() {
-    // A chord to a group beyond the supported count is a row dispatch
-    // ignores; loading must shed that row alone, never the user's own
-    // customizations with it.
-    let dir = std::env::temp_dir().join(format!("oxide-config-stale-{}", std::process::id()));
-    let path = dir.join("config.json");
-    let mut config = Config {
-        bindings: BindingMap::legacy(),
-        ..Config::default()
-    };
-    assert!(config.bindings.rebind(
-        crate::action::Action::AssignGroup(7),
-        crate::action::Chord::ctrl(oxide_protocol::Key::Num7)
-    ));
-    assert!(config.bindings.rebind(
-        crate::action::Action::Patrol,
-        crate::action::Chord::bare(oxide_protocol::Key::J)
-    ));
-    config.save_to(&path).expect("save");
-    let loaded = Config::load_from(Some(path));
-    assert_eq!(
-        loaded
-            .bindings
-            .chord_for(crate::action::Action::AssignGroup(7)),
-        None,
-        "the stale chord is gone"
-    );
-    assert_eq!(
-        loaded.bindings.chord_for(crate::action::Action::Patrol),
-        Some(crate::action::Chord::bare(oxide_protocol::Key::J)),
-        "the customization survived the strip"
     );
     std::fs::remove_dir_all(&dir).ok();
 }

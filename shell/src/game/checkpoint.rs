@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct GameCheckpoint {
-    version: u32,
     session: SessionCheckpoint,
     human: PlayerId,
     demo: crate::tutorial::Demo,
@@ -47,7 +46,6 @@ impl Game {
 impl SaveCapture {
     pub(crate) fn checkpoint(self) -> Result<GameCheckpoint> {
         Ok(GameCheckpoint {
-            version: 2,
             session: SessionCheckpoint::capture(
                 &self.scenario,
                 &self.state,
@@ -100,10 +98,6 @@ impl GameCheckpoint {
 
     pub(crate) fn restore(self) -> Result<RestoredGame> {
         let checkpoint = self;
-        anyhow::ensure!(
-            checkpoint.version == 2,
-            "unsupported shell checkpoint version"
-        );
         let recorder = checkpoint.session.recording()?;
         let recovery_origin = Some(checkpoint.session.clone());
         let core = checkpoint.session.restore()?;

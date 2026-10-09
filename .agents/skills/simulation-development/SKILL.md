@@ -94,9 +94,7 @@ cargo test -p oxide-sim --locked --test integration determinism::
 Required gates may run locally or through CI under `AGENTS.md`; do not duplicate
 running CI checks. For an intentional behavior correction, prove the new outcome
 with a focused regression. Historical fixture parity does not override that
-contract. Follow the hash/version approval rules in `AGENTS.md`, using any
-applicable approval already given in the session. No version bump is implied by
-permission to fix behavior.
+contract. Follow the hash and version rules in `AGENTS.md`.
 
 For work aimed at simulation cost, follow the `simulation-performance` skill to
 locate the cost, prove an optimization exact, and judge one that alters

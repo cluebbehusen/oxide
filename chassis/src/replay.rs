@@ -58,7 +58,7 @@ impl<S> RecordingOrigin<S> for () {
 pub struct ReplayMeta {
     /// Version of the sim that recorded this replay. Replays are only
     /// guaranteed to reproduce on the version that wrote them.
-    pub sim_version: String,
+    pub sim_version: u32,
     /// Free-form context (who played, what was being tested).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -102,18 +102,18 @@ pub enum ReplayError {
     #[error("replay was recorded on sim {recorded}, this is {running}")]
     VersionMismatch {
         /// Version stamped in the file.
-        recorded: String,
+        recorded: u32,
         /// Version doing the loading.
-        running: String,
+        running: u32,
     },
 }
 
 impl<S, C, O: RecordingOrigin<S>> Replay<S, C, O> {
     /// Starts an empty replay for a run of `setup`.
-    pub fn new(sim_version: impl Into<String>, setup: S) -> Self {
+    pub fn new(sim_version: u32, setup: S) -> Self {
         Self {
             meta: ReplayMeta {
-                sim_version: sim_version.into(),
+                sim_version,
                 description: None,
                 ticks: None,
                 kind: None,
@@ -126,11 +126,7 @@ impl<S, C, O: RecordingOrigin<S>> Replay<S, C, O> {
     }
 
     /// Starts a segment at a validated snapshot, keeping absolute command ticks.
-    pub fn with_origin(
-        sim_version: impl Into<String>,
-        setup: S,
-        origin: O,
-    ) -> Result<Self, ReplayError> {
+    pub fn with_origin(sim_version: u32, setup: S, origin: O) -> Result<Self, ReplayError> {
         let mut replay = Self::new(sim_version, setup);
         replay.meta.ticks = Some(origin.start_tick());
         replay.origin = Some(origin);
@@ -170,7 +166,7 @@ impl<S, C, O: RecordingOrigin<S>> Replay<S, C, O> {
     /// written by this sim. Call before executing any loaded replay; a log that
     /// fails these can silently produce a different world, or panic the
     /// recorder later.
-    pub fn validate(&self, expected_version: Option<&str>) -> Result<(), ReplayError> {
+    pub fn validate(&self, expected_version: Option<u32>) -> Result<(), ReplayError> {
         self.validate_command_count(MAX_REPLAY_COMMANDS)?;
         if let Some(origin) = &self.origin {
             origin.validate(&self.setup)?;
@@ -216,8 +212,8 @@ impl<S, C, O: RecordingOrigin<S>> Replay<S, C, O> {
             && self.meta.sim_version != expected
         {
             return Err(ReplayError::VersionMismatch {
-                recorded: self.meta.sim_version.clone(),
-                running: expected.to_string(),
+                recorded: self.meta.sim_version,
+                running: expected,
             });
         }
         Ok(())

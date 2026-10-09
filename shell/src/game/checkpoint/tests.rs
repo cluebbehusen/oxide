@@ -218,14 +218,9 @@ fn an_opponent_seat_continues_through_save_recovery_and_replay_resume() {
 fn checkpoint_rejects_invalid_shell_metadata_before_installation() {
     let game = Game::with_viewport(Scenario::skirmish(), vec2(1280.0, 720.0)).unwrap();
     let original = serde_json::to_value(&game).unwrap();
-    for (key, value) in [
-        ("version", serde_json::json!(3)),
-        ("human", serde_json::json!(255)),
-    ] {
-        let mut bad = original.clone();
-        bad[key] = value;
-        assert!(serde_json::from_value::<Game>(bad).is_err());
-    }
+    let mut bad = original.clone();
+    bad["human"] = serde_json::json!(255);
+    assert!(serde_json::from_value::<Game>(bad).is_err());
     let mut bad = original;
     bad["boundary_fog"]["visible"] = serde_json::json!([{"x":-1,"y":-1}]);
     assert!(serde_json::from_value::<Game>(bad).is_err());
@@ -261,7 +256,6 @@ fn checkpoint_requires_the_scenarios_default_local_seat() {
         let session =
             SessionCheckpoint::capture(&scenario, &state, &[], &[], Some(&stats)).unwrap();
         let checkpoint = GameCheckpoint {
-            version: 2,
             session,
             human: PlayerId(0),
             demo: Demo::default(),

@@ -27,20 +27,10 @@ impl RecordKind {
     }
 }
 
-pub(crate) fn record_kind(
-    meta: &chassis::replay::ReplayMeta,
-    path: &std::path::Path,
-) -> RecordKind {
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or_default();
+pub(crate) fn record_kind(meta: &chassis::replay::ReplayMeta) -> RecordKind {
     match meta.kind.as_deref() {
         Some("autosave") => RecordKind::Autosave,
         Some("save") => RecordKind::Save,
-        Some("match") => RecordKind::Match,
-        _ if stem.starts_with("autosave-") => RecordKind::Autosave,
-        _ if stem.starts_with("save-") => RecordKind::Save,
         _ => RecordKind::Match,
     }
 }
@@ -141,7 +131,7 @@ fn scan_cancellable(
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("replay");
-        let kind = record_kind(&replay.meta, &path);
+        let kind = record_kind(&replay.meta);
         // A record's own saved_at outranks mtime: a copied or synced
         // file reports the copy date, and only the metadata records when
         // the save was made.
@@ -178,15 +168,7 @@ fn scan_cancellable(
                 RecordKind::Save => "a saved game",
                 _ => "a live session",
             };
-            let action = if replay.legacy {
-                (
-                    "reconstructs and loads paused",
-                    "reconstruct and load paused",
-                )
-            } else {
-                ("loads paused", "load paused")
-            };
-            (what.to_string(), Some(action))
+            (what.to_string(), Some(("loads paused", "load paused")))
         } else {
             (
                 format!("{} seats | sim v{}", replay.seats, replay.meta.sim_version),
