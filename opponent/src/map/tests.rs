@@ -43,7 +43,7 @@ fn components_split_at_walls_and_scrap_touches_its_side() {
 /// packs it: a Foundry with its ring clear of lanes, a smaller building
 /// beside a lane, and a two-by-two one beside lanes both ways.
 fn packed(model: &MapModel, foundries: &[TilePos], kind: BuildingKind, spot: TilePos) -> bool {
-    let (width, height) = kind.base_stats().size;
+    let (width, height) = kind.size();
     let laned = |tile: TilePos| model.lane_of(foundries, tile);
     let across = (0..height).any(|dy| laned(spot.offset(-1, dy)) || laned(spot.offset(width, dy)));
     let along = (0..width).any(|dx| laned(spot.offset(dx, -1)) || laned(spot.offset(dx, height)));
@@ -85,14 +85,14 @@ fn spots_pack_blocks_beside_lanes_clear_of_foundry_rings_and_mirror_between_seat
     let tiles = |anchor: TilePos, (width, height): (i32, i32)| {
         (0..height).flat_map(move |dy| (0..width).map(move |dx| anchor.offset(dx, dy)))
     };
-    let foundry = BuildingKind::Foundry.base_stats().size;
+    let foundry = BuildingKind::Foundry.size();
     let laid = |kind: BuildingKind, spot: TilePos| packed(&model, &[start], kind, spot);
     for kind in [
         BuildingKind::Fabricator,
         BuildingKind::Reclaimer,
         BuildingKind::Foundry,
     ] {
-        let size = kind.base_stats().size;
+        let size = kind.size();
         let (west, east) = (spots(0, kind), spots(1, kind));
         let first = west.iter().take_while(|spot| laid(kind, **spot)).count();
         assert!(first > 0, "{kind:?}: {west:?}");

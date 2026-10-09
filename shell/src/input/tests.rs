@@ -204,7 +204,6 @@ fn skyhook_interaction_game() -> Game {
     let scenario = oxide_sim::Scenario::from_json(
         "{
         \"name\": \"skyhook interaction\",
-        \"seed\": 7,
         \"players\": [
             {\"name\": \"F\", \"faction\": \"ferrous\", \"scrap\": 100, \"bot\": false},
             {\"name\": \"C\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": true}
@@ -334,7 +333,7 @@ fn shift_click_selects_and_toggles_same_owner_buildings() {
     assert_eq!(own.len(), 2);
     let center = |game: &Game, id| {
         let building = game.state.building(id).unwrap();
-        let size = building.stats().size;
+        let size = building.kind.size();
         game.presentation.camera.to_screen(vec2(
             building.anchor.x as f32 + size.0 as f32 * 0.5,
             building.anchor.y as f32 + size.1 as f32 * 0.5,
@@ -645,7 +644,6 @@ fn extractor_input_game() -> Game {
     let scenario = oxide_sim::Scenario::from_json(
         "{
         \"name\": \"frame input\",
-        \"seed\": 7,
         \"players\": [
             {\"name\": \"F\", \"faction\": \"ferrous\", \"scrap\": 500, \"bot\": false},
             {\"name\": \"C\", \"faction\": \"cupric\", \"scrap\": 500, \"bot\": true,
@@ -1055,7 +1053,6 @@ fn edge_scrap_game() -> Game {
     let scenario = oxide_sim::Scenario::from_json(
         "{
         \"name\": \"edge scrap\",
-        \"seed\": 7,
         \"players\": [
             {\"name\": \"F\", \"faction\": \"ferrous\", \"scrap\": 500, \"bot\": false},
             {\"name\": \"C\", \"faction\": \"cupric\", \"scrap\": 500, \"bot\": true,
@@ -1608,7 +1605,6 @@ fn a_shift_click_on_the_wounded_wall_queues_the_weld_not_the_rat() {
     let scenario = oxide_sim::Scenario::from_json(
         "{
         \"name\": \"gnawed wall\",
-        \"seed\": 7,
         \"players\": [
             {\"name\": \"F\", \"faction\": \"ferrous\", \"scrap\": 100, \"bot\": false},
             {\"name\": \"C\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": true}
@@ -2190,7 +2186,6 @@ fn team_game() -> Game {
     let scenario = oxide_sim::Scenario::from_json(
         "{
         \"name\": \"team stage\",
-        \"seed\": 9,
         \"players\": [
             {\"name\": \"me\", \"faction\": \"ferrous\", \"scrap\": 100, \"bot\": false, \"team\": 1},
             {\"name\": \"pal\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": true, \"team\": 1,
@@ -2498,7 +2493,7 @@ fn a_touch_placement_drops_a_ghost_then_builds_where_it_is_drawn() {
         "the first tap only drops a ghost"
     );
     let ghost = input.ghost_anchor().expect("a ghost is down");
-    let (w, h) = kind.base_stats().size;
+    let (w, h) = kind.size();
     let center = vec2(
         ghost.x as f32 + w as f32 * 0.5,
         ghost.y as f32 + h as f32 * 0.5,
@@ -3807,7 +3802,6 @@ fn an_allied_site_under_fog_refuses_selection() {
     let mut scenario = oxide_sim::Scenario {
         mode: ScenarioMode::Match,
         name: "ally-site-arena".into(),
-        seed: 7,
         map: vec![
             "################################".into(),
             "#1.............................#".into(),
@@ -3959,7 +3953,6 @@ fn a_foreign_box_never_reaches_through_fog() {
     let scenario = oxide_sim::Scenario::from_json(
         "{
         \"name\": \"fog box\",
-        \"seed\": 9,
         \"players\": [
             {\"name\": \"me\", \"faction\": \"ferrous\", \"scrap\": 100, \"bot\": false},
             {\"name\": \"foe\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": true}
@@ -4020,7 +4013,6 @@ fn a_selected_hostile_drops_when_fog_recovers_it() {
     let scenario = oxide_sim::Scenario::from_json(
         "{
         \"name\": \"beacon\",
-        \"seed\": 4,
         \"players\": [
             {\"name\": \"me\", \"faction\": \"ferrous\", \"scrap\": 100, \"bot\": false},
             {\"name\": \"foe\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": true}
@@ -4666,7 +4658,6 @@ fn a_placement_drag_stamps_a_row_of_queued_builds() {
     let scenario = oxide_sim::Scenario::from_json(
         &serde_json::json!({
             "name": "Drag Range",
-            "seed": 3,
             "players": [
                 {"name": "Mason", "faction": "ferrous", "scrap": 1000, "bot": false},
                 {"name": "Idle", "faction": "cupric", "scrap": 0, "bot": true}
@@ -5081,7 +5072,6 @@ fn drag_arena(scrap: u32) -> Game {
     let scenario = oxide_sim::Scenario::from_json(
         &serde_json::json!({
             "name": "Drag Bank",
-            "seed": 3,
             "players": [
                 {"name": "Mason", "faction": "ferrous", "scrap": scrap, "bot": false},
                 {"name": "Idle", "faction": "cupric", "scrap": 0, "bot": true}
@@ -5472,7 +5462,6 @@ fn fog_corridor_game(kind: &str, units: impl IntoIterator<Item = (i32, i32)>) ->
     let scenario = oxide_sim::Scenario::from_json(
         &serde_json::json!({
             "name": "Corridor",
-            "seed": 11,
             "players": [
                 {"name": "Walker", "faction": "ferrous", "scrap": 0, "bot": false},
                 {"name": "Idle", "faction": "cupric", "scrap": 0, "bot": true}
@@ -5608,7 +5597,6 @@ fn an_attack_on_an_even_footprint_draws_at_its_center() {
     let scenario = oxide_sim::Scenario::from_json(
         &serde_json::json!({
             "name": "Even footprint",
-            "seed": 5,
             "players": [
                 {"name": "Raider", "faction": "ferrous", "scrap": 0, "bot": false},
                 {"name": "Target", "faction": "cupric", "scrap": 0, "bot": true}
@@ -5674,7 +5662,6 @@ fn work_on_an_even_footprint_draws_at_its_center() {
     let scenario = oxide_sim::Scenario::from_json(
         &serde_json::json!({
             "name": "Even footprint work",
-            "seed": 5,
             "players": [
                 {"name": "Builder", "faction": "ferrous", "scrap": 1000, "bot": false},
                 {"name": "Rival", "faction": "cupric", "scrap": 0, "bot": true}
@@ -5786,7 +5773,6 @@ fn the_docks_subject_always_draws_its_trail() {
     let scenario = oxide_sim::Scenario::from_json(
         &serde_json::json!({
             "name": "Crowd",
-            "seed": 9,
             "players": [
                 {"name": "Mass", "faction": "ferrous", "scrap": 0, "bot": false},
                 {"name": "Idle", "faction": "cupric", "scrap": 0, "bot": true}
@@ -6275,7 +6261,7 @@ fn an_undrained_deferred_build_is_replaced_before_preflight() {
     walk(&mut game, TilePos::new(19, 6));
     for _ in 0..600 {
         if [first, replacement].iter().all(|anchor| {
-            let (w, h) = kind.base_stats().size;
+            let (w, h) = kind.size();
             (0..h).all(|dy| {
                 (0..w).all(|dx| {
                     game.state
@@ -6290,7 +6276,7 @@ fn an_undrained_deferred_build_is_replaced_before_preflight() {
     walk(&mut game, TilePos::new(7, 5));
     for _ in 0..600 {
         if [first, replacement].iter().all(|anchor| {
-            let (w, h) = kind.base_stats().size;
+            let (w, h) = kind.size();
             (0..h).all(|dy| {
                 (0..w).all(|dx| {
                     !game
@@ -6304,7 +6290,7 @@ fn an_undrained_deferred_build_is_replaced_before_preflight() {
         game.state.tick(&[]);
     }
     for anchor in [first, replacement] {
-        let (w, h) = kind.base_stats().size;
+        let (w, h) = kind.size();
         for dy in 0..h {
             for dx in 0..w {
                 let tile = anchor.offset(dx, dy);
@@ -7284,8 +7270,7 @@ fn a_hidden_mine_does_not_change_placement_selection_or_resume_input() {
     let anchor = TilePos::new(12, 4);
     for mined in [false, true] {
         let scenario=oxide_sim::Scenario::from_json(&serde_json::json!({
-            "name":"Mine placement","seed":17,
-            "players":[{"name":"Builder","faction":"ferrous","scrap":800,"bot":false},{"name":"Mines","faction":"cupric","scrap":0,"bot":true}],
+            "name":"Mine placement","players":[{"name":"Builder","faction":"ferrous","scrap":800,"bot":false},{"name":"Mines","faction":"cupric","scrap":0,"bot":true}],
             "map":["########################","#1.....................#","#......................#","#......................#","#......................#","#......................#","#......................#","#...................2..#","#......................#","########################"],
             "units":[{"player":0,"kind":"harvester","x":4,"y":4},{"player":0,"kind":"harvester","x":10,"y":2}],
             "buildings":if mined {vec![serde_json::json!({"player":1,"kind":"scuttle_charge","x":12,"y":4})]}else{vec![]}
@@ -7339,8 +7324,7 @@ fn a_hidden_mine_does_not_change_placement_selection_or_resume_input() {
 fn selecting_an_unfinished_mine_does_not_reveal_its_condition_after_concealment() {
     use oxide_sim::BuildingKind;
     let scenario=oxide_sim::Scenario::from_json(&serde_json::json!({
-        "name":"Mine visibility","seed":17,
-        "players":[{"name":"Observer","faction":"ferrous","scrap":800,"bot":false},{"name":"Mines","faction":"cupric","scrap":800,"bot":true}],
+        "name":"Mine visibility","players":[{"name":"Observer","faction":"ferrous","scrap":800,"bot":false},{"name":"Mines","faction":"cupric","scrap":800,"bot":true}],
         "map":["########################","#1.....................#","#......................#","#......................#","#......................#","#......................#","#......................#","#...................2..#","#......................#","########################"],
         "units":[{"player":0,"kind":"harvester","x":10,"y":2},{"player":1,"kind":"harvester","x":13,"y":4}],
         "buildings":[{"player":1,"kind":"fabricator","x":17,"y":2}]

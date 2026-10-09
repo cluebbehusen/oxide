@@ -195,7 +195,6 @@ fn the_fog_view_keeps_a_hostile_landing_while_hiding_its_program() {
     let scenario = oxide_sim::Scenario {
         mode: ScenarioMode::Match,
         name: "landing-fog".into(),
-        seed: 11,
         map: vec![
             "########################".into(),
             "#1.....................#".into(),

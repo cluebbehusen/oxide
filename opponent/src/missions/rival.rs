@@ -73,12 +73,8 @@ impl Missions {
             let pressure: i64 = armed
                 .filter(|unit| {
                     observation.my_buildings.iter().any(|building| {
-                        gap(
-                            building.anchor,
-                            building.kind.base_stats().size,
-                            unit.tile,
-                            (1, 1),
-                        ) <= PRESSURE_GAP
+                        gap(building.anchor, building.kind.size(), unit.tile, (1, 1))
+                            <= PRESSURE_GAP
                     })
                 })
                 .map(|unit| cost(unit.kind))

@@ -37,7 +37,6 @@ fn field(chasm: bool, members: &[(UnitKind, i32, i32)], enemy: (UnitKind, i32, i
     Scenario {
         mode: ScenarioMode::Match,
         name: "focus".into(),
-        seed: 1,
         map,
         players: [Faction::Ferrous, Faction::Cupric]
             .into_iter()

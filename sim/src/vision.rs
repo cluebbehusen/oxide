@@ -51,7 +51,7 @@ fn ghost_built_default() -> bool {
 
 impl GhostBuilding {
     pub(crate) fn footprint(&self) -> impl Iterator<Item = TilePos> + use<> {
-        let (w, h) = self.kind.base_stats().size;
+        let (w, h) = self.kind.size();
         let anchor = self.anchor;
         (0..h).flat_map(move |dy| (0..w).map(move |dx| anchor.offset(dx, dy)))
     }
@@ -481,7 +481,7 @@ impl GroundSalvageDanger {
                     + crate::stats::HARVEST_STATIC_DANGER_MARGIN;
                 Some(StaticGroundPressure {
                     anchor: ghost.anchor,
-                    size: ghost.kind.base_stats().size,
+                    size: ghost.kind.size(),
                     reach_sq: range * range,
                 })
             })
@@ -498,7 +498,7 @@ impl GroundSalvageDanger {
                     &mut building_blocks,
                     state.map.width(),
                     building.anchor,
-                    building.stats().size,
+                    building.kind.size(),
                 );
             } else {
                 // A hostile structure placed during this tick's command
@@ -526,7 +526,7 @@ impl GroundSalvageDanger {
                 &mut building_blocks,
                 state.map.width(),
                 ghost.anchor,
-                ghost.kind.base_stats().size,
+                ghost.kind.size(),
             );
         }
         for row in &mut building_blocks {
@@ -1187,7 +1187,7 @@ pub(crate) fn refresh(state: &mut State) {
             .iter()
             .filter(|b| allied(b.player) && b.built)
         {
-            let (w, h) = building.stats().size;
+            let (w, h) = building.kind.size();
             view.stamp_rect(
                 building.anchor,
                 w,
@@ -1359,7 +1359,7 @@ fn radar_return(
     ring_distance: impl Fn(TilePos) -> Option<i32>,
 ) -> Option<TilePos> {
     let map_size = (state.map.width(), state.map.height());
-    let (anchor, size) = (building.anchor, building.stats().size);
+    let (anchor, size) = (building.anchor, building.kind.size());
     let ranked: Vec<_> = building
         .tiles()
         .filter_map(|t| {
@@ -1389,7 +1389,7 @@ fn radar_return(
         })
         .min_by_key(|b| b.id)
         .map(|foundry| {
-            let (w, h) = foundry.stats().size;
+            let (w, h) = foundry.kind.size();
             (
                 i64::from(foundry.anchor.x) * 2 + i64::from(w) - center.0,
                 i64::from(foundry.anchor.y) * 2 + i64::from(h) - center.1,

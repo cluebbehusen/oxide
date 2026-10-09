@@ -1,9 +1,8 @@
 //! Unit and building kinds, their stats, and global tuning constants.
 //!
-//! Unit and building stats are `const` tables here, alongside most global
-//! tuning constants; a few behavior tunables live beside the tick code that
-//! uses them. Changing a number changes sim behavior, so expect regression
-//! hashes to move (see AGENTS.md).
+//! Unit and building stats are `const` tables here, alongside the global
+//! tuning constants. Changing a number changes sim behavior, so expect
+//! regression hashes to move (see AGENTS.md).
 //!
 //! Combat is a weapons matrix: every kind carries a (possibly empty) list
 //! of weapons, each declaring which movement domains it can hit, whether it
@@ -208,8 +207,29 @@ pub struct WeaponStats {
     /// The shot is a real projectile: a Shell entity travels to a fixed
     /// fire-time aim point and resolves on arrival. Artillery may lead an
     /// existing path before launch, but the shell is never guided and a
-    /// later course change can dodge it. Hitscan when false.
-    pub projectile: bool,
+    /// later course change can dodge it. Hitscan when `None`.
+    pub projectile: Option<ProjectileStats>,
+}
+
+/// What a projectile weapon launches and how fast it flies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProjectileStats {
+    /// The payload's physical identity, which only presentation reads.
+    pub payload: ProjectileKind,
+    /// Flight speed in tiles per tick.
+    pub speed: Fx,
+}
+
+/// Physical identity of an in-flight payload, independent of its damage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectileKind {
+    /// An artillery shell.
+    Shell,
+    /// An Avalanche missile.
+    Missile,
+    /// An air-dropped bomb.
+    Bomb,
 }
 
 /// Gathering parameters for units that can harvest.
@@ -261,9 +281,9 @@ pub struct UnitStats {
     /// the Excavator).
     pub build_rate: u32,
     /// The machine is its own warhead: an ordered attack ends with the unit
-    /// pressing to contact and detonating (the `SAPPER_*` constants govern
-    /// the blast). Grants attack legality without weapons.
-    pub demolition: bool,
+    /// pressing to contact and detonating. Grants attack legality without
+    /// weapons.
+    pub demolition: Option<DemolitionStats>,
     /// Room this machine occupies aboard a transport. 0 means it can
     /// never be carried — every flyer, and the transport itself.
     pub transport_size: u8,
@@ -271,11 +291,52 @@ pub struct UnitStats {
     /// everything that is not a transport.
     pub transport_capacity: u8,
     /// Maximum compass steps (of 256) a committed airframe turns per tick.
-    /// 0 selects ordinary movement or [`UnitKind::cruise_turn_rate`]. A
+    /// 0 selects ordinary movement or [`Self::cruise_turn_rate`]. A
     /// nonzero rate makes the unit fly heading-first: it steers on a
     /// bounded arc, attacks on passes, and releases bombs only into its
     /// forward cone.
     pub turn_rate: u8,
+    /// Travel and fixed-gun traverse, in compass steps per tick, for
+    /// aircraft that bank in cruise and hover at rest. 0 for everything
+    /// else, including committed bombers and rotorcraft.
+    pub cruise_turn_rate: u8,
+    /// Independent turret traverse in compass steps per tick. 0 when the
+    /// gun turns with the hull.
+    pub turret_turn_rate: u8,
+    /// Hull turn speed in compass steps per tick for a ground unit that
+    /// does not scale its turning with its speed.
+    pub hull_turn_rate: Option<u8>,
+    /// Recoil spades the gun must deploy, stationary and aligned, before
+    /// it fires.
+    pub brace: Option<BraceStats>,
+    /// The ground blast a large airframe makes when it crashes.
+    pub crash: Option<CrashProfile>,
+}
+
+/// Recoil spades a gun deploys before it may fire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BraceStats {
+    /// Stationary, aligned ticks to deploy the spades fully; the gun
+    /// fires only when they are.
+    pub deploy_ticks: u8,
+    /// Ticks after a shot before the spades may start retracting.
+    pub recoil_ticks: u32,
+    /// Deployment lost per tick while retracting.
+    pub retract_per_tick: u8,
+}
+
+/// A machine's own warhead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DemolitionStats {
+    /// How close the machine presses to its target before the charge
+    /// fires, measured to the target's closest point.
+    pub contact_range: Fx,
+    /// Damage dealt directly to the building target.
+    pub structure_damage: u32,
+    /// Damage dealt to every hostile ground machine in the blast ring.
+    pub splash_damage: u32,
+    /// The blast ring's radius.
+    pub blast_radius: Fx,
 }
 
 impl UnitStats {
@@ -299,7 +360,7 @@ impl UnitStats {
 impl UnitStats {
     /// Whether this kind carries any weapon at all.
     pub const fn can_fight(&self) -> bool {
-        !self.weapons.is_empty() || self.demolition
+        !self.weapons.is_empty() || self.demolition.is_some()
     }
 
     /// Whether any weapon covers the given domain.
@@ -322,8 +383,6 @@ impl UnitStats {
 pub struct BuildingStats {
     /// Hit points when fully built.
     pub max_hp: u32,
-    /// Footprint in tiles (width, height), anchored top-left.
-    pub size: (i32, i32),
     /// Fog-of-war reveal radius, in tiles (from each footprint tile).
     pub vision: i32,
     /// What this building can train. Empty for non-producers.
@@ -337,6 +396,26 @@ pub struct BuildingStats {
 }
 
 impl BuildingKind {
+    /// Footprint in tiles (width, height), anchored top-left. Every tier
+    /// of a kind shares it.
+    pub const fn size(self) -> (i32, i32) {
+        match self {
+            BuildingKind::Turret
+            | BuildingKind::FlakTurret
+            | BuildingKind::Array
+            | BuildingKind::Reclaimer
+            | BuildingKind::Barricade
+            | BuildingKind::ScuttleCharge => (1, 1),
+            BuildingKind::Foundry
+            | BuildingKind::Fabricator
+            | BuildingKind::Bastion
+            | BuildingKind::RepairBay
+            | BuildingKind::Airworks
+            | BuildingKind::Crucible
+            | BuildingKind::Extractor => (2, 2),
+        }
+    }
+
     /// The tier ladder for this kind: index by a building's `tier`.
     /// Kinds without upgrades ladder alone at tier zero.
     pub const fn tiers(self) -> &'static [&'static BuildingStats] {
@@ -493,6 +572,10 @@ impl Role {
 /// Time between an airborne casualty and its ground impact.
 pub const AIRCRAFT_CRASH_TICKS: crate::Tick = 13;
 
+/// The share of its last motion a falling airframe keeps over the whole
+/// fall.
+pub const AIRCRAFT_CRASH_COAST: Fx = Fx::lit("0.8");
+
 /// Ground damage from a large aircraft reaching its crash site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CrashProfile {
@@ -500,57 +583,26 @@ pub struct CrashProfile {
     pub damage: u32,
     /// Blast radius in world tiles, including building footprints.
     pub radius: Fx,
+    /// Whether the falling airframe faces the way it was moving. Airframes
+    /// that never steer their heading in flight need this to fall in the
+    /// direction they drifted.
+    pub aligns_to_motion: bool,
 }
 
 impl UnitKind {
-    /// Large airframes that coast to a damaging ground impact.
-    pub const fn crash_profile(self) -> Option<CrashProfile> {
-        let damage = match self {
-            Self::Condor => 50,
-            Self::Moth | Self::Skyhook => 40,
-            _ => return None,
-        };
-        Some(CrashProfile {
-            damage,
-            radius: const { Fx::lit("2") },
-        })
-    }
-
-    /// Travel and fixed-gun traverse for aircraft that bank in cruise and
-    /// hover at rest. Independent of committed bomber flight and rotorcraft.
-    pub const fn cruise_turn_rate(self) -> u8 {
-        match self {
-            Self::Shrike => 6,
-            Self::Talon => 8,
-            Self::Darter | Self::Sylph | Self::Kestrel => 10,
-            Self::Gnat => 12,
-            _ => 0,
-        }
-    }
-
-    /// Independent turret traverse in compass steps per tick.
-    pub const fn turret_turn_rate(self) -> u8 {
-        match self {
-            Self::Buzzard => 6,
-            Self::Sentinel => 8,
-            Self::Warden => 5,
-            Self::Lancer => 6,
-            _ => 0,
-        }
-    }
-
-    /// Hull turn speed in compass steps per tick, scaled with ground mobility.
+    /// Hull turn speed in compass steps per tick: the kind's override, or
+    /// scaled with ground mobility.
     pub fn ground_turn_rate(self) -> u8 {
-        match self {
-            Self::Breaker => 4,
-            Self::Avalanche => 3,
-            Self::Bombard => 3,
-            _ if self.stats().domain == Domain::Ground => (self.stats().speed * Fx::from_num(64))
+        let stats = self.stats();
+        if stats.domain != Domain::Ground {
+            return 0;
+        }
+        stats.hull_turn_rate.unwrap_or_else(|| {
+            (stats.speed * Fx::from_num(64))
                 .ceil()
                 .to_num::<u8>()
-                .clamp(4, 10),
-            _ => 0,
-        }
+                .clamp(4, 10)
+        })
     }
 
     /// Ticks a ground chassis loses leaving a stop on the opposite bearing,
@@ -571,7 +623,8 @@ impl UnitKind {
 
     /// Ground gun mounts whose bearing is independent of the chassis.
     pub const fn has_ground_turret(self) -> bool {
-        matches!(self, Self::Sentinel | Self::Warden | Self::Lancer)
+        let stats = self.stats();
+        matches!(stats.domain, Domain::Ground) && stats.turret_turn_rate > 0
     }
 
     /// The faction whose roster carries this kind; `None` means shared.
@@ -723,9 +776,6 @@ impl UnitKind {
 /// by this.
 pub const MAX_WEAPONS: usize = 2;
 
-/// Stationary, aligned deployment time for the Bombard's recoil spades.
-pub const BOMBARD_BRACE_TICKS: u8 = 12;
-
 const HARVESTER: UnitStats = UnitStats {
     contact_reach: None,
     max_hp: 60,
@@ -744,10 +794,15 @@ const HARVESTER: UnitStats = UnitStats {
     requires: &[],
     welder: true,
     build_rate: 1,
-    demolition: false,
+    demolition: None,
     transport_size: 1,
     transport_capacity: 0,
     turn_rate: 0,
+    cruise_turn_rate: 0,
+    turret_turn_rate: 0,
+    hull_turn_rate: None,
+    brace: None,
+    crash: None,
 };
 
 const SENTINEL: UnitStats = UnitStats {
@@ -771,7 +826,7 @@ const SENTINEL: UnitStats = UnitStats {
             splash: None,
             indirect: false,
             salvo: 1,
-            projectile: false,
+            projectile: None,
         },
         // A weak anti-air weapon so a pure air army cannot ignore the core
         // army; dedicated anti-air remains the hard counter.
@@ -784,7 +839,7 @@ const SENTINEL: UnitStats = UnitStats {
             splash: None,
             indirect: false,
             salvo: 1,
-            projectile: false,
+            projectile: None,
         },
     ],
     aggro_range: Fx::lit("5"),
@@ -793,10 +848,15 @@ const SENTINEL: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
-    demolition: false,
+    demolition: None,
     transport_size: 1,
     transport_capacity: 0,
     turn_rate: 0,
+    cruise_turn_rate: 0,
+    turret_turn_rate: 8,
+    hull_turn_rate: None,
+    brace: None,
+    crash: None,
 };
 
 const SCUTTLER: UnitStats = UnitStats {
@@ -816,7 +876,7 @@ const SCUTTLER: UnitStats = UnitStats {
         splash: None,
         indirect: false,
         salvo: 1,
-        projectile: false,
+        projectile: None,
     }],
     aggro_range: Fx::lit("5"),
     harvest: None,
@@ -824,10 +884,15 @@ const SCUTTLER: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
-    demolition: false,
+    demolition: None,
     transport_size: 1,
     transport_capacity: 0,
     turn_rate: 0,
+    cruise_turn_rate: 0,
+    turret_turn_rate: 0,
+    hull_turn_rate: None,
+    brace: None,
+    crash: None,
 };
 
 const LANCER: UnitStats = UnitStats {
@@ -849,7 +914,7 @@ const LANCER: UnitStats = UnitStats {
         splash: None,
         indirect: false,
         salvo: 1,
-        projectile: false,
+        projectile: None,
     }],
     aggro_range: Fx::lit("5"),
     harvest: None,
@@ -857,10 +922,15 @@ const LANCER: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
-    demolition: false,
+    demolition: None,
     transport_size: 2,
     transport_capacity: 0,
     turn_rate: 0,
+    cruise_turn_rate: 0,
+    turret_turn_rate: 6,
+    hull_turn_rate: None,
+    brace: None,
+    crash: None,
 };
 
 const BOMBARD: UnitStats = UnitStats {
@@ -880,7 +950,10 @@ const BOMBARD: UnitStats = UnitStats {
         splash: Some(Fx::lit("1.4")),
         indirect: true,
         salvo: 1,
-        projectile: true,
+        projectile: Some(ProjectileStats {
+            payload: ProjectileKind::Shell,
+            speed: Fx::lit("0.30"),
+        }),
     }],
     aggro_range: Fx::lit("9.5"), // its whole spotter-enabled firing envelope
     harvest: None,
@@ -888,10 +961,19 @@ const BOMBARD: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
-    demolition: false,
+    demolition: None,
     transport_size: 3,
     transport_capacity: 0,
     turn_rate: 0,
+    cruise_turn_rate: 0,
+    turret_turn_rate: 0,
+    hull_turn_rate: Some(3),
+    brace: Some(BraceStats {
+        deploy_ticks: 12,
+        recoil_ticks: 8,
+        retract_per_tick: 3,
+    }),
+    crash: None,
 };
 
 const FLAKHOUND: UnitStats = UnitStats {
@@ -911,7 +993,7 @@ const FLAKHOUND: UnitStats = UnitStats {
         splash: Some(Fx::lit("1.2")),
         indirect: false,
         salvo: 1,
-        projectile: false,
+        projectile: None,
     }],
     aggro_range: Fx::lit("5"),
     harvest: None,
@@ -919,10 +1001,15 @@ const FLAKHOUND: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
-    demolition: false,
+    demolition: None,
     transport_size: 2,
     transport_capacity: 0,
     turn_rate: 0,
+    cruise_turn_rate: 0,
+    turret_turn_rate: 0,
+    hull_turn_rate: None,
+    brace: None,
+    crash: None,
 };
 
 const STINGER: UnitStats = UnitStats {
@@ -942,7 +1029,7 @@ const STINGER: UnitStats = UnitStats {
         splash: Some(Fx::lit("1")),
         indirect: false,
         salvo: 1,
-        projectile: false,
+        projectile: None,
     }],
     aggro_range: Fx::lit("5"),
     harvest: None,
@@ -950,10 +1037,15 @@ const STINGER: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
-    demolition: false,
+    demolition: None,
     transport_size: 1,
     transport_capacity: 0,
     turn_rate: 0,
+    cruise_turn_rate: 0,
+    turret_turn_rate: 0,
+    hull_turn_rate: None,
+    brace: None,
+    crash: None,
 };
 
 const BUZZARD: UnitStats = UnitStats {
@@ -975,7 +1067,7 @@ const BUZZARD: UnitStats = UnitStats {
         splash: None,
         indirect: false,
         salvo: 1,
-        projectile: false,
+        projectile: None,
     }],
     aggro_range: Fx::lit("5"),
     harvest: None,
@@ -983,10 +1075,15 @@ const BUZZARD: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
-    demolition: false,
+    demolition: None,
     transport_size: 0,
     transport_capacity: 0,
     turn_rate: 0,
+    cruise_turn_rate: 0,
+    turret_turn_rate: 6,
+    hull_turn_rate: None,
+    brace: None,
+    crash: None,
 };
 
 const DARTER: UnitStats = UnitStats {
@@ -1007,7 +1104,7 @@ const DARTER: UnitStats = UnitStats {
         splash: None,
         indirect: false,
         salvo: 1,
-        projectile: false,
+        projectile: None,
     }],
     aggro_range: Fx::lit("5"),
     harvest: None,
@@ -1015,10 +1112,15 @@ const DARTER: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
-    demolition: false,
+    demolition: None,
     transport_size: 0,
     transport_capacity: 0,
     turn_rate: 0,
+    cruise_turn_rate: 10,
+    turret_turn_rate: 0,
+    hull_turn_rate: None,
+    brace: None,
+    crash: None,
 };
 
 const TALON: UnitStats = UnitStats {
@@ -1038,7 +1140,7 @@ const TALON: UnitStats = UnitStats {
         splash: None,
         indirect: false,
         salvo: 1,
-        projectile: false,
+        projectile: None,
     }],
     aggro_range: Fx::lit("5"),
     harvest: None,
@@ -1046,10 +1148,15 @@ const TALON: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
-    demolition: false,
+    demolition: None,
     transport_size: 0,
     transport_capacity: 0,
     turn_rate: 0,
+    cruise_turn_rate: 8,
+    turret_turn_rate: 0,
+    hull_turn_rate: None,
+    brace: None,
+    crash: None,
 };
 
 const WISP: UnitStats = UnitStats {
@@ -1069,7 +1176,7 @@ const WISP: UnitStats = UnitStats {
         splash: None,
         indirect: false,
         salvo: 1,
-        projectile: false,
+        projectile: None,
     }],
     aggro_range: Fx::lit("5"),
     harvest: None,
@@ -1077,10 +1184,15 @@ const WISP: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
-    demolition: false,
+    demolition: None,
     transport_size: 0,
     transport_capacity: 0,
     turn_rate: 0,
+    cruise_turn_rate: 0,
+    turret_turn_rate: 0,
+    hull_turn_rate: None,
+    brace: None,
+    crash: None,
 };
 
 const WARDEN: UnitStats = UnitStats {
@@ -1102,7 +1214,7 @@ const WARDEN: UnitStats = UnitStats {
         splash: None,
         indirect: false,
         salvo: 1,
-        projectile: false,
+        projectile: None,
     }],
     aggro_range: Fx::lit("5"),
     harvest: None,
@@ -1110,10 +1222,15 @@ const WARDEN: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
-    demolition: false,
+    demolition: None,
     transport_size: 2,
     transport_capacity: 0,
     turn_rate: 0,
+    cruise_turn_rate: 0,
+    turret_turn_rate: 5,
+    hull_turn_rate: None,
+    brace: None,
+    crash: None,
 };
 
 const TENDER: UnitStats = UnitStats {
@@ -1133,10 +1250,15 @@ const TENDER: UnitStats = UnitStats {
     requires: &[],
     welder: true,
     build_rate: 1,
-    demolition: false,
+    demolition: None,
     transport_size: 2,
     transport_capacity: 0,
     turn_rate: 0,
+    cruise_turn_rate: 0,
+    turret_turn_rate: 0,
+    hull_turn_rate: None,
+    brace: None,
+    crash: None,
 };
 
 const EXCAVATOR: UnitStats = UnitStats {
@@ -1157,10 +1279,15 @@ const EXCAVATOR: UnitStats = UnitStats {
     requires: &[BuildingKind::Fabricator],
     welder: true,
     build_rate: 2,
-    demolition: false,
+    demolition: None,
     transport_size: 2,
     transport_capacity: 0,
     turn_rate: 0,
+    cruise_turn_rate: 0,
+    turret_turn_rate: 0,
+    hull_turn_rate: None,
+    brace: None,
+    crash: None,
 };
 
 const KESTREL: UnitStats = UnitStats {
@@ -1178,10 +1305,15 @@ const KESTREL: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
-    demolition: false,
+    demolition: None,
     transport_size: 0,
     transport_capacity: 0,
     turn_rate: 0,
+    cruise_turn_rate: 10,
+    turret_turn_rate: 0,
+    hull_turn_rate: None,
+    brace: None,
+    crash: None,
 };
 
 const GNAT: UnitStats = UnitStats {
@@ -1199,10 +1331,15 @@ const GNAT: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
-    demolition: false,
+    demolition: None,
     transport_size: 0,
     transport_capacity: 0,
     turn_rate: 0,
+    cruise_turn_rate: 12,
+    turret_turn_rate: 0,
+    hull_turn_rate: None,
+    brace: None,
+    crash: None,
 };
 
 const SHRIKE: UnitStats = UnitStats {
@@ -1222,7 +1359,7 @@ const SHRIKE: UnitStats = UnitStats {
         splash: None,
         indirect: false,
         salvo: 1,
-        projectile: false,
+        projectile: None,
     }],
     aggro_range: Fx::lit("6"),
     harvest: None,
@@ -1230,10 +1367,15 @@ const SHRIKE: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
-    demolition: false,
+    demolition: None,
     transport_size: 0,
     transport_capacity: 0,
     turn_rate: 0,
+    cruise_turn_rate: 6,
+    turret_turn_rate: 0,
+    hull_turn_rate: None,
+    brace: None,
+    crash: None,
 };
 
 const SYLPH: UnitStats = UnitStats {
@@ -1253,7 +1395,7 @@ const SYLPH: UnitStats = UnitStats {
         splash: None,
         indirect: false,
         salvo: 1,
-        projectile: false,
+        projectile: None,
     }],
     aggro_range: Fx::lit("6"),
     harvest: None,
@@ -1261,10 +1403,15 @@ const SYLPH: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
-    demolition: false,
+    demolition: None,
     transport_size: 0,
     transport_capacity: 0,
     turn_rate: 0,
+    cruise_turn_rate: 10,
+    turret_turn_rate: 0,
+    hull_turn_rate: None,
+    brace: None,
+    crash: None,
 };
 
 const CONDOR: UnitStats = UnitStats {
@@ -1284,7 +1431,10 @@ const CONDOR: UnitStats = UnitStats {
         splash: Some(Fx::lit("2.2")),
         indirect: true,
         salvo: 1,
-        projectile: true,
+        projectile: Some(ProjectileStats {
+            payload: ProjectileKind::Bomb,
+            speed: Fx::lit("0.30"),
+        }),
     }],
     aggro_range: Fx::lit("5"),
     harvest: None,
@@ -1292,10 +1442,19 @@ const CONDOR: UnitStats = UnitStats {
     requires: &[BuildingKind::Crucible],
     welder: false,
     build_rate: 1,
-    demolition: false,
+    demolition: None,
     transport_size: 0,
     transport_capacity: 0,
     turn_rate: 2, // ~2.2-tile turn radius
+    cruise_turn_rate: 0,
+    turret_turn_rate: 0,
+    hull_turn_rate: None,
+    brace: None,
+    crash: Some(CrashProfile {
+        damage: 50,
+        radius: Fx::lit("2"),
+        aligns_to_motion: false,
+    }),
 };
 
 const MOTH: UnitStats = UnitStats {
@@ -1315,7 +1474,10 @@ const MOTH: UnitStats = UnitStats {
         splash: Some(Fx::lit("1.2")),
         indirect: true,
         salvo: 6, // the stick, laid along the flight line
-        projectile: true,
+        projectile: Some(ProjectileStats {
+            payload: ProjectileKind::Bomb,
+            speed: Fx::lit("0.30"),
+        }),
     }],
     aggro_range: Fx::lit("5"),
     harvest: None,
@@ -1323,10 +1485,19 @@ const MOTH: UnitStats = UnitStats {
     requires: &[BuildingKind::Crucible],
     welder: false,
     build_rate: 1,
-    demolition: false,
+    demolition: None,
     transport_size: 0,
     transport_capacity: 0,
     turn_rate: 3, // tighter loops than the Condor, weaker punch
+    cruise_turn_rate: 0,
+    turret_turn_rate: 0,
+    hull_turn_rate: None,
+    brace: None,
+    crash: Some(CrashProfile {
+        damage: 40,
+        radius: Fx::lit("2"),
+        aligns_to_motion: false,
+    }),
 };
 
 const BREAKER: UnitStats = UnitStats {
@@ -1349,7 +1520,7 @@ const BREAKER: UnitStats = UnitStats {
         splash: Some(Fx::lit("1.5")),
         indirect: false,
         salvo: 1,
-        projectile: false,
+        projectile: None,
     }],
     aggro_range: Fx::lit("6"),
     harvest: None,
@@ -1357,10 +1528,15 @@ const BREAKER: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
-    demolition: false,
+    demolition: None,
     transport_size: 4,
     transport_capacity: 0,
     turn_rate: 0,
+    cruise_turn_rate: 0,
+    turret_turn_rate: 0,
+    hull_turn_rate: Some(4),
+    brace: None,
+    crash: None,
 };
 
 const AVALANCHE: UnitStats = UnitStats {
@@ -1383,7 +1559,10 @@ const AVALANCHE: UnitStats = UnitStats {
         splash: Some(Fx::lit("1.6")),
         indirect: true,
         salvo: 1,
-        projectile: true,
+        projectile: Some(ProjectileStats {
+            payload: ProjectileKind::Missile,
+            speed: Fx::lit("0.30"),
+        }),
     }],
     aggro_range: Fx::lit("14"),
     harvest: None,
@@ -1391,10 +1570,15 @@ const AVALANCHE: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
-    demolition: false,
+    demolition: None,
     transport_size: 4,
     transport_capacity: 0,
     turn_rate: 0,
+    cruise_turn_rate: 0,
+    turret_turn_rate: 0,
+    hull_turn_rate: Some(3),
+    brace: None,
+    crash: None,
 };
 
 const SKYHOOK: UnitStats = UnitStats {
@@ -1412,10 +1596,19 @@ const SKYHOOK: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
-    demolition: false,
+    demolition: None,
     transport_size: 0,
     transport_capacity: 4,
     turn_rate: 0,
+    cruise_turn_rate: 0,
+    turret_turn_rate: 0,
+    hull_turn_rate: None,
+    brace: None,
+    crash: Some(CrashProfile {
+        damage: 40,
+        radius: Fx::lit("2"),
+        aligns_to_motion: true,
+    }),
 };
 
 const SAPPER: UnitStats = UnitStats {
@@ -1433,17 +1626,26 @@ const SAPPER: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
-    demolition: true,
+    demolition: Some(DemolitionStats {
+        contact_range: Fx::lit("0.9"),
+        structure_damage: 250,
+        splash_damage: 60,
+        blast_radius: Fx::lit("1.5"),
+    }),
     transport_size: 1,
     transport_capacity: 0,
     turn_rate: 0,
+    cruise_turn_rate: 0,
+    turret_turn_rate: 0,
+    hull_turn_rate: None,
+    brace: None,
+    crash: None,
 };
 
 const FOUNDRY: BuildingStats = BuildingStats {
     // Durable enough that an opening rush creates pressure without
     // routinely ending a match before either side develops.
     max_hp: 1600,
-    size: (2, 2),
     vision: 8,
     produces: &[
         UnitKind::Harvester,
@@ -1464,7 +1666,6 @@ const FOUNDRY: BuildingStats = BuildingStats {
 
 const TURRET: BuildingStats = BuildingStats {
     max_hp: 350,
-    size: (1, 1),
     vision: 6,
     produces: &[],
     weapons: &[WeaponStats {
@@ -1476,7 +1677,7 @@ const TURRET: BuildingStats = BuildingStats {
         splash: None,
         indirect: false,
         salvo: 1,
-        projectile: false,
+        projectile: None,
     }],
     construction: Some(ConstructionStats {
         cost: 100,
@@ -1487,7 +1688,6 @@ const TURRET: BuildingStats = BuildingStats {
 
 const FABRICATOR: BuildingStats = BuildingStats {
     max_hp: 500,
-    size: (2, 2),
     vision: 6,
     // Both factions' variants are listed; the train gate deals each seat
     // only its own. Order groups the roles for the HUD's slot labels.
@@ -1510,7 +1710,6 @@ const FABRICATOR: BuildingStats = BuildingStats {
 
 const FLAK_TURRET: BuildingStats = BuildingStats {
     max_hp: 300,
-    size: (1, 1),
     vision: 7,
     produces: &[],
     weapons: &[WeaponStats {
@@ -1522,7 +1721,7 @@ const FLAK_TURRET: BuildingStats = BuildingStats {
         splash: Some(Fx::lit("1.2")),
         indirect: false,
         salvo: 1,
-        projectile: false,
+        projectile: None,
     }],
     construction: Some(ConstructionStats {
         cost: 90,
@@ -1533,7 +1732,6 @@ const FLAK_TURRET: BuildingStats = BuildingStats {
 
 const BASTION: BuildingStats = BuildingStats {
     max_hp: 500,
-    size: (2, 2),
     vision: 6,
     produces: &[],
     weapons: &[WeaponStats {
@@ -1549,7 +1747,10 @@ const BASTION: BuildingStats = BuildingStats {
         splash: Some(Fx::lit("1.3")),
         indirect: true,
         salvo: 1,
-        projectile: true,
+        projectile: Some(ProjectileStats {
+            payload: ProjectileKind::Shell,
+            speed: Fx::lit("0.30"),
+        }),
     }],
     // Competes with the mobile Bombard by trading mobility for a durable
     // firing position rather than losing the comparison on price alone.
@@ -1564,7 +1765,6 @@ const ARRAY: BuildingStats = BuildingStats {
     // A permanent early-warning sentry. Unlike a scout aircraft it does
     // not need attention, but it cannot move or identify radar contacts.
     max_hp: 250,
-    size: (1, 1),
     vision: 9, // the inner ring: true sight
     produces: &[],
     weapons: &[],
@@ -1577,7 +1777,6 @@ const ARRAY: BuildingStats = BuildingStats {
 
 const RECLAIMER: BuildingStats = BuildingStats {
     max_hp: 300,
-    size: (1, 1),
     vision: 4,
     produces: &[],
     weapons: &[],
@@ -1590,7 +1789,6 @@ const RECLAIMER: BuildingStats = BuildingStats {
 
 const REPAIR_BAY: BuildingStats = BuildingStats {
     max_hp: 400,
-    size: (2, 2),
     vision: 5,
     produces: &[],
     weapons: &[],
@@ -1603,7 +1801,6 @@ const REPAIR_BAY: BuildingStats = BuildingStats {
 
 const AIRWORKS: BuildingStats = BuildingStats {
     max_hp: 500,
-    size: (2, 2),
     vision: 6,
     // Both factions' wings are listed; the train gate deals each seat
     // only its own.
@@ -1630,7 +1827,6 @@ const AIRWORKS: BuildingStats = BuildingStats {
 
 const CRUCIBLE: BuildingStats = BuildingStats {
     max_hp: 900,
-    size: (2, 2),
     vision: 6,
     produces: &[UnitKind::Breaker, UnitKind::Avalanche],
     weapons: &[],
@@ -1646,7 +1842,6 @@ const CRUCIBLE: BuildingStats = BuildingStats {
 
 const BARRICADE: BuildingStats = BuildingStats {
     max_hp: 400,
-    size: (1, 1),
     vision: 1,
     produces: &[],
     weapons: &[],
@@ -1659,7 +1854,6 @@ const BARRICADE: BuildingStats = BuildingStats {
 
 const SCUTTLE_CHARGE: BuildingStats = BuildingStats {
     max_hp: 20,
-    size: (1, 1),
     vision: 1,
     produces: &[],
     weapons: &[],
@@ -1672,7 +1866,6 @@ const SCUTTLE_CHARGE: BuildingStats = BuildingStats {
 
 const EXTRACTOR: BuildingStats = BuildingStats {
     max_hp: 600,
-    size: (2, 2),
     vision: 4,
     produces: &[],
     weapons: &[],
@@ -1695,7 +1888,6 @@ const EXTRACTOR: BuildingStats = BuildingStats {
 
 const HEAVY_TURRET: BuildingStats = BuildingStats {
     max_hp: 500,
-    size: (1, 1),
     vision: 6,
     produces: &[],
     weapons: &[WeaponStats {
@@ -1707,7 +1899,7 @@ const HEAVY_TURRET: BuildingStats = BuildingStats {
         splash: None,
         indirect: false,
         salvo: 1,
-        projectile: false,
+        projectile: None,
     }],
     construction: Some(ConstructionStats {
         cost: 150,
@@ -1718,7 +1910,6 @@ const HEAVY_TURRET: BuildingStats = BuildingStats {
 
 const BULWARK: BuildingStats = BuildingStats {
     max_hp: 900,
-    size: (1, 1),
     vision: 7,
     produces: &[],
     weapons: &[WeaponStats {
@@ -1730,7 +1921,7 @@ const BULWARK: BuildingStats = BuildingStats {
         splash: None,
         indirect: false,
         salvo: 1,
-        projectile: false,
+        projectile: None,
     }],
     construction: Some(ConstructionStats {
         cost: 300,
@@ -1741,7 +1932,6 @@ const BULWARK: BuildingStats = BuildingStats {
 
 const BURST_FLAK: BuildingStats = BuildingStats {
     max_hp: 400,
-    size: (1, 1),
     vision: 7,
     produces: &[],
     weapons: &[WeaponStats {
@@ -1753,7 +1943,7 @@ const BURST_FLAK: BuildingStats = BuildingStats {
         splash: Some(Fx::lit("1.5")),
         indirect: false,
         salvo: 1,
-        projectile: false,
+        projectile: None,
     }],
     construction: Some(ConstructionStats {
         cost: 120,
@@ -1764,7 +1954,6 @@ const BURST_FLAK: BuildingStats = BuildingStats {
 
 const REFINERY: BuildingStats = BuildingStats {
     max_hp: 400,
-    size: (1, 1),
     vision: 4,
     produces: &[],
     weapons: &[],
@@ -1777,7 +1966,6 @@ const REFINERY: BuildingStats = BuildingStats {
 
 const DEEP_ARRAY: BuildingStats = BuildingStats {
     max_hp: 300,
-    size: (1, 1),
     vision: 11,
     produces: &[],
     weapons: &[],
@@ -1829,7 +2017,7 @@ impl UnitKind {
             && stats
                 .weapons
                 .iter()
-                .any(|weapon| weapon.targets.covers(Domain::Ground) && !weapon.projectile)
+                .any(|weapon| weapon.targets.covers(Domain::Ground) && weapon.projectile.is_none())
     }
 }
 
@@ -1954,11 +2142,6 @@ pub const WRECK_DECAY_TICKS: u64 = 300;
 /// owner). Blips never satisfy targeted-attack visibility.
 pub const RADAR_DETECT_RADIUS: i32 = 20;
 
-/// Shell flight speed in tiles per tick. Slow enough that a reacting target
-/// can change course before a full-range shell lands, while path-aware aim
-/// still catches a straight commitment.
-pub const SHELL_SPEED: Fx = Fx::lit("0.30");
-
 /// Ticks per scrap credited by each built Reclaimer. Slow enough to serve as
 /// insurance and a stalemate valve rather than an opening.
 pub const RECLAIMER_PERIOD: u64 = 24;
@@ -1994,6 +2177,13 @@ pub const BOMBER_CONE_DOT: Fx = Fx::lit("0.92");
 
 /// Distance between consecutive bombs of a stick along the flight line.
 pub const BOMB_SALVO_SPACING: Fx = Fx::lit("0.8");
+
+/// The furthest ahead, in ticks, a projectile weapon leads a moving target.
+pub const MAX_LEAD_TICKS: u64 = 96;
+
+/// The furthest ring searched for chase stand-ins; it covers the longest
+/// anti-air reach (range 5 lands exactly on ring 5's axis tiles).
+pub const CHASE_STAND_RADIUS: i32 = 5;
 
 /// Acceptance slack added to a turn-limited flier's computed turn
 /// radius: the ring inside which a waypoint or goal counts as reached.
@@ -2059,20 +2249,6 @@ pub const CHARGE_BASE_ARRAY_DETECT_RADIUS: i32 = 12;
 /// A built Deep Array (Array tier 1) reveals buried charges inside this
 /// ring (euclidean, like radar contacts).
 pub const CHARGE_ARRAY_DETECT_RADIUS: i32 = 22;
-
-/// Damage a detonating Sapper deals directly to its building target.
-pub const SAPPER_STRUCTURE_DAMAGE: u32 = 250;
-
-/// Damage a detonating Sapper deals to every hostile ground machine in its
-/// blast ring.
-pub const SAPPER_SPLASH_DAMAGE: u32 = 60;
-
-/// The Sapper's blast ring.
-pub const SAPPER_BLAST_RADIUS: Fx = Fx::lit("1.5");
-
-/// How close the Sapper must press to its target before the charge
-/// fires (measured to the target's closest point).
-pub const SAPPER_CONTACT_RANGE: Fx = Fx::lit("0.9");
 
 /// Ticks per scrap credited by a tier-one Reclaimer (the Refinery).
 pub const REFINERY_PERIOD: u64 = 10;
@@ -2219,6 +2395,22 @@ pub const HARVEST_STATIC_DANGER_MARGIN: Fx = Fx::lit("1");
 /// for the tile itself and ends as close as it can get.
 pub const GOAL_SNAP_RADIUS: i32 = 3;
 
+/// The wider ring an air goal on a peak snaps within: flyers clear every
+/// tile but peaks, so their nearest open sky can sit farther out.
+pub const AIR_GOAL_SNAP_RADIUS: i32 = GOAL_SNAP_RADIUS + 3;
+
+/// Same-owner bodies may close to this fraction of their combined radii,
+/// so a friendly group packs tighter than it spaces from enemies.
+pub const SAME_OWNER_COMPRESSION: Fx = Fx::lit("0.65");
+
+/// How far from its body a neighbor's destination may lie and still count
+/// as a claim on that position.
+pub const ARRIVAL_WINDOW: Fx = Fx::lit("1.25");
+
+/// Clearance beyond a unit's diameter that a waiting position keeps from
+/// the contested one.
+pub const WAITING_CLEARANCE: Fx = Fx::lit("0.20");
+
 /// How far the footprint-eviction pre-pass ring-scans for a walkable
 /// escape tile. Any real escape starts on an adjacent open tile (A*
 /// cannot leave a fully sealed one), so the reach only pads for
@@ -2261,6 +2453,29 @@ pub const STALL_REPLAN_TICKS: u8 = 12;
 /// route, and one holding cargo with no safe way to a drop-off keeps standing.
 /// Either reacts at once when the hold begins; only the repeat waits.
 pub const HARVEST_DANGER_RETRY_TICKS: u64 = 16;
+
+/// Existing routes re-check only this near segment each tick. A Harvester
+/// needs 64 ticks to traverse eight clear cardinal tiles, so this is
+/// ample deterministic warning without turning every worker tick into a
+/// full path-length by threat-count scan.
+pub const HARVEST_DANGER_LOOKAHEAD: usize = 8;
+
+/// The near slice of the lookahead that always reacts immediately: a threat
+/// inside these route tiles replans this tick. Only a flag beyond this zone
+/// defers to the staggered replan window, [`HARVEST_REPLAN_PERIOD`].
+pub const HARVEST_DANGER_REACT_ZONE: usize = 3;
+
+/// A worker whose retained route fails the danger lookahead only in the far
+/// zone does not re-plan every tick while the threat lingers; that would run
+/// a full multi-candidate A* per worker per tick and jitter the fleet
+/// between near-equal detours. Far-zone replans stagger on this period,
+/// keyed by owner-local unit rank so a fleet never re-plans in unison
+/// without making cross-seat production ids a tactical input; near-zone
+/// threats never wait.
+pub const HARVEST_REPLAN_PERIOD: u64 = 4;
+
+/// Ticks between repeated `DangerHold` reports for one waiting worker.
+pub const DANGER_HOLD_REPORT_PERIOD: u64 = 100;
 
 /// How many upcoming route waypoints the ground follower may skip per tick
 /// toward the furthest one its hull can reach on a straight, clear leg.

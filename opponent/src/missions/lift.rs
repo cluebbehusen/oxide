@@ -716,7 +716,7 @@ impl<'a> Lifting<'a> {
     /// on lies on the target's island, so none land across a chasm.
     fn landing(&self, target: Objective) -> Option<TilePos> {
         let map = self.map;
-        let size = target.building.base_stats().size;
+        let size = target.building.size();
         let island = map.component(target.anchor)?;
         let spread_ok = |tile: TilePos| {
             (-SPREAD..=SPREAD).all(|dy| {
@@ -774,14 +774,7 @@ impl<'a> Lifting<'a> {
                 .iter()
                 .chain(&observation.my_buildings)
                 .chain(&observation.ally_buildings)
-                .any(|building| {
-                    gap(
-                        building.anchor,
-                        building.kind.base_stats().size,
-                        tile,
-                        (1, 1),
-                    ) < 0
-                })
+                .any(|building| gap(building.anchor, building.kind.size(), tile, (1, 1)) < 0)
     }
 
     /// The open home tile nearest `carrier`, away from other aircraft, where
@@ -823,7 +816,7 @@ impl<'a> Lifting<'a> {
     /// The tile beside `target` on its island nearest `from`.
     fn hunt_tile(&self, target: Objective, from: TilePos) -> Option<TilePos> {
         let island = self.map.component(target.anchor)?;
-        ring(target.anchor, target.building.base_stats().size)
+        ring(target.anchor, target.building.size())
             .filter(|tile| self.map.component(*tile) == Some(island))
             .min_by_key(|tile| {
                 (

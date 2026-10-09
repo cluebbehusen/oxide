@@ -1052,9 +1052,9 @@ fn ratio(value: u32, total: u32) -> f32 {
 }
 
 fn sapper_at_contact(state: &State, unit: &Unit) -> bool {
-    if unit.kind != UnitKind::Sapper {
+    let Some(demolition) = unit.kind.stats().demolition else {
         return false;
-    }
+    };
     let Order::Attack { target, .. } = unit.order else {
         return false;
     };
@@ -1062,7 +1062,7 @@ fn sapper_at_contact(state: &State, unit: &Unit) -> bool {
         .attack_view(unit.player, target)
         .map(|view| view.aim_from(unit.pos));
     target_pos.is_some_and(|target| {
-        let reach = oxide_sim::stats::SAPPER_CONTACT_RANGE;
+        let reach = demolition.contact_range;
         unit.pos.dist_sq(target) <= reach * reach
     })
 }

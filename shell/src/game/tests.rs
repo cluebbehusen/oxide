@@ -300,7 +300,7 @@ fn articulated_hulls_keep_authoritative_bearings_when_paused_or_jumped() {
 fn cruising_aircraft_keep_authoritative_facing_across_timeline_jumps() {
     for kind in UnitKind::ALL
         .into_iter()
-        .filter(|kind| kind.cruise_turn_rate() > 0)
+        .filter(|kind| kind.stats().cruise_turn_rate > 0)
     {
         let mut scenario = Scenario::skirmish();
         scenario.units[0].kind = kind;
@@ -328,7 +328,7 @@ fn head_on_pair() -> (Game, [UnitId; 2]) {
     let mut map = vec!["........................................"; 24];
     map[2] = "..1.....................................";
     let scenario = serde_json::from_value(serde_json::json!({
-        "name": "Head-on pass", "seed": 1, "map": map,
+        "name": "Head-on pass", "map": map,
         "players": [{"name": "You", "faction": "ferrous", "scrap": 0, "bot": false}],
         "units": [
             {"player": 0, "kind": "sentinel", "x": 12, "y": 12},
@@ -391,7 +391,7 @@ fn rotor_game(kind: UnitKind) -> Game {
     let mut map = vec!["........................................"; 24];
     map[2] = "..1................................2....";
     let scenario = serde_json::from_value(serde_json::json!({
-        "name": "Rotor turning", "seed": 1, "map": map,
+        "name": "Rotor turning", "map": map,
         "players": [
             {"name": "You", "faction": "ferrous", "scrap": 0, "bot": false},
             {"name": "Target", "faction": "cupric", "scrap": 0, "bot": true}
@@ -802,7 +802,6 @@ fn a_team_concession_raises_the_surrender_overlay() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "concede-arena".into(),
-        seed: 42,
         map: vec![
             "####################".into(),
             "#1..............3..#".into(),

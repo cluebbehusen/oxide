@@ -63,8 +63,8 @@ where a profile shows a real win.
 
 ## Determinism contract
 
-The target is strict: **same seed plus same command log produces bit-identical
-state on every run and platform.**
+The target is strict: **the same scenario plus the same command log produces
+bit-identical state on every run and platform.**
 
 - `chassis`, `oxide-sim`, and `oxide-opponent` contain no floating-point
   arithmetic. Use `chassis::fx::Fx`; floats are presentation-only.

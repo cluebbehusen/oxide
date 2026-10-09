@@ -40,7 +40,6 @@ fn sandbox(map: Vec<String>, teams: &[Option<u8>], units: &[(u8, UnitKind, i32, 
     Scenario {
         mode: ScenarioMode::Sandbox,
         name: "clicked-tile-goals".into(),
-        seed: 23,
         map,
         players: teams
             .iter()

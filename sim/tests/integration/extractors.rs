@@ -21,7 +21,6 @@ fn arena(scrap: u32, units: Vec<UnitSpec>, buildings: Vec<BuildingSpec>) -> Scen
     Scenario {
         mode: ScenarioMode::Match,
         name: "extractor-arena".into(),
-        seed: 7,
         map: vec![
             "####################".into(),
             "#1.................#".into(),
@@ -96,7 +95,6 @@ fn support_arena(
     Scenario {
         mode: ScenarioMode::Match,
         name: "extractor-support-arena".into(),
-        seed: 17,
         map: tiles
             .into_iter()
             .map(|row| row.into_iter().collect())
@@ -139,7 +137,6 @@ fn fog_arena(units: Vec<UnitSpec>) -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "extractor-fog-arena".into(),
-        seed: 11,
         map: vec![
             "################################".into(),
             "#1..........................2..#".into(),

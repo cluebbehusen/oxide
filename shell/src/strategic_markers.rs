@@ -271,7 +271,7 @@ pub(crate) fn draw_buildings(game: &Scene<'_>) {
     push_camera_state();
     set_camera(&marker_camera(viewport, scale));
     for (kind, owner, anchor, built, memory, selected, fade) in markers {
-        let (w, h) = kind.base_stats().size;
+        let (w, h) = kind.size();
         let world = vec2(
             anchor.x as f32 + w as f32 * 0.5,
             anchor.y as f32 + h as f32 * 0.5,

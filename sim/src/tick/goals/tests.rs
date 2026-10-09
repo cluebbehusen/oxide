@@ -22,7 +22,6 @@ fn world(map: &[&str], units: &[(UnitKind, i32, i32)]) -> State {
     Scenario {
         mode: ScenarioMode::Sandbox,
         name: "goals".into(),
-        seed: 5,
         map: map.iter().map(|row| (*row).to_owned()).collect(),
         players: vec![PlayerSpec {
             name: "p0".into(),

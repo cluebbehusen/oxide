@@ -116,7 +116,7 @@ fn independent_ground_guns_traverse_without_spinning_the_hull() {
             let bearing = u.weapon_heading();
             assert!(
                 bearing.wrapping_sub(previous).cast_signed().unsigned_abs()
-                    <= kind.turret_turn_rate()
+                    <= kind.stats().turret_turn_rate
             );
             previous = bearing;
             if report

@@ -36,7 +36,6 @@ fn chasm(width: i32, units: Vec<UnitSpec>) -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "chasm".into(),
-        seed: 9,
         map,
         players: players(300),
         units,
@@ -345,7 +344,6 @@ fn a_chasm_severs_ground_but_the_sky_keeps_the_map_legal() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "severed".into(),
-        seed: 9,
         map,
         players: players(300),
         units: Vec::new(),
@@ -381,7 +379,6 @@ fn a_mesa_seal_still_refuses_to_build() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "sealed".into(),
-        seed: 9,
         map,
         players: players(300),
         units: Vec::new(),

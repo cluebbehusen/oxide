@@ -17,7 +17,6 @@ fn allied_incident_state() -> State {
     Scenario {
         mode: ScenarioMode::Match,
         name: "allied-incidents".into(),
-        seed: 5,
         map: vec![
             "########################".into(),
             "#1.........2........3..#".into(),
@@ -73,7 +72,6 @@ fn screened_source(extra_hostile: bool) -> (State, TilePos) {
     let state = Scenario {
         mode: ScenarioMode::Match,
         name: "screened-salvage".into(),
-        seed: 4,
         map: vec![
             "####################".into(),
             "#1.................#".into(),

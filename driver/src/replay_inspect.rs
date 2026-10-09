@@ -41,8 +41,6 @@ pub struct ReplayInspection {
 pub struct ScenarioSummary {
     /// Scenario display name.
     pub name: String,
-    /// Deterministic scenario seed.
-    pub seed: u64,
     /// Map width in tiles.
     pub map_width: i32,
     /// Map height in tiles.
@@ -253,7 +251,6 @@ fn scenario_summary(replay: &GameReplay, initial_state: &oxide_sim::State) -> Sc
         .collect();
     ScenarioSummary {
         name: replay.setup.name.clone(),
-        seed: replay.setup.seed,
         map_width: initial_state.map().width(),
         map_height: initial_state.map().height(),
         players,

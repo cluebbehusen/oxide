@@ -18,7 +18,7 @@ fn turn_limited_weapons_align_before_firing_and_resume_identically() {
         UnitKind::Bombard,
     ] {
         let target_x = if kind == UnitKind::Avalanche { 13 } else { 9 };
-        let rate = kind.ground_turn_rate().max(kind.turret_turn_rate());
+        let rate = kind.ground_turn_rate().max(kind.stats().turret_turn_rate);
         let mut scenario = open_arena_with(
             26,
             18,
@@ -97,12 +97,6 @@ fn turn_limited_weapons_align_before_firing_and_resume_identically() {
                     let restored: oxide_sim::State =
                         serde_json::from_value(document.clone()).unwrap();
                     assert_eq!(restored.hash(), state.hash());
-                    let mut forged = document.clone();
-                    forged["shells"][0]["kind"] = serde_json::json!("bomb");
-                    let error = serde_json::from_value::<oxide_sim::State>(forged)
-                        .unwrap_err()
-                        .to_string();
-                    assert!(error.contains("projectile kind inconsistent with its shooter"));
                     let mut orphaned = document;
                     orphaned["units"]
                         .as_array_mut()
@@ -120,7 +114,13 @@ fn turn_limited_weapons_align_before_firing_and_resume_identically() {
             assert_eq!(unit.cooldowns[0], 0, "turning must not consume the shot");
         }
         let deployment = if kind == UnitKind::Bombard {
-            u32::from(oxide_sim::stats::BOMBARD_BRACE_TICKS)
+            u32::from(
+                oxide_sim::UnitKind::Bombard
+                    .stats()
+                    .brace
+                    .expect("the bombard braces")
+                    .deploy_ticks,
+            )
         } else {
             0
         };
@@ -246,7 +246,14 @@ fn bombard_retracts_before_retargeting_or_moving_and_resumes_mid_deployment() {
             assert_eq!(u.heading, before);
         }
         if fired(&report.events) {
-            assert_eq!(u.brace_ticks, oxide_sim::stats::BOMBARD_BRACE_TICKS);
+            assert_eq!(
+                u.brace_ticks,
+                oxide_sim::UnitKind::Bombard
+                    .stats()
+                    .brace
+                    .expect("the bombard braces")
+                    .deploy_ticks
+            );
             return;
         }
     }
@@ -519,7 +526,6 @@ fn avalanche_backs_out_of_its_dead_zone_before_firing() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "avalanche-dead-zone".into(),
-        seed: 43,
         map: vec![
             "########################".into(),
             "#1.....................#".into(),
@@ -1074,7 +1080,6 @@ fn rock_is_cover_until_the_attacker_repositions() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "cover".into(),
-        seed: 42,
         map: vec![
             "############".into(),
             "#1.........#".into(),
@@ -1530,7 +1535,6 @@ fn turret_holds_ground_and_dies_to_lancer_siege() {
     // Now the siege, in a fresh world: a lancer at range 5.5 > turret 5.0
     // grinds it down without ever taking return fire.
     let scenario = Scenario {
-        seed: 43,
         players: players(200),
         ..open_arena(
             20,
@@ -1670,7 +1674,6 @@ fn bastion_has_artillery_reach_and_a_real_close_pressure_dead_zone() {
     );
 
     let scenario = Scenario {
-        seed: 44,
         players: players(200),
         buildings: vec![BuildingSpec {
             player: 0,
@@ -1722,7 +1725,6 @@ fn bastion_has_artillery_reach_and_a_real_close_pressure_dead_zone() {
 #[test]
 fn bastion_opens_fire_beyond_its_dead_zone() {
     let scenario = Scenario {
-        seed: 45,
         players: players(200),
         buildings: vec![BuildingSpec {
             player: 0,

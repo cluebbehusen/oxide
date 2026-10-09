@@ -5,7 +5,6 @@ fn manifest() -> LadderManifest {
         "name": "ladder",
         "tick_limit": 600,
         "runs": 2,
-        "scenario_seed_base": 7000,
         "personality_seed_base": 9000,
         "stances": ["balanced", "aggressive"],
         "comparisons": [
@@ -57,13 +56,11 @@ fn manifests_expand_into_seat_swapped_pairs_sharing_a_personality_seed() {
             (BotDifficulty::Prime, BotStance::Balanced, 9000),
         ]
     );
-    assert_eq!(forward.plan.scenario.seed, 7000);
     let last = legs.last().unwrap();
     assert_eq!(
         (last.label.lower, last.label.stance, last.label.run),
         (BotDifficulty::Scrapheap, BotStance::Aggressive, 1)
     );
-    assert_eq!(last.plan.scenario.seed, 7001);
     assert_eq!(last.label.gate, 800);
 }
 

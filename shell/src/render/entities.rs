@@ -22,7 +22,7 @@ pub(crate) fn draw_placement_ghost(
         return;
     };
     let zoom = game.presentation.camera.zoom;
-    let (w, h) = kind.base_stats().size;
+    let (w, h) = kind.size();
     let queue = input.placing_stroke.is_some() || input.queue_held();
     let ok = crate::input::placement_refusal(game, kind, anchor, queue).is_none();
     let screen = game
@@ -93,7 +93,7 @@ pub(crate) fn draw_pending_founds(game: &crate::game::Scene<'_>, sprites: &Sprit
         .iter()
         .filter(|b| b.player == game.presentation.human && b.provisional)
     {
-        let (w, h) = site.stats().size;
+        let (w, h) = site.kind.size();
         let screen = game
             .presentation
             .camera
@@ -165,9 +165,9 @@ pub(crate) fn breadcrumb_points(
             oxide_sim::Order::Build { site } => {
                 world_vec(projection.building(game.state, *site)?.center())
             }
-            oxide_sim::Order::Found { kind, anchor } => world_vec(
-                oxide_sim::geometry::footprint_center(*anchor, kind.base_stats().size),
-            ),
+            oxide_sim::Order::Found { kind, anchor } => {
+                world_vec(oxide_sim::geometry::footprint_center(*anchor, kind.size()))
+            }
             oxide_sim::Order::Repair { building } | oxide_sim::Order::Salvage { building } => {
                 world_vec(game.state.building(*building)?.center())
             }
@@ -517,12 +517,7 @@ fn payload_flight_ticks(game: &crate::game::Scene<'_>, index: usize) -> f32 {
         .projectile_releases
         .flight(game.state.shells(), index)
         .map_or_else(
-            || {
-                (shell.launch.dist_sq(shell.impact).to_num::<f32>().sqrt()
-                    / oxide_sim::stats::SHELL_SPEED.to_num::<f32>())
-                .ceil()
-                .max(1.0)
-            },
+            || shell.arrival.saturating_sub(shell.launched_at).max(1) as f32,
             |flight| flight.ticks as f32,
         )
 }
@@ -560,7 +555,7 @@ pub(super) fn building_contact(
     );
     let frame = super::motion::building_frame(hit.kind, animation);
     let (source, _) = building_body_sources(sprites, hit.kind, hit.tier, hit.faction, frame.body);
-    let (width, height) = hit.kind.tier_stats(hit.tier).size;
+    let (width, height) = hit.kind.size();
     let size = vec2(width as f32, height as f32);
     let aim = if (aim - from).length_squared() < f32::EPSILON {
         hit.anchor + size * 0.5
@@ -584,7 +579,7 @@ fn draw_defense_mount(
         .presentation
         .camera
         .to_screen(vec2(building.anchor.x as f32, building.anchor.y as f32));
-    let (width, height) = building.stats().size;
+    let (width, height) = building.kind.size();
     let dest = vec2(
         width as f32 * game.presentation.camera.zoom,
         height as f32 * game.presentation.camera.zoom,
@@ -656,7 +651,7 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
     // cover explored-but-unseen ground (skipped in the omniscient overlay).
     if !game.presentation.all_seeing() {
         for ghost in game.my_vision().ghosts() {
-            let (w, h) = ghost.kind.base_stats().size;
+            let (w, h) = ghost.kind.size();
             let visible = (0..h)
                 .flat_map(|dy| (0..w).map(move |dx| ghost.anchor.offset(dx, dy)))
                 .any(|t| game.my_vision().visible(t));
@@ -780,7 +775,7 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
         }
         let faction = game.state.player(building.player).faction;
         let screen = game.presentation.camera.to_screen(anchor);
-        let (w, h) = building.stats().size;
+        let (w, h) = building.kind.size();
         let dest = vec2(w as f32 * zoom, h as f32 * zoom);
 
         let animation = game.presentation.animations.building_state(
@@ -1113,9 +1108,7 @@ pub(crate) fn shell_visual_origin(
                 31.0 / 128.0 * super::unit_draw_scale(oxide_sim::UnitKind::Bombard)
             }
         }
-        oxide_sim::Target::Building(_) => {
-            oxide_sim::BuildingKind::Bastion.base_stats().size.0 as f32 * 0.49
-        }
+        oxide_sim::Target::Building(_) => oxide_sim::BuildingKind::Bastion.size().0 as f32 * 0.49,
     };
     launch + direction.normalize() * reach
 }
@@ -1908,7 +1901,10 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                         sprites,
                         game.presentation.camera.to_screen(blast_at),
                         game.presentation.camera.zoom,
-                        oxide_sim::stats::SAPPER_BLAST_RADIUS.to_num::<f32>(),
+                        oxide_sim::UnitKind::Sapper
+                            .stats()
+                            .demolition
+                            .map_or(0.0, |demolition| demolition.blast_radius.to_num::<f32>()),
                         progress,
                     );
                 }
@@ -2248,7 +2244,8 @@ fn visit_building_ranges(
     mut visit: impl FnMut(BuildingRange),
 ) {
     let stats = kind.tier_stats(tier);
-    let size = vec2(stats.size.0 as f32, stats.size.1 as f32);
+    let (width, height) = kind.size();
+    let size = vec2(width as f32, height as f32);
     let center = anchor + size * 0.5;
     if let Some(weapon) = stats.weapons.first() {
         visit(BuildingRange {
@@ -2371,7 +2368,7 @@ fn building_screen_bounds(
     game: &crate::game::Scene<'_>,
     building: &oxide_sim::Building,
 ) -> (Vec2, Vec2) {
-    let (width, height) = building.stats().size;
+    let (width, height) = building.kind.size();
     let min = game
         .presentation
         .camera
@@ -2587,7 +2584,7 @@ fn draw_economy_support_links(
         .into_iter()
         .filter(|id| !game.presentation.selection.buildings.contains(id))
         .filter_map(|id| game.state.building(id))
-        .map(|building| (building.anchor, building.stats().size));
+        .map(|building| (building.anchor, building.kind.size()));
     for bracket in support_brackets::junctions(footprints, game.presentation.camera.zoom, scale) {
         let origin = game
             .presentation
@@ -2865,8 +2862,8 @@ pub(crate) fn draw_rally_marker(game: &crate::game::Scene<'_>) {
         .filter_map(|building| building.rally.map(|rally| (building, rally)))
     {
         let a = game.presentation.camera.to_screen(vec2(
-            building.anchor.x as f32 + building.stats().size.0 as f32 * 0.5,
-            building.anchor.y as f32 + building.stats().size.1 as f32 * 0.5,
+            building.anchor.x as f32 + building.kind.size().0 as f32 * 0.5,
+            building.anchor.y as f32 + building.kind.size().1 as f32 * 0.5,
         ));
         let b = game
             .presentation

@@ -44,7 +44,7 @@ fn all_bots_leaves_no_idle_chair() {
 #[test]
 fn five_hundred_units_stay_bit_identical_across_runs() {
     let run = || {
-        let scenario = mass_battle(250, 9);
+        let scenario = mass_battle(250);
         let mut state = scenario.build().expect("scale scenario builds");
         engage(&mut state);
         let mut hashes = Vec::new();

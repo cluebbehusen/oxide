@@ -174,10 +174,9 @@ The load-bearing rule is:
 > The same scenario and command log must produce a bit-identical state on every
 > run and every supported platform.
 
-Simulation code uses fixed-point arithmetic, explicitly ordered choices, and a
-seeded PCG32 stream. Humans, bots, replays, and the debug socket all submit the
-same tick-stamped commands. Rendering and audio observe the result; they never
-feed back into it.
+Simulation code uses fixed-point arithmetic and explicitly ordered choices.
+Humans, bots, replays, and the debug socket all submit the same tick-stamped
+commands. Rendering and audio observe the result; they never feed back into it.
 
 The implementation contracts are documented in
 [`docs/simulation-architecture.md`](docs/simulation-architecture.md) and

@@ -7,8 +7,7 @@ fn building_game() -> Game {
     map[20].replace_range(58..59, "2");
     let scenario = oxide_sim::Scenario::from_json(
         &serde_json::json!({
-            "name": "Double-click selection", "seed": 17,
-            "players": [
+            "name": "Double-click selection", "players": [
                 {"name": "You", "faction": "ferrous", "scrap": 1000, "bot": false},
                 {"name": "Opponent", "faction": "cupric", "scrap": 0, "bot": true}
             ],

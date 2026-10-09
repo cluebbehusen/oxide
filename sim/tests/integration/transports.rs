@@ -16,7 +16,6 @@ fn arena(map: Vec<String>, units: Vec<UnitSpec>) -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "sling-arena".into(),
-        seed: 13,
         map,
         players: players(500),
         units,

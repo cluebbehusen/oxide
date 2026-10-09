@@ -167,7 +167,7 @@ pub fn render_state(state: &State) -> Pixmap {
 
     for building in state.buildings() {
         let color = faction_color(state.player(building.player).faction);
-        let (w, h) = building.stats().size;
+        let (w, h) = building.kind.size();
         let (x, y) = (
             building.anchor.x as f32 * TILE_PX,
             building.anchor.y as f32 * TILE_PX,

@@ -38,7 +38,6 @@ fn sandbox(map: &[&str], units: Vec<UnitSpec>, buildings: Vec<BuildingSpec>) -> 
     Scenario {
         mode: ScenarioMode::Sandbox,
         name: "unreachable-goals".into(),
-        seed: 17,
         map: map.iter().map(|row| (*row).to_owned()).collect(),
         players: vec![PlayerSpec {
             name: "Home".into(),
@@ -302,7 +301,6 @@ fn mirrored_groups_sent_into_mirrored_enclosures_settle_symmetrically() {
     let mut state = Scenario {
         mode: ScenarioMode::Sandbox,
         name: "mirrored-islands".into(),
-        seed: 17,
         map,
         players: vec![seat(0), seat(1)],
         units,

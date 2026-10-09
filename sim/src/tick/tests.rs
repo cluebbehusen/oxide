@@ -392,7 +392,6 @@ fn calibration_open_cupric() -> crate::Scenario {
     crate::Scenario {
         mode: ScenarioMode::Match,
         name: "Calibration Open - Cupric".into(),
-        seed: 1_616_101,
         map: [
             "################################################",
             "#..............................................#",
@@ -656,7 +655,7 @@ fn assert_calibration_open_symmetry(
         let (left, right) = (0, 1);
         let left = &state.buildings[left];
         let right = &state.buildings[right];
-        let (width, height) = left.kind.base_stats().size;
+        let (width, height) = left.kind.size();
         assert_eq!(left.kind, right.kind, "{stage}: building kind");
         assert_eq!(left.hp, right.hp, "{stage}: building hp");
         assert_eq!(left.queue, right.queue, "{stage}: production queue");
@@ -833,7 +832,7 @@ fn mirrored_haulers_replan_together_when_construction_closes_their_routes() {
             .find(|building| building.player == player && building.kind == BuildingKind::Foundry)
             .expect("each side has a foundry");
         assert!(
-            tile_adjacent_to_rect(goal, foundry.anchor, foundry.stats().size),
+            tile_adjacent_to_rect(goal, foundry.anchor, foundry.kind.size()),
             "{goal:?} must be a doorstep around {:?}",
             foundry.anchor
         );
@@ -1019,12 +1018,12 @@ fn centered_builders_leave_new_footprints_through_legal_doorsteps() {
     assert!(tile_adjacent_to_rect(
         left_path.goal,
         left_anchor,
-        BuildingKind::ScuttleCharge.base_stats().size,
+        BuildingKind::ScuttleCharge.size(),
     ));
     assert!(tile_adjacent_to_rect(
         right_path.goal,
         right_anchor,
-        BuildingKind::ScuttleCharge.base_stats().size,
+        BuildingKind::ScuttleCharge.size(),
     ));
     for path in [left_path, right_path] {
         assert!(path.final_point.is_some());

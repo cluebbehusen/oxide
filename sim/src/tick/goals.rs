@@ -204,7 +204,7 @@ pub(super) fn spread_scan_reversed(state: &State, center: TilePos, ids: &[UnitId
                 && !building.provisional
                 && building.kind == crate::stats::BuildingKind::Foundry
         })
-        .map(|building| (building.anchor, building.kind.base_stats().size));
+        .map(|building| (building.anchor, building.kind.size()));
     super::group_spread_scan_reversed(
         center,
         ids.iter()
@@ -230,7 +230,7 @@ pub(super) fn group_domain_goal(
                 goal.x.clamp(0, state.map.width() - 1),
                 goal.y.clamp(0, state.map.height() - 1),
             ),
-            GOAL_SNAP_RADIUS + 3,
+            crate::stats::AIR_GOAL_SNAP_RADIUS,
         ),
     };
     group_goal_by(center, radius, reverse, |t| state.passable_for(domain, t))

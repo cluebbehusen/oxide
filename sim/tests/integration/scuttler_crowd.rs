@@ -23,7 +23,6 @@ fn swarm(paired: bool) -> Scenario {
     Scenario {
         name: "scuttler-frontage".into(),
         mode: ScenarioMode::Sandbox,
-        seed: 42,
         map: vec![".".repeat(80); 60],
         players: players(0),
         units,

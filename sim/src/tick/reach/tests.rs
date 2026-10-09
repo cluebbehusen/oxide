@@ -18,7 +18,6 @@ fn world_with_teams(
     let scenario = Scenario {
         mode: ScenarioMode::Sandbox,
         name: "reach".into(),
-        seed: 3,
         map: map.iter().map(|row| (*row).to_owned()).collect(),
         players: teams
             .iter()

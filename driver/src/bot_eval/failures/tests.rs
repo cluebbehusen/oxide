@@ -15,7 +15,6 @@ fn scenario(buildings: Vec<BuildingSpec>, scrap: u32) -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "detectors".into(),
-        seed: 3,
         map,
         players: [Faction::Ferrous, Faction::Cupric]
             .into_iter()

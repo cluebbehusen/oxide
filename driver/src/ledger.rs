@@ -21,7 +21,7 @@ use oxide_sim::stats::{
     BuildingKind, CHARGE_ARRAY_DETECT_RADIUS, CHARGE_BASE_ARRAY_DETECT_RADIUS, CHARGE_BLAST_RADIUS,
     CRUCIBLE_SMELT_PERIOD, CRUCIBLE_SMELT_RADIUS, EXTRACTOR_REMOTE_YIELD,
     EXTRACTOR_SUPPORTED_YIELD, FOUNDRY_DRIP_PERIOD, FOUNDRY_DRIP_START_TICK, RECLAIMER_PERIOD,
-    REFINERY_PERIOD, SAPPER_BLAST_RADIUS, UnitKind,
+    REFINERY_PERIOD, UnitKind,
 };
 use oxide_sim::{
     BuildingId, Event, ExtractorIncome, State, Target, TickReport, UnitId, UnitRepairSource,
@@ -423,7 +423,7 @@ fn smelters(state: &State) -> Vec<Key> {
         if !building.built || building.hp == 0 || building.kind != BuildingKind::Crucible {
             continue;
         }
-        let (w, h) = building.kind.base_stats().size;
+        let (w, h) = building.kind.size();
         let anchor = building.anchor;
         let mut fuel = None;
         for y in (anchor.y - reach)..(anchor.y + h + reach) {
@@ -655,10 +655,9 @@ impl ImpactLedger {
                     };
                     let at = TilePos::containing(*target_pos);
                     let stats = attacker_kind.stats();
-                    let splash = if stats.demolition {
-                        Some(SAPPER_BLAST_RADIUS)
-                    } else {
-                        stats.weapons.get(*weapon).and_then(|weapon| weapon.splash)
+                    let splash = match stats.demolition {
+                        Some(demolition) => Some(demolition.blast_radius),
+                        None => stats.weapons.get(*weapon).and_then(|weapon| weapon.splash),
                     };
                     if let Some(radius) = splash {
                         sources.splash.push((at, tiles(radius), source));
@@ -729,7 +728,7 @@ impl ImpactLedger {
                     }
                 }
                 Event::AircraftImpacted { crash } => {
-                    if let Some(profile) = crash.kind.crash_profile() {
+                    if let Some(profile) = crash.kind.stats().crash {
                         sources.splash.push((
                             TilePos::containing(crash.impact),
                             tiles(profile.radius),

@@ -313,9 +313,10 @@ pub fn building_stat_line(kind: BuildingKind) -> String {
     let build = stats.construction.map_or(0.0, |c| {
         c.build_ticks as f32 / oxide_sim::TICKS_PER_SECOND as f32
     });
+    let (width, height) = kind.size();
     format!(
-        "{} hp | {build:.1} s build | {}x{} | sight {}",
-        stats.max_hp, stats.size.0, stats.size.1, stats.vision
+        "{} hp | {build:.1} s build | {width}x{height} | sight {}",
+        stats.max_hp, stats.vision
     )
 }
 
@@ -376,7 +377,7 @@ fn weapon_line(weapon: &WeaponStats) -> String {
         (false, true) => "air",
         (false, false) => "nothing",
     };
-    let flavor = if weapon.projectile {
+    let flavor = if weapon.projectile.is_some() {
         " | projectile"
     } else if weapon.indirect {
         " | indirect"

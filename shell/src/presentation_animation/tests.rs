@@ -725,7 +725,7 @@ fn construction_requires_the_assigned_harvester_at_the_site() {
         pos: oxide_sim::geometry::work_approach_point(
             site.anchor.offset(-1, 0),
             site.anchor,
-            site.stats().size,
+            site.kind.size(),
             UnitKind::Harvester.stats().radius,
         ),
         hp: UnitKind::Harvester.stats().max_hp,
@@ -748,10 +748,10 @@ fn construction_requires_the_assigned_harvester_at_the_site() {
         cargo: Vec::new(),
         landed: false,
     };
-    assert!(builder.in_work_reach(site.anchor, site.stats().size));
+    assert!(builder.in_work_reach(site.anchor, site.kind.size()));
     assert!(matches!(builder.order, Order::Build { site: id } if id == site.id));
     builder.pos = TilePos::new(1, 1).center();
-    assert!(!builder.in_work_reach(site.anchor, site.stats().size));
+    assert!(!builder.in_work_reach(site.anchor, site.kind.size()));
 }
 
 #[test]

@@ -49,8 +49,6 @@ pub struct LadderManifest {
     pub tick_limit: u64,
     /// Seed cells per map, comparison and stance.
     pub runs: u64,
-    /// Simulation seed of run zero; each run adds one.
-    pub scenario_seed_base: u64,
     /// Personality seed of run zero, shared by both seats; each run adds one.
     pub personality_seed_base: u64,
     /// Stances, applied to both seats.
@@ -87,12 +85,12 @@ impl LadderManifest {
             self.min_decided_pairs > 0,
             "the decided-pair minimum must be positive"
         );
-        for base in [self.scenario_seed_base, self.personality_seed_base] {
-            ensure!(
-                base.checked_add(self.runs - 1).is_some(),
-                "seed range overflows u64"
-            );
-        }
+        ensure!(
+            self.personality_seed_base
+                .checked_add(self.runs - 1)
+                .is_some(),
+            "seed range overflows u64"
+        );
         ensure!(!self.stances.is_empty(), "stances are empty");
         ensure!(!self.comparisons.is_empty(), "comparisons are empty");
         ensure!(!self.maps.is_empty(), "maps are empty");
@@ -196,7 +194,6 @@ pub fn expand(manifest: &LadderManifest, scenarios: &[Scenario]) -> Result<Vec<L
                     let seat = |difficulty| {
                         BotConfig::new(difficulty, stance, manifest.personality_seed_base + run)
                     };
-                    let seed = manifest.scenario_seed_base + run;
                     for (leg, rungs) in [
                         (
                             EvaluationLeg::Forward,
@@ -209,7 +206,7 @@ pub fn expand(manifest: &LadderManifest, scenarios: &[Scenario]) -> Result<Vec<L
                     ] {
                         legs.push(LadderLeg {
                             label: label.clone(),
-                            plan: seated_plan(source, seed, leg, rungs.into_iter().map(seat)),
+                            plan: seated_plan(source, leg, rungs.into_iter().map(seat)),
                         });
                     }
                 }

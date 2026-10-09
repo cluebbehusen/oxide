@@ -1570,9 +1570,15 @@ impl Sprites {
         self.array_rig.as_ref()
     }
 
+    /// The spade row for a Bombard's deployment, from stowed (row 0) to
+    /// fully braced (row 4).
     pub(crate) fn bombard_spades(&self, brace_ticks: u8) -> Option<Rect> {
-        self.bombard_spades
-            .map(|rows| rows[usize::from(brace_ticks.div_ceil(3).min(4))])
+        let deploy = UnitKind::Bombard
+            .stats()
+            .brace
+            .map_or(1, |brace| u16::from(brace.deploy_ticks.max(1)));
+        let row = (u16::from(brace_ticks) * 4).div_ceil(deploy).min(4);
+        self.bombard_spades.map(|rows| rows[usize::from(row)])
     }
 
     /// The allegiance-accent mask over a unit's faction-colored

@@ -22,7 +22,6 @@ fn scenario(name: &str, scrap: u32, worker: bool) -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: name.into(),
-        seed: 42,
         map: map
             .into_iter()
             .map(|row| row.into_iter().collect())
