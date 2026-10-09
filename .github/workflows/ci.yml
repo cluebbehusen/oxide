@@ -192,13 +192,13 @@ jobs:
       - name: Sprite generator check
         run: uv run tools/gen_sprites.py --check
       - name: Sprite generator tests
-        run: uv run --python 3.14 --with 'pillow==12.3.0' -m unittest tools.test_gen_sprites tools.test_production_sprite_sources tools.test_gen_icon
+        run: uv run --with 'pillow==12.3.0' -m unittest tools.test_gen_sprites tools.test_production_sprite_sources tools.test_gen_icon
       - name: Sound generator check
         run: uv run tools/gen_sounds.py --check
       - name: Sound tests
         run: uv run --with 'numpy==2.5.1' --with 'scipy==1.18.0' -m unittest tools.test_gen_sounds
       - name: Review tool tests
-        run: uv run --python 3.14 -m unittest tools.test_map_review tools.test_asset_review tools.test_line_report
+        run: uv run -m unittest tools.test_map_review tools.test_asset_review tools.test_line_report
 
   # Supply-chain gate: advisories, bans, licenses, and source policy
   # live in deny.toml, including the triage list for macroquad's stale

@@ -208,7 +208,7 @@ When assets or generators change, also run their deterministic checks:
 
 ```sh
 uv run tools/gen_sprites.py --check
-uv run --python 3.14 --with 'pillow==12.3.0' \
+uv run --with 'pillow==12.3.0' \
   -m unittest tools.test_gen_sprites tools.test_production_sprite_sources \
   tools.test_gen_icon
 uv run tools/gen_sounds.py --check

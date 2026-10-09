@@ -149,7 +149,7 @@ uv run tools/map_review.py
 When changing the review-page builder, run its orchestration and escaping tests:
 
 ```sh
-uv run --python 3.14 -m unittest tools.test_map_review
+uv run -m unittest tools.test_map_review
 ```
 
 The review page presents drafts; it never promotes them. Moving a draft into
