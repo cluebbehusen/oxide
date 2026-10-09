@@ -696,3 +696,13 @@ fn screenshot_encoding_flips_gpu_rows_and_reports_path_errors() {
     );
     std::fs::remove_dir_all(root).ok();
 }
+
+#[test]
+fn only_a_frames_first_pass_reads_the_hardware() {
+    let escape = || vec![RawEvent::KeyDown { key: Key::Escape }];
+    assert_eq!(hardware_events(true, escape), escape());
+    assert!(
+        hardware_events(false, || panic!("a rerun pass must not poll")).is_empty(),
+        "the screen a key opened never receives that key"
+    );
+}
