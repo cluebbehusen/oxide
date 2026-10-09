@@ -381,7 +381,6 @@ fn boundary_pair() -> State {
     Scenario {
         mode: ScenarioMode::Match,
         name: "boundary-pair".into(),
-        seed: 1,
         map: vec![
             "............".into(),
             "............".into(),
@@ -468,7 +467,6 @@ fn corner_shortcut_pair(
     let mut state = Scenario {
         mode: ScenarioMode::Match,
         name: name.into(),
-        seed: 24_722,
         map,
         players: vec![
             seat("West", Faction::Ferrous),
@@ -569,7 +567,6 @@ fn corner_hugging_pair(offset: Vec2Fx, heading: u8, next: u32) -> State {
     let mut state = Scenario {
         mode: ScenarioMode::Match,
         name: "corner-hugging-pair".into(),
-        seed: 7_002,
         map,
         players: vec![
             seat("West", Faction::Ferrous),
@@ -710,7 +707,6 @@ fn collision_trio() -> State {
     Scenario {
         mode: ScenarioMode::Match,
         name: "collision-trio".into(),
-        seed: 3,
         map: vec![
             "............".into(),
             "............".into(),
@@ -759,7 +755,6 @@ fn replay_center_crossing() -> State {
     let mut state = Scenario {
         mode: ScenarioMode::Match,
         name: "replay-center-crossing".into(),
-        seed: 1_616_101,
         map,
         players: vec![
             seat("West", Faction::Ferrous),
@@ -928,7 +923,6 @@ fn mirrored_seat_stacks_ignore_global_id_blocks() {
     let mut state = Scenario {
         mode: ScenarioMode::Match,
         name: "mirrored-seat-stacks".into(),
-        seed: 4,
         map: vec![
             "............".into(),
             "............".into(),
@@ -1199,7 +1193,6 @@ fn passed_waypoint_still_rejects_a_blocked_next_step() {
     let mut state = Scenario {
         mode: ScenarioMode::Match,
         name: "blocked-next-waypoint".into(),
-        seed: 2,
         map: vec![
             "............".into(),
             "............".into(),

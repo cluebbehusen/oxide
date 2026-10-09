@@ -687,7 +687,7 @@ impl<'a> Plan<'a> {
 
     /// Known enemy buildings around `target` that can hit ground.
     fn defenses(&self, target: Target) -> impl Iterator<Item = &'a BuildingObs> {
-        let size = target.building.base_stats().size;
+        let size = target.building.size();
         self.observation
             .enemy_buildings
             .iter()
@@ -698,12 +698,8 @@ impl<'a> Plan<'a> {
                     .weapons
                     .iter()
                     .any(|weapon| weapon.targets.ground)
-                    && gap(
-                        target.anchor,
-                        size,
-                        building.anchor,
-                        building.kind.base_stats().size,
-                    ) < DEFENSE_TILES
+                    && gap(target.anchor, size, building.anchor, building.kind.size())
+                        < DEFENSE_TILES
             })
     }
 
@@ -714,7 +710,7 @@ impl<'a> Plan<'a> {
         let ground = self.map.component(sapper.tile);
         self.defenses(target)
             .filter(|building| {
-                ring(building.anchor, building.kind.base_stats().size)
+                ring(building.anchor, building.kind.size())
                     .any(|tile| ground.is_some() && self.map.component(tile) == ground)
             })
             .min_by_key(|building| {
@@ -872,12 +868,7 @@ impl<'a> Plan<'a> {
             .filter(|building| !building.kind.base_stats().weapons.is_empty())
             .filter(|building| {
                 members.iter().any(|unit| {
-                    gap(
-                        building.anchor,
-                        building.kind.base_stats().size,
-                        unit.tile,
-                        (1, 1),
-                    ) < CONTACT_TILES
+                    gap(building.anchor, building.kind.size(), unit.tile, (1, 1)) < CONTACT_TILES
                 })
             })
             .map(building_value)
@@ -891,14 +882,10 @@ impl<'a> Plan<'a> {
         let me = self.observation.me;
         let start = self.map.start(me)?;
         let occupied = |tile: TilePos| {
-            self.observation.my_buildings.iter().any(|building| {
-                gap(
-                    building.anchor,
-                    building.kind.base_stats().size,
-                    tile,
-                    (1, 1),
-                ) < 0
-            })
+            self.observation
+                .my_buildings
+                .iter()
+                .any(|building| gap(building.anchor, building.kind.size(), tile, (1, 1)) < 0)
         };
         (-RALLY_SEARCH..=RALLY_SEARCH + 1)
             .flat_map(|dy| (-RALLY_SEARCH..=RALLY_SEARCH + 1).map(move |dx| start.offset(dx, dy)))
@@ -994,12 +981,7 @@ pub(super) fn fortified(observation: &ObservationData, tile: TilePos) -> bool {
             .max();
         building.built
             && reach.is_some_and(|reach| {
-                gap(
-                    building.anchor,
-                    building.kind.base_stats().size,
-                    tile,
-                    (1, 1),
-                ) < reach
+                gap(building.anchor, building.kind.size(), tile, (1, 1)) < reach
             })
     })
 }
@@ -1012,12 +994,7 @@ fn guards(building: &BuildingObs, tile: TilePos) -> bool {
         .weapons
         .iter()
         .any(|weapon| weapon.targets.ground)
-        && gap(
-            building.anchor,
-            building.kind.base_stats().size,
-            tile,
-            (1, 1),
-        ) < DEFENSE_TILES
+        && gap(building.anchor, building.kind.size(), tile, (1, 1)) < DEFENSE_TILES
 }
 
 /// Whether any visible armed enemy or seen enemy building is within contact
@@ -1035,12 +1012,7 @@ pub(super) fn contact(observation: &ObservationData, members: &[&UnitObs]) -> bo
         || observation.enemy_buildings.iter().any(|building| {
             building.seen
                 && members.iter().any(|unit| {
-                    gap(
-                        building.anchor,
-                        building.kind.base_stats().size,
-                        unit.tile,
-                        (1, 1),
-                    ) < CONTACT_TILES
+                    gap(building.anchor, building.kind.size(), unit.tile, (1, 1)) < CONTACT_TILES
                 })
         })
 }

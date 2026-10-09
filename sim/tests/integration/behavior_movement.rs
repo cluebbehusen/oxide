@@ -252,7 +252,6 @@ fn congestion_survives_nonconsecutive_unit_ids() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "id-gaps".into(),
-        seed: 42,
         map: vec![
             "########################".into(),
             "#1..........s..........#".into(),
@@ -616,7 +615,6 @@ fn an_unreachable_leg_ends_short_and_the_program_continues() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "sealed-pocket".into(),
-        seed: 42,
         map: vec![
             "##############".into(),
             "#1...........#".into(),

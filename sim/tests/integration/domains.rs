@@ -83,6 +83,12 @@ fn stat_tables_satisfy_the_runtime_math_preconditions() {
                     "{owner} weapon {slot} has a non-positive splash radius"
                 );
             }
+            if let Some(projectile) = weapon.projectile {
+                assert!(
+                    projectile.speed > chassis::fx::Fx::ZERO,
+                    "{owner} weapon {slot} launches a projectile that never lands"
+                );
+            }
         }
     };
 
@@ -104,6 +110,36 @@ fn stat_tables_satisfy_the_runtime_math_preconditions() {
             );
         }
         check_weapons(&owner, stats.weapons);
+        let ground = stats.domain == oxide_sim::stats::Domain::Ground;
+        if let Some(brace) = stats.brace {
+            assert!(
+                ground && !stats.weapons.is_empty() && brace.deploy_ticks > 0,
+                "{owner} braces a gun it cannot plant"
+            );
+            assert!(
+                stats
+                    .weapons
+                    .iter()
+                    .all(|weapon| brace.recoil_ticks <= weapon.cooldown_ticks),
+                "{owner} recoils past its own reload"
+            );
+        }
+        assert!(
+            stats.crash.is_none() || !ground,
+            "{owner} crashes without ever flying"
+        );
+        assert!(
+            stats.cruise_turn_rate == 0 || !ground,
+            "{owner} banks in cruise on the ground"
+        );
+        assert!(
+            stats.hull_turn_rate.is_none() || ground,
+            "{owner} turns a hull it does not have"
+        );
+        assert!(
+            stats.turret_turn_rate == 0 || !stats.weapons.is_empty(),
+            "{owner} traverses a turret with no gun"
+        );
         if let Some(harvest) = stats.harvest {
             assert!(
                 harvest.capacity > 0 && harvest.ticks_per_scrap > 0,
@@ -124,12 +160,23 @@ fn stat_tables_satisfy_the_runtime_math_preconditions() {
     for kind in BuildingKind::ALL {
         let tiers = kind.tiers();
         assert!(!tiers.is_empty(), "{kind:?} has no base tier");
+        let (width, height) = kind.size();
+        assert!(width > 0 && height > 0, "{kind:?} has no footprint");
+        let base = tiers[0];
         for (tier, stats) in tiers.iter().enumerate() {
             let owner = format!("building {kind:?} tier {tier}");
             assert!(stats.max_hp > 0, "{owner} stands dead");
+            // Fog memories, focus fire and the opponent read a building's
+            // weapons without its tier, so upgrades may not change what a
+            // gun can hit.
             assert!(
-                stats.size.0 > 0 && stats.size.1 > 0,
-                "{owner} has no footprint"
+                stats.weapons.len() == base.weapons.len()
+                    && stats
+                        .weapons
+                        .iter()
+                        .zip(base.weapons)
+                        .all(|(weapon, base)| weapon.targets == base.targets),
+                "{owner} changes what its guns can hit"
             );
             assert!(stats.vision > 0, "{owner} has no sight");
             check_weapons(&owner, stats.weapons);
@@ -449,7 +496,6 @@ fn long_guns_fire_on_a_spotters_eyes_and_go_quiet_without_them() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "spotter-wall".into(),
-        seed: 42,
         map: vec![
             "################".into(),
             "#1......#......#".into(),

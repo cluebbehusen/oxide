@@ -735,7 +735,7 @@ fn mirrored_seats_launch_mirrored_attacks() {
     scenario
         .units
         .push(unit(1, UnitKind::Kestrel, width - 1 - 22, height - 1 - 10));
-    let (w, h) = BuildingKind::Fabricator.base_stats().size;
+    let (w, h) = BuildingKind::Fabricator.size();
     for (x, y) in [(28, 3), (28, 17)] {
         scenario.buildings.push(BuildingSpec {
             player: 1,

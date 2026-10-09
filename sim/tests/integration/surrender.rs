@@ -28,7 +28,6 @@ fn arena4() -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "surrender-arena".into(),
-        seed: 42,
         map: vec![
             "####################".into(),
             "#1..............3..#".into(),

@@ -15,7 +15,6 @@ fn arena(map: Vec<String>, units: Vec<UnitSpec>, buildings: Vec<BuildingSpec>) -
     Scenario {
         mode: ScenarioMode::Match,
         name: "field-kit-arena".into(),
-        seed: 17,
         map,
         players: players(800),
         units,
@@ -532,12 +531,22 @@ fn the_sapper_cracks_the_wall_and_is_consumed() {
     let wall_hp = state.building(wall).unwrap().hp;
     assert_eq!(
         wall_hp,
-        BuildingKind::Barricade.base_stats().max_hp - oxide_sim::stats::SAPPER_STRUCTURE_DAMAGE,
+        BuildingKind::Barricade.base_stats().max_hp
+            - oxide_sim::UnitKind::Sapper
+                .stats()
+                .demolition
+                .expect("the sapper demolishes")
+                .structure_damage,
         "the wall takes the full charge"
     );
     let bystander_hp = state.unit(bystander).map_or(0, |u| u.hp);
     assert!(
-        splash_distance.expect("the sapper detonated") <= oxide_sim::stats::SAPPER_BLAST_RADIUS,
+        splash_distance.expect("the sapper detonated")
+            <= oxide_sim::UnitKind::Sapper
+                .stats()
+                .demolition
+                .expect("the sapper demolishes")
+                .blast_radius,
         "the stationary bystander must be inside the blast"
     );
     assert!(

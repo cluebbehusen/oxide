@@ -163,7 +163,6 @@ fn direct_pairing_matches_sorting_every_candidate() {
     let mut state = Scenario {
         mode: ScenarioMode::Match,
         name: "converging-armies".into(),
-        seed: 11,
         map: (0..13)
             .map(|y| match y {
                 1 => ".1".to_owned() + &".".repeat(29),

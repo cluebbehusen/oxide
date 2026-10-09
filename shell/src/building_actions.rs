@@ -80,7 +80,7 @@ impl SelectedBuildings {
             .filter(|b| {
                 self.accepts
                     && b.built
-                    && b.kind.base_stats().weapons.first().is_some_and(|weapon| {
+                    && b.stats().weapons.first().is_some_and(|weapon| {
                         domain.is_none_or(|domain| weapon.targets.covers(domain))
                     })
             })

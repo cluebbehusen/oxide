@@ -27,7 +27,6 @@ fn field(
     Scenario {
         mode: ScenarioMode::Match,
         name: "reactivity".into(),
-        seed: 3,
         map,
         players: factions
             .into_iter()

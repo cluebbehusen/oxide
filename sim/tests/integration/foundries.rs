@@ -21,7 +21,6 @@ fn arena(scrap: u32, fabricator: bool, units: Vec<UnitSpec>) -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "foundry-arena".into(),
-        seed: 5,
         map: vec![
             "####################".into(),
             "#1.................#".into(),

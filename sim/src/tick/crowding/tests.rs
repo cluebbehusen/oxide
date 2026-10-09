@@ -187,8 +187,7 @@ fn only_nearby_arrivals_claim_a_position_across_body_sizes() {
 #[test]
 fn chooser_finds_a_farther_reachable_position_after_four_sealed_candidates() {
     let scenario: Scenario = serde_json::from_value(serde_json::json!({
-        "name":"split firing positions", "mode":"sandbox", "seed":42,
-        "map":vec![".......^........";12],
+        "name":"split firing positions", "mode":"sandbox", "map":vec![".......^........";12],
         "players":[{"name":"Local","faction":"ferrous","scrap":0,"bot":false}],
         "units":[{"player":0,"kind":"sentinel","x":3,"y":5}]
     }))

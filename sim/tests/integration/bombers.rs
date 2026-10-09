@@ -13,7 +13,6 @@ fn arena(scrap: u32, units: Vec<UnitSpec>, buildings: Vec<BuildingSpec>) -> Scen
     Scenario {
         mode: ScenarioMode::Match,
         name: "strike-arena".into(),
-        seed: 11,
         map: vec![
             "########################".into(),
             "#1.....................#".into(),
@@ -37,7 +36,6 @@ fn peak_strike_arena() -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "peak-strike-arena".into(),
-        seed: 11,
         map: vec![
             "########################".into(),
             "#1.....................#".into(),
@@ -458,7 +456,6 @@ fn edge_arena(units: Vec<UnitSpec>, buildings: Vec<BuildingSpec>) -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "edge-arena".into(),
-        seed: 11,
         map: vec![
             "########################".into(),
             "#1.....................#".into(),

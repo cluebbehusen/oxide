@@ -22,7 +22,6 @@ fn hostile_arena(units: Vec<UnitSpec>, buildings: Vec<BuildingSpec>) -> Scenario
     Scenario {
         mode: ScenarioMode::Match,
         name: "landing-arena".into(),
-        seed: 11,
         // Both Foundries hug the west wall, well clear of the pads around
         // (16, 8) and of the run-in lines a go-around near them flies.
         map: vec![

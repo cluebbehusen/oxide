@@ -74,23 +74,15 @@ enum Cmd {
             long,
             default_value_t = 1,
             value_parser = clap::value_parser!(u64).range(1..),
-            conflicts_with_all = ["scenario_seeds", "personality_seeds", "faction_cells", "geometries"]
+            conflicts_with_all = ["personality_seeds", "faction_cells", "geometries"]
         )]
         runs: u64,
-        /// First simulation seed. Defaults to each scenario's authored seed;
-        /// subsequent runs increment it.
-        #[arg(long, conflicts_with = "scenario_seeds")]
-        scenario_seed_base: Option<u64>,
-        /// Exact simulation seeds to cross with every personality seed in a controlled comparison.
-        #[arg(long, value_delimiter = ',', conflicts_with = "scenario_seed_base")]
-        scenario_seeds: Vec<u64>,
         /// First personality seed. Seats and subsequent runs receive
         /// deterministic seeds; use `--same-personality-seed` to consume one
         /// shared seed per two-seat run.
         #[arg(long, conflicts_with = "personality_seeds")]
         personality_seed_base: Option<u64>,
-        /// Exact player-facing personality seeds to cross with every
-        /// simulation seed in a controlled comparison.
+        /// Exact player-facing personality seeds for a controlled comparison.
         #[arg(long, value_delimiter = ',', conflicts_with = "personality_seed_base")]
         personality_seeds: Vec<u64>,
         /// Player-facing skill rung.
@@ -637,8 +629,6 @@ fn main() -> Result<()> {
             ticks,
             stall_loop_limit,
             runs,
-            scenario_seed_base,
-            scenario_seeds,
             personality_seed_base,
             personality_seeds,
             difficulty,
@@ -671,23 +661,16 @@ fn main() -> Result<()> {
                 opponent_stance,
                 same_personality_seed,
             };
-            ensure_distinct(&scenario_seeds, "--scenario-seeds")?;
             ensure_distinct(&personality_seeds, "--personality-seeds")?;
             ensure_distinct(&faction_cells, "--faction-cells")?;
             ensure_distinct(&geometries, "--geometries")?;
             let mut plans = Vec::new();
             for (scenario_index, scenario_name) in scenarios.iter().enumerate() {
                 let source = runner::load_scenario(scenario_name)?;
-                if !scenario_seeds.is_empty()
-                    || !personality_seeds.is_empty()
+                if !personality_seeds.is_empty()
                     || !faction_cells.is_empty()
                     || !geometries.is_empty()
                 {
-                    let scenario_seed_values = if scenario_seeds.is_empty() {
-                        vec![scenario_seed_base.unwrap_or(source.seed)]
-                    } else {
-                        scenario_seeds.clone()
-                    };
                     let personality_seed_values = if personality_seeds.is_empty() {
                         vec![personality_seed_base.unwrap_or(0)]
                     } else {
@@ -705,55 +688,47 @@ fn main() -> Result<()> {
                     };
 
                     let mut seed_cell = 0_u64;
-                    for &scenario_seed in &scenario_seed_values {
-                        for &personality_seed in &personality_seed_values {
-                            for &faction_cell in &faction_cells {
-                                for &geometry in &geometries {
-                                    for plan in oxide_driver::bot_eval::configured_matchup_plans(
-                                        &source,
-                                        scenario_seed,
-                                        matchup,
-                                        personality_seed,
-                                        paired,
-                                        faction_cell,
-                                        geometry,
-                                    )? {
-                                        let replay_path = replay_dir
-                                            .as_ref()
-                                            .map(|dir| {
-                                                oxide_driver::bot_eval::evaluation_replay_filename(
-                                                    scenario_index,
-                                                    seed_cell,
-                                                    scenario_seed,
-                                                    ticks,
-                                                    &candidate,
-                                                    &plan,
-                                                )
-                                                .map(|filename| dir.join(filename))
-                                            })
-                                            .transpose()?;
-                                        plan.scenario.build().with_context(|| {
+                    for &personality_seed in &personality_seed_values {
+                        for &faction_cell in &faction_cells {
+                            for &geometry in &geometries {
+                                for plan in oxide_driver::bot_eval::configured_matchup_plans(
+                                    &source,
+                                    matchup,
+                                    personality_seed,
+                                    paired,
+                                    faction_cell,
+                                    geometry,
+                                )? {
+                                    let replay_path = replay_dir
+                                        .as_ref()
+                                        .map(|dir| {
+                                            oxide_driver::bot_eval::evaluation_replay_filename(
+                                                scenario_index,
+                                                seed_cell,
+                                                ticks,
+                                                &candidate,
+                                                &plan,
+                                            )
+                                            .map(|filename| dir.join(filename))
+                                        })
+                                        .transpose()?;
+                                    plan.scenario.build().with_context(|| {
                                             format!(
                                                 "prevalidating bot evaluation scenario {scenario_name} seed cell {seed_cell} {}",
                                                 plan.leg.name()
                                             )
                                         })?;
-                                        plans.push((plan, replay_path));
-                                    }
+                                    plans.push((plan, replay_path));
                                 }
                             }
-                            seed_cell = seed_cell
-                                .checked_add(1)
-                                .context("evaluation seed-cell index overflows u64")?;
                         }
+                        seed_cell = seed_cell
+                            .checked_add(1)
+                            .context("evaluation seed-cell index overflows u64")?;
                     }
                 } else {
-                    let seed_base = scenario_seed_base.unwrap_or(source.seed);
                     let personality_seed_base = personality_seed_base.unwrap_or(0);
                     for run in 0..runs {
-                        let scenario_seed = seed_base
-                            .checked_add(run)
-                            .context("scenario seed range overflows u64")?;
                         let profile_base = matchup.personality_seed_base_for_run(
                             personality_seed_base,
                             run,
@@ -761,7 +736,6 @@ fn main() -> Result<()> {
                         )?;
                         for (leg, scenario) in oxide_driver::bot_eval::configured_matchup_legs(
                             &source,
-                            scenario_seed,
                             matchup,
                             profile_base,
                             paired,
@@ -775,7 +749,6 @@ fn main() -> Result<()> {
                                     oxide_driver::bot_eval::evaluation_replay_filename(
                                         scenario_index,
                                         run,
-                                        scenario_seed,
                                         ticks,
                                         &candidate,
                                         &plan,
@@ -1089,9 +1062,8 @@ fn main() -> Result<()> {
                 let mut state = sc.build()?;
                 let mut bots = oxide_kit::controller::seat_controllers(&sc)?;
                 println!(
-                    "controller: {config:?}; sim {}; simulation seed {}",
-                    oxide_sim::SIM_VERSION,
-                    sc.seed
+                    "controller: {config:?}; sim version {}",
+                    oxide_sim::SIM_VERSION
                 );
                 // The timed loop stops at the match result: post-victory
                 // ticks have nothing left to decide and would inflate
@@ -1149,7 +1121,7 @@ fn main() -> Result<()> {
                 );
                 return Ok(());
             }
-            let scenario = oxide_kit::bench::mass_battle(units, 9);
+            let scenario = oxide_kit::bench::mass_battle(units);
             let mut state = scenario.build()?;
             oxide_kit::bench::engage(&mut state);
             let start = std::time::Instant::now();

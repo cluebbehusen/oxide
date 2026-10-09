@@ -70,7 +70,7 @@ fn checkpoint_origin_validates_absolute_bounds_and_world_identity() {
     bad.meta.ticks = Some(36);
     assert!(bad.validate(None).is_err());
     let mut bad = replay.clone();
-    bad.setup.seed += 1;
+    bad.setup.name.push('!');
     assert!(bad.validate(None).is_err());
     let mut bad = replay.clone();
     bad.origin.as_mut().unwrap().state.tick(&[]);

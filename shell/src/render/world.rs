@@ -530,6 +530,8 @@ pub(crate) fn draw_tiles(game: &crate::game::Scene<'_>, sprites: &Sprites) {
     let tint = theme_tint(theme);
     let themed = theme_code(theme).is_some();
     let map_width = game.state.map().width();
+    // Quarry props vary by map, not by anything in play.
+    let quarry_salt = chassis::hash::fnv1a(game.scenario.name.as_bytes());
     let map_height = game.state.map().height();
     let (min, max) = visible_tiles(game);
     for y in min.y..max.y {
@@ -592,7 +594,7 @@ pub(crate) fn draw_tiles(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                 };
             let quarry = sprites.quarry_dressing(0).is_some();
             let placement = quarry
-                .then(|| quarry_dressing(pos, map_width, map_height, game.scenario.seed))
+                .then(|| quarry_dressing(pos, map_width, map_height, quarry_salt))
                 .flatten()
                 .filter(|_| {
                     tile.cosmetic != 1

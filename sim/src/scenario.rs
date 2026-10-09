@@ -24,8 +24,6 @@ pub struct Scenario {
     pub mode: ScenarioMode,
     /// Display name.
     pub name: String,
-    /// Master seed for simulation randomness.
-    pub seed: u64,
     /// The playfield as ASCII rows (see [`crate::map`] for the legend).
     pub map: Vec<String>,
     /// One entry per player; matches require an anchor `1`..`8` or `a`..`h`
@@ -430,11 +428,11 @@ impl Scenario {
                 return Err(ScenarioError::OneTeam);
             }
         }
-        let mut state = State::assemble(map, players, self.seed);
+        let mut state = State::assemble(map, players);
         state.mode = self.mode;
 
         for &(player, anchor) in &anchors {
-            let (w, h) = BuildingKind::Foundry.base_stats().size;
+            let (w, h) = BuildingKind::Foundry.size();
             let footprint_ok = (0..h)
                 .flat_map(|dy| (0..w).map(move |dx| anchor.offset(dx, dy)))
                 .all(|t| state.passable(t));
@@ -450,7 +448,7 @@ impl Scenario {
         // registers its footprint, so the second's ground reads occupied.
         for (index, spec) in self.buildings.iter().enumerate() {
             let anchor = TilePos::new(spec.x, spec.y);
-            let (w, h) = spec.kind.base_stats().size;
+            let (w, h) = spec.kind.size();
             let footprint_ok = (0..h)
                 .flat_map(|dy| (0..w).map(move |dx| anchor.offset(dx, dy)))
                 .all(|t| state.passable(t));

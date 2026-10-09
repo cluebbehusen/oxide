@@ -14,7 +14,7 @@ pub struct Surface {
 impl Surface {
     /// Resolve the fixed outline at a building's world position.
     pub fn new(building: &Building) -> Self {
-        let size = building.stats().size;
+        let size = building.kind.size();
         Self {
             kind: building.kind,
             anchor: building.anchor,

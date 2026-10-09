@@ -7,7 +7,7 @@ use crate::{BuildingId, Event, Order, PlayerId, State};
 use chassis::grid::TilePos;
 
 fn known_charge_in(state: &State, player: PlayerId, kind: BuildingKind, anchor: TilePos) -> bool {
-    let (w, h) = kind.base_stats().size;
+    let (w, h) = kind.size();
     (0..h).any(|dy| (0..w).any(|dx| state.known_charge_at(player, anchor.offset(dx, dy))))
 }
 

@@ -51,7 +51,7 @@ fn crash_damage_waits_for_contact_and_survives_state_round_trip() {
         }));
         assert_eq!(
             state.unit(target).map_or(0, |u| u.hp),
-            hp.saturating_sub(kind.crash_profile().unwrap().damage)
+            hp.saturating_sub(kind.stats().crash.unwrap().damage)
         );
         assert!(state.aircraft_crashes.is_empty());
         let next_hp = state.unit(target).map_or(0, |u| u.hp);
@@ -160,7 +160,7 @@ fn pending_crash_does_not_delay_the_last_foundry_result() {
         .unwrap()
         .pos = impact;
     state.buildings[0].hp = 0;
-    state.buildings[1].hp = UnitKind::Condor.crash_profile().unwrap().damage;
+    state.buildings[1].hp = UnitKind::Condor.stats().crash.unwrap().damage;
     state.tick(&[]);
     assert_eq!(state.result, Some(crate::GameResult::Victory { team: 1 }));
     assert!(state.aircraft_crashes.is_empty());

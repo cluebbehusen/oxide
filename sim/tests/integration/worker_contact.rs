@@ -475,8 +475,7 @@ fn a_crowded_crew_delivers_every_last_load_and_clears_the_dropoff() {
                     }
                 }
                 let scenario: oxide_sim::Scenario = serde_json::from_value(json!({
-                    "mode":"sandbox", "name":"crowded-delivery", "seed":42,
-                    "map":rows.into_iter().map(|r|r.into_iter().collect::<String>()).collect::<Vec<_>>(),
+                    "mode":"sandbox", "name":"crowded-delivery", "map":rows.into_iter().map(|r|r.into_iter().collect::<String>()).collect::<Vec<_>>(),
                     "players":[{"name":"Local","faction":"ferrous","scrap":0,"bot":false}],
                     "buildings":[{"player":0,"kind":"foundry","x":5,"y":11}],
                     "units":(0..12).map(|i| {

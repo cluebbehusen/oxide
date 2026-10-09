@@ -266,7 +266,7 @@ impl Missions {
         ledger: &mut Ledger,
     ) -> Option<TilePos> {
         let units = self.list[index].units.clone();
-        let aim = ring(target.anchor, target.building.base_stats().size).min_by_key(|tile| {
+        let aim = ring(target.anchor, target.building.size()).min_by_key(|tile| {
             (
                 tile.chebyshev(from),
                 raid.frame.rank(raid.frame.home, doubled(*tile)),

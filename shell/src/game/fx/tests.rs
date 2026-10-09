@@ -5,8 +5,7 @@ use oxide_sim::{BuildingId, BuildingKind, Target, UnitId, UnitKind};
 #[test]
 fn lethal_scuttler_bite_retains_the_visible_unit_surface() {
     let scenario = serde_json::from_value(serde_json::json!({
-        "name": "Lethal bite", "mode": "sandbox", "seed": 1,
-        "map": vec![".............................."; 22],
+        "name": "Lethal bite", "mode": "sandbox", "map": vec![".............................."; 22],
         "players": [
             {"name": "Local", "faction": "ferrous", "scrap": 0, "bot": false},
             {"name": "Target", "faction": "cupric", "scrap": 0, "bot": false}
@@ -53,8 +52,7 @@ fn lethal_scuttler_bite_retains_the_visible_unit_surface() {
 fn building_reports_keep_surface_facts_through_the_lethal_tick() {
     for lethal in [false, true] {
         let scenario = serde_json::from_value(serde_json::json!({
-            "name": "Building strike", "mode": "sandbox", "seed": 1,
-            "map": vec![".............................."; 22],
+            "name": "Building strike", "mode": "sandbox", "map": vec![".............................."; 22],
             "players": [
                 {"name": "Local", "faction": "ferrous", "scrap": 0, "bot": false},
                 {"name": "Target", "faction": "cupric", "scrap": 0, "bot": false}
@@ -757,6 +755,7 @@ fn projectile_impacts_sound_on_visible_and_hidden_ground_for_either_owner() {
                     shooter: Target::Unit(shooter.id),
                     launch: shooter.pos,
                     impact: at,
+                    launched_at: 0,
                     arrival: 0,
                     damage: 1,
                     targets: oxide_sim::stats::DomainMask::GROUND,
@@ -806,7 +805,7 @@ fn charge_detonation_plays_one_blast_and_preserves_other_building_losses() {
                 }));
             }
             let scenario = serde_json::from_value(serde_json::json!({
-                "name": "Charge explosion audio", "seed": 37, "map": map,
+                "name": "Charge explosion audio", "map": map,
                 "players": [
                     {"name": "Observer", "faction": "ferrous", "bot": false},
                     {"name": "Mine", "faction": "cupric", "bot": true},
@@ -981,6 +980,7 @@ fn impact_metadata_is_consumed_in_landing_order() {
                 player: oxide_sim::PlayerId(0),
                 launch: at,
                 impact: at,
+                launched_at: 0,
                 arrival: 0,
                 damage: 1,
                 targets: oxide_sim::stats::DomainMask::GROUND,
@@ -1377,7 +1377,12 @@ fn only_bombard_and_bastion_use_real_shell_entities() {
     ];
     let unit_shells: Vec<_> = units
         .into_iter()
-        .filter(|kind| kind.stats().weapons.iter().any(|weapon| weapon.projectile))
+        .filter(|kind| {
+            kind.stats()
+                .weapons
+                .iter()
+                .any(|weapon| weapon.projectile.is_some())
+        })
         .collect();
     assert_eq!(unit_shells, vec![UnitKind::Bombard]);
 
@@ -1397,7 +1402,7 @@ fn only_bombard_and_bastion_use_real_shell_entities() {
             kind.base_stats()
                 .weapons
                 .iter()
-                .any(|weapon| weapon.projectile)
+                .any(|weapon| weapon.projectile.is_some())
         })
         .collect();
     assert_eq!(building_shells, vec![BuildingKind::Bastion]);
@@ -1770,8 +1775,7 @@ fn ranged_reports_retain_unit_contacts_through_lethal_hits() {
         UnitKind::Breaker,
     ] {
         let scenario = serde_json::from_value(serde_json::json!({
-            "name":"Unit impacts", "mode":"sandbox", "seed":42,
-            "map":vec![".............................."; 22],
+            "name":"Unit impacts", "mode":"sandbox", "map":vec![".............................."; 22],
             "players":[
                 {"name":"Local","faction":"ferrous","scrap":0,"bot":false},
                 {"name":"Target","faction":"cupric","scrap":0,"bot":false}
@@ -1816,8 +1820,7 @@ fn ranged_reports_retain_unit_contacts_through_lethal_hits() {
 #[test]
 fn bomb_contacts_preserve_ground_spread_and_use_simulation_time() {
     let scenario = serde_json::from_value(serde_json::json!({
-        "name":"Bomb contacts", "mode":"sandbox", "seed":42,
-        "map":vec!["...................................."; 24],
+        "name":"Bomb contacts", "mode":"sandbox", "map":vec!["...................................."; 24],
         "players":[
             {"name":"Local","faction":"ferrous","scrap":0,"bot":false},
             {"name":"Target","faction":"cupric","scrap":0,"bot":false}
@@ -1898,8 +1901,7 @@ fn checkpoint_projectiles_recover_unit_contacts_without_launch_history() {
         UnitKind::Moth,
     ] {
         let scenario = serde_json::from_value(serde_json::json!({
-            "name":"Restored contacts", "mode":"sandbox", "seed":42,
-            "map":vec!["...................................."; 24],
+            "name":"Restored contacts", "mode":"sandbox", "map":vec!["...................................."; 24],
             "players":[{"name":"Local","faction":"ferrous","scrap":0,"bot":false},
                 {"name":"Target","faction":"cupric","scrap":0,"bot":false}],
             "units":[{"player":0,"kind":kind,"x":12,"y":11},
@@ -1965,8 +1967,7 @@ fn checkpoint_projectiles_recover_unit_contacts_without_launch_history() {
 #[test]
 fn lethal_hit_retains_the_moving_body_frame() {
     let scenario = serde_json::from_value(serde_json::json!({
-        "name":"Moving lethal contact", "mode":"sandbox", "seed":42,
-        "map":vec!["....................................";24],
+        "name":"Moving lethal contact", "mode":"sandbox", "map":vec!["....................................";24],
         "players":[{"name":"Local","faction":"ferrous","scrap":0,"bot":false},
             {"name":"Target","faction":"cupric","scrap":0,"bot":false}],
         "units":[{"player":0,"kind":"lancer","x":10,"y":10},

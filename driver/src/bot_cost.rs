@@ -177,8 +177,6 @@ pub struct CostReport {
     pub workload: String,
     /// Scenario display name.
     pub scenario: String,
-    /// Simulation seed.
-    pub seed: u64,
     /// Requested window in ticks from the scenario start.
     pub ticks: u64,
     /// Tick the run stopped at: the window end or the match result.
@@ -302,7 +300,6 @@ pub fn measure(
     Ok(CostReport {
         workload: workload.to_owned(),
         scenario: scenario.name.clone(),
-        seed: scenario.seed,
         ticks,
         final_tick: state.current_tick(),
         result: state.result(),
@@ -340,8 +337,8 @@ impl CostReport {
         let mut out = String::new();
         let _ = writeln!(
             out,
-            "{}: {} (seed {}), ticks 0..{}, stopped at {} ({outcome})",
-            self.workload, self.scenario, self.seed, self.ticks, self.final_tick
+            "{}: {}, ticks 0..{}, stopped at {} ({outcome})",
+            self.workload, self.scenario, self.ticks, self.final_tick
         );
         let _ = writeln!(
             out,

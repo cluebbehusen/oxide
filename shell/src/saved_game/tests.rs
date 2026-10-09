@@ -168,7 +168,7 @@ fn metadata_reads_stop_before_the_payload_and_corruption_is_checked_on_load() {
 
 #[test]
 fn representative_checkpoints_stay_compact_and_continue_exactly() {
-    let mut dense = oxide_kit::bench::mass_battle(250, 7);
+    let mut dense = oxide_kit::bench::mass_battle(250);
     oxide_kit::bench::all_bots(&mut dense);
     let skyhook: Scenario =
         serde_json::from_str(include_str!("../../../scenarios/skyhook-anchorage.json")).unwrap();

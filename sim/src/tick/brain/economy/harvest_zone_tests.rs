@@ -16,8 +16,7 @@ fn return_cargo_reuses_exhausted_floods_per_worker_and_safety_pass() {
     rows[2][18] = '1';
     rows[16][28] = '2';
     let scenario = serde_json::json!({
-        "name": "sealed-worker-drop-offs", "seed": 25,
-        "map": rows.into_iter().map(|row| row.into_iter().collect::<String>()).collect::<Vec<_>>(),
+        "name": "sealed-worker-drop-offs", "map": rows.into_iter().map(|row| row.into_iter().collect::<String>()).collect::<Vec<_>>(),
         "players": [
             {"name": "F", "faction": "ferrous", "scrap": 0, "bot": false},
             {"name": "C", "faction": "cupric", "scrap": 0, "bot": true}
@@ -55,8 +54,7 @@ fn return_cargo_reuses_exhausted_floods_per_worker_and_safety_pass() {
 #[test]
 fn return_cargo_resets_reachability_before_ignoring_danger() {
     let scenario = serde_json::json!({
-        "name": "danger-blocked-return", "seed": 25,
-        "map": [
+        "name": "danger-blocked-return", "map": [
             "##########################",
             "#1....................2..#",
             "#........................#",
@@ -91,7 +89,7 @@ fn return_cargo_resets_reachability_before_ignoring_danger() {
             &danger,
             worker,
             foundry.anchor,
-            foundry.stats().size,
+            foundry.kind.size(),
             true,
             None
         )
@@ -112,8 +110,7 @@ fn return_cargo_resets_reachability_before_ignoring_danger() {
 #[test]
 fn a_failed_search_from_a_small_pocket_keeps_no_proof() {
     let scenario = serde_json::json!({
-        "name": "pocketed-return", "seed": 25,
-        "map": [
+        "name": "pocketed-return", "map": [
             "##########################",
             "#1....................2..#",
             "#..............###.......#",
@@ -138,7 +135,7 @@ fn a_failed_search_from_a_small_pocket_keeps_no_proof() {
         .iter()
         .find(|b| b.player == PlayerId(0))
         .unwrap();
-    let (anchor, size) = (foundry.anchor, foundry.stats().size);
+    let (anchor, size) = (foundry.anchor, foundry.kind.size());
     let danger = GroundSalvageDanger::capture(&state, PlayerId(0));
     let route = || known_rect_route(&state, &danger, worker, anchor, size, true, None);
     assert!(route().is_none());
@@ -155,8 +152,7 @@ fn a_failed_search_from_a_small_pocket_keeps_no_proof() {
 #[test]
 fn a_failed_safe_search_settles_repeats_until_a_watched_node_drains() {
     let scenario = serde_json::json!({
-        "name": "scrap-gated-return", "seed": 25,
-        "map": [
+        "name": "scrap-gated-return", "map": [
             "##########################",
             "#1............#.......2..#",
             "#.............#..........#",
@@ -182,7 +178,7 @@ fn a_failed_safe_search_settles_repeats_until_a_watched_node_drains() {
         .iter()
         .find(|b| b.player == PlayerId(0))
         .unwrap();
-    let (anchor, size) = (foundry.anchor, foundry.stats().size);
+    let (anchor, size) = (foundry.anchor, foundry.kind.size());
     let danger = GroundSalvageDanger::capture(&state, PlayerId(0));
     assert!(state.vision(PlayerId(0)).visible(gate));
     assert!(danger.outside_every_envelope(state.units[0].tile()));
@@ -207,8 +203,7 @@ fn a_failed_safe_search_settles_repeats_until_a_watched_node_drains() {
 #[test]
 fn a_held_drop_off_route_yields_only_to_a_nearer_worker() {
     let scenario = serde_json::json!({
-        "name": "shared-drop-off", "seed": 25,
-        "map": [
+        "name": "shared-drop-off", "map": [
             "##########################",
             "#1....................2..#",
             "#........................#",
@@ -235,7 +230,7 @@ fn a_held_drop_off_route_yields_only_to_a_nearer_worker() {
         .iter()
         .find(|b| b.player == PlayerId(0))
         .unwrap();
-    let (foundry_id, anchor, size) = (foundry.id, foundry.anchor, foundry.stats().size);
+    let (foundry_id, anchor, size) = (foundry.id, foundry.anchor, foundry.kind.size());
     let goal = TilePos::new(anchor.x + size.0, anchor.y + 1);
     let point = goal.center() - Vec2Fx::new(Fx::lit("0.2"), Fx::ZERO);
     let ids = [state.units[0].id, state.units[1].id];
@@ -289,8 +284,7 @@ fn held_worker(wall: Option<(usize, usize)>) -> (State, UnitId, KnownSource, Pat
         map[y].replace_range(x..=x, "#");
     }
     let scenario = serde_json::json!({
-        "name": "danger-held-order", "seed": 25,
-        "map": map,
+        "name": "danger-held-order", "map": map,
         "players": [
             {"name": "F", "faction": "ferrous", "scrap": 0, "bot": false},
             {"name": "C", "faction": "cupric", "scrap": 0, "bot": true}
@@ -395,8 +389,7 @@ fn a_sealed_worker_settles_every_work_position_with_one_search() {
     rows[16][28] = '2';
     rows[7][20] = 's';
     let scenario = serde_json::json!({
-        "name": "sealed-worker-source", "seed": 25,
-        "map": rows.into_iter().map(|row| row.into_iter().collect::<String>()).collect::<Vec<_>>(),
+        "name": "sealed-worker-source", "map": rows.into_iter().map(|row| row.into_iter().collect::<String>()).collect::<Vec<_>>(),
         "players": [
             {"name": "F", "faction": "ferrous", "scrap": 0, "bot": false},
             {"name": "C", "faction": "cupric", "scrap": 0, "bot": true}
@@ -418,8 +411,7 @@ fn a_sealed_worker_settles_every_work_position_with_one_search() {
 #[test]
 fn a_worker_held_from_its_drop_off_rescans_after_the_retry_period_and_on_command() {
     let scenario = serde_json::json!({
-        "name": "danger-held-delivery", "seed": 25,
-        "map": [
+        "name": "danger-held-delivery", "map": [
             "##########################",
             "#1....................2..#",
             "#........................#",
@@ -450,7 +442,7 @@ fn a_worker_held_from_its_drop_off_rescans_after_the_retry_period_and_on_command
         .unwrap()
         .id;
     let period = crate::stats::HARVEST_DANGER_RETRY_TICKS;
-    let start = DANGER_HOLD_REPORT_PERIOD - 1;
+    let start = crate::stats::DANGER_HOLD_REPORT_PERIOD - 1;
     let mut searched = Vec::new();
     let mut reported = Vec::new();
     for tick in start..=start + period {
@@ -484,7 +476,7 @@ fn a_worker_held_from_its_drop_off_rescans_after_the_retry_period_and_on_command
     assert_eq!(searched, [0, period]);
     assert_eq!(
         reported,
-        [DANGER_HOLD_REPORT_PERIOD],
+        [crate::stats::DANGER_HOLD_REPORT_PERIOD],
         "the hold stays visible"
     );
     assert!(state.units[0].danger_retry_at.is_some());
@@ -612,7 +604,6 @@ fn replacement_preserves_worker_affinity_before_route_efficiency() {
     let state = Scenario {
         mode: ScenarioMode::Match,
         name: "harvest-worker-affinity".into(),
-        seed: 11,
         map: vec![
             "####################".into(),
             "#1.....#...........#".into(),
@@ -693,7 +684,7 @@ fn per_tick_danger_rechecks_are_constant_even_on_a_long_route() {
     );
     assert_eq!(
         checks.get(),
-        HARVEST_DANGER_LOOKAHEAD,
+        crate::stats::HARVEST_DANGER_LOOKAHEAD,
         "the hot-path cost is independent of total route length"
     );
 }
@@ -703,7 +694,6 @@ fn danger_replan_cadence_uses_owner_local_rank() {
     let mut state = Scenario {
         mode: ScenarioMode::Match,
         name: "owner-local-replan-cadence".into(),
-        seed: 13,
         map: vec![
             "##############".into(),
             "#1.........2.#".into(),
@@ -783,7 +773,7 @@ fn danger_replan_cadence_uses_owner_local_rank() {
     assert!(!danger_replan_window(&state, UnitId(2)));
     assert!(!danger_replan_window(&state, UnitId(3)));
 
-    state.tick = HARVEST_REPLAN_PERIOD - 1;
+    state.tick = crate::stats::HARVEST_REPLAN_PERIOD - 1;
     assert!(!danger_replan_window(&state, UnitId(0)));
     assert!(!danger_replan_window(&state, UnitId(1)));
     assert!(danger_replan_window(&state, UnitId(2)));
@@ -795,7 +785,6 @@ fn unseen_wreck_selection_reads_frozen_memory_not_live_salvage() {
     let mut state = Scenario {
         mode: ScenarioMode::Match,
         name: "harvest-memory".into(),
-        seed: 9,
         map: vec![
             "##############################".into(),
             "#1...........................#".into(),
@@ -866,7 +855,6 @@ fn an_unscouted_enemy_building_cannot_bend_a_route_through_fog() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "harvest-route-belief".into(),
-        seed: 10,
         map: vec![
             "##############################".into(),
             "#1...........................#".into(),

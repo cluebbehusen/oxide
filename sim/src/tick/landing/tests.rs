@@ -18,7 +18,6 @@ fn arena() -> State {
     Scenario {
         mode: ScenarioMode::Match,
         name: "mirror".into(),
-        seed: 3,
         map: rows,
         players: vec![
             PlayerSpec {

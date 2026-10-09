@@ -45,7 +45,6 @@ A minimal unit-only sandbox:
 {
   "name": "Movement Drill",
   "mode": "sandbox",
-  "seed": 1,
   "map": [
     "....................",
     "....................",

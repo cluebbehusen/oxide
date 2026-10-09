@@ -40,8 +40,8 @@ impl UnitBody {
             game.draw_hull_heading(state, unit.id, 1.0)
         } else if kind.stats().turn_rate > 0
             || kind.ground_turn_rate() > 0
-            || kind.cruise_turn_rate() > 0
-            || kind.turret_turn_rate() > 0
+            || kind.stats().cruise_turn_rate > 0
+            || kind.stats().turret_turn_rate > 0
         {
             game.draw_heading(unit.id, unit.weapon_heading(), 1.0)
         } else {
@@ -115,7 +115,7 @@ impl HitSurface {
     pub(crate) fn covers(self, at: Vec2) -> bool {
         match self {
             Self::Building(hit) => {
-                let (w, h) = hit.kind.tier_stats(hit.tier).size;
+                let (w, h) = hit.kind.size();
                 at.x >= hit.anchor.x
                     && at.y >= hit.anchor.y
                     && at.x <= hit.anchor.x + w as f32
@@ -475,7 +475,7 @@ fn defense_shot_style(kind: oxide_sim::BuildingKind, tier: u8) -> ShotStyle {
         kind.base_stats()
             .weapons
             .iter()
-            .all(|weapon| !weapon.projectile),
+            .all(|weapon| weapon.projectile.is_none()),
         "real shell weapons must arrive through ShellLaunched"
     );
     match kind {
@@ -522,7 +522,7 @@ fn unit_shot_origin(kind: oxide_sim::UnitKind, from: Vec2, to: Vec2) -> Vec2 {
 
 fn defense_muzzle_reach(kind: oxide_sim::BuildingKind) -> f32 {
     match kind {
-        oxide_sim::BuildingKind::Bastion => kind.base_stats().size.0 as f32 * 0.49,
+        oxide_sim::BuildingKind::Bastion => kind.size().0 as f32 * 0.49,
         oxide_sim::BuildingKind::FlakTurret => 0.47,
         _ => 0.44,
     }
@@ -1169,7 +1169,7 @@ impl Presentation {
                     // gets the right report and burst.
                     let sound = defense_fire_sound(*kind);
                     let splash = kind
-                        .base_stats()
+                        .tier_stats(*tier)
                         .weapons
                         .iter()
                         .find_map(|w| w.splash)

@@ -611,7 +611,7 @@ fn check_idle_army(detector: &mut SeatDetector, state: &State, player: PlayerId,
 
 /// Chebyshev tiles from `tile` to `building`'s footprint, 0 inside it.
 pub(super) fn gap(tile: TilePos, building: &Building) -> i32 {
-    let (width, height) = building.stats().size;
+    let (width, height) = building.kind.size();
     let far = building.anchor.offset(width - 1, height - 1);
     let dx = (building.anchor.x - tile.x).max(tile.x - far.x).max(0);
     let dy = (building.anchor.y - tile.y).max(tile.y - far.y).max(0);

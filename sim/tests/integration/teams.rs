@@ -22,7 +22,6 @@ fn arena4(units: Vec<UnitSpec>) -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "team-arena".into(),
-        seed: 42,
         map: vec![
             "########################".into(),
             "#1..................3..#".into(),

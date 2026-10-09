@@ -27,7 +27,7 @@ fn builds(commands: &[PlayerCommand]) -> Vec<(BuildingKind, TilePos)> {
 }
 
 fn footprint(kind: BuildingKind, anchor: TilePos) -> impl Iterator<Item = TilePos> {
-    let (width, height) = kind.base_stats().size;
+    let (width, height) = kind.size();
     (0..height).flat_map(move |dy| (0..width).map(move |dx| anchor.offset(dx, dy)))
 }
 
@@ -122,10 +122,7 @@ fn a_building_packs_beside_the_last_one_off_the_lanes() {
     );
     for (kind, anchor) in laid {
         assert!(beside.contains(&anchor), "{kind:?} at {anchor:?}");
-        assert_eq!(
-            crate::frame::gap(first, (2, 2), anchor, kind.base_stats().size),
-            0
-        );
+        assert_eq!(crate::frame::gap(first, (2, 2), anchor, kind.size()), 0);
         assert!(
             footprint(kind, anchor).all(|tile| !model.lane_of(&[start], tile)),
             "{kind:?} at {anchor:?} stands on a lane"
@@ -274,7 +271,7 @@ fn under(threat: impl Fn(&mut Scenario)) -> Vec<(BuildingKind, TilePos)> {
 /// Whether a `kind` at `anchor` lies within `range` tiles of `centre`, in
 /// doubled coordinates, measured to the footprint's nearest point.
 fn within(kind: BuildingKind, anchor: TilePos, centre: (i64, i64), range: Fx) -> bool {
-    let (width, height) = kind.base_stats().size;
+    let (width, height) = kind.size();
     let axis = |v: i64, low: i32, len: i32| {
         let (low, high) = (2 * i64::from(low), 2 * i64::from(low + len));
         (low - v).max(v - high).max(0)
@@ -509,7 +506,7 @@ fn mirrored_seats_pack_mirrored_bases() {
     let mut scenario = saturated(400);
     let first = TilePos::new(7, 6);
     let rotate = |kind: BuildingKind, anchor: TilePos| {
-        let (width, height) = kind.base_stats().size;
+        let (width, height) = kind.size();
         TilePos::new(24 - width - anchor.x, 12 - height - anchor.y)
     };
     put(&mut scenario, 0, BuildingKind::Crucible, first);

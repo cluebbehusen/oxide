@@ -19,7 +19,6 @@ fn scene_with(kind: UnitKind, rocks: &[(usize, usize)]) -> crate::State {
     Scenario {
         mode: ScenarioMode::Match,
         name: "ground-motor".into(),
-        seed: 1,
         map: rows,
         players: [Faction::Ferrous, Faction::Cupric]
             .into_iter()

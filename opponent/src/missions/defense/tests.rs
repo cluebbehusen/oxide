@@ -18,7 +18,6 @@ fn viewed(units: &[(u8, UnitKind, i32, i32)]) -> (ObservationData, Vec<UnitId>) 
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "defense".into(),
-        seed: 1,
         map,
         players: [Faction::Ferrous, Faction::Cupric]
             .into_iter()

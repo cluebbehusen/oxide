@@ -79,7 +79,6 @@ fn boundary_duel() -> State {
     Scenario {
         mode: ScenarioMode::Match,
         name: "boundary-duel".into(),
-        seed: 1,
         map: vec![
             "............".into(),
             "............".into(),
@@ -201,7 +200,6 @@ fn indexed_acquisition_matches_the_linear_scan() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "acquisition-differential".into(),
-        seed: 7,
         map: rows.into_iter().map(|r| r.into_iter().collect()).collect(),
         players: vec![
             seat("West", Faction::Ferrous),
@@ -338,7 +336,6 @@ fn windowed_sidearm_victim_matches_the_linear_scan() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "sidearm-differential".into(),
-        seed: 11,
         map: rows.into_iter().map(|r| r.into_iter().collect()).collect(),
         players: vec![
             seat("West", Faction::Ferrous),

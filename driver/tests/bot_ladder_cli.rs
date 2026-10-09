@@ -42,7 +42,6 @@ fn manifest(dir: &Path) -> PathBuf {
             "name": "cli",
             "tick_limit": 24,
             "runs": 1,
-            "scenario_seed_base": 7000,
             "personality_seed_base": 9000,
             "stances": ["balanced"],
             "comparisons": [{"higher": "prime", "lower": "scrapheap", "gate": 800}],

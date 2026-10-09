@@ -50,8 +50,8 @@ cargo run --release --locked -p oxide-driver -- run scenarios/compass-grand.json
 cargo run --release --locked -p oxide-driver -- run scenarios/skyhook-anchorage.json --bots --ticks 6480 --save-replay replays/performance/skyhook.json
 ```
 
-Use the authored scenario seeds and configured bot profiles. `--bots` retains
-one passive local seat and the configured opponents; `--all-bots` is a different
+Use the authored scenarios and configured bot profiles. `--bots` retains one
+passive local seat and the configured opponents; `--all-bots` is a different
 workload. Preserve these generated inputs for the candidate/control comparison.
 Do not independently regenerate both sides and assume their worlds are equal.
 Record the source commit and any setup/profile changes beside the results.

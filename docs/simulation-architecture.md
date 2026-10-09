@@ -16,21 +16,20 @@ lives in `geometry`, outside the private tick implementation.
 step. Camera state, input state, interpolation, effects, audio, and UI never
 enter `State` and cannot affect an outcome.
 
-A `Scenario` contains the map, seed, players, starting entities, and bot setup
-needed to begin a match. It may also carry browser metadata that the simulation
+A `Scenario` contains the map, players, starting entities, and bot setup needed
+to begin a match. It may also carry browser metadata that the simulation
 deliberately ignores. The complete scenario is embedded in a replay, so
-reconstruction does not depend on the original scenario file. Its seed
-initializes the simulation RNG. Each player-facing bot seat carries a separate
-personality seed in its configuration; the bot derives its profile from that
-seed, not the scenario seed.
+reconstruction does not depend on the original scenario file. The simulation has
+no random stream of its own. Each player-facing bot seat carries a personality
+seed in its configuration, and the bot derives its profile from that seed.
 
 All outcome-relevant arithmetic uses fixed point or integers. Fixed-point vector
 scaling computes unsigned magnitudes before restoring the sign, preserving exact
 negation for representable results so opposite movement rays cannot drift by one
-raw unit. Entity tables are kept in stable id order, random choices use
-`chassis::rng::Pcg32`, and selection rules end in explicit deterministic
-tie-breakers. `State::hash` serializes the authoritative state canonically;
-readable protocol views are not substitutes for that fingerprint.
+raw unit. Entity tables are kept in stable id order, and selection rules end in
+explicit deterministic tie-breakers. `State::hash` serializes the authoritative
+state canonically; readable protocol views are not substitutes for that
+fingerprint.
 
 `TickReport` and its `Event` values are output only. Consumers may use them for
 statistics, effects, animation, sound, and assertions, or drop them entirely.
@@ -68,8 +67,6 @@ Validation covers, among other things:
 - valid owners, faction production, entity references, and shell fields;
 - coherent construction, salvage, recovery, ghost, radar, and memory state;
 - canonical ordering for every collection whose order is observable.
-
-`Pcg32` validates its odd stream increment at its own deserialization boundary.
 
 Each new serialized field needs an invariant decision. The integrity tests
 exercise meaningful malformed relationships and bounds, while round-tripping
@@ -209,7 +206,9 @@ knowledge, so a group never spreads before its owner's team has seen the clicked
 tile. Patrols spread each leg the same way. A rally walk, the walk a unit that
 cannot hit an attack target takes to that target's tile, and an `Unload` drop
 point each resolve as rank 0, so a rally's newborns and a group's pacifists
-share one tile.
+share one tile. Every air route snaps a peak goal to open sky with the same
+scan, framed by the flyer's own approach, so mirrored flights snap to mirrored
+sky.
 
 When the target lies outside the unit's reachable ground, the unit routes to the
 reachable tile nearest it by squared distance instead, and stores that tile as
@@ -236,7 +235,10 @@ touching bodies within `CROWD_CHAIN_REACH`, to one within `ARRIVAL_NEAR` of the
 endpoint. Only bodies of the walker's own team count toward that chain, so a
 hostile body that may be out of sight never changes where a short walk stops. A
 crowd therefore never makes a goal count as unreachable. An unreachable `Unload`
-sets its riders down where the flight ended.
+sets its riders down where the flight ended. Riders take the open tiles
+ring-scanned outward from where the transport stopped, framed by the transport's
+approach when the order was issued, so mirrored drops set riders on mirrored
+tiles.
 
 ## Movement and collision
 
@@ -385,7 +387,9 @@ approach frame, so rotating the map rotates the fallback destinations too.
 Relocation happens only after acceptance and payment.
 
 Approaching a footprint orders passable doorsteps in the body's local approach
-frame, then uses an owner-local unit rank to spread equivalent workers.
+frame, then uses an owner-local unit rank to spread equivalent workers. A Sapper
+pressing a building and a long gun backing out of its dead zone take the nearest
+doorstep or firing stand, with equal distances ranked in that same frame.
 Ground-production orders spawn doorsteps in the producer's radial frame around
 the map. In both cases, dot and cross products replace an absolute scan
 direction, so half-turned producers and workers receive corresponding geometric
@@ -476,11 +480,12 @@ movement. Recurring economy runs in the production phase: Reclaimers and
 Refineries pay on their cadences, restored Extractors provide fixed remote
 income, and a completed same-owner Foundry within the support radius raises an
 Extractor's fixed yield without stacking. Completed Foundries also provide the
-baseline drip and a finite recovery entitlement for a stranded seat. Crucibles
-consume nearby wreck salvage for income, nearest tile first and then the richer
-one, with exact ties ordered in the crucible's half-turn frame so mirrored
-crucibles burn mirrored tiles. These are ordinary authoritative rules, not shell
-conveniences.
+baseline drip and a finite recovery entitlement for a stranded seat: one with no
+machine that can harvest, whether in the world, aboard a transport, or prepaid
+in a live production queue. Crucibles consume nearby wreck salvage for income,
+nearest tile first and then the richer one, with exact ties ordered in the
+crucible's half-turn frame so mirrored crucibles burn mirrored tiles. These are
+ordinary authoritative rules, not shell conveniences.
 
 Extractor frames are immutable authored map features. Only an Extractor may
 claim one, other foundations cannot cover one, and destroying an Extractor
@@ -560,9 +565,9 @@ building destroyed by that tick's volley.
 
 Every unit or armed building reads immutable stats describing range, minimum
 range, cooldown, damage, target domains, splash, indirect fire, and whether the
-shot is hitscan or a real projectile. Buildings count as ground targets. Weapons
-may cover ground, air, or both; sidearms are separate weapon slots and cooldowns
-are stored per slot.
+shot is hitscan or a real projectile with its own payload and flight speed.
+Buildings count as ground targets. Weapons may cover ground, air, or both;
+sidearms are separate weapon slots and cooldowns are stored per slot.
 
 Ground chassis keep a motor speed independent of collision displacement. They
 accelerate from rest over `GROUND_ACCEL_TICKS` and brake from full speed over
@@ -622,15 +627,16 @@ traversing toward its ordinary opportunistic target; cooldown starts only once
 the turret aligns. Hidden structures cannot attract an advancing weapon or
 reveal themselves through turret tracking.
 
-Bombard keeps serialized `brace_ticks`, bounded by `BOMBARD_BRACE_TICKS`. It
-turns with the spades stowed, then deploys over that many aligned ticks; its
-heading stays fixed inside the firing tolerance while planted. After a shot, a
-short recoil window precedes retraction, which runs faster than deployment. A
-new aim, lost firing solution, or movement order retracts the spades before
-further turning or translation. Reloading at an unchanged firing stance keeps
-them planted. Advance does not fire Bombard potshots. Deserialization bounds the
-deployment counter, rejects it on other kinds and requires transported riders to
-have stowed spades.
+A unit whose stats carry a brace, today the Bombard, keeps serialized
+`brace_ticks`, bounded by the brace's deployment ticks. It turns with the spades
+stowed, then deploys over that many aligned ticks; its heading stays fixed
+inside the firing tolerance while planted. After a shot, a short recoil window
+precedes retraction, which runs faster than deployment. A new aim, lost firing
+solution, or movement order retracts the spades before further turning or
+translation. Reloading at an unchanged firing stance keeps them planted. A
+braced gun never fires potshots on Advance. Deserialization bounds the
+deployment counter, rejects it on kinds without a brace and requires transported
+riders to have stowed spades.
 
 `AttackTarget` resolves through team knowledge to a visible entity, remembered
 building footprint, or mobile contact. Explicit attacks approach weapon range
@@ -669,11 +675,11 @@ use the current steering-line estimate. The snapshot precedes unit brains and
 does not consult later route turns. A shell is unguided after it leaves the
 weapon. Radar aim uses a fixed-point velocity estimated from the rolling
 one-second tile-center history, clamped to a global movement bound; a fresh
-contact has zero estimated velocity. A serialized projectile kind preserves
-missile, bomb, or shell identity independently of shooter survival.
-Deserialization rejects a kind inconsistent with a shooter that still exists. On
-arrival, buildings take only a direct hit; eligible enemy units may take splash
-according to the weapon's domain mask.
+contact has zero estimated velocity. A shell keeps its weapon's payload kind
+(missile, bomb, or shell) and its launch tick for presentation, independently of
+shooter survival; deserialization requires it to launch no later than it lands.
+On arrival, buildings take only a direct hit; eligible enemy units may take
+splash according to the weapon's domain mask.
 
 ## Fog, memory, radar, and teams
 
@@ -714,14 +720,14 @@ ranked by predicted distance, previous distance, contact id, and coordinates.
 Visible identity can link visible observations; radar matching uses only
 reported movement. Unmatched tracks end immediately, and ids are never reused.
 
-Salvage-relevant hostile incidents, such as a Harvester hit or an allied loss,
-remember only the victim's tile for a bounded caution period, never the
-attacker's identity or location. Only fire from an attacker the victim's team
-cannot see leaves an incident; a visible attacker is live danger that ends when
-it dies or leaves sight. A worker already inside a remembered static firing
-envelope may retreat laterally or outward, without approaching any overlapping
-gun. This escape rule never makes the source eligible for work and does not
-permit crossing mobile or radar pressure.
+Salvage-relevant hostile incidents, such as a hit on any machine that can
+harvest or an allied loss, remember only the victim's tile for a bounded caution
+period, never the attacker's identity or location. Only fire from an attacker
+the victim's team cannot see leaves an incident; a visible attacker is live
+danger that ends when it dies or leaves sight. A worker already inside a
+remembered static firing envelope may retreat laterally or outward, without
+approaching any overlapping gun. This escape rule never makes the source
+eligible for work and does not permit crossing mobile or radar pressure.
 
 All allegiance checks route through normalized team ids. Teammates share vision,
 cannot target one another, and win or lose as a team. Resignation makes a seat
