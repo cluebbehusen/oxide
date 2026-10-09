@@ -1,6 +1,7 @@
 //! Pure camera-listener weighting for one frame of queued sound events.
 
 use crate::game::SoundKind;
+use crate::mixer::Weight;
 use crate::numeric;
 use macroquad::prelude::Vec2;
 
@@ -17,63 +18,17 @@ pub(crate) struct FrameSound {
     positioned: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum WeightClass {
-    Detail,
-    Standard,
-    Heavy,
-    Protected,
-}
-
-fn weight_class(kind: SoundKind) -> WeightClass {
-    match kind {
-        SoundKind::Alert => WeightClass::Protected,
-        SoundKind::BuildingBoom
-        | SoundKind::Artillery
-        | SoundKind::ArtilleryLaunch
-        | SoundKind::BombardFire
-        | SoundKind::BastionFire
-        | SoundKind::BreakerFire
-        | SoundKind::AvalancheFire
-        | SoundKind::RocketMotor
-        | SoundKind::RocketImpact
-        | SoundKind::BombRelease
-        | SoundKind::DemolitionBoom => WeightClass::Heavy,
-        SoundKind::UnitDeath
-        | SoundKind::LancerFire
-        | SoundKind::FlakhoundFire
-        | SoundKind::BuzzardFire
-        | SoundKind::FlakTurretFire => WeightClass::Standard,
-        SoundKind::Laser
-        | SoundKind::WardenFire
-        | SoundKind::ScuttlerFire
-        | SoundKind::SentinelFire
-        | SoundKind::StingerFire
-        | SoundKind::DarterFire
-        | SoundKind::TalonFire
-        | SoundKind::WispFire => WeightClass::Detail,
-        SoundKind::Deposit
-        | SoundKind::UpgradeDone
-        | SoundKind::TrainDone
-        | SoundKind::Click
-        | SoundKind::Denied
-        | SoundKind::Victory
-        | SoundKind::Defeat
-        | SoundKind::Ack => WeightClass::Standard,
-    }
-}
-
 fn zoom_detail(zoom: f32) -> f32 {
     ((zoom - WIDE_ZOOM) / (DETAIL_ZOOM - WIDE_ZOOM)).clamp(0.0, 1.0)
 }
 
 fn zoom_gain(kind: SoundKind, zoom: f32) -> f32 {
     let detail = zoom_detail(zoom);
-    match weight_class(kind) {
-        WeightClass::Detail => 0.25 + 0.75 * detail,
-        WeightClass::Standard => 0.45 + 0.55 * detail,
-        WeightClass::Heavy => 0.72 + 0.28 * detail,
-        WeightClass::Protected => 1.0,
+    match crate::mixer::spec(kind).weight {
+        Weight::Detail => 0.25 + 0.75 * detail,
+        Weight::Standard => 0.45 + 0.55 * detail,
+        Weight::Heavy => 0.72 + 0.28 * detail,
+        Weight::Protected => 1.0,
     }
 }
 
@@ -82,7 +37,7 @@ fn distance_gain(kind: SoundKind, world: Vec2, center: Vec2, half_extents: Vec2)
     let delta = (world - center).abs() - half_extents;
     let outside = Vec2::new(delta.x.max(0.0), delta.y.max(0.0));
     let distance = outside.length();
-    if kind.is_explosion() {
+    if crate::mixer::spec(kind).explosion {
         (1.0 - distance / EXPLOSION_FALLOFF_TILES).clamp(0.0, 1.0)
     } else if distance == 0.0 {
         1.0
@@ -147,7 +102,7 @@ pub(crate) fn frame_mix(
         .filter_map(|(index, event)| event.positioned.then_some(index))
         .collect();
     ranked.sort_by(|&left, &right| {
-        let heavy = |event: FrameSound| matches!(weight_class(event.kind), WeightClass::Heavy);
+        let heavy = |event: FrameSound| crate::mixer::spec(event.kind).weight == Weight::Heavy;
         heavy(mixed[right])
             .cmp(&heavy(mixed[left]))
             .then_with(|| mixed[right].gain.total_cmp(&mixed[left].gain))

@@ -108,3 +108,26 @@ fn mute_and_volume_edits_fade_and_scale_the_music_bus() {
     let mix = settle(&mut score, Scene::Menu, half);
     assert!((mix.menu - 0.04).abs() < 1.0e-6);
 }
+
+#[test]
+fn soundtrack_context_tracks_pause_victory_and_surrender() {
+    let mut won = crate::game::Game::new(oxide_sim::Scenario::skirmish()).expect("game");
+    assert_eq!(match_scene(&won.view(), false), Scene::Match);
+    assert_eq!(match_scene(&won.view(), true), Scene::Pause);
+    won.state.tick(&[oxide_sim::PlayerCommand {
+        player: oxide_sim::PlayerId(1),
+        command: oxide_sim::Command::Surrender,
+    }]);
+    assert_eq!(match_scene(&won.view(), false), Scene::Victory);
+
+    let mut lost = crate::game::Game::new(oxide_sim::Scenario::skirmish()).expect("game");
+    lost.state.tick(&[oxide_sim::PlayerCommand {
+        player: lost.presentation.human,
+        command: oxide_sim::Command::Surrender,
+    }]);
+    assert_eq!(
+        match_scene(&lost.view(), false),
+        Scene::Defeat,
+        "a resigned human never hears a teammate's eventual win as their victory"
+    );
+}

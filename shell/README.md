@@ -12,12 +12,15 @@ crate-level rustdoc.
 ## Main pieces
 
 - `main` handles CLI arguments, window configuration, and startup.
-- `app` owns frame orchestration and debug requests; `app/screen_flow` owns
-  cross-screen transitions and draws one active screen.
-- `screens/wizard` owns New Match seat, team, faction, and opponent choices;
-  `bot_label` keeps configured opponent names consistent across the wizard, HUD,
-  and result report. Every bot seat of a new match runs `oxide-opponent`;
-  rematches, saves and replays keep their recorded configuration.
+- `app` owns frame orchestration; `app/screen_flow` owns cross-screen
+  transitions and draws one active screen. `app/debug` answers debug requests,
+  `app/ui_view` reports what the window shows, and `app/audio` feeds the visible
+  session's sounds to the mixer.
+- `screens/wizard` owns New Match seat, team, faction, and opponent choices, and
+  `screens/wizard/launch` turns a finished draft into a match; `bot_label` keeps
+  configured opponent names consistent across the wizard, HUD, and result
+  report. Every bot seat of a new match runs `oxide-opponent`; rematches, saves
+  and replays keep their recorded configuration.
 - `game` owns one live session, its recorder, and bots. `game::Presentation`
   holds camera, interpolation, effects, and UI state; rendering borrows the
   active live or replay world through `game::Scene`. Its checkpoint adapter
@@ -40,7 +43,9 @@ crate-level rustdoc.
 - `entity_lod` derives filtered entity textures for world rendering and UI
   portraits; `strategic_markers` draws role and allegiance cues at distant zoom.
 - `assets`, `typography`, `audio_mix`, and `soundtrack` own presentation
-  resources.
+  resources. `mixer` plays clips and holds the one table of what the shell
+  decides per sound kind: its clip, bus, mix weight, and whether it is a blast
+  or raises combat music.
 - `debug_server` connects the frame loop to `oxide-protocol`.
 - `netplay` gathers LAN machines in a lobby and carries a running match between
   them over `oxide-net`; `screens/lobby` asks for a host address and shows the

@@ -212,7 +212,7 @@ fn new_match_seed_window_advances_once_only_after_a_successful_launch() {
     );
     assert_eq!(
         personality_seeds.match_base(),
-        first_base.wrapping_add(BOT_PERSONALITY_WINDOW),
+        first_base.wrapping_add(crate::screens::wizard::launch::BOT_PERSONALITY_WINDOW),
         "one successful match consumes exactly one complete roster window"
     );
 }
@@ -244,7 +244,7 @@ fn a_remote_chair_hosts_the_match_and_a_refused_listen_keeps_the_seeds() {
     );
     assert_eq!(
         personality_seeds.match_base(),
-        first_base.wrapping_add(BOT_PERSONALITY_WINDOW)
+        first_base.wrapping_add(crate::screens::wizard::launch::BOT_PERSONALITY_WINDOW)
     );
 }
 

@@ -1511,5 +1511,7 @@ impl Wizard {
     }
 }
 
+pub(crate) mod launch;
+
 #[cfg(test)]
 mod tests;

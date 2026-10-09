@@ -129,7 +129,7 @@ pub(super) fn update_and_draw(
     // Coaching waits until the player seems stuck on this screen.
     let pressed = events.iter().any(crate::hints::is_press);
     crate::hints::set_alpha(app.hint_clock.observe(
-        super::screen_mode(&screen),
+        super::ui_view::screen_mode(&screen),
         pressed,
         time.presentation,
         render::reduced_motion(),
