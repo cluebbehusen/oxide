@@ -753,7 +753,7 @@ fn owner(state: &State, target: Target) -> Option<PlayerId> {
 /// Whether `kind` fights or carries others.
 fn attacker(kind: UnitKind) -> bool {
     let stats = kind.stats();
-    !stats.weapons.is_empty() || stats.transport_capacity > 0
+    stats.can_fight() || stats.transport_capacity > 0
 }
 
 fn armed_aircraft(unit: &Unit) -> bool {
@@ -863,7 +863,7 @@ fn press(
             .iter()
             .filter(|unit| {
                 unit.kind.stats().domain == domain
-                    && !unit.kind.stats().weapons.is_empty()
+                    && unit.kind.stats().can_fight()
                     && gap(unit.tile(), foundry) <= PRESS_TILES
             })
             .map(|unit| unit.id.0)
@@ -1047,7 +1047,7 @@ fn evacuate(
 fn repair(watch: &mut SeatWatch, own: &[&Building], seen: &[&Unit], now: u64) {
     let clear = |building: &Building| {
         !seen.iter().any(|enemy| {
-            !enemy.kind.stats().weapons.is_empty() && gap(enemy.tile(), building) <= CLEAR_TILES
+            enemy.kind.stats().can_fight() && gap(enemy.tile(), building) <= CLEAR_TILES
         })
     };
     for building in own {
@@ -1115,7 +1115,7 @@ fn restore(watch: &mut SeatWatch, state: &State, player: PlayerId, own: &[&Build
             let contested = state.units().iter().any(|unit| {
                 unit.hp > 0
                     && state.hostile(player, unit.player)
-                    && !unit.kind.stats().weapons.is_empty()
+                    && unit.kind.stats().can_fight()
                     && unit.tile().chebyshev(site) <= PRESS_TILES
             });
             if contested {

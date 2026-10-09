@@ -1215,7 +1215,7 @@ fn share(observation: &ObservationData, profile: &ResolvedProfile) -> u32 {
     let threat: u32 = observation
         .enemy_units
         .iter()
-        .filter(|unit| armed(unit.kind))
+        .filter(|unit| unit.kind.stats().can_fight())
         .filter(|unit| {
             observation.my_buildings.iter().any(|building| {
                 let size = building.kind.base_stats().size;

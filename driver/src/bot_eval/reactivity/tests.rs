@@ -189,6 +189,18 @@ fn a_pressed_foundry_is_answered_by_a_hit_lapses_when_the_enemy_leaves_or_is_mis
 }
 
 #[test]
+fn a_sapper_pressing_a_foundry_opens_a_ground_defense_case() {
+    let state = built(&field(
+        &[(1, UnitKind::Sapper, 6, 3), (0, UnitKind::Sentinel, 2, 6)],
+        &[],
+        false,
+    ));
+    let mut detectors = ReactivityDetectors::new([true, false]);
+    run(&mut detectors, &state, 0..12);
+    assert_eq!(found(detectors, 0).ground_defense.arose, 1);
+}
+
+#[test]
 fn enemy_aircraft_over_a_foundry_open_an_air_defense_case() {
     let state = built(&field(
         &[(1, UnitKind::Buzzard, 6, 3), (0, UnitKind::Flakhound, 2, 6)],

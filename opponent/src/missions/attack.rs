@@ -18,6 +18,7 @@ use crate::frame::{HomeFrame, doubled, footprint_centre, gap, ring};
 use crate::map::MapModel;
 use crate::memory::Memory;
 use crate::profile::ResolvedProfile;
+use chassis::fx::Fx;
 use chassis::grid::TilePos;
 use chassis::rng::Pcg32;
 use oxide_sim::observation::{BuildingObs, ObservationData, UnitObs};
@@ -861,7 +862,7 @@ impl<'a> Plan<'a> {
             .memory
             .units()
             .iter()
-            .filter(|unit| !unit.kind.stats().weapons.is_empty() && near(unit.tile))
+            .filter(|unit| unit.kind.stats().can_fight() && near(unit.tile))
             .map(|unit| unit.value(now))
             .sum();
         let buildings: u64 = self
@@ -938,9 +939,8 @@ pub(super) fn opposed(
         .units()
         .iter()
         .filter(|unit| {
-            let stats = unit.kind.stats();
-            stats.weapons.iter().any(|weapon| weapon.targets.ground)
-                && (stats.domain == Domain::Air || map.component(unit.tile) == ground)
+            crate::defenses::reach(unit.kind) > Fx::ZERO
+                && (unit.kind.stats().domain == Domain::Air || map.component(unit.tile) == ground)
         })
         .map(|unit| super::remembered(unit, map, home, now))
         .sum();
@@ -964,7 +964,7 @@ pub(super) fn defense_around(
     let units: u64 = memory
         .units()
         .iter()
-        .filter(|unit| !unit.kind.stats().weapons.is_empty())
+        .filter(|unit| unit.kind.stats().can_fight())
         .filter(|unit| {
             tiles
                 .iter()
@@ -1031,7 +1031,7 @@ pub(super) fn contact(observation: &ObservationData, members: &[&UnitObs]) -> bo
     observation
         .enemy_units
         .iter()
-        .any(|enemy| !enemy.kind.stats().weapons.is_empty() && near(enemy.tile))
+        .any(|enemy| enemy.kind.stats().can_fight() && near(enemy.tile))
         || observation.enemy_buildings.iter().any(|building| {
             building.seen
                 && members.iter().any(|unit| {

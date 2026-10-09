@@ -83,14 +83,15 @@ impl Missions {
 
 /// Whether `enemy` stands near a member and can hit one.
 fn threatens(enemy: &UnitObs, members: &[&UnitObs]) -> bool {
+    let stats = enemy.kind.stats();
     members.iter().any(|unit| {
+        let domain = unit.body_domain();
         unit.tile.chebyshev(enemy.tile) <= FOCUS_TILES
-            && enemy
-                .kind
-                .stats()
+            && (stats
                 .weapons
                 .iter()
-                .any(|weapon| weapon.targets.covers(unit.body_domain()))
+                .any(|weapon| weapon.targets.covers(domain))
+                || (stats.demolition && domain == Domain::Ground))
     })
 }
 

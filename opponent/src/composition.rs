@@ -111,7 +111,7 @@ impl Enemy {
             let value = unit.value(now);
             if unit.kind.stats().domain == Domain::Air {
                 enemy.air += value;
-            } else if !unit.kind.stats().weapons.is_empty() {
+            } else if unit.kind.stats().can_fight() {
                 enemy.ground += value;
             }
             if let Some(reach) = reach(unit.kind) {
