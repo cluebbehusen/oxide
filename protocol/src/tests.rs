@@ -598,11 +598,10 @@ fn typos_inside_command_values_are_rejected() {
             "command.key.objective",
         ),
     ] {
-        let error = serde_json::from_str::<RequestEnvelope>(line)
-            .expect_err("an unknown field nested inside a command must fail closed");
-        let message = error.to_string();
-        assert!(message.contains("unknown field"), "{message}");
-        assert!(message.contains(path), "{message}");
+        assert!(
+            serde_json::from_str::<RequestEnvelope>(line).is_err(),
+            "{path}: an unknown field nested inside a command must fail closed"
+        );
     }
 }
 

@@ -25,7 +25,7 @@ pub(crate) enum LiveCmd {
         #[arg(long)]
         map: bool,
     },
-    /// The world as one seat honestly knows it: visibility mask, entities
+    /// The world as one seat knows it under fog: visibility mask, entities
     /// under current sight, ghost memories, remembered salvage, contacts.
     Fog {
         /// The seat whose knowledge to report.
@@ -43,7 +43,7 @@ pub(crate) enum LiveCmd {
     },
     /// Canonical state fingerprint.
     Hash,
-    /// Fast-forward N ticks (works while paused — that's the point).
+    /// Fast-forward N ticks; works while paused.
     Advance {
         /// Tick count.
         ticks: u64,
@@ -286,7 +286,7 @@ pub(crate) enum LiveCmd {
     /// Inject a key press (and release).
     InjectKey {
         /// A mapped key: letters, arrows, tab, enter, escape, space,
-        /// pageup/pagedown/home/end, f1/f5-f8, shift, ctrl, or 1-9.
+        /// backspace, pageup/pagedown/home/end, f1/f5-f8, shift, ctrl, or 1-9.
         key: String,
     },
     /// Inject a key press WITHOUT the release — held-key states (panning,
@@ -301,7 +301,7 @@ pub(crate) enum LiveCmd {
         key: String,
     },
     /// Inject a chord: every key pressed in order, then released in
-    /// reverse — `ctrl+1` assigns a control group exactly like a hand.
+    /// reverse, so `ctrl+1` assigns a control group.
     InjectChord {
         /// Keys joined with '+', e.g. "ctrl+1" or "shift+f1".
         keys: String,
@@ -680,8 +680,7 @@ pub(crate) fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
             if keys.is_empty() {
                 bail!("a chord needs at least one key");
             }
-            // Down in written order, up in reverse — modifiers wrap the
-            // core key the way a hand holds them.
+            // Releasing in reverse keeps modifiers held around the core key.
             let mut requests: Vec<Request> = keys
                 .iter()
                 .map(|&key| Request::InjectEvent {

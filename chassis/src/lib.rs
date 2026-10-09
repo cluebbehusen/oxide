@@ -13,3 +13,25 @@ pub mod rng;
 
 /// Simulation time, counted in fixed-timestep ticks since scenario start.
 pub type Tick = u64;
+
+/// Declares a fieldless enum together with an `ALL` list of its variants,
+/// so the list cannot omit a variant or drift from declaration order.
+#[macro_export]
+macro_rules! listed_enum {
+    (
+        $(#[$meta:meta])*
+        $vis:vis enum $name:ident {
+            $($(#[$variant_meta:meta])* $variant:ident,)+
+        }
+    ) => {
+        $(#[$meta])*
+        $vis enum $name {
+            $($(#[$variant_meta])* $variant,)+
+        }
+
+        impl $name {
+            /// Every variant, in declaration order.
+            pub const ALL: [$name; [$($name::$variant),+].len()] = [$($name::$variant),+];
+        }
+    };
+}

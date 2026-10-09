@@ -1,9 +1,8 @@
-//! The codex: every machine and works in the game, with its sprite,
-//! its description, and its figures — the roster a player can read
-//! without a match on the line. One screen object over the shared menu
+//! The codex: every machine and works in the game, with its sprite, its
+//! description, and its figures. One screen object over the shared menu
 //! widget: the list is the cursor, the selected row is the page.
 //! Windowless update; the coordinator holds the displaced screen and
-//! restores it wholesale on leave, exactly like Settings.
+//! restores it wholesale on leave, as for Settings.
 
 use crate::assets::Sprites;
 use crate::game::SoundKind;

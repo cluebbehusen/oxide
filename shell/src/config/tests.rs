@@ -52,9 +52,8 @@ fn marker_preferences_migrate_round_trip_and_clamp_without_resetting_other_setti
 
 #[test]
 fn a_customized_map_survives_the_round_trip() {
-    // The whole point of persistence: a rebind must still be there
-    // after restart. A payload-validation off-by-one once rejected
-    // the classic map's own one-based Slot(9) and reset everything.
+    // A rebind must survive a restart, so the rest of the classic map
+    // (including its one-based Slot(9)) must pass load validation.
     let dir = std::env::temp_dir().join(format!("oxide-config-custom-{}", std::process::id()));
     let path = dir.join("config.json");
     let mut config = Config::default();
@@ -77,9 +76,9 @@ fn a_customized_map_survives_the_round_trip() {
 
 #[test]
 fn an_explicit_unbinding_survives_the_restart() {
-    // Controls > X removes the row AND records the choice; without
-    // the tombstone the new-verb migration read the missing row as
-    // an old config and resurrected the classic chord every load.
+    // Controls > X removes the row and records the choice; without the
+    // tombstone the new-verb migration would read the missing row as an
+    // old config and restore the classic chord on every load.
     let dir = std::env::temp_dir().join(format!("oxide-config-unbind-{}", std::process::id()));
     let path = dir.join("config.json");
     let mut config = Config::default();
@@ -141,9 +140,9 @@ fn a_config_saved_before_a_new_verb_adopts_its_classic_chord() {
 
 #[test]
 fn stale_group_chords_drop_without_resetting_the_profile() {
-    // A config saved before the classic map trimmed Ctrl+6..9 keeps
-    // a chord to a group dispatch ignores; loading must shed that
-    // row alone, never the user's own customizations with it.
+    // A chord to a group beyond the supported count is a row dispatch
+    // ignores; loading must shed that row alone, never the user's own
+    // customizations with it.
     let dir = std::env::temp_dir().join(format!("oxide-config-stale-{}", std::process::id()));
     let path = dir.join("config.json");
     let mut config = Config {

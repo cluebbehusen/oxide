@@ -285,10 +285,9 @@ fn performance_cycles_with_keyboard_mouse_and_touch_in_small_windows() {
 
 #[test]
 fn a_held_modifier_from_another_screen_rides_into_the_captured_chord() {
-    // The 0.9 regression, headless at last: Ctrl went down on the
-    // Settings screen, so no Ctrl edge appears in THIS frame's
-    // events — only the baseline knows. The capture must still
-    // record Ctrl+K.
+    // Ctrl went down on the Settings face, so no Ctrl edge appears in
+    // this frame's events; only the baseline knows. The capture must
+    // still record Ctrl+K.
     let mut config = Config::default();
     let mut live = config.bindings.clone();
     let mut s = SettingsScreen::open(&config);
@@ -321,9 +320,9 @@ fn a_held_modifier_from_another_screen_rides_into_the_captured_chord() {
 
 #[test]
 fn a_chord_released_within_the_frame_still_reads_its_modifiers() {
-    // The whole chord in one batch: Ctrl down, K down, K up, Ctrl
-    // up. Batch-final modifier state is false — only reading the
-    // modifiers AT the key's press gets this right.
+    // The whole chord in one batch: Ctrl down, K down, K up, Ctrl up.
+    // Batch-final modifier state is false, so only reading the modifiers
+    // at the key's press gets this right.
     let mut config = Config::default();
     let mut live = config.bindings.clone();
     let mut s = SettingsScreen::open(&config);
@@ -382,8 +381,8 @@ fn a_conflicting_chord_is_refused_and_the_notice_names_the_holder() {
 
 #[test]
 fn a_conflict_with_a_non_remappable_holder_is_still_named() {
-    // Enter is Confirm — not on the remap screen, but a reachable
-    // collision that once could only say "something".
+    // Enter is Confirm: not on the remap screen, but a reachable
+    // collision whose holder must still be named.
     let mut config = Config::default();
     let mut live = config.bindings.clone();
     let mut s = SettingsScreen::open(&config);
@@ -481,10 +480,9 @@ fn x_unbinds_and_reset_restores_the_classic_map() {
 
 #[test]
 fn escaping_controls_returns_the_cursor_to_the_controls_row() {
-    // Two rows were once inserted above Controls... while the exit
-    // paths kept a stale index: coming back from Controls left the
-    // cursor on Colorblind accents, and the next Enter toggled a
-    // setting instead of reopening the remap screen.
+    // Leaving Controls must land on the Controls row, so the next Enter
+    // reopens the remap screen instead of toggling a neighbouring
+    // setting.
     let mut config = Config::default();
     let mut live = config.bindings.clone();
     let mut screen = SettingsScreen::open(&config);

@@ -643,7 +643,7 @@ def harvester(faction: str, dig: int = 0, tread: int = 0) -> None:
                 [s(cx - 1), s(sy - 1), s(cx + 1), s(sy + 1)],
                 fill=(*SCRAP_DARK, 255),
             )
-    # Cargo eye — the shell can read "carrying" at a glance someday.
+    # Cargo eye.
     d.ellipse([s(28), s(34), s(36), s(42)], fill=(*SCRAP_DARK, 255))
     suffix = ("", "_scoop1", "_scoop2")[dig]
     if tread:
@@ -1387,8 +1387,8 @@ def flak_mount(faction: str) -> None:
             radius=s(3),
             fill=(*pal["dark"], 255),
         )
-    # Four parallel barrels retain the renderer's authored muzzle positions,
-    # but each pair now shares an armored collar instead of reading as wires.
+    # Four parallel barrels keep the renderer's authored muzzle positions;
+    # each pair shares an armored collar so the barrels do not read as wires.
     for x0, x1 in ((15, 29), (35, 49)):
         d.rounded_rectangle(
             [s(x0), s(15), s(x1), s(31)],
@@ -1599,8 +1599,8 @@ def bastion_mount(faction: str) -> None:
     )
     d.ellipse([s(58), s(66), s(70), s(78)], fill=(*IRON_LIGHT, 255))
 
-    # Redraw the tube over the housing. Burying it underneath the bunker
-    # left only a dark muzzle stub at game scale; this high-contrast spine
+    # Redraw the tube over the housing. Buried under the bunker it leaves
+    # only a dark muzzle stub at game scale; this high-contrast spine
     # carries the artillery silhouette from the pivot to the footprint edge.
     d.rounded_rectangle(
         [s(53), s(1), s(75), s(69)], radius=s(6), fill=(*IRON_DARK, 255)
@@ -1664,8 +1664,7 @@ def array(faction: str, work: int = 0) -> None:
     # Lattice cross-braces.
     for x0, y0, x1, y1 in ((18, 18, 46, 46), (46, 18, 18, 46)):
         d.line([(s(x0), s(y0)), (s(x1), s(y1))], fill=(*IRON_DARK, 255), width=s(2))
-    # The dish, with its feed direction carried by the sprite frame. This
-    # replaces the world-space radar needle that used to float over it.
+    # The dish, with its feed direction carried by the sprite frame.
     d.ellipse([s(16), s(14), s(52), s(50)], fill=(*pal["dark"], 255))
     d.ellipse([s(20), s(18), s(48), s(46)], fill=(*pal["base"], 255))
     d.ellipse([s(24), s(22), s(44), s(42)], fill=(*pal["dark"], 255))

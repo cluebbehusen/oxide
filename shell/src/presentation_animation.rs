@@ -436,7 +436,7 @@ impl BuildingAnimationFacts {
             .filter(|kind| building.progress < kind.stats().train_ticks)
             .map(|kind| (kind, building.progress, kind.stats().train_ticks));
         // The active tier's clock: a committed upgrade rebuilds on the
-        // NEW tier's labor budget, and a base denominator would show the
+        // new tier's labor budget, and a base denominator would show the
         // scaffold complete early.
         let construction_total = building.stats().construction.map(|stats| stats.build_ticks);
         Self {

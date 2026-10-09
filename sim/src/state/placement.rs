@@ -48,7 +48,7 @@ impl State {
             }
         }
         if kind == BuildingKind::Extractor {
-            // The machine exists only where the old rush left its frame.
+            // An Extractor rebuilds only on a map-authored derelict frame.
             if !self.map.is_extractor_frame(anchor) {
                 return Some(PlaceRefusal::FrameRequired);
             }
@@ -253,7 +253,7 @@ impl State {
             }
         }
         if kind == BuildingKind::Extractor {
-            // The machine exists only where the old rush left its frame.
+            // An Extractor rebuilds only on a map-authored derelict frame.
             if !self.map.is_extractor_frame(anchor) {
                 return Some(PlaceRefusal::FrameRequired);
             }
@@ -324,7 +324,7 @@ impl State {
         if claimed {
             return Some(PlaceRefusal::Building);
         }
-        // Hostile machines deny only ground the issuer can SEE them
+        // Hostile machines deny only ground the issuer can see them
         // holding — exactly the strict rule, restricted to visible
         // footprint tiles.
         let hostile_in_sight = self.units.iter().any(|u| {

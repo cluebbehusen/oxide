@@ -423,10 +423,10 @@ fn a_building_flush_against_the_ridge_is_safe_from_the_far_side() {
 
 #[test]
 fn an_air_patrol_through_the_ridge_keeps_flying_its_legs() {
-    // A peak waypoint stored raw once deadlocked the flyer: it reached
-    // the route's snapped endpoint, compared against the original peak
-    // goal, and repathed to the same tile forever. Lowering must store
-    // the snapped goal, so the patrol rotates through both legs.
+    // A peak waypoint stored raw would deadlock the flyer: it reaches the
+    // route's snapped endpoint, compares against the original peak goal,
+    // and repaths to the same tile forever. Lowering must store the
+    // snapped goal, so the patrol rotates through both legs.
     let mut state = ridge(true, vec![unit(0, UnitKind::Wisp, 6, 5)])
         .build()
         .unwrap();

@@ -1,4 +1,4 @@
-//! The 0.15 Skyhook: boarding, riding, landing, stranding, and dying.
+//! The Skyhook: boarding, riding, landing, stranding, and dying.
 
 use crate::common;
 use common::wide_open_map as open_map;

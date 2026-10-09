@@ -343,6 +343,19 @@ fn a_mismatched_build_is_refused_and_its_seat_stays_open() {
 }
 
 #[test]
+fn a_silent_connection_is_closed_after_the_greeting_timeout() {
+    let mut host = HostLobby::new("127.0.0.1:0", duel(), HOST, COMMIT).unwrap();
+    let silent = std::net::TcpStream::connect(&host.address).unwrap();
+    wait(|| {
+        assert!(host.poll(Duration::ZERO, viewport()).is_none());
+        (!host.greeting.is_empty()).then_some(())
+    });
+    assert!(host.poll(GREETING_TIMEOUT, viewport()).is_none());
+    assert!(host.greeting.is_empty());
+    drop(silent);
+}
+
+#[test]
 fn a_host_needs_its_own_seat_and_another_human_seat() {
     assert!(HostLobby::new("127.0.0.1:0", Scenario::skirmish(), HOST, COMMIT).is_err());
     assert!(HostLobby::new("127.0.0.1:0", duel(), PlayerId(2), COMMIT).is_err());

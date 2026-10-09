@@ -87,9 +87,8 @@ sets digest cadence, `--json` is the stable contract. Reserve schematic
 screenshots for confirming what the summary surfaces.
 
 Interpret snapshot tick `N` as state before commands stamped `N` execute.
-Compare the reproduced final hash with the live hash. Respect replay version
-checks; use version-mismatch overrides only for explicit archaeology and label
-the result non-authoritative.
+Compare the reproduced final hash with the live hash. A replay plays only on the
+sim version that recorded it.
 
 For a visual replay, launch `oxide-shell --watch <replay>`. For a saved match,
 load it as a live continuation rather than exposing a fog-free mid-match viewer.
@@ -132,8 +131,8 @@ driver profile-shell replays/session.json --from 4500 --to 5750 --speed 8
 ```
 
 Use release mode unless debug-build behavior is the question. Select a window
-that remains on the Playing screen through `--to`; the harness correctly refuses
-an interval that has already reached a result. `profile-shell` reconstructs only
+that remains on the Playing screen through `--to`; the harness refuses an
+interval that has already reached a result. `profile-shell` reconstructs only
 through `--from`; commands after that tick come from the live continuation, not
 the recorded replay suffix.
 

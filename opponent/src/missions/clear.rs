@@ -67,8 +67,8 @@ struct Sweep<'a> {
 
 impl Missions {
     /// Advances every clearance under way, then, while the seat's ground
-    /// reaches no enemy, sends the free ground-attack aircraft beyond the
-    /// home reserve at enemy anti-air they outweigh.
+    /// reaches no enemy, sends the free splash bombers beyond the home
+    /// reserve at enemy anti-air they outweigh.
     pub(crate) fn clear_anti_air(
         &mut self,
         observation: &ObservationData,
@@ -176,8 +176,8 @@ impl Missions {
             .collect()
     }
 
-    /// Sends every free ground-attack aircraft beyond the reserve at the
-    /// anti-air they outweigh most easily. Returns whether a clearance formed.
+    /// Sends every free splash bomber beyond the reserve at the anti-air they
+    /// outweigh most easily. Returns whether a clearance formed.
     fn form_clear(&mut self, sweep: &Sweep<'_>, ledger: &mut Ledger) -> bool {
         let observation = sweep.observation;
         if self.list.len() >= MISSION_CAP {

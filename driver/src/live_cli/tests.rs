@@ -53,7 +53,7 @@ fn raw_commands_use_the_strict_debug_wire_boundary() {
     })
     .expect_err("unknown command fields must fail before connecting");
     assert!(
-        format!("{error:#}").contains("unknown field `unitz` in command"),
+        format!("{error:#}").contains("unknown field `unitz`"),
         "unexpected error: {error:#}"
     );
 }

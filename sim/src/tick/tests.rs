@@ -503,7 +503,7 @@ fn assert_calibration_open_symmetry(
             ) => {
                 assert_eq!(mirror_tile(state, left_node), right_node, "{stage}: node");
                 assert_eq!(
-                    left_anchor.map(|tile| mirror_tile(state, tile)),
+                    mirror_tile(state, left_anchor),
                     right_anchor,
                     "{stage}: anchor"
                 );
@@ -771,7 +771,7 @@ fn mirrored_haulers_replan_together_when_construction_closes_their_routes() {
         unit.carrying = 10;
         unit.order = Order::Harvest {
             node,
-            anchor: Some(anchor),
+            anchor,
             retiring: false,
         };
         unit.path = Some(PathFollow {

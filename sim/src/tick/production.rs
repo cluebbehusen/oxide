@@ -1,4 +1,4 @@
-//! Phase 2: Foundry production queues.
+//! Production queues, recurring income, and abandoned-site decay.
 //!
 //! One queue per building, front item in progress. A finished ground unit
 //! spawns on a passable ring tile in the footprint's map-relative outward
@@ -41,9 +41,8 @@ pub(super) fn capture_recovery_entitlements(state: &mut State) {
 }
 
 pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
-    // Reclaimers trickle first: every built one grinds ambient debris
-    // into a scrap each period. Order is building-id order (commutative
-    // anyway — the credits are per-player sums).
+    // Every built Reclaimer credits one scrap per period. Credits are
+    // per-player sums, so order does not matter.
     for (period, tier) in [
         (crate::stats::RECLAIMER_PERIOD, 0u8),
         (crate::stats::REFINERY_PERIOD, 1u8),
@@ -70,8 +69,8 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
 
     let completed_ticks = state.tick.saturating_add(1);
     // A restored Extractor pays a fixed remote yield. A completed own
-    // Foundry close to its footprint develops the claim and raises that
-    // yield; support is binary rather than one bonus per Foundry.
+    // Foundry close to its footprint raises that yield; support is binary
+    // rather than one bonus per Foundry.
     if completed_ticks.is_multiple_of(crate::stats::EXTRACTOR_REMOTE_YIELD.1) {
         let credits: Vec<(PlayerId, u32)> = state
             .buildings
@@ -91,11 +90,9 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
         }
     }
 
-    // The transparent income floor: every standing Foundry smelts a slow
-    // trickle per works rather than per player, so expansion bases earn
-    // their keep — while the rate keeps income alone from ever paying
-    // for one. A living seat always has a way back into the game, even
-    // with every node exhausted and camped.
+    // The income floor: every completed Foundry credits a slow trickle, so
+    // a living seat always has some income even with every node exhausted
+    // or camped.
     if completed_ticks >= crate::stats::FOUNDRY_DRIP_START_TICK
         && completed_ticks.is_multiple_of(crate::stats::FOUNDRY_DRIP_PERIOD)
     {
@@ -229,14 +226,13 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
 /// rally tile until its owner's team has explored it, and an unreachable
 /// rally ends as close as it can get.
 ///
-/// A rally is clamped onto the map first: a rally the command envelope
-/// once admitted off the map could never be explored.
+/// A rally is clamped onto the map first, since an off-map tile could never
+/// be explored.
 ///
-/// "Node" is judged by the owner's *remembered* scrap, not the live map —
-/// it refreshes while the ground is visible and freezes when sight is
-/// lost, so a rally can neither probe unexplored tiles nor know a distant
-/// node ran dry. Stale beliefs resolve honestly: the newborn walks out
-/// and discovers.
+/// "Node" is judged by the owner's remembered scrap and wreck, not the live
+/// map: memory refreshes while the ground is visible and freezes when sight
+/// is lost, so a rally can neither probe unexplored tiles nor know a
+/// distant node ran dry. The newborn walks out and discovers the truth.
 fn rally_order(state: &State, newborn: UnitId, rally: TilePos) -> Order {
     let unit = state.unit(newborn).expect("just spawned");
     let (owner, stats) = (unit.player, unit.kind.stats());
@@ -250,7 +246,7 @@ fn rally_order(state: &State, newborn: UnitId, rally: TilePos) -> Order {
     {
         return Order::Harvest {
             node: rally,
-            anchor: Some(rally),
+            anchor: rally,
             retiring: false,
         };
     }
@@ -263,19 +259,18 @@ fn rally_order(state: &State, newborn: UnitId, rally: TilePos) -> Order {
     }
 }
 
-/// Phase 3.5: abandoned construction sites rust away.
+/// Abandoned construction sites decay.
 ///
 /// A site with no live own harvest-capable machine committed to build it or
 /// standing beside its footprint loses one hp per
 /// [`crate::stats::SITE_DECAY_PERIOD`] ticks. A queued Build order is a
 /// commitment too: sites waiting behind earlier work are not abandoned.
-/// Tiered works are committed self-upgrades rather than abandoned sites and
-/// never enter this decay pass.
-/// Survival counts Foundry sites exactly like standing Foundries, so an
-/// untended scaffold must eventually die rather than keep a beaten seat
-/// technically alive — and decay burns the cancel refund exactly like
-/// enemy fire does. A site that reaches zero resolves through cleanup
-/// with the ordinary destroyed-building rules the same tick.
+/// Upgrading buildings (tier above zero) never decay. Survival counts
+/// Foundry sites like standing Foundries, so an untended scaffold must
+/// eventually die rather than keep a beaten seat alive; decay also burns
+/// the cancel refund like enemy fire does. A site that reaches zero
+/// resolves through cleanup with the ordinary destroyed-building rules the
+/// same tick.
 pub(super) fn decay_abandoned_sites(state: &mut State) {
     if !state
         .tick

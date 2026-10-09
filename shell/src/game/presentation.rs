@@ -68,28 +68,28 @@ pub struct Presentation {
     /// Live under-attack alerts: world position and seconds of age.
     /// Pulsed on the minimap, jumpable, aged out by `update_fx`.
     pub alerts: Vec<(Vec2, f32)>,
-    /// Where trouble last landed — the jump key's target.
+    /// The latest alert position, which the jump key targets.
     pub last_alert: Option<Vec2>,
-    /// Per-region rate limiter for alerts (8-tile cells -> last raise
-    /// time in fx-seconds), so a running battle nags once, not per hit.
+    /// Per-region alert rate limiter: 8-tile cell to last raise time in
+    /// fx-seconds.
     pub(super) alert_gate: HashMap<(i32, i32), f32>,
     /// Presentation clock: seconds of fx time since session start.
     pub(super) fx_clock: f32,
     /// When each remembered tile (ghost anchors, scrap, wrecks) was
-    /// last actually seen, on the fx clock — presentation state behind
-    /// the staleness ramp. A `RefCell` because drawing borrows presentation.
+    /// last actually seen, on the fx clock; drives the staleness fade. A
+    /// `RefCell` because drawing borrows presentation.
     pub last_seen: std::cell::RefCell<HashMap<(i32, i32), f32>>,
     /// The minimap's cached terrain-and-fog texture layer. Presentation
     /// only, lazily created by the first minimap draw (headless sessions
     /// never touch the GPU). A `RefCell` because drawing borrows presentation.
     pub minimap_layer: std::cell::RefCell<Option<crate::render::MinimapLayer>>,
     pub boundary_fog: crate::boundary_fog::BoundaryFog,
-    /// The chrome geometry the renderer computed last frame — the one
-    /// model hit-testing reads, so drawn and clickable can never
+    /// The chrome geometry the renderer computed last frame. Hit-testing
+    /// reads this same model so drawn and clickable regions cannot
     /// disagree. A `Cell` because drawing borrows presentation.
     pub layout: std::cell::Cell<crate::layout::LayoutModel>,
     /// The frame's command panel, built once in `draw_hud` and read by
-    /// the tooltip pass — building it twice per frame was pure waste.
+    /// the tooltip pass.
     pub panel_model: std::cell::RefCell<Option<crate::panel::Panel>>,
     /// The selection's programs through the staged commands, shared by the
     /// orders dock and the waypoint chain. A `RefCell` because drawing
@@ -99,9 +99,9 @@ pub struct Presentation {
     /// Esc-to-menu exit) is up. Presentation only; opening the pause
     /// menu dismisses it so spectating the ally stays unobstructed.
     pub conceded_banner: bool,
-    /// Fog-free viewing without the debug chrome — the playback
-    /// viewer's stance. `overlay` remains the developer's F1 (grid,
-    /// ids, camera internals) and implies this.
+    /// Fog-free viewing without the debug chrome, used by the playback
+    /// viewer. `overlay` is the developer's F1 view (grid, ids, camera
+    /// internals) and implies this.
     pub spectate: bool,
     pub(super) accum: f32,
 }
@@ -301,14 +301,14 @@ impl Presentation {
         self.overlay || self.spectate
     }
 
-    /// The effect clock — what aim holds and recoil age against.
+    /// The effect clock that aim holds and recoil age against.
     pub fn fx_time(&self) -> f32 {
         self.fx_clock
     }
 
     /// How far the presentation clock sits between the last executed
-    /// tick and the next, 0..1 — frozen while paused. Interpolation
-    /// fuel for anything that must move on sim time, not wall time.
+    /// tick and the next, 0..1, frozen while paused. Drives anything that
+    /// must move on sim time rather than wall time.
     pub fn tick_fraction(&self) -> f32 {
         (self.accum / TICK_DT).clamp(0.0, 1.0)
     }
@@ -337,8 +337,8 @@ impl Presentation {
     /// Drops an order-acknowledgment ping; a `queued` order's ping says
     /// it joined the program rather than replacing it.
     pub fn ping_order(&mut self, at: Vec2, kind: PingKind, queued: bool) {
-        // An order the sim accepted deserves an answer in the ear as
-        // well as the eye (the mixer rate-limits volley spam).
+        // Accepted orders get an audible acknowledgment too; the mixer
+        // rate-limits bursts.
         self.sounds_pending.push((SoundKind::Ack, None));
         self.fx.push(Effect {
             kind: EffectKind::Ping { at, kind, queued },
@@ -356,9 +356,8 @@ impl Presentation {
         }
     }
 
-    /// Ages and prunes effects and toasts.
-    /// Raises an under-attack alert, rate-limited per 8-tile region —
-    /// a running battle nags once, not once per hit.
+    /// Raises an under-attack alert, rate-limited per 8-tile region so a
+    /// running battle alerts once, not once per hit.
     pub(super) fn raise_alert(&mut self, world: Vec2) {
         let cell = (
             numeric::to_i32(world.x / 8.0),
@@ -425,8 +424,8 @@ impl Presentation {
         }
     }
 
-    /// Drops queued transient presentation — what a bulk jump (a seek)
-    /// must not replay as a burst of noise.
+    /// Drops queued transient presentation so a bulk jump (a seek) does
+    /// not replay it as a burst of noise.
     pub fn drop_presentation(&mut self, state: &State) {
         self.fx.clear();
         self.projection.take();

@@ -94,11 +94,11 @@ fn threatens(enemy: &UnitObs, members: &[&UnitObs]) -> bool {
     })
 }
 
-/// The members that can hit `enemy`, by id, if every one of them already
-/// reaches it in a straight line between tile centres that terrain does not
-/// stop, as the simulation measures a shot, and every ground member stands on
-/// the enemy's ground, so one a little short steps closer rather than seeking
-/// a way round; otherwise none.
+/// The members that can hit `enemy`, by id, if every one of them armed
+/// against it already reaches it in a straight line between tile centres
+/// that terrain does not stop, as the simulation measures a shot, and every
+/// ground member stands on the enemy's ground, so one a little short steps
+/// closer rather than seeking a way round; otherwise none.
 fn shooters(map: &MapModel, members: &[&UnitObs], enemy: &UnitObs) -> Vec<UnitId> {
     let domain = enemy.body_domain();
     let mut shooters = Vec::new();

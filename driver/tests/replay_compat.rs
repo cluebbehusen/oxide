@@ -1,9 +1,8 @@
-//! Compatibility checks at the file-loading boundary for historical replays.
+//! Checks at the replay file-loading boundary and the `replay` command.
 
 use chassis::replay::ReplayError;
 use oxide_kit::GameReplay;
 use oxide_sim::{SIM_VERSION, Scenario};
-use serde_json::json;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -75,7 +74,7 @@ fn checkpoint_origins_reach_every_read_only_replay_surface() {
             .flat_map(|seat| &seat.firsts)
             .all(|first| first.tick >= 37)
     );
-    let end = oxide_kit::runner::run_replay(&replay, None, false).unwrap();
+    let end = oxide_kit::runner::run_replay(&replay, None).unwrap();
     assert_eq!(end.current_tick(), 43);
     assert!(oxide_driver::session::Session::resume(replay).is_err());
 }
@@ -148,9 +147,9 @@ fn checkpoint_exploration_deltas_count_only_new_scouting() {
         report.digests.last().unwrap().rows[0].explored_tiles,
         final_explored
     );
-    let mut legacy = GameReplay::new(SIM_VERSION, scenario);
-    legacy.meta.ticks = Some(1);
-    let report = oxide_driver::replay_summary::summarize(&legacy, &options).unwrap();
+    let mut from_start = GameReplay::new(SIM_VERSION, scenario);
+    from_start.meta.ticks = Some(1);
+    let report = oxide_driver::replay_summary::summarize(&from_start, &options).unwrap();
     assert_eq!(
         report.digests[0].rows[0].explored_delta, initial,
         "scenario-start summaries retain their initial visibility"
@@ -165,28 +164,25 @@ impl Drop for TempReplay {
     }
 }
 
-fn legacy_bot_replay() -> TempReplay {
-    let replay: GameReplay = GameReplay::new("0.0.0-legacy", Scenario::skirmish());
-    let mut document = serde_json::to_value(replay).expect("current replay serializes");
-    document["setup"]["players"][1]["bot_config"] = json!({"level": "medium"});
-
+fn foreign_version_replay() -> TempReplay {
+    let replay: GameReplay = GameReplay::new("0.0.0-foreign", Scenario::skirmish());
     let id = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
-        "oxide-legacy-bot-replay-{}-{id}.json",
+        "oxide-foreign-version-replay-{}-{id}.json",
         std::process::id()
     ));
     std::fs::write(
         &path,
-        serde_json::to_vec(&document).expect("legacy fixture serializes"),
+        serde_json::to_vec(&replay).expect("fixture serializes"),
     )
-    .expect("legacy fixture is written");
+    .expect("fixture is written");
     TempReplay(path)
 }
 
 #[test]
-fn legacy_bot_setup_reaches_version_validation_and_the_archaeology_flag() {
-    let fixture = legacy_bot_replay();
-    let replay = oxide_kit::load_replay(&fixture.0).expect("legacy setup remains loadable");
+fn a_foreign_version_replay_is_refused_at_version_validation() {
+    let fixture = foreign_version_replay();
+    let replay = oxide_kit::load_replay(&fixture.0).expect("the current setup shape loads");
     assert!(matches!(
         replay.validate(Some(SIM_VERSION)),
         Err(ReplayError::VersionMismatch { .. })
@@ -196,24 +192,12 @@ fn legacy_bot_setup_reaches_version_validation_and_the_archaeology_flag() {
         .arg("replay")
         .arg(&fixture.0)
         .output()
-        .expect("run replay without compatibility flag");
+        .expect("run replay");
     assert!(!refused.status.success());
     assert!(
         String::from_utf8_lossy(&refused.stderr).contains("replay was recorded on sim"),
-        "the normal path should refuse at version validation: {}",
+        "the replay command should refuse at version validation: {}",
         String::from_utf8_lossy(&refused.stderr)
-    );
-
-    let allowed = std::process::Command::new(env!("CARGO_BIN_EXE_oxide-driver"))
-        .arg("replay")
-        .arg(&fixture.0)
-        .arg("--allow-version-mismatch")
-        .output()
-        .expect("run replay with compatibility flag");
-    assert!(
-        allowed.status.success(),
-        "the archaeology flag should reach playback: {}",
-        String::from_utf8_lossy(&allowed.stderr)
     );
 }
 

@@ -256,7 +256,7 @@ impl Tracking {
         }
         reported.sort_unstable_by_key(|tile| (tile.y, tile.x));
         visible.sort_unstable();
-        // Empty tracking accepts old snapshots; the next refresh initializes it.
+        // Empty tracking is accepted; the next refresh initializes it.
         self.tracks.is_empty() && self.next_id == 0
             || (reported == view.contacts
                 && visible

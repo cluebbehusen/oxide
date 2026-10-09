@@ -166,8 +166,8 @@ fn metadata_reads_stop_before_the_payload_and_corruption_is_checked_on_load() {
     assert!(prepare_load(&path.0).is_err());
 }
 
-/// Walking orders gained optional fields; the world inside a retained
-/// same-version save written before them must still restore and play.
+/// The world inside a retained same-version save whose walking orders
+/// lack their optional fields must still restore and play.
 /// Only the simulation state is decoded: the fixture is a profiling
 /// checkpoint, and controller memory is not held to its format.
 #[test]

@@ -49,9 +49,7 @@ pub struct PlaybackSession {
     middle_anchor: Option<Vec2>,
     /// What a held left press is dragging, if anything.
     pub drag: Option<PlaybackDrag>,
-    /// Explicit return destination. A tick-count heuristic resurrected
-    /// matches Main Menu had already discarded, while a boolean origin
-    /// could not distinguish the replay shelf from a match report.
+    /// Where closing the viewer returns.
     pub return_to: ReturnTo,
     /// A seek in flight: the target tick, chipped away a budget per
     /// frame so the render thread never freezes on a long jump.
@@ -105,8 +103,8 @@ impl PlaybackSession {
             oxide_sim::PlayerId(vantage.fit::<u8>()),
             render::viewport(),
         );
-        // Spectator truth: fog-free, but NOT the developer overlay —
-        // playback must look like the game, not the debugger.
+        // Spectator view: fog-free, but without the developer overlay, so
+        // playback looks like the game.
         presentation.spectate = true;
         Ok(Self {
             engine,
@@ -219,8 +217,8 @@ pub fn playback_hud(pb: &PlaybackSession, viewport: Vec2, mouse: Vec2) {
         composition_band(pb, stats, bar, s);
     }
     if let Some(target) = pb.seeking {
-        // Mid-seek the transport numbers would lie (the state is
-        // sprinting through the record); show honest progress instead.
+        // Mid-seek the transport numbers would show intermediate state;
+        // show seek progress instead.
         let line = format!("SEEKING  {} / {target}", pb.engine.position());
         let width = measure_text(&line, None, numeric::font_size(size), 1.0).width;
         let x = (screen_width() - width) * 0.5;
@@ -478,7 +476,8 @@ impl PlaybackSession {
             dir.x += 1.0;
         }
         if dir != vec2(0.0, 0.0) {
-            let world_per_sec = 240.0 * pan_speed / self.presentation.camera.zoom;
+            let world_per_sec =
+                crate::input::PAN_PX_PER_SEC * pan_speed / self.presentation.camera.zoom;
             self.presentation
                 .camera
                 .pan(dir.normalize() * world_per_sec * dt);
@@ -618,9 +617,8 @@ impl PlaybackSession {
     /// live play.
     pub fn advance_frame(&mut self, time: FrameTime, viewport: Vec2) {
         if let Some(target) = self.seeking {
-            // Budgeted: a slice per frame keeps a long first jump from
-            // hitching the render thread; sim ticks run thousands per
-            // second, so 2000 is comfortably under a frame.
+            // Budgeted: a slice per frame keeps a long jump from hitching
+            // the render thread.
             if self.engine.seek_step(target, 2_000) {
                 self.seeking = None;
             }
@@ -633,11 +631,10 @@ impl PlaybackSession {
             let ticks = numeric::to_u64(self.accum / game::TICK_DT);
             if ticks > 0 {
                 self.accum -= ticks as f32 * game::TICK_DT;
-                // One tick per present: fog is per-tick truth, and
-                // batching sight checks against the final state judged
-                // sounds by the wrong tick's sight. Ticks past the cap
-                // are dropped debt, exactly like the live clock after a
-                // hitch.
+                // One tick at a time: fog is per-tick truth, so each
+                // tick's sounds are judged by that tick's sight. Ticks
+                // past the cap are dropped debt, as on the live clock
+                // after a hitch.
                 for _ in 0..ticks.min(24) {
                     self.presentation.remember_previous_tick(&self.engine.state);
                     let events = self.engine.advance(1);
@@ -707,10 +704,10 @@ impl oxide_protocol::DebugSession for PlaybackSession {
     }
 
     fn advance(&mut self, ticks: u64) -> oxide_protocol::AdvancedView {
-        // Seek, don't advance: advance collects the interval's events
-        // for presentation, and a million-tick battle's worth of them is
-        // memory nobody will hear. The reply reports what actually ran —
-        // a replay near its end advances less than asked.
+        // Seek, don't advance: advance collects the interval's events for
+        // presentation, which over a long interval is wasted memory. The
+        // reply reports what actually ran; a replay near its end advances
+        // less than asked.
         //
         // An external transport op replaces any UI seek in flight: left
         // pending, the stale target resumes next frame and rewinds the

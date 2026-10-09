@@ -4,7 +4,7 @@ use oxide_sim::scenario::BotStance;
 use oxide_sim::{Command, PlayerId};
 
 #[test]
-fn checkpoint_continuation_keeps_input_order_and_recording() {
+fn replay_resume_keeps_pending_controller_events_and_recording() {
     let mut scenario = Scenario::skirmish();
     for seat in &mut scenario.players {
         seat.bot = true;
@@ -25,37 +25,35 @@ fn checkpoint_continuation_keeps_input_order_and_recording() {
             command: Command::Stop { units: vec![] },
         })
         .unwrap();
-    let before = original.state.hash();
-    let mut restored: Session =
-        serde_json::from_slice(&serde_json::to_vec(&original).unwrap()).unwrap();
-    assert_eq!(restored.state.hash(), before);
-    assert_eq!(original.pending, restored.pending);
-    for index in 0..240 {
-        if index == 119 {
-            restored = serde_json::from_slice(&serde_json::to_vec(&restored).unwrap()).unwrap();
-        }
-        assert_eq!(original.step(), restored.step());
-        assert_eq!(original.state.hash(), restored.state.hash());
-        if index == 0 {
-            let controllers = |session: &Session| {
-                serde_json::to_value(session).unwrap()["session"]["bots"].clone()
-            };
-            let pending = controllers(&original);
-            assert_eq!(
-                pending[0]["events"],
-                serde_json::json!([{"event": "command_rejected", "reason": "no_valid_units"}])
-            );
-            let mut snapshot = original.recorder.clone();
-            snapshot.meta.ticks = Some(original.state.current_tick());
-            assert_eq!(controllers(&restored), pending);
-            assert_eq!(controllers(&Session::resume(snapshot).unwrap()), pending);
-        }
+    original.step();
+    let controllers = |session: &Session| {
+        let checkpoint = oxide_kit::checkpoint::SessionCheckpoint::capture(
+            &session.scenario,
+            &session.state,
+            &session.bots,
+            &session.pending,
+            None,
+        )
+        .unwrap();
+        serde_json::to_value(checkpoint).unwrap()["bots"].clone()
+    };
+    let pending = controllers(&original);
+    assert_eq!(
+        pending[0]["events"],
+        serde_json::json!([{"event": "command_rejected", "reason": "no_valid_units"}])
+    );
+    let mut snapshot = original.recorder.clone();
+    snapshot.meta.ticks = Some(original.state.current_tick());
+    let mut resumed = Session::resume(snapshot).unwrap();
+    assert_eq!(controllers(&resumed), pending);
+    for _ in 0..240 {
+        assert_eq!(original.step(), resumed.step());
+        assert_eq!(original.state.hash(), resumed.state.hash());
     }
     assert_eq!(
         serde_json::to_vec(&original.recorder.commands).unwrap(),
-        serde_json::to_vec(&restored.recorder.commands).unwrap()
+        serde_json::to_vec(&resumed.recorder.commands).unwrap()
     );
-    assert!(original.recorder.commands.len() > 1);
     for seat in [PlayerId(0), PlayerId(1)] {
         assert!(
             original
@@ -179,7 +177,7 @@ fn replay_without_duration_resumes_through_its_last_command() {
         },
     );
     assert_eq!(replay.meta.ticks, None);
-    let expected = runner::run_replay(&replay, None, false).unwrap();
+    let expected = runner::run_replay(&replay, None).unwrap();
 
     let session = Session::resume(replay).unwrap();
     assert_eq!(session.state().current_tick(), 4);

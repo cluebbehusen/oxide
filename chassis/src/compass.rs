@@ -2,10 +2,9 @@
 //!
 //! Heading is a `u8`: step `k` points along angle `2*pi*k/256`, with
 //! `0` on +x and steps advancing toward +y. Wrapping arithmetic on the
-//! step IS rotation, which keeps bounded turning free of trigonometry
-//! at simulation time: the table below is the only place an angle is
-//! ever evaluated, and it is evaluated in decimal literals, so every
-//! platform reads identical bits.
+//! step is rotation, so bounded turning needs no trigonometry. The table
+//! below is written in decimal literals, so every platform reads identical
+//! bits.
 
 use crate::fx::{Fx, Vec2Fx};
 

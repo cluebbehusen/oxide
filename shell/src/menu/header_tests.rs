@@ -58,9 +58,8 @@ fn an_all_header_menu_refuses_keyboard_activation() {
 
 #[test]
 fn wheel_scroll_cannot_pin_the_cursor_onto_a_header() {
-    // A short window forces the riding clamp; the ride must snap
-    // off headers or Enter activates a section label (the wizard
-    // maps unmapped rows to Back — a scroll would quit the list).
+    // A short window forces the riding clamp; the ride must snap off
+    // headers or Enter activates a section label.
     let mut menu = sectioned();
     crate::render::set_viewport(1280.0, 400.0);
     menu.select(5);

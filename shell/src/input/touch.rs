@@ -32,7 +32,7 @@ pub(crate) struct TouchPoint {
     pub at: Vec2,
     /// Wall clock at touch-down (the injected `now`).
     pub down_at: f64,
-    /// Where it landed.
+    /// What it landed on, which decides what it may drive.
     pub born: TouchBorn,
     /// Whether it ever left the slop circle — a moved finger is a
     /// drag, never a tap or a long-press.
@@ -356,10 +356,9 @@ pub(super) fn moved(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
             game.presentation.camera.center -= delta / game.presentation.camera.zoom;
             game.presentation.camera.pan(Vec2::ZERO); // re-clamp
         }
-        // Two fingers: a spread that has CUMULATIVELY moved
-        // past the threshold is a pinch (zoom at the
-        // midpoint) — per-event deltas would miss a slow
-        // pinch entirely and mis-commit it as a box select.
+        // Two fingers: a spread that has cumulatively moved past the
+        // threshold is a pinch (zoom at the midpoint). Per-event deltas
+        // would miss a slow pinch and commit it as a box select.
         2 => {
             let new_dist = (input.touches[0].1.at - input.touches[1].1.at).length();
             if let Some(pair) = &mut input.pair
@@ -439,34 +438,30 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
                     (input.now - t) * 1000.0 < f64::from(input.touch_prefs.double_tap_ms)
                         && (at - p).length() < click_slop(input.ui) * 2.0
                 });
-                // Armed modes first, exactly like the
-                // mouse: the tap that follows an armed
-                // Build or Salvage card completes the
-                // command instead of selecting under it.
-                // A tap is an atomic click — no drag can
-                // follow, so the stroke closes here and
-                // Shift decides the mode, like MouseUp.
+                // Armed modes first, as with the mouse: the tap
+                // that follows an armed Build or Salvage card
+                // completes the command instead of selecting under
+                // it. A tap is an atomic click with no drag to
+                // follow, so the stroke closes here and Shift
+                // decides the mode, as on MouseUp.
                 if super::ribbon_row_press(game, input, p, super::Pointer::Touch)
                     || armed_click(game, input, p, super::Pointer::Touch)
                 {
                     input.last_tap = None;
                     return;
                 }
-                // The minimap owns its taps (jump the
-                // camera), and HUD chrome swallows the
-                // rest — same ownership order as clicks,
-                // or a tap behind the panel would select
-                // (and a minimap tap would grab) whatever
-                // world ground happens to sit under the
-                // chrome pixel.
+                // The minimap owns its taps (jump the camera),
+                // and HUD chrome swallows the rest, in the same
+                // ownership order as clicks, so a tap on chrome
+                // never selects the world ground under it.
                 if let Some(world) = crate::render::minimap_world_at(&game.view(), p) {
                     game.presentation.camera.center = world;
                     game.presentation.camera.pan(Vec2::ZERO); // re-clamp
                     return;
                 }
-                // Chrome next, through the touch pad: a
-                // fingertip needs 44 logical px even where
-                // the drawn card is smaller. A finger that
+                // Chrome next, through the touch pad, so a
+                // fingertip gets the minimum touch target even
+                // where the drawn card is smaller. A finger that
                 // landed on another card activates nothing.
                 let layout = game.presentation.layout.get();
                 let card = pressed_card(game, p, input.ui);

@@ -1,7 +1,7 @@
 //! Pure selection of authored sprite frames from presentation state.
 //!
 //! The controller derives semantic activity from deterministic simulation
-//! facts. This module maps those facts onto the approved atlas rows without
+//! facts. This module maps those facts onto atlas rows without
 //! consulting wall time or changing gameplay state.
 
 use crate::numeric;

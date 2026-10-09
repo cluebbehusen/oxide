@@ -306,8 +306,7 @@ const VIEW: Vec2 = Vec2::new(1280.0, 800.0);
 #[test]
 fn a_dock_tooltip_tracks_the_chip_it_describes() {
     // Two chips of a full dock, hundreds of px apart: each tooltip
-    // centers on ITS chip. Pinning to the band drew both beside the
-    // bottom one.
+    // centers on its own chip, not on the band.
     let size = Vec2::new(240.0, 90.0);
     let top = Rect::new(8.0, 300.0, 44.0, 44.0);
     let bottom = Rect::new(8.0, 620.0, 44.0, 44.0);

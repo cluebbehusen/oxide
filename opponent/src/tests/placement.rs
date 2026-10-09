@@ -1,5 +1,6 @@
 use super::*;
 use crate::placement::{Allowed, Layout, Refusal, check};
+use std::collections::BTreeMap;
 
 /// A west base with a frame, a scrap node, a sealed two-by-two pocket and a
 /// visible hostile Sentinel; the east seat stays out of sight.
@@ -99,13 +100,24 @@ fn each_known_obstacle_refuses_a_footprint_for_its_own_reason() {
 
 #[test]
 fn an_accepted_footprint_is_one_the_simulation_accepts() {
-    let state = yard().build().unwrap();
-    let mut accepted = 0;
-    for y in 0..14 {
-        for x in 0..20 {
-            for kind in [BuildingKind::Fabricator, BuildingKind::Reclaimer] {
+    // The yard plus pits, a peak and a standing Fabricator, so terrain the
+    // yard lacks and tech-gated kinds are both compared.
+    let mut scenario = yard();
+    scenario.map[9] = "#.~~^..............#".to_owned();
+    scenario.map[10] = "#.~~...............#".to_owned();
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Fabricator,
+        x: 12,
+        y: 9,
+    });
+    let state = scenario.build().unwrap();
+    let mut accepted = BTreeMap::new();
+    for kind in BuildingKind::ALL {
+        for y in 0..14 {
+            for x in 0..20 {
                 if verdict(&state, kind, x, y).is_ok() {
-                    accepted += 1;
+                    *accepted.entry(kind).or_insert(0) += 1;
                     let anchor = TilePos::new(x, y);
                     assert_eq!(
                         state.place_intent_refusal(PlayerId(0), kind, anchor),
@@ -116,7 +128,10 @@ fn an_accepted_footprint_is_one_the_simulation_accepts() {
             }
         }
     }
-    assert!(accepted > 20, "premise: open ground is accepted");
+    assert!(
+        accepted.values().all(|count| *count > 0) && accepted.len() >= 8,
+        "premise: most kinds find open ground: {accepted:?}"
+    );
 }
 
 #[test]

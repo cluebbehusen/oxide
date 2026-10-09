@@ -46,9 +46,10 @@ impl Missions {
     /// threats until, in each domain it is attacked from, they outweigh the
     /// attackers by half again, and sends them at the grounded threat nearest
     /// the Foundry, else at a gun out of sight. A shelling building counts
-    /// with the known defense around it, and only while the units the defense
-    /// holds or could take would beat that defense by half again. A defense that is only
-    /// recovering lends its units, as does an attack not yet fighting.
+    /// with the known defense around it, and only while the units the
+    /// defense holds or could take would beat that defense by half again. A
+    /// defense that is only recovering lends its units, as does an attack not
+    /// yet fighting.
     /// Returns each of the seat's own Foundries whose defense falls short of
     /// its attackers, home-nearest first.
     ///

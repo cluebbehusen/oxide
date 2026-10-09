@@ -7,8 +7,7 @@ use oxide_sim::SIM_VERSION;
 use std::path::PathBuf;
 
 /// What a record on disk is, read from its metadata `kind` tag with a
-/// filename-prefix fallback for pre-0.13 files (which carried the rule
-/// in their names).
+/// filename-prefix fallback for records that carry no tag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordKind {
     /// A live session written on quit; Continue's material.
@@ -21,7 +20,7 @@ pub enum RecordKind {
 
 impl RecordKind {
     /// Whether the shelf's verb for this record is Load. Autosaves and
-    /// saves are LIVE sessions: watching one fog-free mid-match would
+    /// saves are live sessions: watching one fog-free mid-match would
     /// scout the enemy, so they resume instead.
     pub fn resumable(self) -> bool {
         matches!(self, RecordKind::Autosave | RecordKind::Save)
@@ -92,8 +91,8 @@ fn civil_date(secs: u64) -> String {
 }
 
 /// Shortens a long file stem for the browser row. Counts chars, not
-/// bytes — replay files are user-named, and a byte slice once panicked
-/// mid-multibyte-character and took the whole shelf down with it.
+/// bytes: replay files are user-named, and slicing bytes could split a
+/// multibyte character and panic.
 fn elide(stem: &str) -> String {
     if stem.chars().count() > 26 {
         let head: String = stem.chars().take(23).collect();
@@ -144,8 +143,8 @@ fn scan_cancellable(
             .unwrap_or("replay");
         let kind = record_kind(&replay.meta, &path);
         // A record's own saved_at outranks mtime: a copied or synced
-        // file reports the copy date, and only the metadata tells the
-        // truth about when the save was made.
+        // file reports the copy date, and only the metadata records when
+        // the save was made.
         let modified = std::fs::metadata(&path)
             .and_then(|metadata| metadata.modified())
             .unwrap_or(std::time::UNIX_EPOCH);

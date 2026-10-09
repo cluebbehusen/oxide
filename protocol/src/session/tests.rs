@@ -1,8 +1,8 @@
 use super::*;
 use crate::hash_hex;
 
-/// The smallest honest session: a bare sim state and a clock that
-/// answers, enough to pin the dispatcher's own behavior.
+/// The smallest session: a bare sim state and a clock that answers,
+/// enough to pin the dispatcher's own behavior.
 struct Bare {
     state: State,
     paused: bool,
@@ -26,9 +26,8 @@ impl DebugSession for Bare {
         &self.state
     }
 
-    // The clock methods echo what the dispatcher hands them — the
-    // double pins the dispatcher's capping, not sim behavior (the
-    // real implementations carry their own parity tests).
+    // The clock methods echo what the dispatcher hands them, so the
+    // double pins the dispatcher's capping, not sim behavior.
     fn advance(&mut self, ticks: u64) -> AdvancedView {
         AdvancedView {
             ticks,
@@ -90,8 +89,8 @@ fn the_capability_split_is_exactly_nine_shared_requests() {
             "{request:?} belongs to the shared surface"
         );
     }
-    // Window-shaped and mutating requests stay with the caller —
-    // each server implements or refuses them per its own nature.
+    // Window-shaped and mutating requests stay with the caller, which
+    // implements or refuses them.
     let unshared = [
         Request::QueryCamera,
         Request::QueryUi,

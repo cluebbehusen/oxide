@@ -52,11 +52,9 @@ const BOT_PERSONALITY_STREAM: u64 = 0x0B07_5EED;
 const BOT_PERSONALITY_WINDOW: u64 = 16;
 const AUTOMATION_PERSONALITY_SEED: u64 = 0xA117_0A7E_0B07_5EED;
 
-/// Which screen owns input this frame, holding that screen's state in
-/// the same place. Screens carry no match choices — the
-/// [`NewMatchDraft`] in [`App`] does, which is what lets Back walk the
-/// wizard flow without losing anything; the tutorial survives Pause
-/// round trips in [`App`] for the same reason.
+/// Which screen owns input this frame, holding that screen's state.
+/// Match choices live in the [`NewMatchDraft`] on [`App`], not in a
+/// screen.
 enum Screen {
     /// The front door: play, settings, quit.
     Home(HomeScreen),
@@ -70,9 +68,8 @@ enum Screen {
         /// The displaced screen, restored wholesale on leave.
         back: Box<Screen>,
     },
-    /// The codex — every machine and works with its figures — opened
-    /// over Home or the paused match, which waits here intact exactly
-    /// as it does under Settings.
+    /// The codex of machines and works, opened over Home or the paused
+    /// match, which waits in `back` as it does under Settings.
     Codex {
         /// The screen itself.
         screen: CodexScreen,
@@ -89,8 +86,8 @@ enum Screen {
         /// Where leaving returns to: Home, or the match setup that hosted.
         back: Box<Screen>,
     },
-    /// The game proper — the session lives in [`App::game`], which
-    /// every screen needs as its backdrop.
+    /// The game proper. The session lives in [`App::game`], which every
+    /// screen needs as its backdrop.
     Playing,
     /// Read-only replay playback: the log is the match, seek included.
     /// Boxed: the session carries a whole presentation `Game`, and the
@@ -118,10 +115,10 @@ struct App {
     config: config::Config,
     /// The live (or backdrop) game session.
     game: Game,
-    /// The lesson cards, when school is in session. Lives here, not in
-    /// a screen: the tutorial must survive Playing -> Pause -> Playing.
+    /// The tutorial's lesson cards, while a tutorial runs. Lives here, not
+    /// in a screen, so it survives Playing -> Pause -> Playing.
     tutorial: Option<tutorial::Tutorial>,
-    /// The wizard's remembered choices. Lives here, not in the wizard:
+    /// The wizard's remembered choices. Lives here, not in the wizard, so
     /// Home -> Wizard -> Back -> Wizard keeps the map pick and dials.
     draft: NewMatchDraft,
     /// Shell-only entropy for New Match opponent identities. A base is
@@ -139,8 +136,8 @@ struct App {
     /// When the current screen's coaching text shows.
     hint_clock: crate::hints::HintClock,
     /// Window-size persistence: written once the size has been stable
-    /// for a second — a live resize is a burst of intermediate sizes
-    /// nobody wants fsynced.
+    /// for a second, so a live resize does not save every intermediate
+    /// size.
     pending_size: Option<((u32, u32), f64)>,
     /// Modifier truth for chord capture: tracked globally from raw
     /// events, every frame, whatever the screen — a Ctrl pressed on one
@@ -276,7 +273,7 @@ fn start_new_match(
 /// The scenario a filled-in draft describes.
 fn draft_scenario(draft: &NewMatchDraft, personality_seed_base: u64) -> Result<Scenario> {
     let mut scenario = (**draft.scenario.as_ref().context("draft has a map")?).clone();
-    // One consumer, one source: the per-seat vector the setup screen filled.
+    // Seats come from the per-seat plans the setup screen filled.
     // Every opponent runs with its chosen difficulty and stance. This launch base gives each chair a distinct
     // hidden identity; after this point it is ordinary scenario/replay data.
     anyhow::ensure!(
@@ -299,29 +296,24 @@ fn draft_scenario(draft: &NewMatchDraft, personality_seed_base: u64) -> Result<S
             )
         });
     }
-    // Per-seat faction chips (the setup screen's): Auto keeps the
-    // authored roster; an override retints the seat, starting units
-    // remapped through their roles. Same-faction opponents are
-    // readable now — the allegiance accents carry friend-or-foe, so
-    // faction is a free choice, not a fairness rule.
+    // Per-seat faction chips: Auto keeps the authored roster; an override
+    // retints only that seat, starting units remapped through their roles.
+    // Same-faction opponents stay readable because allegiance accents
+    // carry friend-or-foe.
     for (i, plan) in draft.seats.iter().enumerate() {
         if let Some(faction) = screens::wizard::faction_override(plan.faction_choice) {
             scenario.retint_seat(i, faction);
         }
     }
-    // Per-seat team chips (the setup screen's): teams regroup seats
-    // without touching factions — an FFA chip drops the seat onto its
-    // own team, and the sim densifies chosen ids by first appearance
-    // at build. The scenario carries the choice, so saves and replays
-    // reproduce the grouping with no extra plumbing. An all-one-team
-    // draft fails the build (OneTeam) like any other launch error;
-    // the wizard refuses it earlier with the reason inline.
+    // Per-seat team chips regroup seats without touching factions: an FFA
+    // chip drops the seat onto its own team, and the sim densifies chosen
+    // ids by first appearance at build. The scenario carries the choice,
+    // so saves and replays reproduce the grouping. An all-one-team draft
+    // fails the build (OneTeam) like any other launch error; the wizard
+    // refuses it earlier with the reason inline.
     for (i, plan) in draft.seats.iter().enumerate() {
         scenario.players[i].team = screens::wizard::team_override(plan.team_choice);
     }
-    // Duels use the same independent faction choices as larger maps.
-    // Auto keeps each seat's authored faction; overriding one seat
-    // retints only that seat, which supports swaps and mirror matches.
     // Seat names must stay unique: the victory banner, the panel, and
     // the stats screen all address seats by name. Retints can land two
     // seats on one faction-derived label ("North West Ferrous" twice),
@@ -354,6 +346,50 @@ struct PendingScreenshot {
     reply: Sender<ResponseEnvelope>,
 }
 
+/// One clip's mixing, as `tools/gen_sounds.py` records it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct MixerSpec {
+    volume: f32,
+    min_gap: f64,
+}
+
+/// The generated sound manifest is the one source for mixer gain and rate
+/// limits.
+static MIXER_SPECS: std::sync::LazyLock<std::collections::BTreeMap<String, MixerSpec>> =
+    std::sync::LazyLock::new(|| {
+        #[derive(serde::Deserialize)]
+        struct Manifest {
+            sounds: Vec<Row>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Row {
+            name: String,
+            mixer_volume: f64,
+            min_gap: f64,
+        }
+        let manifest: Manifest =
+            serde_json::from_str(include_str!("../../assets/sounds/manifest.json"))
+                .expect("the generated sound manifest parses");
+        manifest
+            .sounds
+            .into_iter()
+            .map(|row| {
+                let spec = MixerSpec {
+                    volume: numeric::to_f32(row.mixer_volume),
+                    min_gap: row.min_gap,
+                };
+                (row.name, spec)
+            })
+            .collect()
+    });
+
+fn mixer_spec(kind: SoundKind) -> MixerSpec {
+    MIXER_SPECS
+        .get(kind.clip_name())
+        .copied()
+        .expect("every sound kind has a manifest row")
+}
+
 /// Plays queued clips with a per-kind rate limit, so twenty simultaneous
 /// weapon reports read as battle, not noise.
 #[derive(Default)]
@@ -375,70 +411,13 @@ impl Mixer {
         volumes.master * bus
     }
 
+    /// Seconds a clip waits before it may play again.
     fn min_gap(kind: SoundKind) -> f64 {
-        match kind {
-            SoundKind::Laser | SoundKind::ScuttlerFire => 0.09,
-            SoundKind::SentinelFire => 0.08,
-            SoundKind::LancerFire | SoundKind::Ack => 0.15,
-            SoundKind::BombardFire
-            | SoundKind::BastionFire
-            | SoundKind::Artillery
-            | SoundKind::ArtilleryLaunch => 0.2,
-            SoundKind::FlakhoundFire | SoundKind::FlakTurretFire => 0.12,
-            SoundKind::WardenFire => 0.1,
-            SoundKind::BreakerFire
-            | SoundKind::AvalancheFire
-            | SoundKind::RocketMotor
-            | SoundKind::RocketImpact
-            | SoundKind::BombRelease
-            | SoundKind::DemolitionBoom => 0.2,
-            SoundKind::UpgradeDone => 0.3,
-            SoundKind::StingerFire
-            | SoundKind::BuzzardFire
-            | SoundKind::DarterFire
-            | SoundKind::TalonFire
-            | SoundKind::WispFire => 0.1,
-            SoundKind::UnitDeath => 0.12,
-            SoundKind::Deposit => 0.15,
-            SoundKind::Alert => 1.5,
-            _ => 0.05,
-        }
+        mixer_spec(kind).min_gap
     }
 
     fn base_volume(kind: SoundKind) -> f32 {
-        match kind {
-            SoundKind::Laser => 0.18,
-            SoundKind::UnitDeath => 0.35,
-            SoundKind::BuildingBoom => 0.6,
-            SoundKind::Deposit => 0.25,
-            SoundKind::TrainDone => 0.3,
-            SoundKind::Click => 0.25,
-            SoundKind::Denied => 0.3,
-            SoundKind::Alert => 0.4,
-            SoundKind::Victory | SoundKind::Defeat => 0.6,
-            SoundKind::Artillery | SoundKind::RocketImpact => 0.5,
-            SoundKind::ArtilleryLaunch => 0.4,
-            SoundKind::Ack => 0.18,
-            SoundKind::SentinelFire => 0.26,
-            SoundKind::ScuttlerFire => 0.2,
-            SoundKind::LancerFire => 0.32,
-            SoundKind::BombardFire => 0.5,
-            SoundKind::FlakhoundFire => 0.3,
-            SoundKind::StingerFire => 0.25,
-            SoundKind::BuzzardFire => 0.35,
-            SoundKind::DarterFire => 0.25,
-            SoundKind::TalonFire => 0.28,
-            SoundKind::WispFire => 0.23,
-            SoundKind::BastionFire => 0.55,
-            SoundKind::FlakTurretFire => 0.34,
-            SoundKind::WardenFire => 0.3,
-            SoundKind::BreakerFire => 0.55,
-            SoundKind::AvalancheFire => 0.5,
-            SoundKind::RocketMotor => 0.35,
-            SoundKind::BombRelease => 0.45,
-            SoundKind::DemolitionBoom => 0.65,
-            SoundKind::UpgradeDone => 0.35,
-        }
+        mixer_spec(kind).volume
     }
 
     fn clip<'a>(&mut self, sounds: &'a assets::Sounds, kind: SoundKind) -> &'a Sound {
@@ -1052,9 +1031,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                 shot.reply.send(response).ok();
             }
         }
-        // Persist the window size once it has settled: the config
-        // documents window persistence, and only settings writes ever
-        // saved it before.
+        // Persist the window size once it has settled.
         let live = (
             numeric::to_u32(screen_width()),
             numeric::to_u32(screen_height()),
@@ -1090,11 +1067,10 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             // autosave swallows the quit (prevent_quit is in force) and
             // raises the failure dialog instead of exiting over data loss.
             app.config.save().ok();
-            // The dialog's home-vs-match classification must see THROUGH
+            // The dialog's home-vs-match classification must see through
             // screens opened from Pause: a quit while Settings or Playback
             // sits over a paused match still has an unsaved match behind
-            // it, and a Home-classified Cancel would strand it with no
-            // route back.
+            // it, and a Home-classified Cancel would strand it.
             let over_a_match = screen_holds_live_match(&screen);
             if let Screen::Busy(busy) = &mut screen {
                 busy.request_quit();
@@ -1257,7 +1233,7 @@ fn screen_holds_live_match(screen: &Screen) -> bool {
     }
 }
 
-/// Keeps the cross-screen cursor position honest even when a click arrives
+/// Keeps the cross-screen cursor position current even when a click arrives
 /// without a preceding move event, as injected and some native clicks do.
 fn track_pointer_position(mouse: &mut Vec2, event: &RawEvent) {
     match *event {
@@ -1375,13 +1351,11 @@ fn capture_ui(screen: &Screen, app: &App) -> UiView {
         Screen::Settings { screen: sc, .. } => (screen_mode(screen), Some(&sc.menu)),
         Screen::Codex { screen: codex, .. } => (screen_mode(screen), Some(&codex.menu)),
         Screen::Wizard(w) => {
-            // The wizard's custom screens (grid, setup) speak the same
-            // protocol surface the row menus do — automation keeps its
-            // footing across redesigns.
+            // The wizard's custom screens (grid, setup) report the same
+            // protocol surface the row menus do.
             let (title, items, selected) = w.ui_surface(&app.draft);
             // The frame injected this viewport before drawing, so the
-            // range reports the grid window the player is actually
-            // seeing.
+            // range reports the grid window the player sees.
             let visible = w.ui_visible_range(&app.draft, render::viewport(), render::ui_scale());
             return UiView {
                 mode: screen_mode(screen).to_string(),
@@ -1478,9 +1452,9 @@ fn veil() {
     );
 }
 
-/// Writes a captured frame as PNG with real error handling — macroquad's
-/// own `export_png` unwraps on failure, which would let one malformed
-/// debug-socket path abort the entire session.
+/// Writes a captured frame as PNG, returning errors: macroquad's own
+/// `export_png` unwraps on failure, so one malformed debug-socket path
+/// would abort the session.
 fn write_png(image: &Image, path: &str) -> Result<(u32, u32)> {
     if let Some(parent) = std::path::Path::new(path).parent()
         && !parent.as_os_str().is_empty()
@@ -1508,9 +1482,8 @@ fn write_png(image: &Image, path: &str) -> Result<(u32, u32)> {
     Ok((u32::from(image.width), u32::from(image.height)))
 }
 
-/// The mutating verbs a read-only viewer refuses wholesale — commands
-/// and session swaps would act through the replay onto the hidden match
-/// behind it.
+/// The mutating verbs a read-only viewer refuses: commands and session
+/// swaps would act through the replay onto the hidden match behind it.
 fn viewer_refuses(request: &Request) -> bool {
     matches!(
         request,
@@ -1533,21 +1506,8 @@ fn frozen_map_refuses(request: &Request) -> bool {
         )
 }
 
-/// Answers one debug request. Screenshots are parked; everything else
-/// responds immediately, between frames, against a settled world.
-///
-/// One dispatcher over every session kind: the shared surface (state
-/// reads, the driven clock) goes through
-/// [`oxide_protocol::dispatch_shared`] against whichever session owns
-/// the screen — the replay viewer when it is up, the live game
-/// otherwise. What remains here is window-shaped (camera, UI, input,
-/// screenshots, the overlay), answered for the screen the window shows,
-/// or live-mutating (commands, loads, saves), refused wholesale while
-/// the viewer owns the screen.
-/// Which session a request addresses, and whether it is allowed to —
-/// decided before any state is touched. The Playback pick is the
-/// load-bearing row: a regression there aims a viewer-bound
-/// `AdvanceTicks` at the hidden live match, which advances silently.
+/// Whether a debug request is refused by a local guard or answered,
+/// decided before any state is touched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Route {
     /// The final battlefield is frozen; time and session verbs bounce.
@@ -1602,6 +1562,16 @@ fn lockstep_refuses(
         || matches!(request, Request::SendCommand { player, .. } if *player != seat)
 }
 
+/// Answers one debug request. Screenshots are parked; everything else
+/// responds immediately, between frames, against a settled world.
+///
+/// Shared requests (state reads, the driven clock) go through
+/// [`oxide_protocol::dispatch_shared`] against whichever session owns
+/// the screen: the replay viewer when it is up, the live game otherwise.
+/// The rest are window-shaped (camera, UI, input, screenshots, the
+/// overlay) and answered for the screen the window shows, or
+/// live-mutating (commands, loads, saves) and refused while the viewer
+/// owns the screen.
 fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen, ui_view: &UiView) {
     let IncomingRequest { id, request, reply } = incoming;
     if matches!(screen, Screen::Busy(_)) && frozen_map_refuses(&request) {
@@ -1641,6 +1611,8 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
         Route::RefuseViewer | Route::Local => {}
     }
     let shared = {
+        // A viewer-bound `AdvanceTicks` sent to the hidden live match
+        // would advance it silently.
         let session: &mut dyn oxide_protocol::DebugSession = match &mut *screen {
             Screen::Playback(pb) => &mut **pb,
             _ => &mut app.game,
@@ -1648,13 +1620,10 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
         oxide_protocol::dispatch_shared(session, &request)
     };
     if let Some(outcome) = shared {
-        // Resuming implies gameplay: leave the pause menu too, or the
-        // sim runs behind a menu that still claims it is paused —
-        // Settings opened over a paused match included. A screen
-        // transition, not a session operation, which is why it lives
-        // with the screen's owner instead of inside the trait. (While
-        // the viewer owns the screen no pause menu can be up, so this
-        // matches nothing there.)
+        // Resuming implies gameplay: leave the pause menu too (including
+        // Settings or the Codex opened over it), or the sim runs behind a
+        // menu that still claims it is paused. This is a screen
+        // transition, so it lives here rather than in the session trait.
         if matches!(request, Request::Resume) && outcome.is_ok() {
             let over_pause = match &*screen {
                 Screen::Pause(_) => true,
@@ -1750,10 +1719,10 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
             }
             Request::InjectEvent { event } => {
                 // The hardware funnel admits only printable ASCII into Text
-                // (input.rs char_event); injected events walk the identical
-                // path, so they honor the identical contract — a control
-                // byte or non-ASCII char is refused, not persisted into a
-                // save name the font cannot draw.
+                // (`input::PointerStream::char_event`); injected events honor
+                // the same contract, so a control byte or non-ASCII char is
+                // refused rather than persisted into a save name the font
+                // cannot draw.
                 if let oxide_protocol::RawEvent::Text { ch } = event
                     && !('\u{20}'..='\u{7e}').contains(&ch)
                 {

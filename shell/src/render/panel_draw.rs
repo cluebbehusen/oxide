@@ -1,6 +1,6 @@
-//! The command band, the orders dock, and the hover tooltip — the
-//! selection panel's entire drawn form. Geometry it publishes rides
-//! the `LayoutModel`; the pure card model lives in `crate::panel`.
+//! The command band, the orders dock, and the hover tooltip: the
+//! selection panel's drawn form. Geometry it publishes goes into the
+//! `LayoutModel`; the pure card model lives in `crate::panel`.
 
 use super::*;
 use crate::numeric;
@@ -284,10 +284,10 @@ fn card_title_lines(title: &str, measure: impl Fn(&str) -> f32, width: f32) -> V
     }
 }
 
-/// Packs every visible queue chip above the command band. A single
-/// column stays pleasantly quiet when it fits; a full eight-slot
-/// production queue becomes a 2×4 dock in the 640×400 stress case instead
-/// of hiding paid, cancelable work behind a "+4" label.
+/// Packs every visible queue chip above the command band: a single
+/// column when it fits, otherwise a grid (a full eight-slot production
+/// queue becomes 2×4 in a 640×400 window), so no paid, cancelable job
+/// hides behind an overflow label.
 fn queue_grid(
     queue_len: usize,
     panel_top: f32,
@@ -693,9 +693,8 @@ pub(crate) fn draw_panel(
     };
     // An order chip is two composed draws: the subject's own silhouette
     // (translucent under a scaffold while its site is still rising) and
-    // the verb as a corner badge on a dark plate, so the pictogram
-    // never dissolves into the hull beneath it. Every other icon is the
-    // one sprite it always was.
+    // the verb as a corner badge on a dark plate, so the pictogram never
+    // dissolves into the hull beneath it. Every other icon is one sprite.
     let draw_icon = |dest: Rect, icon: &CardIcon, tint: Color| {
         let CardIcon::Order {
             subject,
@@ -725,8 +724,8 @@ pub(crate) fn draw_panel(
             }
             return;
         };
-        // The subject wears ITS OWN colors: an attack chip's victim is
-        // not the panel owner's faction.
+        // The subject draws in its own owner's colors: an attack chip's
+        // victim is not the panel owner's faction.
         let hull = if *ghost {
             Color::new(tint.r, tint.g, tint.b, tint.a * 0.7)
         } else {
@@ -1255,8 +1254,8 @@ pub(crate) fn draw_panel(
                     Color::new(0.45, 0.45, 0.52, 0.8)
                 },
             );
-            // Order chips carry the same numbers the world breadcrumbs
-            // wear — chip 2 IS waypoint 2.
+            // Order chips carry the same numbers as the world
+            // breadcrumbs: chip 2 is waypoint 2.
             if orders_dock && panel.queue.len() > 1 {
                 draw_text(
                     format!("{}", i + 1),
@@ -1396,9 +1395,9 @@ pub(crate) fn draw_panel_tooltip(game: &crate::game::Scene<'_>, input: &InputSta
     else {
         return;
     };
-    // The hovered RECT is the anchor, not just the index: the orders
+    // The hovered rect is the anchor, not just the index: the orders
     // dock stacks upward from the band, so a tooltip pinned to the
-    // band's top edge described chip 1 beside chip 8.
+    // band's top edge would sit far from a high chip.
     let Some(card) = panel.card(hit.row, hit.index) else {
         return;
     };
@@ -1432,9 +1431,8 @@ pub(crate) fn draw_panel_tooltip(game: &crate::game::Scene<'_>, input: &InputSta
         .flatten();
     let size = 17.0 * s;
     let pad = 12.0 * s;
-    // Descriptions run to two sentences; the box wraps them at a
-    // reading width instead of growing to the longest line, which
-    // once put a Skyhook tooltip wider than the window.
+    // The box wraps descriptions at a reading width, capped by the
+    // window, instead of growing to the longest line.
     let wrap_w = (400.0 * s).min(screen_width() - 40.0 * s);
     for d in &card.desc {
         for line in crate::render::wrap_words(
@@ -1472,9 +1470,8 @@ pub(crate) fn draw_panel_tooltip(game: &crate::game::Scene<'_>, input: &InputSta
     let line_h = 22.0 * s;
     let table_height = comparison.map_or(0.0, |c| (c.rows.len() + 2) as f32 * line_h);
     let height = lines.len() as f32 * line_h + table_height + pad * 1.5;
-    // The box's room is the window BETWEEN the top bar and the band:
-    // a tooltip that spilled over the command cards would cover what
-    // the hand is about to click next.
+    // The box fits between the top bar and the band so it never covers
+    // the command cards.
     let origin = crate::layout::tooltip_origin(
         anchor,
         vec2(width, height),

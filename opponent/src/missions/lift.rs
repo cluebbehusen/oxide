@@ -361,9 +361,8 @@ impl Missions {
     /// while riders walk to their carriers. Once none is walking and none was
     /// sent, or time runs out, flies when what is aboard, with any bombers
     /// out clearing the way, meets the landing's need as now known, and
-    /// otherwise sets everyone down and lets them go.
-    /// A rider that stopped short of its carrier could not board it and is
-    /// not sent again.
+    /// otherwise sets everyone down and lets them go. A rider that stopped
+    /// short of its carrier could not board it and is not sent again.
     fn board(&mut self, flight: &Flight<'_>, lifting: &Lifting<'_>, ledger: &mut Ledger) {
         let waiting = &flight.grounded;
         let need = lifting.need(flight.target, flight.landing);
@@ -712,10 +711,9 @@ impl<'a> Lifting<'a> {
 
     /// Where to set a payload down near `target`: known open ground on the
     /// target's island, out of reach of known fire where any is, then as near
-    /// about four tiles from the target as it can be, so riders set down out
-    /// of range walk in. The one reachability check: every ground tile
-    /// riders could be set down on lies on the target's island, so none land
-    /// across a chasm.
+    /// `LANDING_GAP` empty tiles from the target as it can be, so riders set
+    /// down out of range walk in. Every ground tile riders could be set down
+    /// on lies on the target's island, so none land across a chasm.
     fn landing(&self, target: Objective) -> Option<TilePos> {
         let map = self.map;
         let size = target.building.base_stats().size;

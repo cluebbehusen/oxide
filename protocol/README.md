@@ -12,7 +12,10 @@ handled or explicitly refused by the session serving them.
 ## Main pieces
 
 - `Request`, `Reply`, and their envelopes are the public wire types.
-- `view` turns exact simulation state into readable protocol snapshots.
+- `view` turns exact simulation state into readable protocol snapshots: the
+  omniscient `StateView` and the fog-honest `FogView`. `FogView` is the debug
+  and agent surface; bots read the sim's `ObservationData`, a fog-honest
+  projection of the same vision.
 - `input` defines the hardware-neutral event stream used by automation.
 - `framing` owns line limits, deadlines, connection handling, and response
   correlation.
@@ -23,11 +26,11 @@ Request decoding is strict: unknown envelope or method-parameter fields,
 including fields inside commands and injected input events, are errors. A
 misspelled harness instruction cannot appear to succeed.
 
-Attack and focus commands accept the existing unit/building target encodings,
-remembered-building references (`owner`, `building_kind`, `anchor`), and contact
-ids from the issuing seat's fog view. `clear_focus` clears armed defenses'
-target preferences. Fog views retain tile-based radar and add continuous contact
-tracks; anonymous tracks expose neither entity identity nor domain.
+Attack and focus commands target units, buildings, remembered buildings
+(`owner`, `building_kind`, `anchor`), or contact ids from the issuing seat's fog
+view. `clear_focus` clears armed defenses' target preferences. Fog views carry
+tile-based radar blips and continuous contact tracks; anonymous tracks expose
+neither entity identity nor domain.
 
 ## Development
 

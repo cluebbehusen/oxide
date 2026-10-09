@@ -235,6 +235,25 @@ fn a_sapper_is_credited_with_its_blast() {
 }
 
 #[test]
+fn direct_fire_splash_is_credited_to_its_shooter() {
+    let scenario = field(
+        0,
+        &[
+            (0, UnitKind::Breaker, 14, 6),
+            (1, UnitKind::Harvester, 16, 6),
+            (1, UnitKind::Harvester, 16, 7),
+        ],
+        &[],
+    );
+    let (_, ledgers) = play(scenario.build().unwrap(), 600, Vec::new());
+    let breaker = unit(&ledgers, 0, "breaker");
+    let harvesters = unit(&ledgers, 1, "harvester");
+    assert_eq!(harvesters.deaths, 2, "{harvesters:?}");
+    assert_eq!(ledgers[1].unattributed, 0, "splash lands on the shooter");
+    assert_eq!(breaker.dealt.total(), harvesters.taken, "{breaker:?}");
+}
+
+#[test]
 fn repair_is_credited_to_whoever_supplied_it() {
     let scenario = field(
         500,
@@ -299,7 +318,7 @@ fn an_array_is_credited_with_a_hidden_charge_it_revealed() {
     assert_eq!(built(&ledgers, 1, "scuttle charge").deaths, 1);
     assert_eq!(
         built(&ledgers, 0, "array").enabled,
-        building_value(BuildingKind::ScuttleCharge, 0)
+        u64::from(BuildingKind::ScuttleCharge.invested_cost(0))
     );
 }
 
@@ -387,11 +406,12 @@ fn spending_is_recorded_by_category_and_phase() {
     );
     assert_eq!(
         spend["defense:turret"][0],
-        building_value(BuildingKind::Turret, 0)
+        u64::from(BuildingKind::Turret.invested_cost(0))
     );
     assert_eq!(
         spend["upgrade:refinery"][0],
-        building_value(BuildingKind::Reclaimer, 1) - building_value(BuildingKind::Reclaimer, 0)
+        u64::from(BuildingKind::Reclaimer.invested_cost(1))
+            - u64::from(BuildingKind::Reclaimer.invested_cost(0))
     );
     let refinery = built(&ledgers, 0, "refinery");
     assert_eq!(refinery.built + refinery.starting, 1);
@@ -652,7 +672,7 @@ fn construction_does_not_hide_fire_on_a_site() {
     let turret = BuildingKind::Turret.tier_stats(0);
     let damage = u64::from(UnitKind::Sentinel.stats().weapons[0].damage);
     let expected =
-        hits * damage * building_value(BuildingKind::Turret, 0) / u64::from(turret.max_hp);
+        hits * damage * u64::from(BuildingKind::Turret.invested_cost(0)) / u64::from(turret.max_hp);
     let dealt = unit(&ledgers, 1, "sentinel").dealt.buildings;
     assert!(hits > 0, "premise: the site is under fire");
     assert!(

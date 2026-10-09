@@ -1,12 +1,10 @@
 //! The New Match flow: the map browser grid, then the match setup
-//! screen — seat cards grouped by team beside a large who-is-where
-//! preview — for every map size. Duels get the same seat, faction,
-//! and team choices the larger maps do (the old 1v1
-//! quick-question flow could not arrange a mirror match or a seat
-//! swap, and Enter-Enter still launches the classic matchup).
+//! screen (seat cards grouped by team beside a large who-is-where
+//! preview) for every map size. Enter-Enter from the grid launches the
+//! map as authored.
 //!
-//! One back end: every answer lands in the draft's PER-SEAT vector,
-//! and `launch()` reads only that.
+//! Every answer lands in the draft's per-seat vector, and `launch()`
+//! reads only that.
 
 use crate::bot_label::{difficulty_name, stance_name};
 use crate::game::SoundKind;
@@ -147,9 +145,8 @@ pub fn effective_faction(
 /// The name a seat will actually play under: the authored name run
 /// through the launcher's own retint rule when a faction chip
 /// overrides the roster. Lives beside [`effective_faction`] so the
-/// card's disc and its label can't drift apart again. (Duplicate-name
-/// ordinals are launch's business; the preview shows the pre-ordinal
-/// name.)
+/// card's disc and its label agree. Duplicate-name ordinals are added
+/// at launch; the preview shows the pre-ordinal name.
 pub fn effective_name(scenario: &Scenario, draft: &NewMatchDraft, seat: usize) -> String {
     let spec = &scenario.players[seat];
     oxide_sim::scenario::retinted_name(
@@ -167,9 +164,9 @@ pub fn effective_name(scenario: &Scenario, draft: &NewMatchDraft, seat: usize) -
 pub struct NewMatchDraft {
     /// The loaded map, once picked.
     pub scenario: Option<Box<Scenario>>,
-    /// The picked map's path (`None` = the embedded skirmish) — keyed
-    /// by PATH so the browser's section sort can never move the
-    /// remembered highlight onto a different map.
+    /// The picked map's path (`None` = the embedded skirmish), keyed by
+    /// path so the browser's section sort can never move the remembered
+    /// highlight onto a different map.
     pub scenario_path: Option<PathBuf>,
     /// Which chair the human takes (index into the scenario's players).
     pub seat_choice: usize,
@@ -181,11 +178,10 @@ pub struct NewMatchDraft {
 }
 
 impl NewMatchDraft {
-    /// Installs a picked map. Re-entering the SAME map keeps every
-    /// earlier answer (the draft survives Back, by doctrine); a
-    /// different map resets the seats and the chair — a seat 5 taken
-    /// on an 8-seat map once silently carried into a duel as "the
-    /// second chair", with nothing on screen saying so.
+    /// Installs a picked map. Re-entering the same map keeps every
+    /// earlier answer, so the draft survives Back; a different map resets
+    /// the seats and the chair, so no chair index carries silently onto a
+    /// map with different seats.
     pub fn set_scenario(&mut self, scenario: Scenario, path: Option<PathBuf>) {
         let same_map = self.scenario.is_some() && self.scenario_path == path;
         let count = scenario.players.len();
@@ -289,13 +285,10 @@ pub struct Wizard {
     setup_page: usize,
 }
 
-/// One collision-free team key per seat: an authored id stays
-/// itself; an omitted seat surrogates as its own index lifted above
-/// the whole u8 range, so no authored id can alias it and every pass
-/// that groups seats derives the identical key. (The old scheme keyed
-/// omitted seats two different ways — `teams.len()` in one pass, the
-/// seat index in the next — and a mixed-team map could drop a seat
-/// from the setup order entirely.)
+/// One collision-free team key per seat: an authored id stays itself;
+/// an omitted seat uses its own index lifted above the whole u8 range,
+/// so no authored id can alias it and every pass that groups seats
+/// derives the identical key.
 fn seat_team_keys(scenario: &Scenario) -> Vec<u16> {
     scenario
         .players
@@ -387,15 +380,12 @@ fn setup_layout_page(
     let left_x = 56.0 * ui;
     let left_w = (view.x * 0.42).min(520.0 * ui);
     // Margins yield before content: small windows compress the title
-    // zone first, then chrome, then the cards — the full roster and
-    // the Start button stay on screen by construction (the old fixed
-    // 34ui card floor pushed Start past the bottom of a 640x400
-    // window on eight-seat maps, with no scrolling to reach it).
+    // zone first, then chrome, then the cards. Cards shorter than a touch
+    // target switch to the paginated compact layout below.
     let top = (132.0 * ui).min(view.y * 0.22);
     let bottom = view.y - (44.0 * ui).min(view.y * 0.08);
-    // Headings earn their rows only when a team actually groups
-    // seats: a duel (or an FFA) under "TEAM 1 / TEAM 2 / ..." — one
-    // singleton per label — was noise wearing a uniform.
+    // Headings take rows only when a team actually groups seats; a duel
+    // or an FFA would otherwise show one heading per lone seat.
     let grouped = teams.len() < n;
     let heading_rows = if grouped { teams.len() as f32 } else { 0.0 };
     let mut heading_h = 26.0 * ui;
@@ -409,10 +399,9 @@ fn setup_layout_page(
         gap *= 0.5;
         avail = bottom - top - heading_rows * heading_h - start_h - 24.0 * ui;
         card_h = ((avail / n.max(1) as f32) - gap).max(18.0 * ui);
-        // A large UI scale cannot conjure height: when the ui-scaled
-        // floor still overflows, the floor goes PHYSICAL — controls
-        // run small, but the whole roster and Start stay on screen
-        // and clickable at every supported window.
+        // When even the ui-scaled floor overflows, the floor goes
+        // physical; such cards fall below a touch target, so the compact
+        // layout takes over below.
         if n as f32 * (card_h + gap) > avail {
             card_h = ((avail / n.max(1) as f32) - gap).max(14.0);
         }
@@ -698,9 +687,9 @@ pub fn seat_anchors(map: &[String]) -> Vec<(usize, (i32, i32))> {
 }
 
 /// Marks every seat's foundry on a drawn preview rect: numbered discs
-/// in the seat's EFFECTIVE faction color (chip overrides included), a
+/// in the seat's effective faction color (chip overrides included), a
 /// white ring for the human's chair, an accent ring for the focused
-/// seat — the list and the map read as one thing.
+/// seat.
 pub fn draw_seat_markers(
     scenario: &Scenario,
     draft: &NewMatchDraft,
@@ -777,8 +766,7 @@ impl Wizard {
             }
             Step::Setup => {
                 // Start preselected: Enter-Enter from the grid plays
-                // the map as authored — the classic launch is still
-                // two keypresses on every map size.
+                // the map as authored.
                 self.setup_sel = draft.seats.len();
                 self.setup_page = self.setup_sel / COMPACT_PAGE_ITEMS;
                 self.setup_cell = 0;
@@ -1027,9 +1015,7 @@ impl Wizard {
                 return None;
             }
             if row == start_index {
-                // The sim refuses an all-one-team match (`OneTeam`:
-                // nobody to fight, no way to win). Start reads
-                // disabled and refuses here so the reason shows
+                // Refuse an all-one-team draft here so the reason shows
                 // inline instead of a failed-launch notice.
                 if draft_one_team(draft) {
                     sounds.push((SoundKind::Denied, None));
@@ -1150,9 +1136,8 @@ impl Wizard {
             let accent = crate::render::faction_accent(effective_faction(scenario, draft, seat));
             let cy = rect.y + rect.h * 0.5;
             let chip_x = rect.x + 22.0 * ui;
-            // Everything on a card scales to the card: a compressed
-            // 400px-window roster once drew full-size discs and names
-            // straight across its neighbors and chips.
+            // Everything on a card scales to the card, so a compressed
+            // roster never draws across its neighbors and chips.
             let disc = (10.0 * ui).min(rect.h * 0.38);
             if is_you {
                 draw_circle_lines(chip_x, cy, disc * 1.3, 2.0, macroquad::prelude::WHITE);
@@ -1268,8 +1253,8 @@ impl Wizard {
                         Color::new(0.6, 0.6, 0.65, 0.35)
                     },
                 );
-                // The label fits ITS chip: squeezed cards shrink the
-                // type instead of spilling text across neighbors.
+                // The label fits its chip: squeezed cards shrink the type
+                // instead of spilling text across neighbors.
                 let mut font = 13.0 * ui;
                 let mut ldims = measure_text(label, None, numeric::font_size(font), 1.0);
                 if ldims.width > chip.w - 6.0 {
@@ -1301,8 +1286,7 @@ impl Wizard {
                 );
             }
         }
-        // Start button. An all-one-team draft cannot launch (the sim's
-        // OneTeam refusal), so the button reads disabled.
+        // Start button, disabled for an all-one-team draft.
         let one_team = draft_one_team(draft);
         let start_selected = self.setup_sel == layout.seats.len();
         if layout.start.w > 0.0 {
@@ -1431,9 +1415,8 @@ impl Wizard {
         }
     }
 
-    /// The debug protocol's stable mode name for the current step —
-    /// unchanged across redesigns, so automation scripts keep their
-    /// footing.
+    /// The debug protocol's stable mode name for the current step, which
+    /// automation scripts depend on.
     pub fn mode_name(&self) -> &'static str {
         match self.step {
             Step::Map => "main_menu",

@@ -42,6 +42,10 @@ const UNITS: u16 = 2 | 4096;
 const LIVE: u16 = 511 | 4096;
 const WORLD: u16 = LIVE | 512 | 1024;
 
+/// Production hotkey slots a selected factory exposes; no per-faction
+/// roster may train more kinds than this.
+pub const TRAIN_SLOTS: u8 = 6;
+
 /// Categories and card order are shared by rendering and keyboard dispatch.
 pub const BUILD_CATEGORIES: [(&str, &[BuildingKind]); 4] = [
     (
@@ -226,7 +230,7 @@ impl Action {
     pub fn sane(self) -> bool {
         match self {
             Self::Slot(n) | Self::AssignGroup(n) => (1..=5).contains(&n),
-            Self::TrainSlot(n) => n < 6,
+            Self::TrainSlot(n) => n < TRAIN_SLOTS,
             Self::SetBookmark(n) | Self::RecallBookmark(n) | Self::BuildCategory(n) => n < 4,
             Self::ReplaySpeed(n) => n < 8,
             Self::Build(kind) => BUILD_CATEGORIES
@@ -400,8 +404,7 @@ impl BindingMap {
     }
 
     /// The left-handed profile: every verb mirrored onto the right
-    /// hand (mouse in the left), pans staying on the arrows. Same
-    /// grammar, other hemisphere.
+    /// hand (mouse in the left), pans staying on the arrows.
     pub fn legacy_left_handed() -> Self {
         let mut map = Self::legacy();
         for (action, key) in [
@@ -413,11 +416,10 @@ impl BindingMap {
             (Action::CycleIdleWorker, Key::U),
             (Action::JumpToLastAlert, Key::I),
             (Action::TogglePause, Key::P),
-            // Every gameplay verb crosses over — Salvage shipped after
-            // this preset and once stayed marooned on classic's V.
+            // Every gameplay verb crosses over, Salvage included.
             (Action::Salvage, Key::J),
-            // Classic's M belongs to StopOrScrap over here; Run takes
-            // the freed right-index H (TrainSlot 1 moved to K).
+            // M belongs to StopOrScrap here, so Run takes the right-index
+            // H.
             (Action::Run, Key::H),
             // The explicit fighting march sits beside Run.
             (Action::Hunt, Key::G),
@@ -616,7 +618,9 @@ impl BindingMap {
     pub fn resolve(&self, key: Key, ctrl: bool, shift: bool) -> Option<Action> {
         self.resolve_where(key, ctrl, shift, |_| true)
     }
-    /// Existing menus consume canonical navigation events after this binding boundary.
+    /// Translates key events through the menu-context bindings into the
+    /// canonical navigation keys menus read. Modifier edges are consumed;
+    /// non-key events pass through.
     pub fn menu_events(
         &self,
         events: &[oxide_protocol::RawEvent],

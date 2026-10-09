@@ -163,7 +163,8 @@ impl FinalMapScreen {
                 - i32::from(self.resolver.is_held(Action::PanUp)) as f32,
         );
         if direction != Vec2::ZERO {
-            let world_per_second = 240.0 * camera_prefs.pan_speed / game.presentation.camera.zoom;
+            let world_per_second = crate::input::PAN_PX_PER_SEC * camera_prefs.pan_speed
+                / game.presentation.camera.zoom;
             game.presentation
                 .camera
                 .pan(direction.normalize() * world_per_second * dt);

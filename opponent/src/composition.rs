@@ -219,9 +219,8 @@ pub(crate) fn weight(trait_value: u8) -> u64 {
 
 /// Per mille of the army the siege role holds at a middling siege trait: a
 /// stance limit on ranged units behind a line that screens them. Turtle and
-/// Balanced seats, which attack with their army massed, hold half; three
-/// quarters left the line too thin. An Aggressive seat attacks early with
-/// small armies, which slow, fragile siege only weakens.
+/// Balanced seats attack with their army massed; an Aggressive seat attacks
+/// early with small armies, which slow, fragile siege only weakens.
 fn siege_share(stance: BotStance) -> i64 {
     match stance {
         BotStance::Turtle | BotStance::Balanced => 500,
@@ -258,7 +257,7 @@ pub(crate) struct Outlet {
 /// building or start; until then line units are wanted only against
 /// invaders on the seat's own ground. A seat that delivers its ground army
 /// only by lift wants siege only against known defenses: Lancers and
-/// Bombards carry less scrap a Skyhook seat than Sentinels.
+/// Bombards carry less scrap per Skyhook seat than Sentinels.
 pub(crate) fn needs(
     observation: &ObservationData,
     memory: &Memory,

@@ -830,79 +830,7 @@ fn unreachable_blind_attacks_stall_once_and_clear_the_program() {
 }
 
 #[test]
-fn legacy_focus_initializes_tracks_without_losing_its_preference() {
-    let mut scenario = open_arena(32, 24, vec![unit(1, UnitKind::Harvester, 12, 10)]);
-    scenario.players[0].team = Some(0);
-    scenario.players[1].team = Some(1);
-    let ally = scenario.players[0].clone();
-    scenario.players.push(ally);
-    scenario.map[20].replace_range(1..2, "3");
-    scenario.buildings = vec![
-        BuildingSpec {
-            player: 0,
-            kind: BuildingKind::Bastion,
-            x: 8,
-            y: 10,
-        },
-        BuildingSpec {
-            player: 1,
-            kind: BuildingKind::Reclaimer,
-            x: 12,
-            y: 12,
-        },
-    ];
-    let state = scenario.build().unwrap();
-    let defense = state
-        .buildings()
-        .iter()
-        .find(|b| b.kind == BuildingKind::Bastion)
-        .unwrap()
-        .id;
-    let building = state
-        .buildings()
-        .iter()
-        .find(|b| b.kind == BuildingKind::Reclaimer)
-        .unwrap()
-        .id;
-    for target in [
-        Target::Unit(state.units()[0].id),
-        Target::Building(building),
-    ] {
-        let mut data = serde_json::to_value(&state).unwrap();
-        for view in data["vision"].as_array_mut().unwrap() {
-            view.as_object_mut().unwrap().remove("tracking");
-        }
-        let row = data["buildings"]
-            .as_array_mut()
-            .unwrap()
-            .iter_mut()
-            .find(|b| b["id"] == serde_json::json!(defense))
-            .unwrap();
-        row["focus"] = serde_json::to_value(target).unwrap();
-        let mut loaded: oxide_sim::State = serde_json::from_value(data).unwrap();
-        loaded.validate_invariants().unwrap();
-        assert_eq!(
-            loaded.vision(PlayerId(0)).tracks(),
-            loaded.vision(PlayerId(2)).tracks()
-        );
-        assert_eq!(
-            loaded
-                .attack_view(PlayerId(0), target.into())
-                .unwrap()
-                .entity,
-            Some(target)
-        );
-        let round_trip: oxide_sim::State =
-            serde_json::from_value(serde_json::to_value(&loaded).unwrap()).unwrap();
-        assert_eq!(loaded.hash(), round_trip.hash());
-        let report = loaded.tick(&[]);
-        assert!(loaded.building(defense).unwrap().focus.is_some());
-        assert!(report.events.iter().any(|event| matches!(event, Event::ShellLaunched { shooter: Target::Building(id), target: Some(victim), .. } if *id == defense && *victim == target)));
-    }
-}
-
-#[test]
-fn legacy_focus_still_rejects_friendly_hidden_and_incompatible_units() {
+fn a_focus_on_a_friendly_hidden_or_incompatible_unit_is_rejected() {
     for case in ["friendly", "hidden", "air"] {
         let enemy_kind = if case == "air" {
             UnitKind::Gnat
@@ -933,9 +861,6 @@ fn legacy_focus_still_rejects_friendly_hidden_and_incompatible_units() {
             .unwrap()
             .id;
         let mut data = serde_json::to_value(&state).unwrap();
-        for view in data["vision"].as_array_mut().unwrap() {
-            view.as_object_mut().unwrap().remove("tracking");
-        }
         data["buildings"]
             .as_array_mut()
             .unwrap()

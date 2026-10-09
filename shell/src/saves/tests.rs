@@ -75,7 +75,7 @@ fn kinds_read_the_metadata_tag_and_fall_back_to_the_0_12_filename_prefix() {
     named.meta.kind = Some("save".to_string());
     named.meta.description = Some("before the push".to_string());
     named.save(dir.join("anything.json")).unwrap();
-    // 0.12-era records carry no tag; their names carry the rule.
+    // Untagged records fall back to their filename prefix.
     let old: GameReplay = chassis::replay::Replay::new(SIM_VERSION, scenario.clone());
     old.save(dir.join("autosave-0000000042.json")).unwrap();
     let finished: GameReplay = chassis::replay::Replay::new(SIM_VERSION, scenario);
@@ -192,8 +192,8 @@ fn long_stems_elide_at_char_boundaries() {
     assert_eq!(elide("short"), "short");
     let long_ascii = "a".repeat(30);
     assert_eq!(elide(&long_ascii), format!("{}...", "a".repeat(23)));
-    // 27 chars, with byte offset 23 landing inside the first é —
-    // the byte-sliced version panicked exactly here.
+    // 27 chars, with byte offset 23 landing inside the first é, where
+    // byte slicing would panic.
     let multibyte = format!("{}ééééé", "a".repeat(22));
     assert_eq!(elide(&multibyte), format!("{}é...", "a".repeat(22)));
 }

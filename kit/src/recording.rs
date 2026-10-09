@@ -55,7 +55,8 @@ impl RecordingOrigin<Scenario> for WorldOrigin {
     }
 }
 
-/// Builds a legacy scenario start or clones the validated world origin.
+/// Builds the scenario start, or clones the validated world origin when the
+/// replay has one.
 pub fn initial_state(replay: &GameReplay) -> anyhow::Result<State> {
     if let Some(origin) = &replay.origin {
         origin.validate(&replay.setup)?;

@@ -1,7 +1,7 @@
 //! Terrain: a tile grid parsed from ASCII art.
 //!
-//! Maps are authored as text on purpose — an agent (or a human) can read a
-//! scenario file and see the level. Legend:
+//! Maps are authored as text so an agent or a human can read a scenario
+//! file and see the level. Legend:
 //!
 //! ```text
 //! . ,  ground, plain or cosmetically rubble-strewn
@@ -37,15 +37,13 @@ fn edge_coordinate(value: usize) -> i32 {
 pub enum Terrain {
     /// Walkable.
     Ground,
-    /// Never walkable (flyable — rock is clutter, not altitude).
+    /// Never walkable; aircraft fly over it.
     Rock,
-    /// A mountain: blocks ground, air, direct fire that involves
-    /// aircraft, and artillery arcs — the one terrain that makes
-    /// genuinely siege-safe geography.
+    /// A mountain: blocks ground, air, and every shot, artillery arcs
+    /// included.
     Peak,
-    /// A bottomless excavation: blocks ground utterly, open sky above,
-    /// and fire of every kind crosses it — machines trade shots over a
-    /// void neither can walk. Wrecks that fall here are gone.
+    /// A bottomless excavation: blocks ground, while aircraft and fire of
+    /// every kind cross it. Wrecks that fall here are gone.
     Pit,
 }
 
@@ -85,7 +83,6 @@ pub struct Tile {
     /// Battlefield salvage left by destroyed machines. Unlike a node it
     /// never blocks movement — harvesters stand *on* the tile to strip it
     /// — and it decays slowly back into the dirt.
-    #[serde(default)]
     pub wreck: u32,
     /// Purely visual ground dressing (0 plain, 1 rubble). No gameplay
     /// effect, but part of the map and therefore of the state hash.
@@ -142,11 +139,10 @@ pub enum MapError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Map {
     grid: Grid<Tile>,
-    /// Anchors of derelict Extractor frames ('E'): 2x2 footprints where
-    /// — and only where — an Extractor can be rebuilt. The frame is part
-    /// of the map and outlives every machine restored on it; the tiles
-    /// beneath are plain ground and block nothing while unclaimed.
-    #[serde(default)]
+    /// Anchors of derelict Extractor frames ('E'): the only 2x2 footprints
+    /// where an Extractor can be rebuilt. The frame is part of the map and
+    /// outlives every machine restored on it; the tiles beneath are plain
+    /// ground and block nothing while unclaimed.
     extractor_frames: Vec<TilePos>,
 }
 
@@ -301,11 +297,11 @@ impl Map {
             && self.extractor_frames.iter().all(|frame| {
                 (0..2).all(|dy| {
                     (0..2).all(|dx| {
-                        // The full parse-side contract, not a subset:
-                        // a frame tile is bare ground. A deserialized
-                        // frame on a scrap node would let restoration
-                        // and harvesting stack on one tile — a shape
-                        // parse refuses and loading must refuse too.
+                        // The full parse-side contract: a frame tile is
+                        // bare ground. A deserialized frame on a scrap node
+                        // would let restoration and harvesting stack on one
+                        // tile, a shape parse refuses and loading must
+                        // refuse too.
                         self.tile(frame.offset(dx, dy))
                             .is_some_and(|t| t.terrain == Terrain::Ground && t.scrap == 0)
                     })
@@ -393,12 +389,10 @@ impl Map {
         self.grid.get(pos).map_or(0, |t| t.wreck)
     }
 
-    /// Deposits salvage on plain ground. Rock and live nodes swallow it —
-    /// a machine downed where nothing can stand leaves nothing to strip.
+    /// Deposits salvage on ground terrain, including live scrap node tiles,
+    /// which become standable once the node exhausts. Rock, peaks, and pits
+    /// swallow it.
     pub(crate) fn add_wreck(&mut self, pos: TilePos, amount: u32) {
-        // Wreck coexists with a live node — the cleanup rules promise a
-        // node tile keeps its deposits, and a flyer downed over one
-        // must not evaporate.
         if let Some(tile) = self.grid.get_mut(pos)
             && tile.terrain == Terrain::Ground
         {

@@ -70,7 +70,8 @@ fn entity_sources(manifest: &HashMap<String, [f32; 4]>) -> BTreeSet<Source> {
                 return true;
             };
             // Layered units draw their hull and mount; only the complete idle
-            // sprite remains in use for portraits. Keep full poses for old atlases.
+            // sprite is used, for portraits. Units without rig layers keep
+            // their full poses.
             !manifest.contains_key(&format!("rig_{stem}_hull_{faction}"))
         })
         .map(|(_, row)| row.map(numeric::to_u32))

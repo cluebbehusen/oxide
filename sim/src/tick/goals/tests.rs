@@ -53,8 +53,8 @@ fn tiles(state: &State) -> impl Iterator<Item = TilePos> {
     (0..h).flat_map(move |y| (0..w).map(move |x| TilePos::new(x, y)))
 }
 
-/// The tiles a group of `count` took before goals kept the clicked tile:
-/// the snapped center, then the first `count` spread slots around it.
+/// The reference tiles for a group of `count`: the snapped center, then
+/// the first `count` spread slots around it.
 fn snap_and_spread(
     state: &State,
     clicked: TilePos,

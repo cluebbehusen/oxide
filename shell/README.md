@@ -25,8 +25,10 @@ crate-level rustdoc.
   decorative boundary exploration. Restoration opens paused and rebuilds
   transient presentation at the current viewport.
 - `input` and `action` form the single hardware and injected-input funnel.
-  `press` and `button` give full-screen surfaces one press gesture and button
-  style; `viewer_touch` pans and pinches the read-only viewers.
+  `press` is the press-then-release-in-place gesture that menus and screen
+  buttons share, and `button` draws the shared action and BACK buttons; the map
+  browser's scrolling card grid tracks its own taps. `viewer_touch` pans and
+  pinches the read-only viewers.
 - `platform` states whether the build is touch-only (iOS).
 - `building_actions` derives single and grouped building controls from their
   capabilities, using projected pending orders for eligibility and spending.

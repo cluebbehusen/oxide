@@ -1,11 +1,10 @@
-//! HAR-01's acceptance criterion: the windowless session serves the
-//! debug protocol exactly as a live shell does.
+//! The windowless session serves the debug protocol as a live shell does.
 //!
 //! The headless half runs in CI: the session over real TCP through the
-//! real `Client`, plus the save-is-a-replay proof (the session's own
-//! saved record re-executes to its live hash). The live half — the same
-//! script driven through a spawned shell window and the headless session
-//! side by side, asserting reply-for-reply identity — needs a native
+//! real `Client`, plus the save-is-a-replay check (the session's own
+//! saved record re-executes to its live hash). The live half drives the
+//! same script through a spawned shell window and the headless session
+//! side by side, asserting reply-for-reply identity; it needs a native
 //! window and runs with the #[ignore]d battery:
 //!
 //! ```text
@@ -14,8 +13,8 @@
 
 use anyhow::{Context, Result, bail};
 use oxide_driver::client::Client;
-use oxide_driver::runner;
 use oxide_driver::session::{Session, serve_listener};
+use oxide_kit::runner;
 use oxide_protocol::framing::Limits;
 use oxide_protocol::{Reply, Request, StateFilter, hash_hex};
 use oxide_sim::{Command, PlayerId, Scenario};
@@ -101,13 +100,13 @@ fn every_live_verb_works_headless_over_tcp_and_the_record_reproduces() -> Result
     let scratch = Scratch::new();
     let mut client = session_client()?;
 
-    // Status: always driven mode, honestly reported.
+    // Status: always driven mode.
     let status = client.status()?;
     assert_eq!(status.tick, 0);
     assert!(status.paused, "a headless session is always in driven mode");
     assert_eq!(status.scenario, "Skirmish Basin");
 
-    // Commands stage for the next tick, exactly like a paused shell.
+    // Commands stage for the next tick, as in a paused shell.
     let command = march_command(&mut client, 0)?;
     let Command::Hunt { .. } = command.clone() else {
         bail!("the march is an hunt");
@@ -159,8 +158,8 @@ fn every_live_verb_works_headless_over_tcp_and_the_record_reproduces() -> Result
     assert!(std::path::Path::new(&shot_path).exists());
 
     // Save-is-a-replay: the session's record re-executes to the hash the
-    // session itself reports — the drift tripwire the live shell's smoke
-    // test runs, now headless in CI.
+    // session itself reports, the same check the live shell's smoke test
+    // runs.
     let replay_path = scratch.path("session.json");
     let Reply::Saved(saved) = client.call(Request::SaveReplay {
         path: replay_path.clone(),
@@ -171,7 +170,7 @@ fn every_live_verb_works_headless_over_tcp_and_the_record_reproduces() -> Result
     assert!(saved.commands > 0, "the march and the bot were recorded");
     let live = client.state_hash()?;
     let replay = oxide_kit::load_replay(&replay_path)?;
-    let replayed = runner::run_replay(&replay, None, false)?;
+    let replayed = runner::run_replay(&replay, None)?;
     assert_eq!(
         hash_hex(replayed.hash()),
         live.hash,
@@ -186,7 +185,7 @@ fn every_live_verb_works_headless_over_tcp_and_the_record_reproduces() -> Result
     let reloaded = client.state_hash()?;
     assert_eq!(reloaded.hash, live.hash);
 
-    // Every windowed or wall-clock verb is refused in words, never
+    // Every windowed or wall-clock verb is refused with a reason, never
     // silently acknowledged.
     for request in [
         Request::Pause,

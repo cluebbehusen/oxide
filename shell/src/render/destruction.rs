@@ -87,7 +87,7 @@ pub(super) fn draw_hit(sprites: &Sprites, center: Vec2, zoom: f32, radius: f32, 
     let heat = (1.0 - t * 2.0).max(0.0);
     if heat > 0.0 {
         let source = sprites.burst();
-        // Reuse the hot center without the old expanding perimeter ring.
+        // Only the burst sprite's hot center; no expanding perimeter ring.
         let core = Rect::new(
             source.x + source.w * 0.375,
             source.y + source.h * 0.375,

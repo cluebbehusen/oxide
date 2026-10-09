@@ -1440,27 +1440,74 @@ fn generic_combatants_keep_the_generic_report() {
 fn artillery_launch_audio_respects_sight_and_allegiance() {
     let bombard = Target::Unit(UnitId(4));
     assert_eq!(
-        shell_launch_audio(bombard, AllegianceCue::Hostile, true, true),
+        shell_launch_audio(
+            bombard,
+            Some(UnitKind::Bombard),
+            AllegianceCue::Hostile,
+            true,
+            true
+        ),
         Some((SoundKind::BombardFire, ShellSoundAnchor::Muzzle))
     );
     assert_eq!(
-        shell_launch_audio(bombard, AllegianceCue::Hostile, false, true),
+        shell_launch_audio(
+            bombard,
+            Some(UnitKind::Bombard),
+            AllegianceCue::Hostile,
+            false,
+            true
+        ),
         Some((SoundKind::ArtilleryLaunch, ShellSoundAnchor::Impact))
     );
     assert_eq!(
-        shell_launch_audio(bombard, AllegianceCue::Hostile, false, false),
+        shell_launch_audio(
+            bombard,
+            Some(UnitKind::Bombard),
+            AllegianceCue::Hostile,
+            false,
+            false
+        ),
         None
     );
     assert_eq!(
-        shell_launch_audio(bombard, AllegianceCue::Ally, false, true),
+        shell_launch_audio(
+            bombard,
+            Some(UnitKind::Bombard),
+            AllegianceCue::Ally,
+            false,
+            true
+        ),
         None,
         "a fogged allied shell must not sound like an incoming threat"
     );
     assert_eq!(
-        shell_launch_audio(bombard, AllegianceCue::Mine, false, false),
+        shell_launch_audio(
+            bombard,
+            Some(UnitKind::Bombard),
+            AllegianceCue::Mine,
+            false,
+            false
+        ),
         Some((SoundKind::BombardFire, ShellSoundAnchor::Muzzle)),
         "the local gun remains audible without revealing another seat"
     );
+}
+
+#[test]
+fn every_projectile_shooter_launches_with_its_own_report() {
+    let shooter = Target::Unit(UnitId(4));
+    for (kind, report) in [
+        (UnitKind::Bombard, SoundKind::BombardFire),
+        (UnitKind::Avalanche, SoundKind::AvalancheFire),
+        (UnitKind::Condor, SoundKind::BombRelease),
+        (UnitKind::Moth, SoundKind::BombRelease),
+    ] {
+        assert_eq!(
+            shell_launch_audio(shooter, Some(kind), AllegianceCue::Mine, true, true),
+            Some((report, ShellSoundAnchor::Muzzle)),
+            "{kind:?}"
+        );
+    }
 }
 
 #[test]

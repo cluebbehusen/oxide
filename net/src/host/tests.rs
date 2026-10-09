@@ -411,3 +411,91 @@ fn duplicate_seats_are_a_caller_bug() {
 fn lines_from_unknown_seats_are_a_caller_bug() {
     HostSession::new(HOST, &[A], secs(0)).receive(B, "{}", secs(0));
 }
+
+/// A Stop order whose client line is exactly `bytes` long, padded with
+/// unit ids.
+fn bulky_line(bytes: usize) -> String {
+    let mut units = Vec::new();
+    let line = |units: &[UnitId]| {
+        ClientMessage::Command {
+            command: Command::Stop {
+                units: units.to_vec(),
+            },
+        }
+        .encode()
+    };
+    while line(&units).len() + 2 <= bytes {
+        units.push(UnitId(1));
+    }
+    let mut padded = line(&units);
+    while padded.len() < bytes {
+        let last = units.last_mut().expect("padding grows a unit id");
+        last.0 = last.0 * 10 + 1;
+        padded = line(&units);
+    }
+    assert_eq!(padded.len(), bytes, "padding lands exactly");
+    padded
+}
+
+#[test]
+fn an_oversized_client_line_drops_the_client() {
+    let mut host = HostSession::new(HOST, &[A], secs(0));
+    host.receive(A, &bulky_line(crate::MAX_CLIENT_LINE_BYTES + 1), secs(0));
+    assert_eq!(
+        host.poll(secs(0)),
+        [HostEvent::Dropped {
+            seat: A,
+            reason: DropReason::Protocol,
+        }]
+    );
+}
+
+#[test]
+fn a_client_flooding_a_paused_host_is_dropped() {
+    let mut host = HostSession::new(HOST, &[A, B], secs(0));
+    host.set_paused(true);
+    let line = bulky_line(crate::MAX_CLIENT_LINE_BYTES);
+    let fit = crate::CLIENT_PENDING_BYTES / line.len();
+    for _ in 0..fit {
+        host.receive(A, &line, secs(0));
+        host.receive(B, &command_line(1), secs(0));
+    }
+    assert_eq!(host.poll(secs(0)), []);
+    host.receive(A, &line, secs(0));
+    assert_eq!(
+        host.poll(secs(0)),
+        [HostEvent::Dropped {
+            seat: A,
+            reason: DropReason::Protocol,
+        }]
+    );
+}
+
+#[test]
+fn every_published_batch_fits_one_line() {
+    let clients = [1, 2, 3, 4, 5, 6].map(PlayerId);
+    let mut host = HostSession::new(HOST, &clients, secs(0));
+    let line = bulky_line(crate::MAX_CLIENT_LINE_BYTES);
+    let per_client = crate::CLIENT_PENDING_BYTES / line.len();
+    for _ in 0..per_client {
+        for seat in clients {
+            host.receive(seat, &line, secs(0));
+        }
+    }
+    let sent = per_client * clients.len();
+    let mut sealed = 0;
+    let mut tick = 0;
+    while sealed < sent {
+        let batch = step(&mut host, secs(0), 0).expect("no client lags yet");
+        sealed += batch.len();
+        tick += 1;
+        for (_, out) in host.take_outgoing() {
+            assert!(out.len() <= crate::MAX_LINE_BYTES, "{} bytes", out.len());
+        }
+        for seat in clients {
+            ack_through(&mut host, seat, tick, tick, secs(0));
+        }
+    }
+    assert_eq!(sealed, sent);
+    assert!(tick > 1, "the flood spans several ticks");
+}

@@ -428,7 +428,7 @@ fn coasting_worker_is_not_anchored_until_its_motor_stops() {
     unit.heading = 0;
     unit.order = Order::Harvest {
         node: TilePos::new(7, 1),
-        anchor: None,
+        anchor: TilePos::new(7, 1),
         retiring: false,
     };
     unit.drive_speed = unit.kind.stats().speed;
@@ -556,8 +556,7 @@ fn assert_corner_shortcut_pair_reaches_goal(mut state: State) {
 
 /// A Harvester south of its own Fabricator's south-east corner with a
 /// route to (10, 3) that first rounds that corner, and the half-turned
-/// copy for the other seat. Offsets from the corner come from a match
-/// where the body pinned itself against the corner of a Foundry.
+/// copy for the other seat.
 fn corner_hugging_pair(offset: Vec2Fx, heading: u8, next: u32) -> State {
     let width = 32;
     let height = 14;

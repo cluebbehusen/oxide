@@ -1,10 +1,10 @@
 //! Canonical state hashing.
 //!
 //! A state hash is the sim's fingerprint: replays assert "tick N hashes to
-//! H", and any two runs that disagree have desynced. The hash must therefore
-//! be stable across platforms and releases — so it is FNV-1a 64 (a frozen,
-//! trivial algorithm) over `postcard`'s canonical byte encoding, never
-//! `std::hash` (explicitly unstable across Rust versions).
+//! H", and two runs that disagree have desynced. The hash must be stable
+//! across platforms and releases, so it is FNV-1a 64 over `postcard`'s
+//! canonical byte encoding, never `std::hash` (unstable across Rust
+//! versions).
 
 use serde::Serialize;
 
@@ -23,9 +23,8 @@ pub fn fnv1a(bytes: &[u8]) -> u64 {
 
 /// Hashes any serializable value via its canonical `postcard` encoding.
 ///
-/// Panics if serialization fails, which for plain data types (no maps with
-/// nondeterministic order, no floats — i.e. anything a sim is allowed to
-/// contain) cannot happen.
+/// Panics if `postcard` rejects the value, which derived `Serialize` impls
+/// on plain data never do.
 pub fn state_hash<T: Serialize + ?Sized>(value: &T) -> u64 {
     let bytes = postcard::to_allocvec(value).expect("sim state must be postcard-serializable");
     fnv1a(&bytes)

@@ -462,7 +462,7 @@ fn a_depletion_during_the_brain_phase_reopens_the_ground_for_later_walkers() {
     };
     state.units[1].order = Order::Harvest {
         node,
-        anchor: None,
+        anchor: node,
         retiring: false,
     };
     state.units[1].pos = crate::geometry::work_approach_point(

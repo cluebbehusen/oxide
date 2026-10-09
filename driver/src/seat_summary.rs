@@ -27,19 +27,19 @@ pub struct SeatEvidence {
     /// Detected failure episodes.
     #[serde(default)]
     pub failures: SeatFailures,
-    /// Armed ground units trained on severed ground, by outcome; absent from
-    /// rows recorded before the diagnostic existed.
+    /// Armed ground units trained on severed ground, by outcome; absent when
+    /// the row omits it.
     #[serde(default)]
     pub deliveries: Option<Deliveries>,
     /// Income checkpoints reached.
     #[serde(default)]
     pub income: Vec<IncomeSample>,
-    /// Situations met and how they were answered; absent from rows recorded
-    /// before the detectors existed.
+    /// Situations met and how they were answered; absent when the row omits
+    /// them.
     #[serde(default)]
     pub reactivity: Option<SeatReactivity>,
-    /// What the seat's units and buildings did; absent from rows recorded
-    /// before the ledger existed.
+    /// What the seat's units and buildings did; absent when the row omits
+    /// it.
     #[serde(default)]
     pub ledger: Option<SeatLedger>,
     /// What it believed when it launched each attack, and how they went.

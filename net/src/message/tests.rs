@@ -121,6 +121,8 @@ fn malformed_lines_are_rejected() {
         r#"{"type":"acknowledge","tick":1}"#,
         r#"{"type":"ack"}"#,
         r#"{"type":"heartbeat"}{"type":"heartbeat"}"#,
+        r#"{"type":"command","command":{"type":"stop","units":[7],"extra":true}}"#,
+        r#"{"type":"command","command":{"type":"harvest","units":[7],"node":{"x":1,"y":2,"z":3}}}"#,
         "not json",
     ] {
         assert!(ClientMessage::decode(line).is_err(), "{line}");

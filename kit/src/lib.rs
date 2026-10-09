@@ -4,7 +4,6 @@ pub mod bench;
 pub mod bot_execution;
 pub mod checkpoint;
 pub mod controller;
-pub mod matchup;
 pub mod perceptual;
 pub mod playback;
 pub mod recording;
@@ -15,10 +14,10 @@ pub mod stats;
 
 use oxide_sim::{PlayerCommand, Scenario};
 
-/// Upper bound on the tick count an interactive surface will replay.
-/// A syntactically valid file can claim an absurd duration and freeze
-/// a UI for minutes; ~28 game-hours is beyond any honest session. The
-/// headless driver may opt out.
+/// Upper bound on the ticks a replay may span before loading or running it
+/// is refused (about 28 game-hours). A syntactically valid file can claim an
+/// absurd duration and freeze a UI for minutes. The headless driver may opt
+/// out.
 pub const MAX_REPLAY_TICKS: u64 = 2_000_000;
 
 /// The concrete session replay type every Oxide surface records,

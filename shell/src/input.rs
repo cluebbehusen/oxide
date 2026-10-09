@@ -1,10 +1,10 @@
 //! The input funnel.
 //!
-//! One path, no exceptions: macroquad's polled state becomes [`RawEvent`]s,
-//! injected events from the debug socket are appended to the same list, and
-//! [`apply_events`] is the only code that turns events into camera motion,
-//! selection, or sim commands. If input behavior ever bypasses this module,
-//! injected tests stop meaning anything — don't.
+//! macroquad's polled state becomes [`RawEvent`]s, injected events from the
+//! debug socket are appended to the same list, and [`apply_events`] is the
+//! only code that turns events into camera motion, selection, or sim
+//! commands. Input that bypasses this module escapes every injected-event
+//! test.
 
 use crate::action::{Action, ActionEvent, ActionResolver, BindingMap};
 use crate::game::{Game, PingKind};
@@ -59,7 +59,7 @@ fn unit_pick_radius(kind: oxide_sim::UnitKind) -> f32 {
 }
 
 /// Camera pan speed in screen pixels per second (converted by zoom).
-const PAN_PX_PER_SEC: f32 = 900.0;
+pub(crate) const PAN_PX_PER_SEC: f32 = 900.0;
 
 /// The one persistent world-targeting mode currently armed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,8 +232,7 @@ pub(crate) struct PlacingStroke {
 
 /// Whether a build at `anchor` must defer its claim: some footprint
 /// tile is not currently visible to the human. Decides both the amber
-/// ghost and the `defer` flag the armed click emits — one judgment,
-/// two surfaces.
+/// ghost and the `defer` flag the armed click emits.
 pub(crate) fn build_defer_needed(
     game: &crate::game::Scene<'_>,
     kind: oxide_sim::BuildingKind,
@@ -504,17 +503,10 @@ impl InputState {
         self.patrol_route = None;
     }
 
-    /// Drops everything that assumes continuity — held keys and any open
-    /// drag — keeping only the cursor position. Called on every mode
-    /// transition: a menu eats the matching release events, and stale
-    /// held-state otherwise pans the camera forever (or fires a phantom
-    /// box-select) after resuming.
-    /// One armed left-click verb at a time: arming placement, salvage,
-    /// repair, run, hunt, rally, or patrol stands the others down. `armed_click`
-    /// resolves modes in a fixed priority order, so two live at once
-    /// would make the next click do something other than what the toast
-    /// promised — press M while placing and the click would still stamp
-    /// a building.
+    /// Disarms every left-click verb, so arming placement, salvage, repair,
+    /// run, hunt, rally, or patrol stands the others down. `armed_click`
+    /// resolves modes in a fixed priority order, so two live at once would
+    /// make the next click do something other than what the toast promised.
     pub(crate) fn disarm_click_verbs(&mut self) {
         self.stop_placing();
         self.patrol_route = None;
@@ -569,6 +561,11 @@ impl InputState {
         armed
     }
 
+    /// Drops everything that assumes continuity (held keys, open drags,
+    /// armed modes, live touches), keeping only the cursor position. Called
+    /// on every mode transition: a menu eats the matching release events,
+    /// and stale held state would otherwise pan the camera forever or fire
+    /// a phantom box-select after resuming.
     pub fn reset_transient(&mut self) {
         self.resolver.clear();
         self.drag_origin = None;
@@ -754,13 +751,10 @@ const KEY_MAP: [(Key, mq::KeyCode); 44] = [
     (Key::Backspace, mq::KeyCode::Backspace),
 ];
 
-/// Converts this frame's hardware input into events. Purely a poll→event
-/// adapter; interpretation happens in [`apply_events`].
-/// Translates one hardware touch phase into the raw event the funnel
-/// speaks — the same vocabulary the debug harness injects, so a real
-/// fingertip and an injected one walk identical code. `Stationary`
-/// maps to nothing: a resting finger emits no event (the long-press
-/// timer rides the frame loop, not the event stream).
+/// Translates one hardware touch phase into the raw event the debug
+/// harness also injects, so a real fingertip and an injected one walk
+/// identical code. `Stationary` maps to nothing: the long-press timer
+/// rides the frame loop, not the event stream.
 fn touch_event(phase: mq::TouchPhase, id: u64, x: f32, y: f32) -> Option<RawEvent> {
     match phase {
         mq::TouchPhase::Started => Some(RawEvent::TouchDown { id, x, y }),
@@ -774,17 +768,12 @@ fn touch_event(phase: mq::TouchPhase, id: u64, x: f32, y: f32) -> Option<RawEven
 }
 
 /// The platform's ordered pointer stream, translated event by event
-/// into [`RawEvent`]s that keep their OWN coordinates.
+/// into [`RawEvent`]s that keep their own coordinates.
 ///
-/// macroquad's polled surface cannot express a press: it keeps the
-/// frame's LAST cursor position and a "was pressed this frame" flag, so
-/// a button that lands while the pointer is moving was stamped wherever
-/// the pointer ENDED the frame. The drag box then anchored ahead of the
-/// click (everything between the press and the frame boundary silently
-/// dropped out of the selection), and could never draw on the press
-/// frame at all — `MouseDown` set `mouse` and `drag_origin` to the same
-/// point by construction, and the frame's motion had already been
-/// collapsed into one `MouseMove` ahead of it.
+/// macroquad's polled surface keeps only the frame's last cursor position
+/// and a "was pressed this frame" flag, so a press made while the pointer
+/// moves would land wherever the pointer ended the frame, and a drag box
+/// would anchor ahead of the click.
 ///
 /// Raw events arrive in backing-store pixels; the dpi factor is
 /// injected (never queried) so the whole adapter runs headless.
@@ -868,12 +857,11 @@ impl macroquad::miniquad::EventHandler for PointerStream {
         }
     }
 
-    /// A fingertip must arrive ONCE, as a touch: the trait's DEFAULT
-    /// `touch_event` emulates mouse clicks, which would give every
-    /// finger a second life as a press. The stream keeps each phase in
-    /// order, where the polled `touches()` snapshot keeps only a
-    /// finger's last phase per frame and would lose a tap that lands
-    /// and lifts inside one frame.
+    /// A fingertip must arrive once, as a touch: the trait's default
+    /// `touch_event` also emulates mouse clicks. The stream keeps each
+    /// phase in order, where the polled `touches()` snapshot keeps only a
+    /// finger's last phase per frame and would lose a tap that lands and
+    /// lifts inside one frame.
     fn touch_event(&mut self, phase: macroquad::miniquad::TouchPhase, id: u64, x: f32, y: f32) {
         let (x, y) = self.logical(x, y);
         if let Some(event) = touch_event(phase.into(), id, x, y) {
@@ -911,11 +899,10 @@ impl macroquad::miniquad::EventHandler for PointerStream {
         }
     }
 
-    /// Typed characters, layout- and shift-resolved by the OS — a
-    /// Key-to-character table would get every non-US layout wrong.
-    /// Printable ASCII only, filtered AT INGEST: the menu font is
-    /// Latin-1 and UI strings stay ASCII, so nothing downstream ever
-    /// needs its own filter.
+    /// Typed characters, layout- and shift-resolved by the OS (a
+    /// Key-to-character table would get non-US layouts wrong). Only
+    /// printable ASCII passes, filtered here so nothing downstream needs
+    /// its own filter: the menu font is Latin-1 and UI strings stay ASCII.
     /// A shortcut chord types nothing: macOS reports Cmd+V as a `v`.
     fn char_event(
         &mut self,
@@ -939,17 +926,16 @@ fn chorded(mods: macroquad::miniquad::KeyMods) -> bool {
     mods.logo || (mods.ctrl && !mods.alt)
 }
 
-// A fingertip must arrive ONCE, as a touch — macroquad otherwise
-// mirrors every touch into synthetic mouse events and the same
-// finger would both pan the camera and drag a box.
+// A fingertip must arrive once, as a touch: macroquad otherwise mirrors
+// every touch into synthetic mouse events and the same finger would both
+// pan the camera and drag a box.
 static TOUCH_SETUP: std::sync::Once = std::sync::Once::new();
-// The subscriber is registered on demand so an automation shell —
-// which never polls hardware — never accumulates a queue it won't
-// drain. Hardware shells must arm BEFORE the prologue instead:
-// macroquad's register_input_subscriber starts an empty queue, so
-// every event dispatched earlier is fanned out to no one and gone —
-// with lazy-only arming, anything clicked or typed while assets and
-// the autosave scan ran inside frame 1 was silently discarded.
+// The subscriber is registered on demand so an automation shell, which
+// never polls hardware, never accumulates a queue it won't drain.
+// Hardware shells must arm before the prologue instead: macroquad's
+// register_input_subscriber starts an empty queue, so events dispatched
+// earlier (clicks or typing while assets and the autosave scan load in
+// frame 1) are lost.
 static POINTER_SUB: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
 
 /// Subscribes to the hardware input stream now, so events arriving
@@ -962,6 +948,8 @@ pub fn arm_hardware() {
     POINTER_SUB.get_or_init(mq::utils::register_input_subscriber);
 }
 
+/// Converts this frame's hardware input into events. Purely a poll-to-event
+/// adapter; interpretation happens in [`apply_events`].
 pub fn poll_events(text_entry: bool) -> Vec<RawEvent> {
     static FIRST_POLL: std::sync::Once = std::sync::Once::new();
     TOUCH_SETUP.call_once(|| mq::simulate_mouse_with_touch(false));
@@ -982,13 +970,11 @@ pub fn poll_events(text_entry: bool) -> Vec<RawEvent> {
     mq::utils::repeat_all_miniquad_input(&mut stream, sub);
     events.append(&mut stream.events);
     // macroquad's mouse_leave_event marks held buttons released in the
-    // POLLED state without queuing any subscriber event — a button let
-    // go outside the window would never reach the stream, leaving
-    // drags, pans, and placement strokes latched (a stroke would even
-    // resume stamping when the pointer wandered back). Synthesize the
-    // missing MouseUp at the last known logical position; releases the
-    // stream DID carry are left alone, and a rare duplicate MouseUp is
-    // harmless — every release handler tolerates an idle repeat.
+    // polled state without queuing any subscriber event, so a button let
+    // go outside the window would leave drags, pans, and placement strokes
+    // latched. Synthesize the missing MouseUp at the last known logical
+    // position; a rare duplicate MouseUp is harmless because every release
+    // handler tolerates an idle repeat.
     for (mq_btn, btn) in [
         (mq::MouseButton::Left, MouseButton::Left),
         (mq::MouseButton::Middle, MouseButton::Middle),
@@ -1009,12 +995,10 @@ pub fn poll_events(text_entry: bool) -> Vec<RawEvent> {
             delta: normalize_wheel(wheel, NATIVE_WHEEL_UNITS),
         });
     }
-    // Modifier edges land BEFORE ordinary key edges: a chord pressed
+    // Modifier edges land before ordinary key edges: a chord pressed
     // whole within one frame (Ctrl and F5 together) must resolve as
-    // Ctrl+F5, not as F5 followed by a late Ctrl.
-    // Modifiers map two physical keys onto one logical one. (Releasing one
-    // of a simultaneously-held pair releases the logical key — an edge case
-    // nobody plays with.)
+    // Ctrl+F5, not as F5 followed by a late Ctrl. Each logical modifier
+    // maps two physical keys; releasing either of a held pair releases it.
     for (key, a, b) in [
         (Key::Shift, mq::KeyCode::LeftShift, mq::KeyCode::RightShift),
         (
@@ -1162,8 +1146,8 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     let projection = pending_build_projection(&game.view(), kind, anchor, true);
                     // The projected bank already reflects every paid
                     // pending command; only surviving deferred claims
-                    // need a future-price reserve. That keeps a fast
-                    // drag honest without billing a drained stamp twice.
+                    // need a future-price reserve, so no stamp is billed
+                    // twice.
                     let affordable = projection.funds.available() >= cost;
                     // The cap is the BUILDER's projected headroom, not
                     // a stroke-local count: a command staged while the
@@ -1262,8 +1246,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 input.mouse = vec2(x, y);
                 input.minimap_drag = false;
                 // The placement stroke ends at release; Shift decides
-                // whether the MODE stays armed, exactly as the old
-                // one-click-per-wall rule did.
+                // whether the mode stays armed.
                 if input.placing_stroke.take().is_some() && !input.queue_held() {
                     input.stop_placing();
                 }
@@ -1388,11 +1371,6 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
     }
 }
 
-/// One armed world click or tap at screen point `p`. Returns whether
-/// an armed mode consumed the event
-/// (whatever the outcome: issued, denied, or a minimap camera jump).
-/// Mouse and touch route here identically: a fingertip that armed a
-/// Build card completes the build with its next tap.
 /// A press on the ribbon row: QUEUE toggles, and the ribbon cancels its
 /// mode but keeps the selection. It runs before every other target, for
 /// mouse and touch alike.
@@ -1445,6 +1423,11 @@ pub(super) fn press_group_slot(
     }
 }
 
+/// One armed world click or tap at screen point `p`. Returns whether
+/// an armed mode consumed the event (whatever the outcome: issued,
+/// denied, or a minimap camera jump). Mouse and touch route here
+/// identically: a fingertip that armed a Build card completes the build
+/// with its next tap.
 fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2, pointer: Pointer) -> bool {
     if click_on_hud(game, p) && crate::render::minimap_world_at(&game.view(), p).is_none() {
         return false;
@@ -1594,13 +1577,10 @@ fn place_at(
 ) -> bool {
     let queue = input.queue_held();
     let projection = pending_build_projection(&game.view(), kind, anchor, queue);
-    // The ghost already showed red; a misclick must not throw
-    // away the armed mode on top of it. The toast names the
-    // actual blocker — "needs open ground" while your own
-    // harvester stands on the tile taught nobody anything.
-    // Explored-but-unseen ground is judged by the same intent
-    // predicate the ghost tints from — memory, never live
-    // state — so Fog here means genuinely unscouted.
+    // A refused click keeps the armed mode, and the toast names the
+    // actual blocker. Explored-but-unseen ground is judged by the same
+    // remembered-state predicate the ghost tints from, so Fog here means
+    // unscouted ground.
     if let Some(refusal) = projection.refusal {
         use oxide_sim::PlaceRefusal;
         game.presentation.toast(match refusal {
@@ -1620,10 +1600,9 @@ fn place_at(
             .push((crate::game::SoundKind::Denied, None));
         return false;
     }
-    // Judge the opening stamp after the exact pending command
-    // phase, with future prices held for surviving deferred
-    // claims. A broke click gets the honest toast, not an
-    // acknowledgment ping followed by a sim rejection.
+    // Judge the opening stamp after the exact pending command phase, with
+    // future prices held for surviving deferred claims, so an unaffordable
+    // click toasts instead of pinging and then failing in the sim.
     let cost = kind.base_stats().construction.map_or(0, |c| c.cost);
     if projection.funds.available() < cost {
         game.presentation.toast(format!(
@@ -1635,10 +1614,9 @@ fn place_at(
             .push((crate::game::SoundKind::Denied, None));
         return false;
     }
-    // The opening stamp must also FIT the builder's program: a
-    // Shift click onto a crew already at the order-queue cap
-    // would ping and then die in the sim as QueueFull. Same
-    // honest refusal as the broke click, mode stays armed.
+    // The opening stamp must also fit the builder's program: a Shift click
+    // onto a crew already at the order-queue cap would ping and then fail
+    // in the sim as QueueFull. Refuse here and keep the mode armed.
     if !projection.queue_has_room {
         game.presentation
             .toast("That builder's order queue is full");
@@ -1648,18 +1626,16 @@ fn place_at(
         return false;
     }
     let units = game.presentation.selection.units.clone();
-    // A held queue (Shift, or QUEUE on touch) both keeps placing AND
-    // queues the build behind the builder's current program — chained
-    // construction in one gesture.
+    // A held queue (Shift, or QUEUE on touch) both keeps placing and
+    // queues the build behind the builder's current program.
     game.issue(Command::Build {
         units,
         kind,
         anchor,
         queue,
-        // Remembered ground defers the claim: the crew walks
-        // out and founds on arrival, paying then. Same click,
-        // two claim timings — the amber ghost already said
-        // which this stamp is.
+        // Remembered ground defers the claim: the crew walks out and
+        // founds on arrival, paying then. The amber ghost shows which
+        // timing this stamp gets.
         defer: build_defer_needed(&game.view(), kind, anchor),
     });
     game.presentation
@@ -1671,9 +1647,9 @@ fn place_at(
 /// hunt.
 fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
     if input.armed(ClickVerb::Salvage) {
-        // The same manners placement keeps: minimap jumps the camera,
-        // a misclick keeps the mode armed, and Shift chains teardowns
-        // behind the crew's program.
+        // As in placement: the minimap jumps the camera, a misclick keeps
+        // the mode armed, and Shift chains teardowns behind the crew's
+        // program.
         if let Some(world) = crate::render::minimap_world_at(&game.view(), p) {
             game.presentation.camera.center = world;
             game.presentation.camera.pan(Vec2::ZERO); // re-clamp
@@ -1708,9 +1684,8 @@ fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
         return true;
     }
     if input.armed(ClickVerb::Weld) {
-        // Same manners as salvage: minimap jumps the camera, a
-        // misclick keeps the mode armed, Shift chains welds behind the
-        // crew's program.
+        // As in salvage: the minimap jumps the camera, a misclick keeps the
+        // mode armed, and Shift chains welds behind the crew's program.
         if let Some(world) = crate::render::minimap_world_at(&game.view(), p) {
             game.presentation.camera.center = world;
             game.presentation.camera.pan(Vec2::ZERO); // re-clamp
@@ -1740,9 +1715,9 @@ fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                     .push((crate::game::SoundKind::Denied, None));
                 return true;
             };
-            // A machine cannot weld itself: if the picked patient is
-            // the only selected welder, the sim would reject after the
-            // ping — refuse honestly at arm time instead.
+            // A machine cannot weld itself: if the picked patient is the
+            // only selected welder, the sim would reject after the ping, so
+            // refuse here instead.
             let has_other_welder = game.presentation.selection.units.iter().any(|id| {
                 *id != target
                     && game.state.unit(*id).is_some_and(|u| {
@@ -1771,7 +1746,7 @@ fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
         return true;
     }
     if input.armed(ClickVerb::Run) {
-        // Same manners again: minimap jumps the camera, HUD swallows,
+        // The minimap jumps the camera, HUD chrome swallows the click, and
         // Shift chains legs and keeps the verb armed.
         if let Some(world) = crate::render::minimap_world_at(&game.view(), p) {
             game.presentation.camera.center = world;
@@ -1884,7 +1859,6 @@ pub(crate) fn activate_action_card(game: &mut Game, input: &mut InputState, acti
     }
 }
 
-/// Continuous per-frame input (held-key panning).
 /// One panel card pressed — by mouse or fingertip, the same act its
 /// hotkey performs.
 fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::CardAction) {
@@ -1995,6 +1969,7 @@ fn press_card(game: &mut Game, input: &mut InputState, hit: crate::layout::CardH
     }
 }
 
+/// Continuous per-frame input (held-key and edge panning).
 pub fn update_held(game: &mut Game, input: &InputState, dt: f32) {
     let mut dir = vec2(0.0, 0.0);
     if input.resolver.is_held(Action::PanUp) {
@@ -2010,9 +1985,8 @@ pub fn update_held(game: &mut Game, input: &InputState, dt: f32) {
         dir.x += 1.0;
     }
     if input.camera_prefs.edge_pan && dir == vec2(0.0, 0.0) {
-        // The pointer at a window edge pans — opt-in, because it fights
-        // windowed-mode mousing; keyboard panning always wins when both
-        // speak.
+        // Edge panning is opt-in because it fights windowed-mode mousing;
+        // keyboard panning wins when both apply.
         const EDGE: f32 = 8.0;
         let viewport = game.presentation.camera.viewport();
         if input.mouse.x <= EDGE {
@@ -2056,11 +2030,10 @@ const NATIVE_WHEEL_UNITS: WheelUnits = if cfg!(target_os = "macos") {
 /// Points of macOS trackpad travel per zoom notch.
 const TRACKPAD_POINTS_PER_NOTCH: f32 = 10.0;
 
-/// Normalizes a raw wheel reading toward gentle notch counts. Trackpads
-/// report small continuous deltas, discrete wheels big notchy ones
-/// (±120-ish); both should zoom at a comparable, capped rate. Heuristic —
-/// revisit if a device feels off (small whole numbers — X11-style
-/// detents — count as full notches; fractional deltas are trackpads).
+/// Normalizes a raw wheel reading toward capped notch counts, so
+/// trackpads (small continuous deltas) and discrete wheels (notches of
+/// about 120) zoom at a comparable rate. A heuristic: small whole numbers
+/// count as X11-style detents, fractional deltas as trackpads.
 fn normalize_wheel(raw: f32, units: WheelUnits) -> f32 {
     let delta = if raw.abs() >= 40.0 {
         raw / 120.0

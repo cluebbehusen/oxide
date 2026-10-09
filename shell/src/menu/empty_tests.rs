@@ -4,8 +4,8 @@ use oxide_protocol::{Key, RawEvent};
 
 #[test]
 fn an_empty_menu_survives_every_key() {
-    // A fresh profile's replay shelf has zero rows; wrap-around
-    // arithmetic on an empty list once divided by zero.
+    // A fresh profile's replay shelf has zero rows, and wrap-around
+    // arithmetic on an empty list would divide by zero.
     let mut menu = Menu::new("EMPTY", Vec::new());
     let mut mouse = vec2(0.0, 0.0);
     for key in [Key::Up, Key::Down, Key::Enter, Key::PageDown, Key::End] {

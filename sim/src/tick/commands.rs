@@ -1,11 +1,10 @@
-//! Phase 1: command validation and application.
+//! Command validation and application.
 //!
-//! Commands mutate *intent* (orders, queues) and nothing else — the later
-//! phases do the actual work. Invalid commands are dropped with a
-//! [`Event::CommandRejected`]; per-unit problems (a dead id in an otherwise
-//! fine selection) are skipped silently, matching how an RTS should feel — a
-//! repeated id among them, which [`canonical_units`] folds away at dispatch
-//! before any handler sees the list.
+//! Commands mutate intent (orders, queues) and nothing else; later phases do
+//! the work. Invalid commands are dropped with a
+//! [`Event::CommandRejected`]. Per-unit problems (a dead id in an otherwise
+//! valid selection) are skipped silently, and [`canonical_units`] folds away
+//! repeated ids at dispatch before any handler sees the list.
 
 use super::goals::{self, spread_scan_reversed};
 use crate::command::{Command, PlayerCommand, RejectReason};
@@ -34,9 +33,9 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
         if (pc.player.0 as usize) >= state.players.len() {
             continue; // malformed traffic from outside the sim; nothing to attribute
         }
-        // The eliminated don't give orders (matters in 3+ player games —
-        // two-player matches freeze on the result before this can bite).
-        // Sandbox seats need no Foundry, but surrender still relinquishes control.
+        // Eliminated seats don't give orders (two-player matches end on the
+        // result first, so this matters with three or more seats). Sandbox
+        // seats need no Foundry, but surrender still relinquishes control.
         if !state.accepts_commands(pc.player) {
             events.push(Event::CommandRejected {
                 player: pc.player,
@@ -183,13 +182,11 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
 
 /// A command's unit list read as the SET it means: id-ordered, each id
 /// once. Every unit-bearing command passes through here at dispatch, so no
-/// handler can double-apply a repeated id — a duplicate used to append a
-/// second queued leg, and on an idle unit it appended a clone of the order
-/// it had just been given. Ownership filtering stays in the handlers, whose
-/// `NoValidUnits` reporting also weighs what a unit can do.
+/// handler can double-apply a repeated id. Ownership filtering stays in the
+/// handlers, whose `NoValidUnits` reporting also weighs what a unit can do.
 ///
 /// The recorded command keeps the client's bytes; this is how the sim
-/// *interprets* a list, not a rewrite of it.
+/// interprets a list, not a rewrite of it.
 fn canonical_units(ids: &[UnitId]) -> Vec<UnitId> {
     let mut ids = ids.to_vec();
     ids.sort_unstable();
@@ -281,19 +278,15 @@ fn accepted_units(state: &State, player: PlayerId, ids: &[UnitId]) -> Vec<UnitId
         .collect()
 }
 
-/// Any command is the player (or bot) speaking: whatever tether a
-/// self-acquired fight put on this machine ends here, and station
-/// keeping restarts — a commanded machine is on assignment, not
-/// standing a post. Runs for every order that lands through a verb that
-/// writes a unit's program ([`assign`], [`assign_circuit`],
-/// [`apply_stop`]) — before `assign`'s no-op early return, because a
-/// player re-ordering the exact attack the unit already picked itself
-/// compares equal, returns early, and would otherwise silently keep
-/// the leash on an explicit commitment. An append a full queue refuses
-/// never reaches it: a rejected order leaves the unit untouched. A new
-/// program-writing verb must pass through here too, not restate the
-/// contract inline. A danger hold's pending retry ends too, so a new
-/// order is judged at once.
+/// Ends any tether a self-acquired fight put on this machine, restarts
+/// station keeping, and clears a pending danger-hold retry so the new order
+/// is judged at once. Every verb that writes a unit's program ([`assign`],
+/// [`assign_circuit`], [`apply_stop`]) calls this, before `assign`'s no-op
+/// early return: re-ordering the exact attack the unit already picked
+/// itself compares equal and would otherwise keep the leash on an explicit
+/// commitment. An append refused by a full queue never reaches it, so a
+/// rejected order leaves the unit untouched. A new program-writing verb must
+/// call this too.
 fn end_station_keeping(unit: &mut crate::state::Unit) {
     unit.leash = None;
     unit.settled = 0;
@@ -309,10 +302,9 @@ fn remove_active_order(unit: &mut crate::state::Unit) {
 }
 
 /// Hands a unit its next order: replacing wipes any queued program;
-/// appending parks the order behind the current one (bounded — a hostile
-/// stream of appends must not grow memory forever). Returns whether the
-/// order actually landed — a full queue drops the append, and the caller
-/// reports it instead of pretending.
+/// appending parks the order behind the current one (bounded, so a hostile
+/// stream of appends cannot grow memory forever). Returns whether the
+/// order landed; a full queue drops the append, and the caller reports it.
 fn assign(unit: &mut crate::state::Unit, order: Order, queue: bool) -> bool {
     if queue && !matches!(unit.order, Order::Idle) {
         if unit.queue.len() >= ORDER_QUEUE_CAP {
@@ -327,12 +319,12 @@ fn assign(unit: &mut crate::state::Unit, order: Order, queue: bool) -> bool {
         unit.queue.clear();
         unit.looping = false;
         // Reissuing the current order continues it past the queue wipe:
-        // progress and path survive. Resetting them let a re-commanded
-        // welder heal forever without ever crossing a billing tick,
-        // dropped a re-clicked harvester's half-extracted scrap, and
-        // threw away perfectly good paths on every army re-push. A walk
-        // matches on its clicked tile and takes the new aim; a path to a
-        // superseded destination is replanned by the walk itself.
+        // progress and path survive. Resetting them would let a
+        // re-commanded welder heal without ever crossing a billing tick,
+        // drop a re-clicked harvester's half-extracted scrap, and discard
+        // valid paths on every army re-push. A walk matches on its clicked
+        // tile and takes the new aim; a path to a superseded destination is
+        // replanned by the walk itself.
         if unit.order.reissue_matches(&order) {
             unit.order.reissue(order);
             return true;
@@ -345,11 +337,9 @@ fn assign(unit: &mut crate::state::Unit, order: Order, queue: bool) -> bool {
     true
 }
 
-/// Hands a unit a whole looping circuit wholesale — patrol's shape:
-/// first leg active, the rest queued, path and progress reset. The
-/// caller validates the route; `legs` must be non-empty. Shares
-/// [`end_station_keeping`] with [`assign`] so the command contract
-/// cannot drift between program writers.
+/// Hands a unit a whole looping circuit (patrol's shape): first leg
+/// active, the rest queued, path and progress reset. The caller validates
+/// the route; `legs` must be non-empty.
 fn assign_circuit(unit: &mut crate::state::Unit, mut legs: impl Iterator<Item = Order>) {
     end_station_keeping(unit);
     unit.unloading = None;
@@ -522,10 +512,10 @@ fn apply_harvest(
     if !in_envelope(state, node) {
         return Err(RejectReason::OutOfBounds);
     }
-    // A source counts if it is visible now or the issuer remembers it —
-    // ordering harvesters onto stale memory is legitimate play (they walk
-    // over, discover the truth, and retarget), while never-seen live
-    // salvage must not become a command-success oracle through fog.
+    // A source counts if it is visible now or the issuer remembers it.
+    // Ordering harvesters onto stale memory is legitimate play (they walk
+    // over, discover the truth, and retarget), while never-seen salvage
+    // must not become a command-success oracle through fog.
     let vision = state.vision(player);
     let known = if vision.visible(node) {
         state.map.scrap_at(node) > 0 || state.map.wreck_at(node) > 0
@@ -541,7 +531,7 @@ fn apply_harvest(
             unit,
             Order::Harvest {
                 node,
-                anchor: Some(node),
+                anchor: node,
                 retiring: false,
             },
             queue,
@@ -555,9 +545,9 @@ fn apply_harvest(
     (landed > 0).then_some(()).ok_or(RejectReason::QueueFull)
 }
 
-/// Walk a looping circuit, the whole route one program: each leg spreads
-/// the group over its waypoint like a group move — combat units hunt
-/// each leg, pacifists walk them obliviously.
+/// Walk a looping circuit as one program: each leg spreads the group over
+/// its waypoint like a group move. Combat units hunt each leg; unarmed
+/// units walk them.
 fn apply_patrol(
     state: &mut State,
     player: PlayerId,
@@ -609,12 +599,11 @@ struct BuildPlacement {
     defer: bool,
 }
 
-/// Claims the site immediately (full price, footprint blocks) and
-/// commits the whole accepted crew: the first accepted harvester founds
-/// the site — pays, proves a doorstep is reachable — and every other
-/// accepted harvester takes the same Build order (builders stack).
-/// Aiming at an existing own unfinished site resumes it instead —
-/// that's how a dead builder's work gets picked back up. With `defer`,
+/// Claims the site immediately (full price, footprint blocks) and commits
+/// the whole accepted crew: the first accepted harvester founds the site
+/// (pays, proves a doorstep is reachable) and every other accepted
+/// harvester takes the same Build order (builders stack). Aiming at an
+/// existing own unfinished site resumes it instead. With `defer`,
 /// a paid provisional scaffold reserves the plan without occupying hidden
 /// ground. The crew takes [`Order::Found`] until visibility verifies the site.
 fn apply_build(
@@ -669,7 +658,7 @@ fn apply_build_inner(
         return Err(RejectReason::OutOfBounds);
     }
     // The crew: every accepted harvester, in id order. `crew[0]` is the
-    // founder — the same unit the fresh-placement path always chose.
+    // founder.
     let crew: Vec<UnitId> = accepted_units(state, player, units)
         .into_iter()
         .filter(|id| {
@@ -680,9 +669,8 @@ fn apply_build_inner(
         .collect();
     let &builder = crew.first().ok_or(RejectReason::NoValidUnits)?;
 
-    // Resume an existing site of ours at this anchor? Every hand joins —
-    // builders stack, and a dead builder's work is picked back up by
-    // however many hands the player sends.
+    // Resume an existing site of ours at this anchor: every accepted
+    // builder joins.
     let existing = state
         .buildings
         .iter()
@@ -710,10 +698,9 @@ fn apply_build_inner(
         }
         return (landed > 0).then_some(()).ok_or(RejectReason::QueueFull);
     }
-    // Tech gating answers before site questions, with its own reason —
-    // "you can't build this yet" and "not there" are different words.
-    // Resuming an existing site above deliberately skips this: losing
-    // the Fabricator does not orphan work already claimed.
+    // Tech gating answers before site questions, with its own reason.
+    // Resuming an existing site above skips this: losing the Fabricator
+    // does not orphan work already claimed.
     if !state.prerequisites_met(player, kind) {
         return Err(RejectReason::MissingPrerequisite);
     }
@@ -767,17 +754,15 @@ fn apply_build_inner(
         return Err(RejectReason::BadSite);
     }
     let site = found_site(state, player, builder, kind, anchor, |state, site| {
-        // Assign BEFORE paying: a founder whose order queue is
-        // full must reject the whole command with the site
-        // retracted and nothing spent — the old code discarded
-        // this result and could charge for a site nobody was
-        // ordered to build.
+        // Assign before paying: a founder whose order queue is full
+        // must reject the whole command with the site retracted and
+        // nothing spent.
         let unit = state.unit_mut(builder).expect("filtered above");
         assign(unit, Order::Build { site }, queue)
     })?;
-    // The rest of the crew joins best-effort, in id order: an
-    // individual full queue drops that hand, never the command —
-    // the founder alone gates acceptance.
+    // The rest of the crew joins best-effort, in id order: a full queue
+    // drops that builder, never the command; the founder alone gates
+    // acceptance.
     for &id in crew.iter().skip(1) {
         if let Some(unit) = state.unit_mut(id) {
             let _ = assign(unit, Order::Build { site }, queue);
@@ -803,10 +788,10 @@ fn found_site(
     if state.player(player).scrap < cost {
         return Err(RejectReason::NotEnoughScrap);
     }
-    // Place first, then prove the founder can actually reach a
-    // doorstep *around the now-blocking footprint* — otherwise
-    // undo for free. Unreachable placement must leave the command rejected
-    // without spending scrap or consuming a building id.
+    // Place first, then prove the founder can reach a doorstep around the
+    // now-blocking footprint; otherwise undo. Unreachable placement must
+    // leave the command rejected without spending scrap or consuming a
+    // building id.
     let site = state.place_site(player, kind, anchor);
     let from = state.unit(builder).expect("caller checked").tile();
     let size = kind.base_stats().size;
@@ -833,16 +818,15 @@ pub(super) fn finish_site_claim(state: &mut State, site: BuildingId, builder: Un
     let building = state.building(site).expect("accepted site");
     let (player, anchor, size) = (building.player, building.anchor, building.stats().size);
     let from = state.unit(builder).expect("committed builder").tile();
-    // Friendly machines make way as the site claims the ground: no
-    // sim rule expects a resting unit on a claimed footprint. The
-    // builders' own approach and the eviction pre-pass both route out
-    // of the footprint, so only a body with no escape route takes the instant deal
-    // onto the passable perimeter ring in the founder's approach frame,
-    // round-robin in id order among the dealt: nothing may end up inside a
-    // finished building. Strictly after the last rejection path and
-    // the payment — a rejected command must not move the state hash
-    // (retract_site's contract). Hostiles can't be here: the
-    // caller's placement predicate refused them.
+    // Friendly machines make way as the site claims the ground: nothing may
+    // end up inside a finished building. The builders' own approach and the
+    // eviction pre-pass both route out of the footprint, so only a body with
+    // no escape route is placed instantly onto the passable perimeter ring,
+    // ordered in the founder's approach frame and dealt round-robin in id
+    // order. This runs strictly after the last rejection path and the
+    // payment, because a rejected command must not move the state hash
+    // (`retract_site`'s contract). Hostiles cannot be here: the caller's
+    // placement predicate refused them.
     let ring: Vec<TilePos> = {
         let approach = super::rect_approach_origin(state, player, from, anchor, size);
         let mut ring: Vec<TilePos> = super::rect_adjacent_tiles(anchor, size)
@@ -1040,18 +1024,16 @@ fn apply_repair(
     if landed == 0 {
         return Err(RejectReason::QueueFull);
     }
-    // Eviction only on a command that actually landed: a REJECTED
-    // command must leave the world untouched (a misfiring client once
-    // cancelled its own welders with an invalid salvage), and running
-    // it after the assignment is safe because the purge only matches
-    // the OPPOSING verb.
+    // Evict only on a command that landed: a rejected command must leave
+    // the world untouched. Running it after the assignment is safe because
+    // the purge only matches the opposing verb.
     purge_opposing_verb(state, player, building, Verb::Salvage);
     Ok(())
 }
 
-/// Stripping is for standing, built, own, non-Foundry buildings —
-/// unbuilt sites keep [`Command::Cancel`]'s instant refund, and the
-/// victory token never comes apart by its own crew's hands.
+/// Salvage is for standing, built, own, non-Foundry buildings. Unbuilt
+/// sites use [`Command::Cancel`]'s instant refund, and a Foundry cannot be
+/// salvaged.
 fn apply_salvage(
     state: &mut State,
     player: PlayerId,
@@ -1084,13 +1066,11 @@ fn apply_salvage(
     Ok(())
 }
 
-/// Unit welding is for wounded, own, GROUND machines. Air patients
-/// refuse (a harvester cannot stand where a flyer hovers; the ring
-/// stand-in machinery is a chase tool, not a service bay), the healthy
-/// leave nothing to do, and the patient never joins its own crew.
-/// No eviction rule: nothing else targets a friendly unit, and the
-/// patient's own orders are deliberately untouched — welding is the
-/// crew's job, not a hold order on the wounded.
+/// Unit welding is for wounded, own ground bodies (including parked
+/// airframes). Airborne patients are refused, since a welder cannot stand
+/// where a flyer hovers; the healthy leave nothing to do, and the patient
+/// never joins its own crew. No eviction rule: nothing else targets a
+/// friendly unit, and the patient's own orders are untouched.
 fn apply_repair_unit(
     state: &mut State,
     player: PlayerId,
@@ -1122,8 +1102,8 @@ fn apply_repair_unit(
 }
 
 /// Sends carriable ground machines to climb aboard an own transport.
-/// Capacity is checked at the sling, not here — contents change while
-/// the boarders walk.
+/// Capacity is checked at the sling, not here, because contents change
+/// while the boarders walk.
 fn apply_load(
     state: &mut State,
     player: PlayerId,
@@ -1158,8 +1138,8 @@ fn apply_load(
     (landed > 0).then_some(()).ok_or(RejectReason::QueueFull)
 }
 
-/// Flies a transport to a drop point and disgorges there. An empty
-/// sling still flies — the order is a movement with intent.
+/// Flies a transport to a drop point and unloads there. An empty sling
+/// still flies.
 fn apply_unload(
     state: &mut State,
     player: PlayerId,
@@ -1187,19 +1167,18 @@ fn apply_unload(
     }
 }
 
-/// The verb a repair/salvage command evicts from its target: the two
-/// never share a building, or a welder and a stripper would feed the
-/// resolver an oscillator (and the bot's deepest-wound repair pick
-/// would re-crew every salvage it sees).
+/// The verb a repair/salvage command evicts from its target: the two never
+/// share a building, or a welder and a salvager would make the resolver
+/// oscillate.
 #[derive(Clone, Copy)]
 enum Verb {
     Repair,
     Salvage,
 }
 
-/// Clears every own unit's orders of the opposing verb on `building` —
-/// queued legs are dropped, a matching active order advances to its
-/// next leg (the program survives; only the conflicting job dies).
+/// Clears every own unit's orders of the opposing verb on `building`:
+/// queued legs are dropped, and a matching active order advances to its
+/// next leg, so the rest of the program survives.
 fn purge_opposing_verb(
     state: &mut State,
     player: PlayerId,
@@ -1213,9 +1192,9 @@ fn purge_opposing_verb(
     for unit in state.units.iter_mut().filter(|u| u.player == player) {
         unit.queue.retain(|o| !conflicts(o));
         if conflicts(&unit.order) {
-            // A looping program ROTATES the finished order to the back
-            // of the queue we just cleaned — strip it again, or a
-            // patrolling welder brings the evicted job around forever.
+            // A looping program rotates the finished order to the back of
+            // the queue just cleaned; strip it again, or a patrolling welder
+            // brings the evicted job around forever.
             unit.advance_queue();
             unit.queue.retain(|o| !conflicts(o));
         }
@@ -1252,8 +1231,8 @@ fn apply_cancel_train(
     let b = state.building_mut(building).expect("checked above");
     b.queue.remove(index as usize);
     if index == 0 {
-        // The next in line starts fresh; half-built progress is not a
-        // thing that transfers between machines.
+        // The next in line starts fresh; progress does not transfer between
+        // machines.
         b.progress = 0;
     }
     let bank = &mut state.player_mut(player).scrap;
@@ -1384,9 +1363,8 @@ fn apply_train(
         if b.queue.len() >= QUEUE_CAP {
             return Err(RejectReason::QueueFull);
         }
-        // The tree's production gate: some machines wait on completed
-        // tech works beyond their producer (the same rule for every
-        // command source).
+        // Some machines require completed tech buildings beyond their
+        // producer (the same rule for every command source).
         let met = kind.stats().requires.iter().all(|required| {
             state
                 .buildings
@@ -1410,10 +1388,9 @@ fn apply_train(
     Ok(())
 }
 
-/// Concession is a fact, not a macro for razing the base: one flag the
-/// victory check and the command gate both read. Commands are phase 1
-/// and victory phase 10, so a decisive surrender ends the match on its
-/// own tick.
+/// Concession sets one flag that the victory check and the command gate
+/// both read; it does not raze the base. Commands apply before the tick's
+/// victory check, so a decisive surrender ends the match on its own tick.
 fn apply_surrender(state: &mut State, player: PlayerId, events: &mut Vec<Event>) {
     state.player_mut(player).resigned = true;
     events.push(Event::PlayerResigned { player });
@@ -1439,9 +1416,8 @@ fn apply_set_rally(
     if !b.built || b.stats().produces.is_empty() {
         return Err(RejectReason::InvalidTarget);
     }
-    // Any tile on the map is a legal rally — each newborn resolves it like
-    // a move of its own, and a scrap-node rally is exactly how auto-harvest
-    // is asked for.
+    // Any tile on the map is a legal rally: each newborn resolves it like a
+    // move of its own, and a scrap-node rally requests auto-harvest.
     b.rally = rally;
     Ok(())
 }
@@ -1540,21 +1516,19 @@ fn apply_upgrade(
     b.progress = 0;
     // The commitment re-founds the machine as a fresh site of the new
     // tier: hp restarts at the new tier's construction floor, scaled by
-    // the old hull's condition, so an undamaged input completes exactly
-    // at the new maximum and battle damage carries through the rebuild.
-    // Retaining the old hp would double-count it against the new ramp —
-    // a full base hull would cap out mid-construction while a wounded
-    // one finished short of maximum.
+    // the previous tier's condition, so an undamaged input completes at
+    // the new maximum and battle damage carries through the rebuild.
+    // Retaining the previous hp would double-count it against the new ramp.
     let start_hp = b.stats().max_hp / 5;
     b.hp = (b.hp.saturating_mul(start_hp) / old_max.max(1)).max(1);
-    // Combat state is the old machine's, and the offline site neither
-    // fires nor cools: a stale cooldown can exceed the new tier's
-    // ceiling and a focus on an unbuilt works fails validation.
+    // The offline site neither fires nor cools, so combat state resets: a
+    // stale cooldown can exceed the new tier's ceiling, and a focus on an
+    // unbuilt building fails validation.
     b.cooldown = 0;
     b.focus = None;
-    // The strip ledger is a record against the OLD tier's price basis;
-    // the rebuilt machine starts a clean one (and any crew mid-salvage
-    // finds an unbuilt patient next tick and stands down).
+    // The salvage ledger is priced against the previous tier; the rebuilt
+    // machine starts a clean one, and any crew mid-salvage finds an
+    // unbuilt target next tick and stands down.
     b.salvage_drained = 0;
     b.salvage_credited = 0;
     Ok(())

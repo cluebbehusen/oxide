@@ -1,5 +1,5 @@
-//! The 0.15 strike wing: attack runs, the Moth's stick, the Crucible
-//! gates, and the tier-three heavies.
+//! The strike wing: attack runs, the Moth's stick, the Crucible gates,
+//! and the tier-three heavies.
 
 use crate::common;
 use common::{cmd, players, unit};

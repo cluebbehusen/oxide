@@ -521,8 +521,8 @@ fn every_persisted_row_replays_to_its_reported_terminal_state() {
             );
         }
 
-        let state = oxide_kit::runner::run_replay(&replay, None, false)
-            .expect("published replay reproduces");
+        let state =
+            oxide_kit::runner::run_replay(&replay, None).expect("published replay reproduces");
         assert_eq!(state.current_tick(), row["duration_ticks"]);
         assert_eq!(
             oxide_protocol::hash_hex(state.hash()),
@@ -1003,71 +1003,6 @@ fn staged_trace_is_cleaned_up_when_replay_staging_fails() {
         1,
         "private trace staging files must be removed on another evidence failure"
     );
-    std::fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
-fn measurement_tools_record_the_complete_shared_profile_and_simulation_version() {
-    let dir = scratch("measurement-profile");
-    let maps = dir.join("maps");
-    std::fs::create_dir(&maps).unwrap();
-    std::fs::write(
-        maps.join("skirmish.json"),
-        serde_json::to_vec(&oxide_sim::Scenario::skirmish()).unwrap(),
-    )
-    .unwrap();
-    for command in ["sweep", "pace-sweep", "sweep-factorial"] {
-        for explicit in [false, true] {
-            let out = dir.join(format!("{command}-{explicit}.json"));
-            let mut run = Command::new(env!("CARGO_BIN_EXE_oxide-driver"));
-            run.args([
-                command,
-                "--seeds",
-                "1",
-                "--ticks",
-                "1",
-                "--seed-base",
-                "13",
-                "--out",
-            ])
-            .arg(&out);
-            if command == "pace-sweep" {
-                run.arg("--dir").arg(&maps);
-            }
-            if command == "sweep-factorial" {
-                run.args(["--factors", "faction"]);
-            }
-            if explicit {
-                run.args([
-                    "--difficulty",
-                    "veteran",
-                    "--stance",
-                    "aggressive",
-                    "--personality-seed",
-                    "31",
-                ]);
-            }
-            let output = run.output().unwrap();
-            assert!(
-                output.status.success(),
-                "{command}: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            let report: Value = serde_json::from_slice(&std::fs::read(out).unwrap()).unwrap();
-            assert_eq!(report["sim_version"], oxide_sim::SIM_VERSION);
-            assert_eq!(
-                report["bot_config"],
-                if explicit {
-                    serde_json::json!({"difficulty":"veteran", "stance":"aggressive", "personality_seed":31})
-                } else {
-                    serde_json::json!({"difficulty":"standard", "stance":"balanced", "personality_seed":0})
-                }
-            );
-            let text = String::from_utf8(output.stdout).unwrap();
-            assert!(text.contains(oxide_sim::SIM_VERSION));
-            assert!(text.contains(if explicit { "Veteran" } else { "Standard" }));
-        }
-    }
     std::fs::remove_dir_all(dir).unwrap();
 }
 

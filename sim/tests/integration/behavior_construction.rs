@@ -380,7 +380,7 @@ fn cancel_refunds_by_health_and_damage_burns_it() {
 fn sealed_apart_scenarios_refuse_to_build() {
     use oxide_sim::scenario::ScenarioError;
     // A mesa wall: rock alone would leave the sky open, and an
-    // air-connected map is legal since the island relaxation.
+    // air-connected map is legal.
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "sealed".into(),
@@ -420,8 +420,8 @@ fn validator_rejects_foreign_owners() {
     let mut doc: serde_json::Value =
         serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
     doc["units"][0]["player"] = serde_json::json!(9);
-    // Validation runs inside Deserialize since 0.6: the tamper never
-    // becomes a State at all.
+    // Validation runs inside Deserialize: the tamper never becomes a
+    // State at all.
     assert!(serde_json::from_value::<State>(doc).is_err());
 }
 
@@ -527,11 +527,10 @@ fn a_fresh_site_blocks_units_already_walking_through_it() {
 #[test]
 fn a_zeroed_site_cannot_be_revived_by_its_builder() {
     use oxide_sim::stats::BuildingKind;
-    // Three lancers volley 90 damage — more than the fresh site's 70 hp —
-    // while the builder (highest id, acting last each tick) feeds it
-    // progress. Without the hp check, the builder revives the corpse
-    // every volley and the site eventually *completes*; with it, the
-    // first volley kills the site for good.
+    // Three lancers volley more than the fresh site's 70 hp while the
+    // builder feeds it progress. Without the hp check, the builder would
+    // revive the corpse every volley and the site would eventually
+    // complete; with it, the first volley kills the site for good.
     let mut state = arena(vec![
         unit(1, UnitKind::Lancer, 8, 5),
         unit(1, UnitKind::Lancer, 9, 6),
@@ -559,8 +558,8 @@ fn a_zeroed_site_cannot_be_revived_by_its_builder() {
         .find(|b| b.anchor == anchor)
         .unwrap()
         .id;
-    // The first volley can land on the command tick itself — keep its
-    // report (the oldest gotcha in the book).
+    // The first volley can land on the command tick itself; keep its
+    // report.
     let mut events = state
         .tick(&[cmd(
             1,
@@ -709,8 +708,8 @@ fn placement_requires_current_vision_not_mere_exploration() {
 #[test]
 fn extra_builders_accelerate_construction() {
     use oxide_sim::stats::BuildingKind;
-    // Deliberate mechanic (documented in AGENTS): every adjacent builder
-    // contributes a progress tick, so two roughly halve the build.
+    // Deliberate mechanic: every adjacent builder contributes a progress
+    // tick, so two roughly halve the build.
     let build_time = |extra_builder: bool| {
         let mut units = vec![unit(0, UnitKind::Harvester, 4, 6)];
         if extra_builder {
@@ -1398,9 +1397,8 @@ fn a_queued_build_whose_site_died_pops_silently_and_the_program_survives() {
 
 #[test]
 fn a_full_order_queue_refuses_placement_with_nothing_spent() {
-    // The old code paid for the site and discarded the assignment
-    // result; a builder whose program is full must reject the whole
-    // command with the site retracted and the bank untouched.
+    // A builder whose program is full must reject the whole command with
+    // the site retracted and the bank untouched.
     let mut state = arena(vec![unit(0, UnitKind::Harvester, 3, 2)])
         .build()
         .unwrap();
@@ -1456,7 +1454,7 @@ fn a_full_order_queue_refuses_placement_with_nothing_spent() {
 #[test]
 fn resuming_a_site_sends_every_hand() {
     // Builders stack; a resume command commits the whole crew, and the
-    // site rises roughly three times as fast under three welders.
+    // site rises roughly three times as fast under three builders.
     let mut state = arena(vec![
         unit(0, UnitKind::Harvester, 3, 2),
         unit(0, UnitKind::Harvester, 4, 2),
@@ -1517,8 +1515,8 @@ fn place_refusal_names_the_actual_blocker() {
     assert_eq!(refusal(4, 6), None);
     // A visible ENEMY machine denies its ground.
     assert_eq!(refusal(5, 5), Some(PlaceRefusal::Unit));
-    // Open visible ground: allowed, and the predicate is literally the
-    // same answer with the reason thrown away.
+    // Open visible ground: allowed, and the predicate is the same answer
+    // with the reason thrown away.
     assert_eq!(refusal(5, 6), None);
     assert!(state.can_place(p, k, TilePos::new(5, 6)));
     // Visible rock.
@@ -1528,8 +1526,7 @@ fn place_refusal_names_the_actual_blocker() {
     // The enemy Foundry's ground is fogged — and fog must win before
     // the building underneath can leak through the reason.
     assert_eq!(refusal(13, 6), Some(PlaceRefusal::Fog));
-    // A Foundry without a completed Fabricator names the missing tech
-    // (0.15: Foundries are buildable expansions behind the tree's gate).
+    // A Foundry without a completed Fabricator names the missing tech.
     assert_eq!(
         state.place_refusal(p, BuildingKind::Foundry, TilePos::new(5, 6)),
         Some(PlaceRefusal::Prerequisite)
@@ -1562,9 +1559,9 @@ fn a_builder_founds_a_building_under_its_own_feet() {
         state.unit(builder).unwrap().order,
         Order::Build { .. }
     ));
-    // The builder WALKS off the claimed ground — the position series is
-    // continuous, never the old instant relocation (a 1+ tile jump
-    // inside one tick).
+    // The builder walks off the claimed ground: the position series is
+    // continuous, never an instant relocation (a 1+ tile jump inside one
+    // tick).
     let step_cap = chassis::fx::Fx::lit("0.5");
     let mut prev = state.unit(builder).unwrap().pos;
     let mut off_at = None;
@@ -1679,8 +1676,7 @@ fn an_enemy_machine_still_denies_the_ground() {
 fn an_allied_machine_makes_way_like_your_own() {
     use oxide_sim::stats::BuildingKind;
     // Two seats on one team: seat 0 builds where seat 1's sentinel
-    // stands. The ally steps aside — your teammate's foundation is
-    // not an enemy of your parking spot.
+    // stands. The ally steps aside like an own machine.
     let scenario = oxide_sim::Scenario::from_json(
         &serde_json::json!({
             "name": "Team Yard",
@@ -1873,10 +1869,9 @@ fn a_walled_in_machine_takes_the_instant_deal() {
 #[test]
 fn a_fresh_placement_commits_the_whole_crew() {
     use oxide_sim::stats::BuildingKind;
-    // The reclaim-parity rule reaches construction: a fresh Build
-    // drafts every accepted harvester — not just the founder — and
-    // non-harvesters in the selection are left to their own work.
-    // Three hands raise the site markedly faster than one.
+    // A fresh Build drafts every accepted harvester, not just the
+    // founder, and non-harvesters in the selection are left to their own
+    // work. Three builders raise the site markedly faster than one.
     let build_time = |crew: usize| {
         let mut units: Vec<_> = (0..crew)
             .map(|i| unit(0, UnitKind::Harvester, 3 + i32::try_from(i).unwrap(), 2))
@@ -2897,8 +2892,8 @@ fn a_rejected_deferred_build_leaves_no_trace_on_the_hash() {
 
 /// The information boundary itself: two worlds differing ONLY in what
 /// the issuer's fog hides must return the same intent verdict for every
-/// anchor on the map — the amber ghost can never be a hidden-enemy
-/// detector.
+/// anchor on the map, so the placement preview can never be a
+/// hidden-enemy detector.
 #[test]
 fn intent_verdicts_ignore_what_fog_hides() {
     use oxide_sim::stats::BuildingKind;

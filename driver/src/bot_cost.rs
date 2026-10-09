@@ -31,7 +31,7 @@ pub enum Workload {
     /// ticks: a representative live duel.
     Duel,
     /// Skyhook Anchorage's seven authored bot seats for 20,000 ticks. The
-    /// first seat stays passive, as in the shipped performance workload.
+    /// human first seat stays passive.
     Skyhook,
     /// Basalt Spine terrain, both seats bots, each starting with a mirrored
     /// mature army and tech structures, for 3,000 ticks.

@@ -149,10 +149,9 @@ impl Client {
         self.writer.write_all(line.as_bytes())?;
         self.writer.flush()?;
 
-        // Bounded, but at the RESPONSE ceiling: replies legitimately
-        // dwarf the request-line cap (a deep query_state is not a
-        // hand-typed line), while a wedged or hostile peer still must
-        // not grow this allocation without limit.
+        // Bounded at the response ceiling: replies can far exceed the
+        // request-line cap, but a wedged or hostile peer must not grow this
+        // allocation without limit.
         let envelope = read_response(&mut self.reader, oxide_protocol::MAX_RESPONSE_BYTES)?;
         // id 0 is the transport speaking, not a reply: the server sends
         // unsolicited refusals (connection cap, oversized frame) under

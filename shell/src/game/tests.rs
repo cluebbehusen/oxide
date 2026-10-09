@@ -39,15 +39,13 @@ fn recovery_records_the_shell_boundary_and_resumes_the_same_future() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
-/// The resume guarantee the hash check alone cannot see: the
-/// watch-back loop replays every re-executed tick through the
-/// seat bots so they rebuild their cross-tick memory (RNG streams,
-/// raid memory, blacklists). Deleting that loop keeps the resume
-/// hash identical — the recorded commands carry it — and only the
-/// FUTURE diverges, which is exactly what this pins.
+/// The watch-back loop replays every re-executed tick through the seat
+/// bots so they rebuild their cross-tick memory. Without it the resume
+/// hash still matches (the recorded commands carry it) and only the
+/// future diverges, which this test catches.
 #[test]
 fn a_resumed_session_plays_the_same_future_as_an_unsaved_one() {
-    // Seat 1 is the shipped bot whose memory the watch-back rebuilds.
+    // Seat 1 is a bot whose memory the watch-back rebuilds.
     let mut scenario = oxide_sim::Scenario::skirmish();
     oxide_kit::bench::all_bots(&mut scenario);
     scenario.players[0].bot = false;
@@ -563,9 +561,8 @@ fn demo_flags_read_only_the_humans_commands() {
     });
     game.do_tick();
     assert!(game.demo.trained_fighter);
-    // Run a few more ticks with no human commands and check the
-    // unrelated flags stay cold — only the human's own commands
-    // may grade the tutorial.
+    // Further ticks without human commands leave the unrelated flags
+    // unset: only the human's own commands grade the tutorial.
     for _ in 0..20 {
         game.do_tick();
     }

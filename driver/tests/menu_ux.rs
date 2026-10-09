@@ -1,9 +1,7 @@
-//! Menu interaction regressions, driven through the automation harness
-//! against a real spawned shell. Written failing against the 0.8 widget
-//! (hover drove selection, activation on press), turned green by the
-//! 0.9 rebuild. `#[ignore]`d because they spawn real windows — CI has
-//! no display and the workspace suite must stay headless. The phase-end
-//! battery runs them explicitly:
+//! Menu interaction contracts, driven through the automation harness
+//! against a real spawned shell. `#[ignore]`d because they spawn real
+//! windows: CI has no display and the workspace suite must stay headless.
+//! Run them explicitly:
 //!
 //! ```sh
 //! cargo test -p oxide-driver --test menu_ux -- --ignored --test-threads 1
@@ -100,20 +98,18 @@ fn hover(client: &mut Client, x: f32, y: f32) -> Result<()> {
     Ok(())
 }
 
-/// The x the row tests probe and click at. The front door is a card
-/// GRID since 0.11: the window's horizontal center (640 at the pinned
-/// 1280x800) is a column gutter where no card hovers, so the probe
-/// column sits inside the second card column instead.
+/// The x the row tests probe and click at. The map list is a card grid,
+/// and the window's horizontal center (640 at the pinned 1280x800) is a
+/// column gutter where no card hovers, so the probe column sits inside the
+/// second card column instead.
 const GRID_X: f32 = 500.0;
 
 /// Sweeps the window's vertical axis and returns every y where the
-/// hover highlight changed — one entry per row boundary crossed, in
-/// top-to-bottom order. Resolution-independent row discovery. The
-/// front door is a thumbnail grid since 0.11: two tall card rows fit
-/// the default window where six menu rows once did, so the sweep
-/// steps fine and two hits suffice.
+/// hover highlight changed, one entry per row boundary crossed, in
+/// top-to-bottom order. Only two tall card rows fit the default window,
+/// so the sweep steps finely and two hits suffice.
 fn find_rows(client: &mut Client) -> Result<Vec<(f32, usize)>> {
-    // Row discovery watches the hover highlight — the pointer's only
+    // Row discovery watches the hover highlight, the pointer's only
     // effect on a healthy menu.
     let mut prev = ui(client)?.hover;
     let mut hits: Vec<(f32, usize)> = Vec::new();
@@ -143,9 +139,9 @@ fn a_stationary_pointer_never_changes_the_row_beneath_it() -> Result<()> {
 
     // Push the keyboard cursor deep so the window scrolls away from the
     // top, then park the pointer on the topmost visible row and wiggle
-    // it by one pixel — a real cursor at rest. Nothing about the row
+    // it by one pixel, like a real cursor at rest. Nothing about the row
     // under the pointer may change: not the hover, not the selection,
-    // not the window. The 0.8 widget failed all three.
+    // not the window.
     for _ in 0..6 {
         press_key(&mut client, Key::Down)?;
     }
@@ -199,7 +195,7 @@ fn menu_rows_activate_on_release_not_on_press() -> Result<()> {
     let released = ui(&mut client)?.mode;
     assert_eq!(released, before, "a drag-away release still activated");
 
-    // And the honest path works: a click inside the card selects it,
+    // A real click still works: a click inside the card selects it,
     // and a second click on the selected card advances to match setup.
     client.call(Request::InjectEvent {
         event: RawEvent::MouseMove {
@@ -313,11 +309,10 @@ fn every_screen_transition_answers_the_walk() -> Result<()> {
 #[test]
 #[ignore = "spawns a real window; run explicitly in the phase battery"]
 fn a_modifier_held_on_another_screen_still_captures_its_chord() -> Result<()> {
-    // The 0.9 regression: Controls tracked modifier edges only inside
-    // its own arm, so a Ctrl pressed in Settings read as unheld and a
-    // rebind captured a bare key. Modifier truth is global now, and
-    // this walks the exact failing path. The shared spawn helper keeps
-    // the persisted rebind inside this test's scratch HOME.
+    // A Ctrl pressed on Settings must still read as held on Controls, so
+    // the rebind captures the chord rather than a bare key. The shared
+    // spawn helper keeps the persisted rebind inside this test's scratch
+    // HOME.
     let (_guard, mut client) = spawn(4144)?;
 
     activate_labeled(&mut client, "settings")?;

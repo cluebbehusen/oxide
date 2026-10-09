@@ -1,8 +1,7 @@
 use super::*;
 use crate::scenario::ScenarioMode;
 
-/// The previous refresh, kept verbatim as the reference: every
-/// candidate pairing generated and sorted.
+/// A reference refresh that generates and sorts every candidate pairing.
 fn sorted_refresh(this: &mut Tracking, view: &Vision, state: &State, player: PlayerId) {
     let mut observations: Vec<(TilePos, Option<UnitId>)> = view
         .contacts

@@ -1,9 +1,9 @@
-//! Menus: the main screen and the pause screen.
+//! The list menu the row-based screens share, plus scenario discovery and
+//! the map preview cache.
 //!
-//! One deliberately plain widget — a titled list navigated by arrow keys,
-//! Enter, the mouse, or a finger. Menu input arrives through the same [`RawEvent`]
-//! funnel as gameplay, so injected events drive menus exactly like hardware
-//! (which is also how the menus get tested).
+//! A menu is a titled list navigated by arrow keys, Enter, the mouse, or a
+//! finger. Menu input arrives through the same [`RawEvent`] funnel as
+//! gameplay, so injected events drive menus exactly like hardware.
 
 use crate::numeric;
 use crate::numeric::Fit;
@@ -80,7 +80,7 @@ pub struct Menu {
     /// Row under the pointer, highlight only.
     hover: Option<usize>,
     /// Fractional wheel accumulation: trackpads deliver hundredths per
-    /// frame, and treating each as a full row made scrolling frantic.
+    /// frame, so only whole accumulated rows scroll.
     wheel_accum: f32,
     /// Row armed by a mouse press or the owning finger.
     press: Press<usize>,
@@ -89,7 +89,7 @@ pub struct Menu {
     /// only way to reach rows below the window.
     drag: Option<TouchDrag>,
     /// Section-label rows: drawn dimmer, skipped by the cursor, never
-    /// activated — the map browser's format headings.
+    /// activated.
     headers: Vec<usize>,
     /// Horizontal offset of the list as a fraction of the viewport
     /// width, zero for a centered list: the codex shifts its list left
@@ -148,8 +148,8 @@ impl Menu {
     }
 
     /// The nearest non-header row from `index`, walking in `dir` and
-    /// WRAPPING — the arrow keys' semantics (Up from the first real row
-    /// lands on the last). Falls back to `index` on an all-header list.
+    /// wrapping, as the arrow keys do (Up from the first real row lands on
+    /// the last). Falls back to `index` on an all-header list.
     fn snap(&self, index: usize, dir: i64) -> usize {
         let n = self.items.len();
         if n == 0 {
@@ -167,12 +167,10 @@ impl Menu {
         index.min(n - 1)
     }
 
-    /// The nearest non-header row from `index` WITHOUT wrapping: walk
-    /// `dir` to the list's edge, then fall back the other way — jump
-    /// keys (Home, End, paging) and programmatic selects must land
-    /// NEAR their target, never teleport across the list because a
-    /// section label sat in the way (`PageUp` once snapped to the bottom
-    /// Back row through the browser's leading header).
+    /// The nearest non-header row from `index` without wrapping: walk
+    /// `dir` to the list's edge, then fall back the other way. Jump keys
+    /// (Home, End, paging) and programmatic selects land near their
+    /// target instead of wrapping across the list past a section header.
     fn snap_clamped(&self, index: usize, dir: i64) -> usize {
         let n = self.items.len().fit::<i64>();
         if n == 0 {
@@ -218,11 +216,9 @@ impl Menu {
         self.scroll = (self.scroll.fit::<i64>() + delta)
             .clamp(0, max.fit::<i64>())
             .fit::<usize>();
-        // The selection rides inside the window: Enter must never
-        // activate a row the wheel has scrolled out of sight (a hidden
-        // Quit would be a nasty surprise) — and never lands on a
-        // header while riding (Enter on a "section label" activated
-        // whatever the caller mapped to nothing).
+        // The selection rides inside the window, so Enter never activates
+        // a row the wheel has scrolled out of sight, and it never lands on
+        // a header.
         let clamped = self
             .selected
             .clamp(self.scroll, self.scroll + visible.saturating_sub(1));
@@ -485,8 +481,7 @@ impl Menu {
             title_size,
             TEXT_TITLE,
         );
-        // The subtitle shrinks to fit — map blurbs run long, and text
-        // spilling off both window edges reads as a defect, not a hook.
+        // The subtitle shrinks to fit the window; map blurbs run long.
         let mut sub_size = 20.0 * s;
         let mut sub_dims = measure_text(&subtitle, None, numeric::font_size(sub_size), 1.0);
         let max_width = view_w() * 0.55;
@@ -760,9 +755,8 @@ pub fn discover_scenarios() -> Vec<ScenarioEntry> {
         for path in paths {
             if let Ok(scenario) = Scenario::load(&path) {
                 let blurb = scenario.meta.as_ref().map(|m| {
-                    // The measured duration band rides beside the
-                    // geometric pace label it qualifies — one badge,
-                    // so the pair can never separate.
+                    // The duration band shares one badge with the pace
+                    // label it qualifies.
                     let pace = match (m.pace.is_empty(), m.duration.is_empty()) {
                         (false, false) => format!("{} | {}", m.pace, m.duration),
                         (false, true) => m.pace.clone(),
@@ -803,7 +797,7 @@ pub fn discover_scenarios() -> Vec<ScenarioEntry> {
     }
     // Sections: 1v1 first (a first Play+Enter must never launch a team
     // match), bigger formats after, alphabetical within each. Callers
-    // key the remembered pick by PATH, so re-sorting can't move it.
+    // key the remembered pick by path, so re-sorting can't move it.
     entries.sort_by_key(|e| (e.seats, e.label.to_lowercase()));
     entries
 }

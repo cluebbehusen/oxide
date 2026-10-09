@@ -1,5 +1,5 @@
-//! The ground truth on screen: terrain tiles (fog-ruled), the fog
-//! veil itself, and battle scars.
+//! Ground layers: terrain tiles (fog-ruled), the fog veil, and battle
+//! scars.
 
 use super::*;
 use crate::numeric;
@@ -296,7 +296,7 @@ fn placement_for_group(
 ) -> Option<ObstaclePlacement> {
     let hash = coordinate_hash(group.x, group.y, 0x5155_4152);
     // Most rock stays as individual outcrops; selected 3x2 cells occasionally
-    // resolve into one approved cluster or abandoned machine footprint.
+    // resolve into one cluster or abandoned machine footprint.
     if !hash.is_multiple_of(3) {
         return None;
     }

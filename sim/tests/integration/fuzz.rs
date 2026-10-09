@@ -1,24 +1,21 @@
 //! Command fuzzing: the sim's command surface faces the debug socket, so
-//! it must shrug off hostile input — garbage ids, repeated ids,
-//! out-of-range players, coordinates at the integer extremes, queues
-//! driven past their caps — without panicking, while every state it
-//! reaches along the way still satisfies
-//! [`oxide_sim::State::validate_invariants`], and the same seeded garbage
-//! must produce the same bits on every run.
+//! it must survive hostile input (garbage ids, repeated ids, out-of-range
+//! players, coordinates at the integer extremes, queues driven past their
+//! caps) without panicking, while every state it reaches along the way
+//! still satisfies [`oxide_sim::State::validate_invariants`], and the same
+//! seeded garbage must produce the same bits on every run.
 //!
-//! Two properties are load-bearing about *how* the garbage is made. The
+//! Two properties of how the garbage is made are load-bearing. The
 //! generator is exhaustive over [`Command`]: a new verb stops this file
-//! compiling until it is fuzzed, which is how three commands escaped the
-//! old hand-written arm list. And the stream is drawn from
-//! [`chassis::rng::Pcg32`] alone, so a failure replays from its seed —
+//! compiling until it is fuzzed. And the stream is drawn from
+//! [`chassis::rng::Pcg32`] alone, so a failure replays from its seed,
 //! which the sweep names on any panic.
 //!
 //! Budget: [`SEEDS`] seeds x [`TICKS`] ticks, each seed run twice for the
 //! reproducibility comparison and fanned across threads like the map
-//! sweeps, with the checklist sampled every [`SAMPLE`] ticks — under half
-//! a second of the workspace run's twenty, which leaves room to widen the
-//! net rather than trim it. `FUZZ_SEEDS` raises the seed count for a soak
-//! run without renumbering the default set.
+//! sweeps, with the checklist sampled every [`SAMPLE`] ticks. `FUZZ_SEEDS`
+//! raises the seed count for a soak run without renumbering the default
+//! set.
 
 use crate::common;
 
@@ -39,8 +36,8 @@ const SEEDS: u64 = 32;
 const SAMPLE: u64 = 50;
 /// The seed the whole sweep is derived from.
 const BASE_SEED: u64 = 0xF022_DEC0DE;
-/// A bank no honest match approaches; a `u32` refund that wrapped would
-/// land three orders of magnitude past it.
+/// A bank no real match approaches; a `u32` refund that wrapped would land
+/// three orders of magnitude past it.
 const SCRAP_CEILING: u32 = 1 << 24;
 
 /// Every [`Command`] variant, as a value the generator can draw.
@@ -73,9 +70,7 @@ enum CommandTag {
 }
 
 /// The draw pool. Paired with the exhaustive matches below, the array and
-/// the variant list cannot drift apart — the old `next_below(10)` bound
-/// against nine arms is exactly how `Repair`, `Salvage`, and
-/// `CancelTrain` went unfuzzed.
+/// the variant list cannot drift apart, so no verb silently goes unfuzzed.
 const COMMAND_TAGS: [CommandTag; 24] = [
     CommandTag::Run,
     CommandTag::Attack,
@@ -426,7 +421,7 @@ fn target(rng: &mut Pcg32, state: &State) -> oxide_sim::AttackTarget {
 }
 
 /// An order cancellation that usually names a real order: a program entry
-/// of the drawn unit, keyed for its owner, with the honest count of later
+/// of the drawn unit, keyed for its owner, with the correct count of later
 /// matches. The rest miscount, or name a unit with no program at all, so
 /// the refusals see garbage too.
 fn cancel_order(rng: &mut Pcg32, state: &State) -> Command {
@@ -1012,10 +1007,8 @@ fn seeded_garbage_never_panics_and_reproduces() {
 
     // The premise. Garbage that never lands proves only that validation
     // works, and a fuzzer whose reach quietly narrows is the failure this
-    // file exists to prevent — it is how three verbs stayed unfuzzed
-    // through two releases. Every row below is a shape the old generator
-    // never reached; a sim change that makes one unreachable owes this
-    // list an edit and an explanation.
+    // file exists to prevent. A sim change that makes one of the rows
+    // below unreachable owes this list an edit and an explanation.
     assert!(
         reach.rejected < reach.sent,
         "the sweep landed nothing ({} of {} refused)",

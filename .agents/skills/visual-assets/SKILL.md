@@ -171,22 +171,22 @@ Build the review package around decisions rather than around generation output:
    review tool must display that same ID even when a small session is opened by
    itself.
 
-For pits and quarry drops, each numbered option must be a genuinely different
-structural system: for example, a sheer highwall, terraced cut, collapsed face,
-retained working, or abandoned lower level. Do not spend separate IDs on the
-same topology with changed scratches, speckles, or edge noise. The production
-black void is a negative control, not a style control: a pit is a visibly lower,
-terrestrial quarry level with a rock face, cliff foot, and textured floor.
+For pits and quarry drops, each numbered option must be a distinct structural
+system: for example, a sheer highwall, terraced cut, collapsed face, retained
+working, or abandoned lower level. Do not spend separate IDs on the same
+topology with changed scratches, speckles, or edge noise. A pit is a visibly
+lower, terrestrial quarry level, not a hole punched through the floor; the
+production renderer in `shell/src/render/pits.rs` steps benches down from a lit
+lip into darkness and is the control.
 
 Place an exact finalized tracked unit beside the lip in review evidence. Review
 at default gameplay zoom and full-map zoom, and reject any drop that looks
 smaller than its treads or plausibly driveable. Establish the desired physical
-scale in unconstrained concept art before forcing it into the current autotile
-renderer. If the approved depth needs multi-tile faces, overdraw, distance
-fields, or region-scale shadows, report that renderer requirement instead of
-flattening the design to fit existing tiles. Give every pit ID a full-map
-primary view plus native-scale edges, corners, junctions, and traversal context
-in sibling evidence.
+scale in unconstrained concept art before forcing it into the renderer. If the
+approved depth needs more than the renderer provides, report that requirement
+instead of flattening the design to fit. Give every pit ID a full-map primary
+view plus native-scale edges, corners, junctions, and traversal context in
+sibling evidence.
 
 At handoff, give verified absolute paths to `tools/asset_review.html` and every
 session directory. Resolve each path where the file or directory actually

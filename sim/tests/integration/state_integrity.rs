@@ -403,10 +403,11 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::InvalidUnloading(_) => 81,
         E::InvalidWorkEndpoint(_) => 82,
         E::InvalidDangerRetry(_) => 83,
+        E::OverlappingBuildings(..) => 84,
     }
 }
 
-const ROWS: usize = 84;
+const ROWS: usize = 85;
 
 /// One rendered message per row, with the entity ids the forgeries
 /// provoke (everything targets seat p0 and entity 0). A fixture's
@@ -503,6 +504,7 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::InvalidUnloading(UnitId(0)),
         E::InvalidWorkEndpoint(UnitId(0)),
         E::InvalidDangerRetry(UnitId(0)),
+        E::OverlappingBuildings(BuildingId(0), BuildingId(1)),
     ]
 }
 
@@ -912,7 +914,12 @@ fn every_checklist_row_refuses_its_forgery() {
         (
             "a danger retry no failed search could schedule",
             |d| d["units"][0]["danger_retry_at"] = json!(u64::MAX),
-            "unit u0 carries a danger retry beyond its bound",
+            "unit u0 carries an invalid danger retry",
+        ),
+        (
+            "a danger retry on a machine that never harvests",
+            |d| d["units"][1]["danger_retry_at"] = d["tick"].clone(),
+            "unit u1 carries an invalid danger retry",
         ),
         (
             "a unit shoved to the far end of the coordinate space",
@@ -1160,6 +1167,11 @@ fn every_checklist_row_refuses_its_forgery() {
             "a live building marked as already salvaged",
             |d| d["buildings"][0]["salvaged"] = json!(true),
             "building b0 is still live but marked salvaged",
+        ),
+        (
+            "two standing buildings on the same ground",
+            |d| d["buildings"][1]["anchor"] = d["buildings"][0]["anchor"].clone(),
+            "buildings b0 and b1 overlap",
         ),
         (
             "cargo aboard a machine with no sling",
@@ -1512,14 +1524,12 @@ fn every_checklist_row_refuses_its_forgery() {
 fn the_ghost_sort_key_carries_the_owner() {
     // Two hostile seats can leave memories under the same corner, which
     // is exactly why the canonical key is (y, x, owner) and not (y, x).
-    let mut base = snapshot();
-    base["players"]
-        .as_array_mut()
-        .unwrap()
-        .push(json!({"name": "Third", "faction": "ferrous", "team": 2, "scrap": 0}));
-    let mut view = base["vision"][0].clone();
-    view.as_object_mut().unwrap().remove("tracking");
-    base["vision"].as_array_mut().unwrap().push(view);
+    let mut scenario = arena();
+    scenario.map[1] = "#1...............3.#".into();
+    let mut third = scenario.players[1].clone();
+    third.name = "Third".into();
+    scenario.players.push(third);
+    let mut base = doc(&scenario.build().unwrap());
     base["vision"][0]["ghosts"] = json!([ghost(1, 6, 6), ghost(2, 6, 6)]);
     serde_json::from_value::<State>(base.clone()).expect("owner-ordered memories are canonical");
     base["vision"][0]["ghosts"] = json!([ghost(2, 6, 6), ghost(1, 6, 6)]);
@@ -1538,10 +1548,10 @@ fn a_ticked_state_survives_a_json_round_trip() {
     assert_eq!(restored.hash(), state.hash(), "the round trip is exact");
 }
 
-/// The bring-up gate, narrow half: a run that deliberately drives the
-/// verbs a bot rarely reaches — construction, welding, stripping,
-/// patrol, artillery in flight — checked on EVERY tick. A row tighter
-/// than reality fails here on the tick it becomes wrong.
+/// The reachable-state half, narrow form: a run that deliberately drives
+/// the verbs a bot rarely reaches (construction, welding, stripping,
+/// patrol, artillery in flight), checked on every tick. A row tighter than
+/// reality fails here on the tick it becomes wrong.
 #[test]
 fn a_full_verb_run_stays_valid_every_tick() {
     let mut scenario = arena();

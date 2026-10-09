@@ -1,7 +1,7 @@
 //! Same-version session continuation without executing historical ticks.
 //!
-//! This is an internal checkpoint contract, independent of player save files and
-//! replay origins. Controller memory is part of continuation, not world state.
+//! Player saves and recovery wrap this checkpoint; replay origins carry only the
+//! world. Controller memory is part of continuation, not world state.
 
 use crate::controller::{ControllerCheckpoint, SeatController};
 use crate::{GameReplay, stats::LiveMatchStats};
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 /// Session envelope revision, separate from simulation and controller revisions.
 pub const VERSION: u32 = 3;
-/// Encoded checkpoint load bound, including the optional legacy command history.
+/// Encoded checkpoint load bound.
 pub const MAX_BYTES: usize = 256 * 1024 * 1024;
 
 /// World and command sources at the boundary before the next tick executes.
@@ -269,53 +269,6 @@ pub(crate) fn validate_setup(scenario: &Scenario, state: &State) -> Result<()> {
 
 pub(crate) fn snapshot_binding(scenario: &Scenario, state: &State) -> u64 {
     chassis::hash::state_hash(&(scenario, state.hash()))
-}
-
-/// A checkpoint paired with its current recording. The recording may start
-/// from a scenario or a world origin; the checkpoint needs no earlier commands.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RecordedCheckpoint {
-    session: SessionCheckpoint,
-    recorder: GameReplay,
-}
-
-impl RecordedCheckpoint {
-    /// Retains the legacy recorder without replaying it during restoration.
-    pub fn capture(session: SessionCheckpoint, recorder: &GameReplay) -> Result<Self> {
-        let mut recorder = recorder.clone();
-        recorder.meta.ticks = Some(session.state.current_tick());
-        let checkpoint = Self { session, recorder };
-        checkpoint.validate_record()?;
-        Ok(checkpoint)
-    }
-
-    fn validate_record(&self) -> Result<()> {
-        self.recorder
-            .validate(Some(SIM_VERSION))
-            .map_err(|error| anyhow::anyhow!("{error}"))?;
-        ensure!(
-            self.recorder.setup == self.session.scenario,
-            "checkpoint recorder scenario mismatch"
-        );
-        ensure!(
-            self.recorder.meta.ticks == Some(self.session.state.current_tick()),
-            "checkpoint recorder tick mismatch"
-        );
-        Ok(())
-    }
-
-    /// Checks the recorder envelope and restores the session without ticking.
-    pub fn restore(self) -> Result<(RestoredSession, GameReplay)> {
-        self.validate_record()?;
-        Ok((self.session.restore()?, self.recorder))
-    }
-
-    /// Loads bounded bytes. This does not load an ordinary player save or replay.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        ensure!(bytes.len() <= MAX_BYTES, "checkpoint exceeds byte limit");
-        serde_json::from_slice(bytes).context("decoding recorded checkpoint")
-    }
 }
 
 #[cfg(test)]

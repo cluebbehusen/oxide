@@ -1,12 +1,11 @@
-//! The shared command panel: one HUD grammar for everything selected.
+//! The shared command panel for whatever is selected.
 //!
-//! Click a building and its cards appear — portrait, production cards
-//! with sprites and costs, the queue as cancelable thumbnails. Click a
-//! harvester and the *same* panel shows the build palette and its order
-//! queue. Every card is a button routed through the exact action its
-//! hotkey dispatches (keyboard stays first-class), and hovering any
-//! card raises a tooltip: what it is, what it costs, how it fights, and
-//! the key that does the same thing.
+//! A building shows its portrait, production cards with sprites and
+//! costs, and its queue as cancelable thumbnails; a harvester shows the
+//! build palette and its order queue. Every card is a button routed
+//! through the action its hotkey dispatches, and hovering any card raises
+//! a tooltip: what it is, what it costs, how it fights, and the key that
+//! does the same thing.
 
 pub(crate) mod info;
 mod upgrade;
@@ -51,8 +50,8 @@ pub enum CardIcon {
     },
 }
 
-/// What an order chip is ABOUT, with the colors that subject actually
-/// wears — an attack victim is not the panel owner's faction.
+/// What an order chip is about, with the colors that subject actually
+/// wears: an attack victim is not the panel owner's faction.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum OrderSubject {
     /// A machine: an attack victim.
@@ -185,10 +184,9 @@ pub struct Card {
     pub why: Option<String>,
     /// Tooltip body: description plus weapon lines.
     pub desc: Vec<String>,
-    /// How far along the card's job is, 0-1, when it has one — the
-    /// production head's bar and an order chip's own meter. The
-    /// renderer draws this and never reaches back into the state for
-    /// it; the panel model is the one description of the panel.
+    /// How far along the card's job is, 0-1, when it has one: the
+    /// production head's bar and an order chip's own meter. The renderer
+    /// draws this rather than reading the state itself.
     pub progress: Option<f32>,
 }
 
@@ -220,9 +218,8 @@ pub struct Panel {
     pub summary: String,
     /// Portrait icon.
     pub portrait: CardIcon,
-    /// Whose colors the portrait and queue sprites wear — the SELECTED
-    /// entity's owner, not the viewer (an inspected Cupric ally must
-    /// not draw in Ferrous rust).
+    /// Whose colors the portrait and queue sprites wear: the selected
+    /// entity's owner, not the viewer's.
     pub faction: oxide_sim::Faction,
     /// A mixed selection's unit-kind filters. Kept separate from
     /// command cards so choosing a roster slice can never crowd out a
@@ -255,11 +252,11 @@ impl Panel {
     }
 }
 
-/// The selection's SUBJECT: the unit whose program the dock, the
-/// portrait, and the full-opacity breadcrumbs all describe — one rule,
-/// so the surfaces can never disagree. Majority kind first (a mixed
-/// army reads as its bulk, not its lowest id), lowest id inside it as
-/// the deterministic tie-break.
+/// The selection's subject: the unit whose program the dock, the
+/// portrait, and the full-opacity breadcrumbs all describe, so those
+/// surfaces agree. Majority kind first (a mixed army reads as its bulk,
+/// not its lowest id), lowest id inside it as the deterministic
+/// tie-break.
 pub fn subject_unit(game: &Scene<'_>) -> Option<oxide_sim::UnitId> {
     let units: Vec<_> = game
         .presentation
@@ -285,9 +282,8 @@ pub fn subject_unit(game: &Scene<'_>) -> Option<oxide_sim::UnitId> {
         .min()
 }
 
-/// The player-facing description per unit kind — the sim's own copy
-/// ([`UnitKind::blurb`]), so the tooltip, the codex, and the source
-/// never drift apart.
+/// The player-facing description per unit kind: the sim's own copy
+/// ([`UnitKind::blurb`]), shared by the tooltip and the codex.
 pub fn unit_flavor(kind: UnitKind) -> &'static str {
     kind.blurb()
 }
@@ -485,11 +481,11 @@ fn bot_controller_label(game: &Scene<'_>, player: oxide_sim::PlayerId) -> Option
         .map(|config| bot_label(config.difficulty, config.stance, BotLabelStyle::Controller))
 }
 
-/// The subject an order chip may show, plus the lines that name it —
-/// OWN programs only. An ally's chips stay bare pictograms rather than
-/// resting the panel on a claim about what team sight shares, and an
-/// attack victim resolves through the breadcrumbs' own fog gate, so
-/// the chip and the trail can never tell different stories.
+/// The subject an order chip may show, plus the lines that name it, for
+/// own programs only. An ally's chips stay bare pictograms rather than
+/// relying on what team sight shares, and an attack victim resolves
+/// through the breadcrumbs' own fog gate, so the chip and the trail
+/// agree.
 fn order_subject(
     game: &Scene<'_>,
     order: &Order,
@@ -1153,10 +1149,9 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
         }
         return Some(panel);
     }
-    // The roster strip: a mixed army offers one chip per kind, counted.
-    // Click keeps only that kind; Shift- or Ctrl-click (or a lit QUEUE)
-    // drops it — the two cuts every RTS hand knows. It has its own eight-chip budget, so every
-    // roster role stays reachable without consuming command verbs.
+    // The roster strip: a mixed army offers one counted chip per kind.
+    // It has its own eight-chip budget, so every roster role stays
+    // reachable without consuming command verbs.
     if units.len() > 1 {
         let mut counts: Vec<(UnitKind, usize)> = Vec::new();
         for u in &units {

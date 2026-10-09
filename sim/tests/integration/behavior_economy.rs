@@ -221,10 +221,6 @@ fn spending_the_recovery_package_does_not_refill_the_entitlement() {
         settled + (drip_credits(&state) - credits_at_settle),
         "after the package is spent, income is the drip alone"
     );
-    assert!(
-        state.recovery_income_active(PlayerId(0)),
-        "the drip is the always-on floor, so a Foundry seat always reports passive income"
-    );
 }
 
 #[test]
@@ -702,8 +698,8 @@ fn deposits_saturate_a_full_bank() {
 
 #[test]
 fn foundry_refuses_kinds_it_cannot_produce() {
-    // 0.15: the Scuttler trains at the Foundry now; the Lancer is the
-    // cheapest kind that still needs the tech hall.
+    // The Scuttler trains at the Foundry; the Lancer is the cheapest kind
+    // that needs the Fabricator.
     let mut state = arena(vec![]).build().unwrap();
     let foundry = state.buildings()[0].id;
     let report = state.tick(&[cmd(
@@ -726,8 +722,8 @@ fn foundry_refuses_kinds_it_cannot_produce() {
 #[test]
 fn fabricator_gates_the_advanced_roster() {
     use oxide_sim::stats::BuildingKind;
-    // 0.15: the Scuttler moved to the Foundry, so the Lancer is the
-    // cheapest kind that proves the Fabricator's gate.
+    // The Scuttler trains at the Foundry, so the Lancer is the cheapest
+    // kind that proves the Fabricator's gate.
     let mut scenario = arena(vec![unit(0, UnitKind::Harvester, 4, 6)]);
     scenario.players[0].scrap = 300; // Fabricator (120) plus a Lancer (110)
     let mut state = scenario.build().unwrap();

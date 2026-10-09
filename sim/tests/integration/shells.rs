@@ -1,7 +1,8 @@
 //! Real artillery: shells lead current motion at fire time, fly unguided,
 //! and resolve on arrival against whatever stands there. Dodgeable by a
-//! later course change, deadly to straight commitments and the rooted,
-//! loyal to no one once launched. Public API only, like `domains.rs`.
+//! later course change, deadly to straight commitments and stationary
+//! targets, and independent of the shooter once launched. Public API only,
+//! like `domains.rs`.
 
 use crate::common;
 use common::{cmd, open_arena, players, run, unit};
@@ -222,24 +223,16 @@ fn shells_outlive_their_shooters() {
     let bombard = state.units()[0].id;
     let scuttler = state.units()[2].id;
     let hp_before = state.unit(scuttler).unwrap().hp;
-    // The shooter dies the tick after launch; its shell flies on and
-    // still lands ("a shell in flight chooses nothing" — including
-    // dying with its gun).
+    // The shooter is stopped the tick after launch; its shell flies on
+    // and still lands.
     state.tick(&[cmd(
         0,
         Command::Stop {
             units: vec![bombard],
         },
     )]);
-    // Simulate the shooter's death by enemy action: a swarm appears is
-    // overkill — the sim only needs the unit gone, and the honest path
-    // is damage. Two enemy scuttlers spawn nearby in scenario terms is
-    // not possible mid-game, so we let the original scuttler's team
-    // kill it via a fresh assault from the second seat's forces. The
-    // simplest honest lever: the enemy scuttler attacks the bombard
-    // (slow walk), while the shell (30 ticks) lands first — instead,
-    // assert the weaker but real property: the shell keeps flying when
-    // its shooter's ORDER is gone (stopped), and lands on schedule.
+    // This asserts the weaker property: the shell keeps flying when its
+    // shooter's order is gone, and lands on schedule.
     assert_eq!(state.shells().len(), 1);
     run(&mut state, 60);
     assert!(state.shells().is_empty(), "the sky cleared on schedule");
@@ -1036,11 +1029,10 @@ fn predictive_aim_falls_back_before_crossing_a_peak() {
 
 #[test]
 fn a_siege_shell_lands_on_the_footprint_edge_and_still_counts() {
-    // Aiming at a building lobs at its closest footprint point — an
-    // exact edge coordinate that floors into the NEIGHBORING tile.
-    // Direct hits are distance-to-footprint, not tile containment, or
-    // sieges deal nothing (found the honest way: a six-gun battery
-    // timed out a victory test without scratching the foundry).
+    // Aiming at a building lobs at its closest footprint point, an exact
+    // edge coordinate that can floor into the neighboring tile. Direct
+    // hits are distance-to-footprint, not tile containment, or sieges
+    // deal nothing.
     let mut state = range(vec![
         unit(0, UnitKind::Bombard, 14, 5),
         // Pacifist eyes on the target: attack commands are sight-gated.

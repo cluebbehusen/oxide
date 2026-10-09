@@ -220,7 +220,7 @@ fn records_carry_their_kind_and_a_named_save_leaves_the_session_recorder_alone()
 #[test]
 fn an_unwritable_dir_reports_instead_of_lying() {
     // The would-be directory exists as a file, so create_dir_all
-    // refuses — the class of trouble the old bool swallowed.
+    // refuses and the error must surface.
     let dir = scratch("unwritable");
     std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
     std::fs::write(&dir, b"in the way").unwrap();

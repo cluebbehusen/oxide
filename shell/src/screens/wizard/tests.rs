@@ -28,8 +28,8 @@ fn drive(w: &mut Wizard, draft: &mut NewMatchDraft, key: Key) -> Out {
         .expect("update")
 }
 
-/// Activates the browser's first entry (sections put duels first,
-/// so entry 0 is always a 1v1 — its own test pins that).
+/// Activates the browser's first entry (sections put duels first, so
+/// entry 0 is always a 1v1; its own test pins that).
 fn pick_first_map(w: &mut Wizard, draft: &mut NewMatchDraft) {
     w.browser.selected = 0;
     assert_eq!(drive(w, draft, Key::Enter), Out::Stay);
@@ -84,10 +84,10 @@ fn every_discovered_map_lands_on_setup_and_launches_as_authored() {
 
 #[test]
 fn a_stale_seat_never_carries_across_maps() {
-    // Take a late chair on a team map, back out, pick a duel: the
-    // chair and choices must reset — the old clamp silently sat the
-    // human in the duel's second seat with nothing on screen
-    // saying so. Re-entering the SAME map keeps every answer.
+    // Take a late chair on a team map, back out, pick a duel: the chair
+    // and choices must reset rather than silently clamp the human into
+    // the duel's second seat. Re-entering the same map keeps every
+    // answer.
     let team = Scenario::load(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../scenarios/compass-grand.json"
@@ -209,10 +209,9 @@ fn the_team_chip_cycles_through_ffa_and_every_team() {
 
 #[test]
 fn a_stale_team_choice_never_carries_across_maps() {
-    // Same shape as the stale-seat guard: re-entering the SAME map
-    // keeps the choice, a different map re-derives the authored
-    // defaults — a Team 5 chosen on an 8-seat map must not ride
-    // into a duel that has no Team 5.
+    // As with the chair: re-entering the same map keeps the choice, and a
+    // different map re-derives the authored defaults, so a Team 5 chosen
+    // on an 8-seat map must not ride into a duel that has no Team 5.
     let team = Scenario::load(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../scenarios/compass-grand.json"
@@ -455,10 +454,8 @@ fn a_team_map_runs_the_setup_screen_and_reseats_without_permuting() {
 #[test]
 fn omitted_singleton_teams_keep_their_setup_card() {
     let mut scenario = Scenario::load("../scenarios/trident-plateau.json").expect("shipped");
-    // Two explicit teammates then an omitted singleton — the shape
-    // that used to derive two different surrogate keys and drop
-    // the seat from the display order (Enter on Start then indexed
-    // past the order and panicked).
+    // Two explicit teammates then an omitted singleton: every seat must
+    // stay in the display order, or Enter on Start would index past it.
     scenario.players[2].team = None;
     let order = seat_display_order(&scenario);
     assert_eq!(
@@ -472,8 +469,7 @@ fn omitted_singleton_teams_keep_their_setup_card() {
     let layout = setup_layout(&scenario, 0, vec2(1280.0, 800.0), 1.0);
     assert_eq!(layout.seats.len(), scenario.players.len());
 
-    // An authored id inside the old surrogate range must not
-    // swallow an omitted seat either.
+    // A large authored id must not swallow an omitted seat either.
     scenario.players[2].team = Some(202);
     let order = seat_display_order(&scenario);
     assert_eq!(order.len(), scenario.players.len());
@@ -1308,10 +1304,9 @@ fn the_setup_card_and_its_protocol_row_show_the_retinted_name() {
 
 #[test]
 fn the_previewed_name_is_the_launched_name() {
-    // The regression guard: the preview reads the SAME rule launch
-    // applies (Scenario::retint_seat). Reimplementing the rename in
-    // the shell — where a name without a faction word diverges —
-    // fails here.
+    // The preview reads the same rule launch applies
+    // (`Scenario::retint_seat`); a shell-side reimplementation of the
+    // rename would diverge on a name without a faction word.
     let mut draft = NewMatchDraft::default();
     draft.set_scenario(Scenario::skirmish(), None);
     draft.seats[0].faction_choice = 2; // Cupric

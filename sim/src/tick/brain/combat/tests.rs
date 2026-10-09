@@ -5,9 +5,8 @@ use crate::scenario::{PlayerSpec, Scenario, ScenarioMode, UnitSpec};
 use crate::state::Faction;
 use crate::stats::UnitKind;
 
-/// The pre-index acquisition, kept verbatim as the reference: a full
-/// scan of the unit list. The indexed window prunes candidates and
-/// must never change the pick.
+/// The reference acquisition: a full scan of the unit list. The indexed
+/// window prunes candidates and must never change the pick.
 fn linear_acquire(state: &State, id: UnitId) -> Option<Target> {
     let unit = state.unit(id).expect("caller checked");
     let stats = unit.kind.stats();
@@ -258,8 +257,8 @@ fn indexed_acquisition_matches_the_linear_scan() {
     assert!(picks > 100, "the armies never met ({picks} picks)");
 }
 
-/// The linear chain `sidearm_victim`'s window replaced, kept verbatim
-/// as the reference the differential below compares against.
+/// A plain linear scan: the reference the differential below compares
+/// `sidearm_victim`'s windowed search against.
 fn linear_sidearm_victim(
     state: &State,
     shooter_pos: Vec2Fx,

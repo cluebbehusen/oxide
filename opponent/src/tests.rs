@@ -292,7 +292,6 @@ const FIELD: [&str; 24] = [
     "################################################",
 ];
 
-/// The field with both seats and no units.
 /// Sentinel spots beside the West Foundry on the field, nearer home than any
 /// other staged unit: worth the Balanced stance's home reserve, so offense
 /// leaves them there.
@@ -314,6 +313,7 @@ fn garrison(scenario: &mut Scenario) {
     }
 }
 
+/// The field with both seats and no units.
 fn field() -> Scenario {
     let mut scenario = arena(0);
     scenario.map = FIELD.map(str::to_owned).to_vec();

@@ -260,7 +260,7 @@ pub struct SeatLedger {
     /// starts from a saved world.
     #[serde(default)]
     pub start: u64,
-    /// Tick the ledger ended; zero in rows recorded before it was kept.
+    /// Tick the ledger ended; zero when a serialized row omits it.
     #[serde(default)]
     pub end: u64,
     /// Net worth at `end`.
@@ -305,15 +305,6 @@ pub struct ImpactLedger {
     shells: Vec<Shell>,
     /// Crucibles that have a wreck in reach as a smelting tick begins.
     smelting: Vec<Key>,
-}
-
-fn building_value(kind: BuildingKind, tier: u8) -> u64 {
-    kind.tiers()
-        .iter()
-        .take(usize::from(tier) + 1)
-        .filter_map(|stats| stats.construction.as_ref())
-        .map(|construction| u64::from(construction.cost))
-        .sum()
 }
 
 fn snapshot(state: &State) -> Vec<Body> {
@@ -380,7 +371,7 @@ fn snapshot(state: &State) -> Vec<Body> {
             team: team(building.player),
             hp: building.hp,
             max_hp: stats.max_hp,
-            value: building_value(building.kind, building.tier),
+            value: u64::from(building.kind.invested_cost(building.tier)),
             tile: TilePos::containing(building.center()),
             vision: stats.vision,
             class: Class::Building,
@@ -651,10 +642,10 @@ impl ImpactLedger {
                 Event::AttackHit {
                     attacker,
                     attacker_kind,
+                    weapon,
                     target,
                     attacker_pos,
                     target_pos,
-                    ..
                 } => {
                     let Some(source) = self.source(
                         Key::Unit(*attacker),
@@ -663,30 +654,40 @@ impl ImpactLedger {
                         continue;
                     };
                     let at = TilePos::containing(*target_pos);
-                    if *attacker_kind == UnitKind::Sapper {
-                        sources
-                            .splash
-                            .push((at, tiles(SAPPER_BLAST_RADIUS), source));
+                    let stats = attacker_kind.stats();
+                    let splash = if stats.demolition {
+                        Some(SAPPER_BLAST_RADIUS)
+                    } else {
+                        stats.weapons.get(*weapon).and_then(|weapon| weapon.splash)
+                    };
+                    if let Some(radius) = splash {
+                        sources.splash.push((at, tiles(radius), source));
                     }
                     aim(&mut sources, *target, at, source);
                 }
                 Event::TurretFired {
                     turret,
+                    kind,
+                    tier,
                     target,
                     turret_pos,
                     target_pos,
-                    ..
                 } => {
                     if let Some(source) = self.source(
                         Key::Building(*turret),
                         Some(TilePos::containing(*turret_pos)),
                     ) {
-                        aim(
-                            &mut sources,
-                            *target,
-                            TilePos::containing(*target_pos),
-                            source,
-                        );
+                        let at = TilePos::containing(*target_pos);
+                        // A building fires its first weapon and nothing else.
+                        if let Some(radius) = kind
+                            .tiers()
+                            .get(usize::from(*tier))
+                            .and_then(|stats| stats.weapons.first())
+                            .and_then(|weapon| weapon.splash)
+                        {
+                            sources.splash.push((at, tiles(radius), source));
+                        }
+                        aim(&mut sources, *target, at, source);
                     }
                 }
                 Event::ShellLaunched {
@@ -1410,8 +1411,8 @@ impl LedgerPool {
 }
 
 /// A seat's net worth at `tick`: its final worth once the ledger has ended,
-/// else the last sample at or before it; `None` before the first. Rows that
-/// predate the final worth carry their last sample forward instead.
+/// else the last sample at or before it; `None` before the first. A row with
+/// no recorded end carries its last sample forward instead.
 pub fn worth_at(ledger: &SeatLedger, tick: u64) -> Option<u64> {
     if ledger.end > 0 && tick >= ledger.end {
         return Some(ledger.final_worth);

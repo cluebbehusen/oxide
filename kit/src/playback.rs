@@ -1,21 +1,18 @@
 //! Replay playback: a read-only walk through a recorded match.
 //!
-//! No recorder, no commands, no bots — the log is the match, and this
-//! engine replays it through raw [`State::tick`] exactly as the record
-//! dictates. Seeking backward restores the nearest forward checkpoint
-//! (in-memory `State` clones taken every `CHECKPOINT_EVERY` ticks on
-//! the way through) and re-simulates the suffix. A seeked position must
-//! agree with a straight run from the recording origin, and the
-//! test below holds that as a hash identity.
+//! No recorder and no bots: this engine replays the log through raw
+//! [`State::tick`] exactly as recorded. Seeking backward restores the
+//! nearest earlier checkpoint (in-memory `State` clones taken on the way
+//! through) and re-simulates the suffix. A seeked position must hash the
+//! same as a straight run from the recording origin.
 
 use crate::GameReplay;
 use anyhow::Result;
 use oxide_sim::{SIM_VERSION, State};
 
-/// Minimum checkpoint cadence in ticks; the real cadence stretches so
-/// no record ever holds more than [`MAX_CHECKPOINTS`] clones — a
-/// 2M-tick replay of a 256x256 world must not exhaust memory for
-/// seek convenience.
+/// Minimum checkpoint cadence in ticks; the real cadence stretches so no
+/// record holds more than [`MAX_CHECKPOINTS`] clones, keeping a long replay
+/// of a large world from exhausting memory.
 const CHECKPOINT_EVERY: u64 = 1024;
 
 /// Upper bound on retained state clones.
@@ -48,7 +45,7 @@ fn checkpoint_cadence(total: u64) -> u64 {
 
 impl Playback {
     /// Validates and opens a replay at its origin. Cross-version records are
-    /// refused — replays reproduce only on the sim that wrote them.
+    /// refused because replays reproduce only on the sim that wrote them.
     pub fn load(replay: GameReplay) -> Result<Self> {
         // Seeking is synchronous: a structurally valid file claiming an
         // absurd length would hang the viewer at the first End press.
@@ -95,8 +92,7 @@ impl Playback {
     }
 
     /// Advances up to `ticks`, stopping at the end of the record, and
-    /// returns every event the replayed world emitted on the way — the
-    /// viewer's presentation feed.
+    /// returns every event the replayed world emitted on the way.
     pub fn advance(&mut self, ticks: u64) -> Vec<oxide_sim::Event> {
         let mut events = Vec::new();
         for _ in 0..ticks {
@@ -110,16 +106,15 @@ impl Playback {
 
     /// Jumps to `target` (clamped to the record). Backward: restore the
     /// nearest checkpoint at or before the target and re-simulate the
-    /// suffix — bit-identical to having played straight there.
+    /// suffix, bit-identical to having played straight there.
     pub fn seek(&mut self, target: u64) {
         self.seek_step(target, u64::MAX);
     }
 
     /// One budgeted slice of a seek toward `target`: restores the best
-    /// checkpoint exactly like [`Playback::seek`], then simulates at
-    /// most `budget` ticks. Returns true when the target is reached —
-    /// callers loop across frames, so a long first seek costs a
-    /// progress bar instead of a frozen render thread.
+    /// checkpoint like [`Playback::seek`], then simulates at most `budget`
+    /// ticks. Returns true when the target is reached; callers loop across
+    /// frames so a long seek shows progress instead of freezing rendering.
     pub fn seek_step(&mut self, target: u64, budget: u64) -> bool {
         let target = target.clamp(self.start(), self.total);
         // Inspect checkpoints by reference: most forward slices need no restore.

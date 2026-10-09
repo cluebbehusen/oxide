@@ -54,9 +54,8 @@ fn validate_accepts_what_record_produces() {
 
 #[test]
 fn validate_checks_structure_before_version() {
-    // Callers may deliberately tolerate a version mismatch (replay
-    // archaeology); that tolerance must never smuggle in a malformed
-    // log. Both defects present -> the structural error wins.
+    // A caller that tolerates a version mismatch must never accept a
+    // malformed log: with both defects present, the structural error wins.
     let mut replay: Replay<(), u8> = Replay::new("0.9.0", ());
     replay.commands = vec![
         TimedCommand {
@@ -163,10 +162,8 @@ fn saving_twice_to_one_path_replaces_the_record() {
 
 #[test]
 fn absent_metadata_stays_out_of_the_file_and_present_metadata_survives() {
-    // Compatibility both directions: a record that sets nothing
-    // serializes byte-identically to the pre-metadata format (an old
-    // binary reads it untroubled), and a pre-metadata file loads
-    // with the new fields honestly absent.
+    // Unset optional metadata is omitted from the file, and a file
+    // without those fields loads with them absent.
     let bare: Replay<u8, u8> = Replay::new("1.0.0", 1);
     let json = serde_json::to_string(&bare).unwrap();
     assert!(!json.contains("kind") && !json.contains("saved_at"));

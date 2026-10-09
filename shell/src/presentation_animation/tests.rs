@@ -477,7 +477,7 @@ fn harvesting_requires_real_work_and_cargo_is_a_continuous_fill() {
     let mut unit = base;
     unit.order = Order::Harvest {
         node,
-        anchor: Some(node),
+        anchor: node,
         retiring: false,
     };
     unit.pos = oxide_sim::geometry::work_approach_point(
@@ -514,7 +514,7 @@ fn harvesting_requires_real_work_and_cargo_is_a_continuous_fill() {
 
     unit.order = Order::Harvest {
         node,
-        anchor: Some(node),
+        anchor: node,
         retiring: true,
     };
     assert_eq!(

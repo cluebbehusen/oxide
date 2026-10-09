@@ -1,8 +1,7 @@
-//! Map audit: the numbers that decide whether a map plays the way its
-//! label promises — usable room per seat, real route lengths by movement
-//! domain, resource spread, artillery pressure, and spawn spacing. Pace
-//! bands use these figures instead of raw dimensions: a large footprint
-//! with bases 22 tiles apart still plays like a knife fight.
+//! Map audit: usable room per seat, route lengths by movement domain,
+//! resource spread, artillery pressure, and spawn spacing. Pace bands use
+//! these figures instead of raw dimensions, since a large map with close
+//! bases still plays short.
 
 use anyhow::{Context, Result};
 use chassis::grid::TilePos;
@@ -23,7 +22,7 @@ pub struct SeatAudit {
     pub nearest_scrap: f64,
     /// Shortest route to any enemy Foundry by the cheapest mover:
     /// ground steps, or the air detour (rounded up) when no ground
-    /// route exists — the island case.
+    /// route exists.
     pub nearest_enemy_route: Option<usize>,
     /// Straight-line distance to the nearest derelict extractor frame,
     /// in tiles; None on maps without frames.
@@ -35,22 +34,22 @@ pub struct SeatAudit {
 pub struct RouteAudit {
     /// Seat pair.
     pub seats: (u8, u8),
-    /// A* steps between doorsteps for ground units; None when sealed.
+    /// Ground route between the doorstep sets, in tile-equivalents; None
+    /// when sealed.
     pub ground_steps: Option<usize>,
     /// Air distance between Foundry centers: the straight line unless a
-    /// peak forces the sim's air router around, then BFS steps over
+    /// peak forces the sim's air router around, then the detour over
     /// air-passable tiles. None when peaks seal the sky entirely.
     pub air_tiles: Option<f64>,
-    /// The longest artillery reach as a fraction of the ground route —
-    /// past ~0.5 the map is a siege range, not a battlefield.
+    /// The longest artillery reach as a fraction of the ground route.
     pub artillery_pressure: Option<f64>,
 }
 
 impl RouteAudit {
-    /// The distance the cheapest mover actually pays: ground steps
-    /// when a ground route exists, else the air detour rounded up.
-    /// `None` never survives a built scenario — the sim's connectivity
-    /// gate refuses a pair no mover can reach.
+    /// The distance the cheapest mover pays: ground steps when a ground
+    /// route exists, else the air detour rounded up. A built scenario never
+    /// yields `None`: the sim's connectivity gate refuses a pair no mover
+    /// can reach.
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -81,9 +80,8 @@ pub struct MapAudit {
     pub routes: Vec<RouteAudit>,
 }
 
-/// Longest artillery reach, straight from the stats of the two siege
-/// kinds — a rebalance moves the audit automatically; a new artillery
-/// kind joins this list.
+/// Longest artillery reach, read from the Bombard, Avalanche and Bastion
+/// stats; a new artillery kind joins this list.
 fn longest_reach() -> f64 {
     let bombard = oxide_sim::UnitKind::Bombard.stats().weapons.iter();
     let avalanche = oxide_sim::UnitKind::Avalanche.stats().weapons.iter();
@@ -95,8 +93,8 @@ fn longest_reach() -> f64 {
         .fold(0.0, f64::max)
 }
 
-/// Passable tiles ringing a building footprint — where ground traffic
-/// actually enters and leaves.
+/// Passable tiles ringing a building footprint, where ground traffic
+/// enters and leaves.
 fn doorsteps(state: &State, anchor: TilePos, size: (i32, i32)) -> Vec<TilePos> {
     let mut out = Vec::new();
     for dy in -1..=size.1 {
@@ -135,7 +133,6 @@ fn reachable_from(state: &State, starts: &[TilePos]) -> usize {
                 }
                 // The sim's A* forbids corner cutting: a diagonal step
                 // is legal only when both cardinal companions are open.
-                // The audit must count rooms the way units walk them.
                 if dx != 0
                     && dy != 0
                     && !(state.passable(t.offset(dx, 0)) && state.passable(t.offset(0, dy)))
@@ -150,13 +147,11 @@ fn reachable_from(state: &State, starts: &[TilePos]) -> usize {
     count
 }
 
-/// Shortest ground route between two doorstep *sets*, in tile-
-/// equivalents: Dijkstra under the sim's own movement costs
-/// (8-connected, no corner cutting, diagonals at 14/10 exactly like
-/// `chassis::path::astar`). A hop-counting BFS both picked routes the
-/// sim would not and understated diagonal-heavy marches by up to 1.4x.
-/// Row-major-first doorsteps understate or seal routes when a rock
-/// leans on one side of a Foundry; sets measure what units can walk.
+/// Shortest ground route between two doorstep sets, in tile-equivalents:
+/// Dijkstra under the sim's movement costs (8-connected, no corner
+/// cutting, diagonals at 14/10 as in `chassis::path::astar`). Searching
+/// from every doorstep keeps a rock on one side of a Foundry from
+/// understating or sealing the route.
 fn ground_route(state: &State, from: &[TilePos], to: &[TilePos]) -> Option<usize> {
     if from.is_empty() || to.is_empty() {
         return None;
@@ -211,16 +206,14 @@ fn ground_route(state: &State, from: &[TilePos], to: &[TilePos]) -> Option<usize
     None
 }
 
-/// Air distance between two Foundries: center-to-center geometry, so an
-/// asymmetric doorstep ring can't skew a metric flyers never feel. The
-/// straight line serves unless a peak crosses it — then an 8-connected
-/// BFS over air-passable tiles (footprint to footprint) measures the
-/// detour the sim's air router would actually take.
+/// Air distance between two Foundries, center to center, so an asymmetric
+/// doorstep ring cannot skew a metric flyers never feel. The straight line
+/// serves unless a peak crosses it; then an 8-connected search over
+/// air-passable tiles, footprint to footprint, measures the detour the
+/// sim's air router would take.
 fn air_route(state: &State, a: &oxide_sim::Building, b: &oxide_sim::Building) -> Option<f64> {
     // Uniform-cost search with diagonals at sqrt(2), so the detour
-    // branch reports the same Euclidean-ish tile unit as the straight
-    // line — a hop-counting BFS made peak maps read closer than open
-    // ones on diagonal geometry.
+    // reports the same tile unit as the straight line.
     const SQRT2: f64 = std::f64::consts::SQRT_2;
     let center = |f: &oxide_sim::Building| {
         let (w, h) = f.stats().size;

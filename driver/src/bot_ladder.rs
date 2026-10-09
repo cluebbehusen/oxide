@@ -405,7 +405,7 @@ impl Tally {
         }
         if self.decided > 0 {
             self.share = Some(f64::from(self.higher_wins) / f64::from(self.decided));
-            self.wilson = Some(crate::sweep::wilson(self.higher_wins, self.decided));
+            self.wilson = Some(wilson(self.higher_wins, self.decided));
         }
     }
 }
@@ -432,8 +432,8 @@ pub struct ComparisonReport {
     pub stances: Vec<(BotStance, Tally)>,
     /// By map family, in family order.
     pub families: Vec<(MapFamily, Tally)>,
-    /// The higher rung's share of net worth, by pair; empty for rows
-    /// recorded before the ledger existed.
+    /// The higher rung's share of net worth, by pair; empty when the rows
+    /// carry no ledgers.
     pub worth: Vec<WorthShare>,
 }
 
@@ -763,6 +763,18 @@ fn line(out: &mut String, group: &str, tally: &Tally, report: &ComparisonReport)
         tally.decided,
         tally.legs
     );
+}
+
+/// The 95% Wilson score interval for `wins` of `n`, which stays inside
+/// 0..1 and remains accurate at small counts.
+fn wilson(wins: u32, n: u32) -> [f64; 2] {
+    const Z: f64 = 1.959_963_984_540_054;
+    let n = f64::from(n);
+    let p = f64::from(wins) / n;
+    let denominator = 1.0 + Z * Z / n;
+    let centre = (p + Z * Z / (2.0 * n)) / denominator;
+    let half = Z / denominator * (p * (1.0 - p) / n + Z * Z / (4.0 * n * n)).sqrt();
+    [(centre - half).max(0.0), (centre + half).min(1.0)]
 }
 
 #[cfg(test)]

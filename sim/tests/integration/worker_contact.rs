@@ -323,7 +323,7 @@ fn losing_the_dropoff_cancels_release_and_only_automatic_delivery_retargets() {
             let mut data = serde_json::to_value(state).unwrap();
             data["units"][0]["order"] = json!(Order::Harvest {
                 node: TilePos::new(13, 7),
-                anchor: Some(TilePos::new(13, 7)),
+                anchor: TilePos::new(13, 7),
                 retiring: true
             });
             state = serde_json::from_value(data).unwrap();

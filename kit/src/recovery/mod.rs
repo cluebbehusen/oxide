@@ -63,8 +63,8 @@ pub enum RecordingKind {
     /// A live match's completed command history.
     #[default]
     LiveMatch,
-    /// A watched replay, recorded by earlier builds for playback diagnostics.
-    /// Still read so those records can be exported and retired.
+    /// A watched-replay recording for playback diagnostics. Only tests write
+    /// these; they are read so existing records can be exported and retired.
     Playback,
 }
 

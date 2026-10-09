@@ -385,7 +385,7 @@ fn every_verb_is_sorted_into_a_tag_list() {
     );
 }
 
-/// The honest comparator: a tripled id must leave the world bit-identical
+/// The direct comparison: a tripled id must leave the world bit-identical
 /// to the same command sent once.
 #[test]
 fn a_tripled_id_lands_exactly_what_a_single_id_lands() {
@@ -406,8 +406,8 @@ fn a_tripled_id_lands_exactly_what_a_single_id_lands() {
     }
 }
 
-/// The append case the duplicate used to corrupt: three copies of one id
-/// must take one queue slot, not three.
+/// The append case: three copies of one id must take one queue slot, not
+/// three.
 #[test]
 fn a_tripled_append_takes_one_queue_slot() {
     let stage = stage();
@@ -443,7 +443,7 @@ fn a_tripled_append_takes_one_queue_slot() {
 }
 
 /// The asymmetric case: an idle unit takes the order itself, and the
-/// repeats used to append clones of the order it had just been given.
+/// repeats must not append clones of the order it was just given.
 #[test]
 fn a_tripled_order_to_an_idle_unit_queues_nothing() {
     let stage = stage();

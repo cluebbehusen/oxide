@@ -251,9 +251,9 @@ fn the_shell_and_the_atlas_name_the_same_sprites() {
         "the shell asks for sprites the atlas does not ship: {missing:?} \
              (regenerate with tools/gen_sprites.py)"
     );
-    // The other direction: art nothing draws is art nobody blessed.
-    // gen_sprites.py and the shell ship together, so a row with no
-    // reader is a half-landed change, not a spare part.
+    // The other direction: every atlas row needs a reader.
+    // gen_sprites.py and the shell ship together, so an unread row is
+    // an incomplete change.
     let mut orphans: Vec<&String> = atlas.keys().filter(|k| !named.contains(k)).collect();
     orphans.sort();
     assert!(

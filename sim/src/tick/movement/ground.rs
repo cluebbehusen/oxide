@@ -168,8 +168,8 @@ fn route_target(
 /// grows; only an error past [`GROUND_PIVOT_THRESHOLD`] brakes along the
 /// old heading and pivots in place, and a chassis at rest pivots onto its
 /// bearing before it rolls. Off the exact bearing the body travels along
-/// its heading, so a bend is a real arc; within eight compass steps it
-/// tracks the target point directly and lands on it exactly.
+/// its heading, so a bend is a real arc; within `GROUND_ALIGNED_STEPS` of
+/// the bearing it tracks the target point directly and lands on it exactly.
 pub(super) fn advance(unit: &mut Unit, terrain: &GroundTerrain, parked: &ParkedBodies) -> bool {
     let target = route_target(unit, terrain, parked);
     let max_speed = unit.kind.stats().speed;

@@ -7,12 +7,12 @@ use crate::numeric;
 use crate::numeric::Fit;
 use crate::render::prim::{fill_circle, line_between, stroke_circle};
 
-/// The armed building follows the cursor as a translucent footprint —
-/// the tint and the command share the shell's queue-aware placement
-/// verdict, so what looks legal is legal. Three states: green founds
-/// this instant, amber founds on arrival (part of the footprint is
-/// remembered ground, judged from memory — never live state, so the
-/// tint can't be a hidden-enemy detector), red is refused.
+/// The armed building follows the cursor as a translucent footprint. The
+/// tint and the command share the queue-aware placement verdict, so what
+/// looks legal is legal: green founds immediately, amber founds on arrival
+/// (part of the footprint is remembered ground, judged from memory rather
+/// than live state so the tint cannot reveal hidden enemies), and red is
+/// refused.
 pub(crate) fn draw_placement_ghost(
     game: &crate::game::Scene<'_>,
     sprites: &Sprites,
@@ -111,18 +111,13 @@ pub(crate) fn draw_pending_founds(game: &crate::game::Scene<'_>, sprites: &Sprit
     }
 }
 
-/// Queued waypoints of the selection, drawn as a faint chain; a patrol
-/// closes the loop. While arming a patrol (`R`), the collected route
-/// draws in scrap-amber instead.
 /// The screen-space waypoints one selected unit's program draws, as the
-/// staged commands will leave it — pure, so the fog rules are testable: a
-/// unit outside the decorated selection or a FOREIGN unit yields no points at
-/// all (an ally's or enemy's order chain is intent the viewer has no
-/// license to read — fog holds positions, never plans). An own walk
-/// draws at the tile its player clicked, explored or not, never at the
-/// slot or endpoint the simulation resolved around it. Each verb speaks
-/// its own color: bone walks, danger fights, scrap-gold harvests,
-/// patina builds, welds, and strips.
+/// staged commands will leave it. Pure, so the fog rules are testable: a
+/// unit outside the decorated selection or a foreign unit yields no
+/// points, because an ally's or enemy's orders are intent the viewer may
+/// not read. An own walk draws at the tile its player clicked, explored
+/// or not, never at the slot or endpoint the simulation resolved around
+/// it. Each verb draws in its own color.
 pub(crate) fn breadcrumb_points(
     game: &crate::game::Scene<'_>,
     projection: &crate::game::projection::Projection,
@@ -139,9 +134,8 @@ pub(crate) fn breadcrumb_points(
     let verb_color = |order: &oxide_sim::Order| match order {
         oxide_sim::Order::Run { .. } => BONE_FAINT,
         oxide_sim::Order::Advance { .. } => Color::new(0.95, 0.76, 0.28, 0.62),
-        // A chase and a march are different promises: the chase burns
-        // crimson at its victim, the fighting march runs ember toward
-        // ground.
+        // A chase (at a victim) and a fighting march (toward ground)
+        // draw in different colors.
         oxide_sim::Order::Attack { .. } => Color::new(0.85, 0.32, 0.29, 0.55),
         oxide_sim::Order::Hunt { .. } => Color::new(0.88, 0.55, 0.26, 0.55),
         oxide_sim::Order::ReturnCargo { .. } | oxide_sim::Order::Harvest { .. } => {
@@ -177,7 +171,7 @@ pub(crate) fn breadcrumb_points(
             oxide_sim::Order::Repair { building } | oxide_sim::Order::Salvage { building } => {
                 world_vec(game.state.building(*building)?.center())
             }
-            // A weld patient is the viewer's own machine — always seen.
+            // A repair patient is the viewer's own machine, so it is always seen.
             oxide_sim::Order::RepairUnit { unit } => tile_center(game.state.unit(*unit)?.tile()),
             oxide_sim::Order::Board { transport } => {
                 tile_center(game.state.unit(*transport)?.tile())
@@ -194,11 +188,11 @@ pub(crate) fn breadcrumb_points(
         };
         Some((goal, verb_color(order)))
     };
-    // Each point carries its PROGRAM position (0 = the active order,
-    // i = queue[i-1]) — the same order the dock pushes chips in, so a
-    // leg whose target the viewer can no longer place (a lost contact,
-    // a razed building) leaves a numbering gap instead of renumbering
-    // the rest out of agreement with the chips.
+    // Each point carries its program position (0 = the active order,
+    // i = queue[i-1]), the order the dock lists chips in, so a leg whose
+    // target the viewer can no longer place (a lost contact, a razed
+    // building) leaves a numbering gap instead of renumbering the rest
+    // out of agreement with the chips.
     let mut points: Vec<(usize, Vec2, Color)> = Vec::new();
     for (i, order) in program.orders.iter().enumerate() {
         if let Some((g, c)) = goal_of(order) {
@@ -208,11 +202,10 @@ pub(crate) fn breadcrumb_points(
     points
 }
 
-/// The selected units that wear decor, SUBJECT FIRST. The dock, the
-/// portrait, and the full-strength trail tell ONE unit's story, so the
-/// subject can never be the entry the cap drops: a selection arrives
-/// in id order, and twelve older workers ahead of a newer majority
-/// would push it past `DECOR_CAP`.
+/// The selected units that draw decor, subject first. The dock, portrait,
+/// and full-strength trail all describe the subject, so it must never be
+/// the entry the cap drops: a selection arrives in id order, and older
+/// units ahead of it could push it past `DECOR_CAP`.
 pub(crate) fn decor_units(game: &crate::game::Scene<'_>) -> Vec<oxide_sim::UnitId> {
     let subject = crate::panel::subject_unit(game);
     let mut ids: Vec<oxide_sim::UnitId> = subject.into_iter().collect();
@@ -228,6 +221,9 @@ pub(crate) fn decor_units(game: &crate::game::Scene<'_>) -> Vec<oxide_sim::UnitI
     ids
 }
 
+/// Queued waypoints of the selection, drawn as a faint chain; a patrol
+/// closes the loop. While a patrol is being armed, the collected route
+/// draws in scrap-amber instead.
 pub(crate) fn draw_breadcrumbs(game: &crate::game::Scene<'_>, input: &InputState) {
     let dot = |p: Vec2, color: Color| fill_circle(p, 3.0, color);
     if let Some(route) = &input.patrol_route {
@@ -245,9 +241,8 @@ pub(crate) fn draw_breadcrumbs(game: &crate::game::Scene<'_>, input: &InputState
         }
         return;
     }
-    // The dock tells ONE unit's story; the world agrees: the subject's
-    // trail draws full strength and numbered, the rest of the
-    // selection's trails dim to context.
+    // The subject's trail draws full strength and numbered, matching the
+    // dock; the rest of the selection's trails dim.
     let subject = crate::panel::subject_unit(game);
     let projection = game.projection();
     for id in decor_units(game) {
@@ -271,9 +266,6 @@ pub(crate) fn draw_breadcrumbs(game: &crate::game::Scene<'_>, input: &InputState
             .camera
             .to_screen(vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>()));
         let s = ui_scale();
-        // Numbered by PROGRAM position, not by how many legs drew — a
-        // leg with no place to draw leaves a gap, it never renumbers the
-        // rest away from the dock's chips.
         let numbered = is_subject && program.orders.len() > 1;
         let mut prev = start;
         for (idx, p, color) in &points {
@@ -682,9 +674,8 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                     .insert(key, game.presentation.fx_time());
                 continue; // the live building (or its absence) is on show
             }
-            // Staleness ramp: a memory the player has not refreshed in
-            // a while stops pretending to be news. Unstamped memories
-            // (loaded saves) start their ramp now.
+            // Unrefreshed memories fade with age; unstamped memories
+            // (from loaded saves) start aging now.
             let age = {
                 let mut seen = game.presentation.last_seen.borrow_mut();
                 let stamp = *seen
@@ -767,7 +758,7 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
         }
     }
     // Frustum cull by anchor with a margin covering the widest footprint
-    // plus bars and site dressing — off-camera works cost nothing.
+    // plus bars and site dressing.
     let (view_lo, view_hi) = game.presentation.camera.world_rect();
     for building in game.state.buildings().iter().filter(|b| !b.provisional) {
         if building.player != game.presentation.human
@@ -892,18 +883,16 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                 BONE,
             );
         }
-        // One bar per story: a site's partial hp is what the ramp
-        // GRANTS, so the progress bar tells it alone — the hp bar
-        // joins only when fire has taken hp construction already gave.
-        // The check mirrors the sim's integer ramp exactly (a float
-        // restatement flickers), and gates on !built because progress
-        // doubles as the train counter on finished producers.
+        // A site's partial hp is what the construction ramp grants, so the
+        // progress bar shows it alone; the hp bar appears only when damage
+        // has taken hp construction already gave. The check mirrors the
+        // sim's integer ramp exactly (a float version flickers), and gates
+        // on !built because progress doubles as the train counter on
+        // finished producers.
         let max_hp = building.stats().max_hp;
         let under_own_salvage = building.built && salvaging.contains(&building.id);
         let wounded = if under_own_salvage {
-            // The gold teardown bar below carries the fraction; a
-            // second bar restating it in hp colors is the double-bar
-            // disease this pass exists to cure.
+            // The gold teardown bar below already shows the fraction.
             false
         } else if building.built {
             building.hp < max_hp
@@ -930,10 +919,9 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                 SCRAP_COLOR,
             );
         }
-        // A teardown in progress: gold — the scrap coming back — over
-        // remaining substance. Keyed on an OWN crew's Order::Salvage,
-        // never on hp shape (shelling looks identical), so enemy
-        // salvage shows nothing through the fog.
+        // A teardown in progress draws remaining hp in scrap gold. Keyed on
+        // an own crew's Order::Salvage, never on hp shape (shelling looks
+        // identical), so enemy salvage shows nothing through the fog.
         if under_own_salvage {
             let fraction = building.hp as f32 / max_hp as f32;
             draw_rectangle(screen.x, screen.y + dest.y + 3.0, dest.x, 4.0, HP_BACK);
@@ -950,8 +938,8 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
 
 pub(crate) fn draw_units(game: &crate::game::Scene<'_>, sprites: &Sprites, alpha: f32) {
     // Two passes: ground bodies first, then everything airborne above
-    // them — each flyer casts an offset shadow so altitude reads even
-    // when nothing overlaps.
+    // them. Each flyer casts an offset shadow so altitude reads even when
+    // nothing overlaps.
     draw_unit_pass(game, sprites, alpha, oxide_sim::stats::Domain::Ground);
     draw_bomber_bombs(game, sprites);
     draw_unit_pass(game, sprites, alpha, oxide_sim::stats::Domain::Air);
@@ -1150,11 +1138,11 @@ fn bombard_shell_position(launch: Vec2, impact: Vec2, heading: Vec2, progress: f
 
 fn shell_arc_lift(screen_distance: f32, zoom: f32, shooter: oxide_sim::Target) -> f32 {
     match shooter {
-        // Bombard remains visibly indirect artillery, but never throws
-        // its shell more than three-fifths of a tile above the flat path.
+        // Bombard arcs visibly as indirect artillery, but its lift above
+        // the flat path stays capped.
         oxide_sim::Target::Unit(_) => (screen_distance * 0.06).min(zoom * 0.60),
-        // Bastion is a low-carriage siege gun: its old moonshot made the
-        // compact shell look detached from the barrel and impact.
+        // Bastion is a low-carriage siege gun; a high arc would detach its
+        // compact shell from the barrel and impact.
         oxide_sim::Target::Building(_) => (screen_distance * 0.04).min(zoom * 0.40),
     }
 }
@@ -1341,9 +1329,9 @@ fn draw_splash_bloom(sprites: &Sprites, center: Vec2, zoom: f32, radius: f32, pr
 #[expect(clippy::too_many_lines, reason = "draws every shell and effect kind")]
 pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
     let sees = |p: Vec2| game.my_vision().visible(numeric::tile_at(p));
-    // Real shells render from sim state, aged by sim ticks: pause holds
-    // them mid-air, speed changes track, and a replay loaded mid-flight
-    // restores them — no wall-clock effect can drift from the rules.
+    // Shells render from sim state, aged by sim ticks: pause holds them
+    // mid-air, speed changes track, and a replay loaded mid-flight
+    // restores them.
     let now = game.state.current_tick() as f32 + game.presentation.tick_fraction();
     for (index, shell) in game.state.shells().iter().enumerate() {
         if bomber_release(game, index).is_some() {
@@ -1354,9 +1342,9 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
             shell.launch.y.to_num::<f32>(),
         );
         let (to, _) = payload_contact(game, sprites, index);
-        // Indirect building fire currently means Bastion fire. Its sim
-        // launch stays at the stable footprint center; presentation
-        // advances that point to the authored barrel mouth.
+        // Indirect building fire is Bastion fire. Its sim launch stays at
+        // the stable footprint center; presentation advances that point to
+        // the authored barrel mouth.
         let from = shell_visual_origin(launch, to, shell.shooter, shell.kind);
         // Fog rule: own and allied shells draw throughout their flight;
         // a hostile shell appears only while its current local segment
@@ -1537,8 +1525,8 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
             continue;
         }
         let radius = (game.presentation.camera.zoom * 0.075).clamp(2.2, 4.0);
-        // The tiny flat-path shadow makes the restrained lift legible
-        // without restoring the old launch-to-impact glowing arc.
+        // A small shadow on the flat path makes the shell's low lift
+        // legible.
         fill_circle(flat, radius * 0.7, Color::new(0.03, 0.03, 0.04, 0.35));
         if game.presentation.all_seeing() || mine || flat_seen(tail_t) {
             let before = at((t - 0.01).max(0.0));
@@ -1996,8 +1984,8 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
     }
 }
 
-/// Radar blips, drawn above the fog: contacts without identity from the
-/// Array's outer ring — the player's own intel, like pings.
+/// Radar blips, drawn above the fog like pings: contacts without identity
+/// from the Array's outer ring.
 pub(crate) fn draw_blips(game: &crate::game::Scene<'_>) {
     if game.presentation.overlay {
         return; // the omniscient overlay already shows the real machines
@@ -2009,8 +1997,7 @@ pub(crate) fn draw_blips(game: &crate::game::Scene<'_>) {
             .camera
             .to_screen(vec2(tile.x as f32 + 0.5, tile.y as f32 + 0.5));
         let r = zoom * 0.3;
-        // A hollow diamond: unmistakably "something", deliberately not
-        // any faction's shape or color.
+        // A hollow diamond in no faction's shape or color.
         let pts = [
             vec2(center.x, center.y - r),
             vec2(center.x + r, center.y),
@@ -2840,8 +2827,8 @@ pub(crate) fn draw_pings(game: &crate::game::Scene<'_>) {
         };
         let center = game.presentation.camera.to_screen(at);
         let progress = (fx.age / 0.5).clamp(0.0, 1.0);
-        // Damped: a still ring instead of a collapsing one — the verb
-        // color still says what was ordered.
+        // Reduced motion draws a still ring instead of a collapsing one;
+        // the verb color still says what was ordered.
         let radius = if reduced_motion() {
             game.presentation.camera.zoom * 0.4
         } else {
@@ -2865,11 +2852,9 @@ pub(crate) fn draw_pings(game: &crate::game::Scene<'_>) {
 /// The selected own building's rally flag, above the fog for the same
 /// reason as pings.
 pub(crate) fn draw_rally_marker(game: &crate::game::Scene<'_>) {
-    // A selected producer draws the line to its rally, not just the
-    // flag — where fresh machines will walk should read at a glance.
-    // OWN producers only, like the flag below: the foreign panel hides
-    // rally and orders on purpose, and an inspected enemy building
-    // must not leak its intent through this line either.
+    // A selected producer draws a line to its rally as well as the flag.
+    // Own producers only, like the flag below: an inspected foreign
+    // building must not reveal its rally.
     for (building, rally) in game
         .presentation
         .selection

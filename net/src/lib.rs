@@ -30,6 +30,19 @@ pub const START_TIMEOUT: Duration = Duration::from_secs(20);
 /// The longest accepted line, excluding its newline.
 pub const MAX_LINE_BYTES: usize = 1 << 20;
 
+/// The longest line the host accepts from a seated client. A longer one
+/// drops the client.
+pub const MAX_CLIENT_LINE_BYTES: usize = 64 * 1024;
+
+/// The encoded human commands one sealed batch carries at most. Later orders
+/// wait for the next tick, so a batch line, bot commands included, stays
+/// under [`MAX_LINE_BYTES`].
+pub const BATCH_COMMAND_BYTES: usize = MAX_LINE_BYTES / 2;
+
+/// The encoded commands one client may have waiting to be sealed. A client
+/// past it is dropped, so a paused or blocked host cannot be flooded.
+pub const CLIENT_PENDING_BYTES: usize = BATCH_COMMAND_BYTES / 4;
+
 /// Clients attach their state hash to acknowledgements of ticks that are
 /// multiples of this.
 pub const HASH_INTERVAL: Tick = 20;

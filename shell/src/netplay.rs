@@ -23,6 +23,13 @@ const WAIT_NOTICE: Duration = Duration::from_millis(500);
 /// the last lines: a desync halt, or the batches that decided the match.
 const CLOSE_GRACE: Duration = Duration::from_secs(2);
 
+/// A lobby connection that has not said Hello by then is closed.
+const GREETING_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Connections awaiting Hello at once. Each holds two transport threads, so
+/// later ones are refused until a slot frees.
+const MAX_GREETING: usize = 8;
+
 /// Why a running match ended for this machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum End {
@@ -404,7 +411,8 @@ pub(crate) struct HostLobby {
     scenario: Scenario,
     host: PlayerId,
     seats: Vec<PlayerId>,
-    greeting: Vec<Connection>,
+    /// Connections yet to say Hello, with when each was accepted.
+    greeting: Vec<(Connection, Duration)>,
     joined: Vec<Connection>,
     starting: Option<Starting>,
     notice: Option<String>,
@@ -477,13 +485,19 @@ impl HostLobby {
             return self.poll_start(now);
         }
         while let Ok(Some(connection)) = self.listener.try_accept() {
+            if self.greeting.len() >= MAX_GREETING {
+                continue;
+            }
             // The host speaks first, so a mismatched client can say why.
             connection.send(&LobbyMessage::hello(&self.commit).encode());
-            self.greeting.push(connection);
+            self.greeting.push((connection, now));
         }
-        for connection in std::mem::take(&mut self.greeting) {
+        for (connection, accepted) in std::mem::take(&mut self.greeting) {
             match connection.try_recv() {
-                Ok(None) => self.greeting.push(connection),
+                Ok(None) if now.saturating_sub(accepted) < GREETING_TIMEOUT => {
+                    self.greeting.push((connection, accepted));
+                }
+                Ok(None) => {}
                 Ok(Some(line)) => {
                     let matching = matches!(
                         JoinMessage::decode(&line),
