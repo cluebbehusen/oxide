@@ -266,5 +266,7 @@ fn focused_controller_contracts_match_hash_fixtures() {
         .collect();
     let fixture =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/goldens/opponent-hashes.json");
-    support::check_or_bless(&fixture, actual);
+    // Replays and netplay carry bot commands rather than rerunning the bot, so
+    // a bot change never calls for a new `SIM_VERSION`.
+    support::check_or_bless(&fixture, actual, |_, _| Ok(()));
 }

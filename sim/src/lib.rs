@@ -27,9 +27,11 @@ pub use stats::{BuildingKind, UnitKind};
 pub use tick::CommandPhaseView;
 pub use vision::{GhostBuilding, Vision};
 
-/// Version stamped into replays; a replay is only guaranteed to reproduce on
-/// the sim version that recorded it.
-pub const SIM_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Version stamped into replays, saves and checkpoints; a replay is only
+/// guaranteed to reproduce on the sim version that recorded it. It tracks
+/// simulation behavior and saved-state shape, independent of the package
+/// version.
+pub const SIM_VERSION: u32 = 1;
 
 /// Fixed simulation rate. The shell converts wall time into ticks; the sim
 /// itself only ever counts ticks.

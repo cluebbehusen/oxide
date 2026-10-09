@@ -32,12 +32,15 @@ fi
 mkdir -p "$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH"
 cp "$BUILT" "$TARGET_BUILD_DIR/$EXECUTABLE_PATH"
 
-# The app wears the workspace version, derived like the macOS bundle's.
+# The app wears the workspace version, derived like the macOS bundle's. App
+# Store Connect requires every upload to carry a higher build number than the
+# last, so the build number is the commit count.
 VERSION="$(cargo pkgid -p oxide-shell)"
 VERSION="${VERSION##*[@#]}"
+BUILD="$(git rev-list --count HEAD)"
 /usr/libexec/PlistBuddy \
     -c "Set :CFBundleShortVersionString $VERSION" \
-    -c "Set :CFBundleVersion $VERSION" \
+    -c "Set :CFBundleVersion $BUILD" \
     "$TARGET_BUILD_DIR/$INFOPLIST_PATH"
 
 test -x "$TARGET_BUILD_DIR/$EXECUTABLE_PATH"

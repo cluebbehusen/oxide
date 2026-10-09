@@ -69,13 +69,13 @@ fn checkpoint_rejects_a_world_with_different_scenario_rules() {
 #[test]
 fn checkpoint_rejects_incompatible_or_inconsistent_parts() {
     let original = checkpoint();
-    for version in [1, 2, VERSION + 1] {
+    for version in [0, VERSION + 1] {
         let mut bad = original.clone();
         bad.version = version;
         assert!(bad.restore().is_err());
     }
     let mut bad = original.clone();
-    bad.sim_version = "other".into();
+    bad.sim_version = SIM_VERSION + 1;
     assert!(bad.restore().is_err());
     let mut bad = original.clone();
     bad.pending[0].player = PlayerId(255);

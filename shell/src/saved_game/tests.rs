@@ -166,55 +166,6 @@ fn metadata_reads_stop_before_the_payload_and_corruption_is_checked_on_load() {
     assert!(prepare_load(&path.0).is_err());
 }
 
-/// The world inside a retained same-version save whose walking orders
-/// lack their optional fields must still restore and play.
-/// Only the simulation state is decoded: the fixture is a profiling
-/// checkpoint, and controller memory is not held to its format.
-#[test]
-fn the_world_in_the_retained_late_skyhook_save_restores_and_plays_on() {
-    fn field<'a>(value: &'a ciborium::Value, name: &str) -> &'a ciborium::Value {
-        value
-            .as_map()
-            .and_then(|entries| {
-                entries
-                    .iter()
-                    .find(|(key, _)| key.as_text() == Some(name))
-                    .map(|(_, value)| value)
-            })
-            .unwrap_or_else(|| panic!("the checkpoint carries `{name}`"))
-    }
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../driver/tests/fixtures/performance/skyhook-late.oxsave");
-    let (_, payload) = read_payload(&path).expect("the retained save decodes");
-    let checkpoint: ciborium::Value = ciborium::from_reader(payload.as_slice()).unwrap();
-    let mut state: oxide_sim::State = field(field(&checkpoint, "session"), "state")
-        .deserialized()
-        .expect("the saved world restores");
-    assert!(
-        state.units().iter().any(|unit| matches!(
-            unit.order,
-            oxide_sim::Order::Run { .. }
-                | oxide_sim::Order::Hunt { .. }
-                | oxide_sim::Order::Attack {
-                    resume: Some(_),
-                    ..
-                }
-        )),
-        "premise: the save holds walking orders in their older shape"
-    );
-    state
-        .validate_invariants()
-        .expect("the saved world is valid");
-    let start = state.current_tick();
-    for _ in 0..5 {
-        state.tick(&[]);
-        state
-            .validate_invariants()
-            .expect("the continued world is valid");
-    }
-    assert_eq!(state.current_tick(), start + 5);
-}
-
 #[test]
 fn representative_checkpoints_stay_compact_and_continue_exactly() {
     let mut dense = oxide_kit::bench::mass_battle(250, 7);

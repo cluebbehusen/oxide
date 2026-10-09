@@ -15,7 +15,7 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 
 /// Version of the serialized [`ReplayInspection`] contract.
-pub const REPLAY_INSPECTION_SCHEMA_VERSION: u32 = 2;
+pub const REPLAY_INSPECTION_SCHEMA_VERSION: u32 = 1;
 
 /// A stable machine-readable inspection of one replay or save.
 #[derive(Debug, Serialize)]

@@ -366,7 +366,8 @@ fn a_decided_match_latches_its_result_and_keeps_ticking() {
 #[test]
 fn a_version_mismatched_replay_is_refused() {
     use chassis::replay::Replay;
-    let replay: oxide_kit::GameReplay = Replay::new("0.0.0-not-this-sim", Scenario::skirmish());
+    let replay: oxide_kit::GameReplay =
+        Replay::new(oxide_sim::SIM_VERSION + 1, Scenario::skirmish());
     let err = runner::run_replay(&replay, None).unwrap_err();
     assert!(err.to_string().contains("recorded on sim"), "{err}");
 }

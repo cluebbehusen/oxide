@@ -165,7 +165,7 @@ impl Drop for TempReplay {
 }
 
 fn foreign_version_replay() -> TempReplay {
-    let replay: GameReplay = GameReplay::new("0.0.0-foreign", Scenario::skirmish());
+    let replay: GameReplay = GameReplay::new(SIM_VERSION + 1, Scenario::skirmish());
     let id = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
         "oxide-foreign-version-replay-{}-{id}.json",

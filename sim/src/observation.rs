@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 /// Schema version for serialized observation snapshots. Increment it when
 /// fields or their meaning change so tools can reject incompatible data.
-pub const OBSERVATION_VERSION: u32 = 20;
+pub const OBSERVATION_VERSION: u32 = 1;
 
 /// An own passenger that remains alive but is unavailable for new assignments.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

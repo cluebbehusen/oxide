@@ -16,7 +16,7 @@ impl DebugSession for Bare {
             paused: self.paused,
             speed: self.speed,
             scenario: "bare".to_string(),
-            sim_version: "test".to_string(),
+            sim_version: 1,
             result: self.state.result(),
             recorded_commands: 0,
         }

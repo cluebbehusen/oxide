@@ -400,7 +400,7 @@ fn every_reply_variant_survives_an_envelope_roundtrip() {
             paused: true,
             speed: 1.0,
             scenario: "skirmish".into(),
-            sim_version: "9.9.9".into(),
+            sim_version: 9,
             result: Some(oxide_sim::GameResult::Victory { team: 1 }),
             recorded_commands: 3,
         }),

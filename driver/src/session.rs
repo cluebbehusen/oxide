@@ -267,7 +267,7 @@ impl DebugSession for Session {
             paused: true,
             speed: 1.0,
             scenario: self.scenario.name.clone(),
-            sim_version: SIM_VERSION.to_string(),
+            sim_version: SIM_VERSION,
             result: self.state.result(),
             recorded_commands: self.recorder.commands.len(),
         }

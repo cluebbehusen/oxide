@@ -355,8 +355,8 @@ pub struct StatusView {
     pub speed: f64,
     /// Scenario display name.
     pub scenario: String,
-    /// Sim crate version.
-    pub sim_version: String,
+    /// [`oxide_sim::SIM_VERSION`] of the running sim.
+    pub sim_version: u32,
     /// Match outcome, if decided.
     pub result: Option<GameResult>,
     /// Commands recorded into the session replay so far.

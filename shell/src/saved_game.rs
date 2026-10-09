@@ -32,7 +32,6 @@ pub struct RecordInfo {
     pub map: String,
     pub seats: usize,
     pub problem: Option<String>,
-    pub legacy: bool,
 }
 
 #[cfg(test)]
@@ -193,47 +192,18 @@ fn inspect_reader(path: &Path, file: &mut (impl Read + Seek), len: u64) -> Resul
             map: header.map,
             seats: header.seats,
             problem,
-            legacy: false,
         })
     } else if path.extension().and_then(|extension| extension.to_str()) == Some("oxsave") {
         anyhow::bail!("invalid player save header");
-    } else if &magic == b"{\"save\":"
-        || path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .is_some_and(|stem| stem.starts_with("save-") || stem.starts_with("autosave-"))
-    {
-        Ok(RecordInfo {
-            meta: ReplayMeta {
-                sim_version: String::new(),
-                description: None,
-                ticks: None,
-                kind: None,
-                saved_at: None,
-            },
-            map: path
-                .file_stem()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned(),
-            seats: 0,
-            problem: Some("unsupported player save format".into()),
-            legacy: true,
-        })
     } else {
         // Replay inspection remains separate from player checkpoint restoration.
         let replay = oxide_kit::load_replay(path)?;
-        let kind = crate::saves::record_kind(&replay.meta, path);
-        let problem = if kind.resumable() {
-            Some("unsupported player save format".into())
-        } else {
-            replay
-                .validate(Some(SIM_VERSION))
-                .map_err(anyhow::Error::from)
-                .and_then(|()| oxide_kit::bounded_replay_duration(&replay).map(|_| ()))
-                .err()
-                .map(|error| format!("{error:#}"))
-        };
+        let problem = replay
+            .validate(Some(SIM_VERSION))
+            .map_err(anyhow::Error::from)
+            .and_then(|()| oxide_kit::bounded_replay_duration(&replay).map(|_| ()))
+            .err()
+            .map(|error| format!("{error:#}"));
         let ticks = oxide_kit::replay_duration(&replay);
         let mut meta = replay.meta;
         meta.ticks = Some(ticks);
@@ -242,7 +212,6 @@ fn inspect_reader(path: &Path, file: &mut (impl Read + Seek), len: u64) -> Resul
             map: replay.setup.name,
             seats: replay.setup.players.len(),
             problem,
-            legacy: true,
         })
     }
 }

@@ -221,28 +221,19 @@ CPU screenshots prove schematic state, not presentation quality.
 
 ## Hashes, goldens, and versions
 
-The approval requirements below apply to agents writing code or updating
-fixtures. Agents reviewing code should not flag missing approval for a version
-change or hash bless; approval is handled by the implementing agent and may have
-been granted outside the review context. Reviewers should still assess technical
-correctness and replay compatibility.
+Oxide is pre-launch: saves, replays, settings and fixtures from other builds are
+not supported. Never add code that reads an older format, and never change a
+version number. [`docs/versioning.md`](docs/versioning.md) lists each version,
+what it gates, and what changes at launch.
 
-- Never change the workspace package version or `SIM_VERSION` without explicit
-  approval from the human user. A request to implement simulation behavior does
-  not imply approval for a compatibility-version bump.
-- If existing state-hash rows move, inspect the drift and ask the user whether
-  to approve a version bump or a same-version bless. Do not choose either path
-  autonomously.
-- Exception: fixtures driven only by `oxide-opponent` live in their own file,
-  separate from simulation-only hashes. Its behavior is expected to change, so
-  the implementing agent reblesses them with a ladder-smoke comparison in the
-  PR, without a version decision.
-- Regenerate driver fixtures with `BLESS=1 cargo test -p oxide-driver --locked`
-  only after that compatibility decision. `BLESS_SAME_VERSION=1` also requires
-  explicit approval from the human user.
+- Keep `driver/tests/goldens/state-hashes.json` as the cheap sim-drift tripwire.
+  When a change moves its rows, inspect the drift, re-bless at the same version
+  with `BLESS=1 BLESS_SAME_VERSION=1 cargo test -p oxide-driver --locked`, and
+  name the moved rows and the reason in the PR.
+- Fixtures driven only by `oxide-opponent` live in their own file and re-bless
+  with `BLESS=1` alone; the PR includes a ladder-smoke comparison.
 - Inspect changed PNGs. A green golden test cannot prove that art or layout is
   good.
-- Keep `driver/tests/goldens/state-hashes.json` as the cheap sim-drift tripwire.
 - A new `Command` variant must enter the fuzz generator's compiler-held tag
   surface and receive reach assertions.
 - `shell/src/assets.rs` and `assets/sprites/atlas.json` remain a bijection over

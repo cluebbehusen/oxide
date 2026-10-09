@@ -1,5 +1,5 @@
 {
-  "sim_version": "0.17.0",
+  "sim_version": 1,
   "hashes": {
     "air#attack": "0x6db36df2ce0f1cb1",
     "air#boarded": "0xf723c7a286e21c86",

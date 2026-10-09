@@ -1036,7 +1036,7 @@ fn scenario_bench_reports_profile_and_separate_bot_and_simulation_phases() {
         "personality_seed: 31",
         "bot phase",
         "simulation phase",
-        oxide_sim::SIM_VERSION,
+        &format!("sim {};", oxide_sim::SIM_VERSION),
     ] {
         assert!(text.contains(expected), "missing {expected}: {text}");
     }
