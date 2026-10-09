@@ -130,11 +130,11 @@ bot owns or sends.
 
 Every bot seat of a normal match runs `oxide-opponent`. Scrapheap, Standard,
 Veteran, and Prime alter fair macro competence plus cognitive and execution
-limits such as opening army commitment, attention, reaction time, memory,
-estimate accuracy, and hesitation. Turtle, Balanced, and Aggressive bound its
-strategic posture. A deterministic per-seat seed varies air, siege, support,
-fortification, greed, and guile priorities; it never changes capabilities or
-unit strength.
+limits: reaction time, attention, the margin an attack must bring, estimate
+accuracy, and how well a seat attacks, focuses fire, and lifts. Turtle,
+Balanced, and Aggressive bound its strategic posture. A deterministic per-seat
+seed varies air, siege, support, fortification, greed, and guile priorities; it
+never changes capabilities or unit strength.
 
 Every difficulty retains the complete strategic repertoire. Automated metrics
 surface candidates and failures; human play and replay judgment decide whether

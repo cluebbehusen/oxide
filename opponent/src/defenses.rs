@@ -2180,11 +2180,14 @@ fn guard_sites(
     sites
 }
 
-/// The domain a defense of `kind` fires at.
+/// The domain a defense of `kind` fires at: air for a gun that hits only
+/// aircraft, ground otherwise, an unarmed work such as the Array included.
 fn domain(kind: BuildingKind) -> Domain {
-    match kind {
-        BuildingKind::FlakTurret => Domain::Air,
-        _ => Domain::Ground,
+    let weapons = kind.base_stats().weapons;
+    if !weapons.is_empty() && weapons.iter().all(|weapon| !weapon.targets.ground) {
+        Domain::Air
+    } else {
+        Domain::Ground
     }
 }
 

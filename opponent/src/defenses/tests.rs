@@ -93,3 +93,15 @@ fn a_repair_bay_reaches_by_straight_distance_from_its_edges() {
     assert!(bay.aura(building), "edges four tiles apart");
     assert!(!bay.aura(Span::of((2, 2), TilePos::new(15, 15))));
 }
+
+#[test]
+fn a_defense_faces_the_domain_its_guns_can_hit() {
+    assert_eq!(domain(BuildingKind::FlakTurret), Domain::Air);
+    for kind in [
+        BuildingKind::Turret,
+        BuildingKind::Bastion,
+        BuildingKind::Array,
+    ] {
+        assert_eq!(domain(kind), Domain::Ground, "{kind:?}");
+    }
+}

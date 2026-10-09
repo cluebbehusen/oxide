@@ -43,14 +43,21 @@ const DEFENSES: [BuildingKind; 3] = [
 ];
 
 /// The role a unit fills. Harvesters, raiders, support, scouts and transports
-/// fill none here.
+/// fill none here. Every simulation role is listed, so a new one must be
+/// placed before the bot can field it.
 pub(crate) fn role(kind: UnitKind) -> Option<Role> {
     match kind.role() {
         Kind::Sentinel | Kind::Warden | Kind::Breaker => Some(Role::Line),
         Kind::Lancer | Kind::Bombard | Kind::Avalanche => Some(Role::Siege),
         Kind::AntiAir | Kind::AirAir | Kind::Interceptor => Some(Role::AntiAir),
         Kind::AirGround | Kind::Bomber => Some(Role::AirStrike),
-        _ => None,
+        Kind::Harvester
+        | Kind::Excavator
+        | Kind::Scuttler
+        | Kind::Sapper
+        | Kind::Tender
+        | Kind::Scout
+        | Kind::Skyhook => None,
     }
 }
 

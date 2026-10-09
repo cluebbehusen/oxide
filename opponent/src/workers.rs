@@ -68,12 +68,12 @@ pub(crate) fn worker(kind: UnitKind) -> bool {
     kind.stats().harvest.is_some()
 }
 
-/// Harvester slots a worker of `kind` fills: an Excavator mines at twice a
-/// Harvester's rate.
+/// Harvester slots a worker of `kind` fills: its mining rate over a
+/// Harvester's, so an Excavator, twice as fast, fills two.
 fn slots(kind: UnitKind) -> usize {
-    match kind {
-        UnitKind::Excavator => 2,
-        kind if worker(kind) => 1,
+    let per_scrap = |kind: UnitKind| kind.stats().harvest.map(|harvest| harvest.ticks_per_scrap);
+    match (per_scrap(UnitKind::Harvester), per_scrap(kind)) {
+        (Some(harvester), Some(ticks)) => (harvester / ticks.max(1)).max(1) as usize,
         _ => 0,
     }
 }

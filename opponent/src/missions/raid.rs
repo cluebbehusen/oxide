@@ -12,7 +12,6 @@ use super::{
     MISSION_CAP, Mission, Missions, Objective, RaidPhase, Task, approach, hunt, mine, run,
     standing, value,
 };
-use crate::composition::{self, Role};
 use crate::decision::Ledger;
 use crate::frame::{HomeFrame, centre_distance, doubled, footprint_centre, ring};
 use crate::map::MapModel;
@@ -56,11 +55,25 @@ enum Raider {
 }
 
 fn raider(kind: UnitKind) -> Option<Raider> {
-    match kind {
-        UnitKind::Sapper => Some(Raider::Sapper),
-        UnitKind::Scuttler => Some(Raider::Scuttler),
-        kind if composition::role(kind) == Some(Role::AirStrike) => Some(Raider::Bomber),
-        _ => None,
+    use oxide_sim::stats::Role as Kind;
+    match kind.role() {
+        Kind::Sapper => Some(Raider::Sapper),
+        Kind::Scuttler => Some(Raider::Scuttler),
+        Kind::AirGround | Kind::Bomber => Some(Raider::Bomber),
+        Kind::Harvester
+        | Kind::Excavator
+        | Kind::Sentinel
+        | Kind::Warden
+        | Kind::Breaker
+        | Kind::Lancer
+        | Kind::Bombard
+        | Kind::Avalanche
+        | Kind::AntiAir
+        | Kind::AirAir
+        | Kind::Interceptor
+        | Kind::Tender
+        | Kind::Scout
+        | Kind::Skyhook => None,
     }
 }
 
