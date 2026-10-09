@@ -954,23 +954,14 @@ fn scratch_home() -> Result<PathBuf> {
 }
 
 fn write_config(home: &Path) -> Result<()> {
-    let config = serde_json::to_vec_pretty(&json!({
-        "version": 1,
-        "bindings": { "bindings": [] },
-        "volumes": { "master": 0.0, "effects": 0.0, "ui": 0.0, "music": 0.0 },
-        "ui_scale": 1.0,
-        "camera": { "pan_speed": 1.0, "edge_pan": false, "zoom_inverted": false },
-        "window": [1280, 800],
-        "reduced_motion": false,
-        "colorblind": false
-    }))?;
+    let config = include_bytes!("../src/quiet_config.json");
     for dir in [
         home.join("Library/Application Support/Oxide"),
         home.join(".config/oxide"),
         home.join("AppData/Oxide"),
     ] {
         std::fs::create_dir_all(&dir)?;
-        std::fs::write(dir.join("config.json"), &config)?;
+        std::fs::write(dir.join("config.json"), config)?;
     }
     Ok(())
 }

@@ -58,16 +58,9 @@ fn scratch_home() -> Result<ScratchHome> {
             Err(error) => return Err(error.into()),
         }
     };
-    let config = serde_json::json!({
-        "version": 1,
-        "bindings": { "bindings": [] },
-        "volumes": { "master": 0.0, "effects": 0.0, "ui": 0.0, "music": 0.0 },
-        "ui_scale": 1.0,
-        "camera": { "pan_speed": 1.0, "edge_pan": false, "zoom_inverted": false },
-        "window": [1280, 800],
-        "reduced_motion": true,
-        "colorblind": false
-    });
+    let mut config: serde_json::Value =
+        serde_json::from_str(include_str!("quiet_config.json")).expect("static json");
+    config["reduced_motion"] = true.into();
     let text = serde_json::to_string_pretty(&config).expect("static json");
     for dir in [
         home.0.join("Library/Application Support/Oxide"),
