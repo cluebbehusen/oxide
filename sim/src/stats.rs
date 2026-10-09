@@ -2158,7 +2158,7 @@ pub const FOUNDRY_DRIP_PERIOD: u64 = 60;
 pub const FOUNDRY_DRIP_START_TICK: u64 = 2_400;
 
 /// Ticks per emergency scrap credited by a surviving Foundry after its
-/// owner's last Harvester is gone. Each real deposit arms one finite
+/// owner's last harvesting machine is gone. Each real deposit arms one finite
 /// recovery entitlement; spending or cancelling that package cannot refill
 /// it.
 pub const FOUNDRY_RECOVERY_PERIOD: u64 = 10;

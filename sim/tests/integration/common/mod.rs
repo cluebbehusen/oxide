@@ -128,7 +128,10 @@ pub fn commanded(order: Order) -> Order {
         Order::Run { goal } => Order::Run { goal: tile(goal) },
         Order::Hunt { goal } => Order::Hunt { goal: tile(goal) },
         Order::Advance { goal } => Order::Advance { goal: tile(goal) },
-        Order::Unload { at } => Order::Unload { at: tile(at) },
+        Order::Unload { at, reverse } => Order::Unload {
+            at: tile(at),
+            reverse,
+        },
         Order::Attack {
             target,
             pursue,

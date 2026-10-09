@@ -68,6 +68,21 @@ fn snap_and_spread(
 }
 
 #[test]
+fn rings_follow_the_spread_scan_order() {
+    for r in 0i32..6 {
+        let mut expected = Vec::new();
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx.abs().max(dy.abs()) == r {
+                    expected.push((dx, dy));
+                }
+            }
+        }
+        assert_eq!(ring(r).collect::<Vec<_>>(), expected, "ring {r}");
+    }
+}
+
+#[test]
 fn explored_slots_are_the_snap_and_spread_tiles_for_every_group_size() {
     let state = world(&FIELD, &[(UnitKind::Kestrel, 5, 4)]);
     for clicked in tiles(&state) {
@@ -225,4 +240,33 @@ fn exposure_leaves_units_without_pending_goals_untouched() {
     let before = state.clone();
     expose(&mut state);
     assert_eq!(state, before);
+}
+
+#[test]
+fn mirrored_air_routes_snap_peak_goals_to_mirrored_sky() {
+    const PEAKS: [&str; 9] = [
+        ".............",
+        ".............",
+        ".............",
+        "...^^^.^^^...",
+        "...^^^.^^^...",
+        "...^^^.^^^...",
+        ".............",
+        ".............",
+        ".............",
+    ];
+    let state = world(&PEAKS, &[]);
+    let mirror =
+        |t: TilePos| TilePos::new(state.map.width() - 1 - t.x, state.map.height() - 1 - t.y);
+    let snapped = |from: TilePos, to: TilePos| {
+        *super::super::route_for(&state, UnitKind::Kestrel, from, to)
+            .expect("open sky surrounds each peak")
+            .last()
+            .expect("a route ends at its goal")
+    };
+    let (from, peak) = (TilePos::new(0, 4), TilePos::new(4, 4));
+    let west = snapped(from, peak);
+    let east = snapped(mirror(from), mirror(peak));
+    assert!(state.passable_for(Domain::Air, west));
+    assert_eq!(east, mirror(west));
 }

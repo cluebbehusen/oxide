@@ -21,7 +21,7 @@ pub(in crate::tick) struct Pending {
     /// (rider, carrier) pairs within reach of a sling with room.
     boardings: Vec<(UnitId, UnitId)>,
     /// (carrier, drop point) pairs standing on their drop tile.
-    landings: Vec<(UnitId, TilePos)>,
+    landings: Vec<(UnitId, TilePos, bool)>,
 }
 
 /// Total sling room a transport's current riders occupy.
@@ -175,8 +175,11 @@ pub(super) fn unload(
         return;
     };
     let unit = state.unit(id).expect("caller checked");
+    let Order::Unload { reverse, .. } = unit.order else {
+        unreachable!("only an unload order steers here");
+    };
     let (pos, tile, player, looping) = (unit.pos, unit.tile(), unit.player, unit.looping);
-    pending.landings.push((id, tile));
+    pending.landings.push((id, tile, reverse));
     if short && !looping {
         events.push(Event::OrderStalled {
             unit: id,
@@ -243,28 +246,18 @@ pub(in crate::tick) fn resolve(state: &mut State, mut pending: Pending, events: 
 
     pending
         .landings
-        .sort_unstable_by_key(|&(carrier, _)| carrier);
-    for (id, at) in pending.landings {
+        .sort_unstable_by_key(|&(carrier, ..)| carrier);
+    for (id, at, reverse) in pending.landings {
         let Some(carrier) = state.unit(id).filter(|t| t.hp > 0) else {
             continue;
         };
         let (pos, player) = (carrier.pos, carrier.player);
         // Claim drop tiles in square rings outward from the drop point,
-        // center first, row-major (y, then x) within each ring.
-        let mut open: Vec<TilePos> = Vec::new();
-        for r in 0..=crate::stats::UNLOAD_SCAN_RADIUS {
-            for dy in -r..=r {
-                for dx in -r..=r {
-                    if dx.abs().max(dy.abs()) != r {
-                        continue;
-                    }
-                    let t = at.offset(dx, dy);
-                    if state.passable(t) {
-                        open.push(t);
-                    }
-                }
-            }
-        }
+        // center first, in the order's approach frame.
+        let open: Vec<TilePos> =
+            super::super::goals::ring_scan(at, crate::stats::UNLOAD_SCAN_RADIUS, reverse)
+                .filter(|&t| state.passable(t))
+                .collect();
         let mut placed = 0usize;
         while placed < open.len() {
             let carrier = state.unit_mut(id).expect("just seen");

@@ -57,21 +57,6 @@ fn id(state: &State, slot: usize) -> UnitId {
 }
 
 #[test]
-fn rings_follow_the_spread_scan_order() {
-    for r in 0i32..6 {
-        let mut expected = Vec::new();
-        for dy in -r..=r {
-            for dx in -r..=r {
-                if dx.abs().max(dy.abs()) == r {
-                    expected.push((dx, dy));
-                }
-            }
-        }
-        assert_eq!(ring(r).collect::<Vec<_>>(), expected, "ring {r}");
-    }
-}
-
-#[test]
 fn a_reachable_target_is_its_own_endpoint() {
     let state = world(&POCKET, 1, &[(0, UnitKind::Sentinel, 1, 1)]);
     let mut reach = Reach::new(&state);

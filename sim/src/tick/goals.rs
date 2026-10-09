@@ -164,24 +164,10 @@ pub(super) fn spread_goals_by(
     reverse: bool,
     legal: impl Fn(TilePos) -> bool,
 ) -> Vec<TilePos> {
-    let mut out = Vec::with_capacity(count);
-    'scan: for r in 0..=SPREAD_RADIUS {
-        for dy in -r..=r {
-            for dx in -r..=r {
-                if dx.abs().max(dy.abs()) != r {
-                    continue;
-                }
-                let (dx, dy) = if reverse { (-dx, -dy) } else { (dx, dy) };
-                let t = center.offset(dx, dy);
-                if legal(t) {
-                    out.push(t);
-                    if out.len() == count {
-                        break 'scan;
-                    }
-                }
-            }
-        }
-    }
+    let mut out: Vec<TilePos> = ring_scan(center, SPREAD_RADIUS, reverse)
+        .filter(|&t| legal(t))
+        .take(count)
+        .collect();
     while out.len() < count {
         out.push(out.last().copied().unwrap_or(center));
     }
@@ -233,31 +219,34 @@ pub(super) fn group_domain_goal(
             crate::stats::AIR_GOAL_SNAP_RADIUS,
         ),
     };
-    group_goal_by(center, radius, reverse, |t| state.passable_for(domain, t))
+    ring_scan(center, radius, reverse).find(|&t| state.passable_for(domain, t))
 }
 
-/// [`group_domain_goal`] over any notion of an open tile.
-fn group_goal_by(
+/// Tiles in Chebyshev rings around `center` out to `radius`, each ring in
+/// [`ring`] order, or the half-turn of that order when `reverse`. A mirrored
+/// caller passing the mirrored center and the opposite `reverse` visits the
+/// mirrored tiles in the same sequence.
+pub(super) fn ring_scan(
     center: TilePos,
     radius: i32,
     reverse: bool,
-    legal: impl Fn(TilePos) -> bool,
-) -> Option<TilePos> {
-    for r in 0..=radius {
-        for dy in -r..=r {
-            for dx in -r..=r {
-                if dx.abs().max(dy.abs()) != r {
-                    continue;
-                }
-                let (dx, dy) = if reverse { (-dx, -dy) } else { (dx, dy) };
-                let candidate = center.offset(dx, dy);
-                if legal(candidate) {
-                    return Some(candidate);
-                }
-            }
+) -> impl Iterator<Item = TilePos> {
+    (0..=radius).flat_map(ring).map(move |(dx, dy)| {
+        if reverse {
+            center.offset(-dx, -dy)
+        } else {
+            center.offset(dx, dy)
         }
-    }
-    None
+    })
+}
+
+/// The offsets of Chebyshev ring `r` in the spread-slot scan order: rows top
+/// to bottom, columns left to right.
+pub(super) fn ring(r: i32) -> impl Iterator<Item = (i32, i32)> {
+    let top = (-r..=r).map(move |dx| (dx, -r));
+    let sides = (1 - r..r).flat_map(move |dy| [(-r, dy), (r, dy)]);
+    let bottom = (-r..=r).map(move |dx| (dx, r)).filter(move |_| r > 0);
+    top.chain(sides).chain(bottom)
 }
 
 #[cfg(test)]

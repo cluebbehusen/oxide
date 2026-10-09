@@ -1160,7 +1160,7 @@ fn apply_unload(
     let reverse = spread_scan_reversed(state, at, &[transport]);
     let at = goals::issue(state, player, at, domain, reverse).goal(0);
     let unit = state.unit_mut(transport).expect("just seen");
-    if assign(unit, Order::Unload { at }, queue) {
+    if assign(unit, Order::Unload { at, reverse }, queue) {
         Ok(())
     } else {
         Err(RejectReason::QueueFull)
