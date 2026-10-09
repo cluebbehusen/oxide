@@ -44,6 +44,32 @@ fn a_ground_threat_draws_the_nearest_sufficient_defenders() {
 }
 
 #[test]
+fn a_sapper_walking_at_the_foundry_draws_defenders() {
+    let scenario = raided(
+        &[(UnitKind::Sentinel, 5, 8), (UnitKind::Sentinel, 10, 1)],
+        &[(UnitKind::Sapper, 9, 5)],
+    );
+    let state = scenario.build().unwrap();
+    let (commands, trace) = seat(&scenario, 0).act_traced(&state, &mut OwnEvents::default());
+    let [(units, goal)] = &hunts(&commands)[..] else {
+        panic!("{commands:?}");
+    };
+    assert_eq!(*goal, TilePos::new(9, 5));
+    assert!(units.contains(&at(&state, 5, 8)), "{units:?}");
+    let missions = trace.unwrap().missions;
+    assert!(
+        matches!(
+            missions.as_slice(),
+            [MissionStatus {
+                kind: MissionKind::Defend { .. },
+                ..
+            }]
+        ),
+        "{missions:?}"
+    );
+}
+
+#[test]
 fn an_air_raid_draws_only_units_that_hit_air_to_guard_the_foundry() {
     let scenario = raided(
         &[

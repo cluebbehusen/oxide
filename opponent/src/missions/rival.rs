@@ -67,7 +67,7 @@ impl Missions {
             let armed = observation
                 .enemy_units
                 .iter()
-                .filter(|unit| unit.player == owner && !unit.kind.stats().weapons.is_empty());
+                .filter(|unit| unit.player == owner && unit.kind.stats().can_fight());
             let cost = |kind: oxide_sim::UnitKind| i64::from(kind.stats().cost);
             let presence: i64 = armed.clone().map(|unit| cost(unit.kind)).sum();
             let pressure: i64 = armed

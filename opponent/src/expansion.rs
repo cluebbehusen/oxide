@@ -176,8 +176,7 @@ fn held(observation: &ObservationData, anchor: TilePos, reach: i32) -> bool {
 /// `anchor`: an Extractor lost there, or a new one, waits until it leaves.
 fn contested(observation: &ObservationData, anchor: TilePos) -> bool {
     observation.enemy_units.iter().any(|enemy| {
-        !enemy.kind.stats().weapons.is_empty()
-            && gap(anchor, WORKS, enemy.tile, (1, 1)) <= DANGER_REACH
+        enemy.kind.stats().can_fight() && gap(anchor, WORKS, enemy.tile, (1, 1)) <= DANGER_REACH
     })
 }
 
@@ -189,8 +188,7 @@ fn danger(observation: &ObservationData, memory: &Memory, anchor: TilePos) -> u6
         .units()
         .iter()
         .filter(|unit| {
-            !unit.kind.stats().weapons.is_empty()
-                && gap(anchor, WORKS, unit.tile, (1, 1)) <= DANGER_REACH
+            unit.kind.stats().can_fight() && gap(anchor, WORKS, unit.tile, (1, 1)) <= DANGER_REACH
         })
         .map(|unit| unit.value(now))
         .sum();

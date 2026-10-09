@@ -15,6 +15,7 @@ use crate::decision::Ledger;
 use crate::frame::{HomeFrame, centre_distance, doubled, footprint_centre, gap, ring};
 use crate::map::MapModel;
 use crate::memory::Memory;
+use chassis::fx::Fx;
 use chassis::grid::TilePos;
 use oxide_sim::observation::{BuildingObs, ObservationData, UnitObs};
 use oxide_sim::stats::{Domain, WeaponStats};
@@ -778,14 +779,8 @@ fn guard(
 /// its longest reach against ground if longer. `None` when it cannot hit
 /// ground at all.
 fn ground_reach(enemy: &UnitObs) -> Option<i32> {
-    enemy
-        .kind
-        .stats()
-        .weapons
-        .iter()
-        .filter(|weapon| weapon.targets.ground)
-        .map(|weapon| weapon.range.ceil().to_num::<i32>().max(THREAT_GAP))
-        .max()
+    let reach = crate::defenses::reach(enemy.kind);
+    (reach > Fx::ZERO).then(|| reach.ceil().to_num::<i32>().max(THREAT_GAP))
 }
 
 #[cfg(test)]

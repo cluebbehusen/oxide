@@ -1088,17 +1088,11 @@ fn upgrade(guard: &Guard<'_>, building: &BuildingObs, weight: u64) -> Option<(In
         .max()
         .unwrap_or(0);
     let threatened = observation.enemy_units.iter().any(|enemy| {
-        let Some(strike) = enemy
-            .kind
-            .stats()
-            .weapons
-            .iter()
-            .filter(|weapon| weapon.targets.ground)
-            .map(|weapon| weapon.range.ceil().to_num::<i32>())
-            .max()
-        else {
+        let strike = self::reach(enemy.kind);
+        if strike == Fx::ZERO {
             return false;
-        };
+        }
+        let strike = strike.ceil().to_num::<i32>();
         gap(building.anchor, building.kind.size(), enemy.tile, (1, 1))
             < reach.max(strike) + UPGRADE_CLEARANCE
     });
@@ -1304,13 +1298,17 @@ fn health(memory: &Memory, now: u64, source: (i64, i64), stakes: Stakes) -> u64 
     near.max(stakes.minimum * u64::from(sentinel.max_hp) / u64::from(sentinel.cost))
 }
 
-/// How far `kind` fires at buildings.
+/// How far `kind` strikes buildings, a demolition charge's contact
+/// included; zero when it cannot.
 pub(crate) fn reach(kind: UnitKind) -> Fx {
-    kind.stats()
+    let stats = kind.stats();
+    let contact = stats.demolition.map(|charge| charge.contact_range);
+    stats
         .weapons
         .iter()
         .filter(|weapon| weapon.targets.ground)
         .map(|weapon| weapon.range)
+        .chain(contact)
         .max()
         .unwrap_or(Fx::ZERO)
 }
@@ -1323,7 +1321,7 @@ fn armed_near(
 ) -> impl Iterator<Item = &SeenUnit> {
     memory.units().iter().filter(move |unit| {
         let stats = unit.kind.stats();
-        !stats.weapons.is_empty()
+        stats.can_fight()
             && stats.domain == domain
             && chebyshev(doubled(unit.tile), source) <= 2 * GROUP_TILES
     })
@@ -1362,7 +1360,7 @@ fn in_sight(observation: &ObservationData, map: &MapModel) -> Vec<Enemy> {
 /// Whether `kind` fights or carries others.
 fn attacker(kind: UnitKind) -> bool {
     let stats = kind.stats();
-    !stats.weapons.is_empty() || stats.transport_capacity > 0
+    stats.can_fight() || stats.transport_capacity > 0
 }
 
 /// The ground around a `size` footprint at `anchor`.

@@ -114,6 +114,22 @@ fn nothing_focuses_an_enemy_behind_terrain_that_stops_its_shot() {
 }
 
 #[test]
+fn a_sapper_beside_a_ground_member_threatens_it() {
+    let scenario = field(
+        false,
+        &[(UnitKind::Sentinel, 4, 4)],
+        (UnitKind::Sapper, 5, 4),
+    );
+    let state = scenario.build().unwrap();
+    let observation = ObservationData::fog_honest(&state, PlayerId(0));
+    let members: Vec<&UnitObs> = observation.my_units.iter().collect();
+    let [sapper] = &observation.enemy_units[..] else {
+        panic!("premise: the Sapper is in sight");
+    };
+    assert!(threatens(sapper, &members));
+}
+
+#[test]
 fn a_gun_never_focuses_an_enemy_inside_its_minimum_range() {
     let enemy = (UnitKind::Sentinel, 14, 4);
     let close = field(false, &[(UnitKind::Avalanche, 12, 4)], enemy);

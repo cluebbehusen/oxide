@@ -282,7 +282,7 @@ fn weld(
             }
             let size = building.kind.size();
             let threatened = observation.enemy_units.iter().any(|enemy| {
-                !enemy.kind.stats().weapons.is_empty()
+                enemy.kind.stats().can_fight()
                     && gap(building.anchor, size, enemy.tile, (1, 1)) <= WELD_CLEARANCE
             });
             let centre = footprint_centre(building.kind, building.anchor);
