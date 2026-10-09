@@ -27,7 +27,7 @@ const CLOSE_GRACE: Duration = Duration::from_secs(2);
 const GREETING_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Connections awaiting Hello at once. Each holds two transport threads, so
-/// later ones are refused until a slot frees.
+/// later ones wait unaccepted until a slot frees.
 const MAX_GREETING: usize = 8;
 
 /// Why a running match ended for this machine.
@@ -484,10 +484,10 @@ impl HostLobby {
         if self.starting.is_some() {
             return self.poll_start(now);
         }
-        while let Ok(Some(connection)) = self.listener.try_accept() {
-            if self.greeting.len() >= MAX_GREETING {
-                continue;
-            }
+        while self.greeting.len() < MAX_GREETING {
+            let Ok(Some(connection)) = self.listener.try_accept() else {
+                break;
+            };
             // The host speaks first, so a mismatched client can say why.
             connection.send(&LobbyMessage::hello(&self.commit).encode());
             self.greeting.push((connection, now));

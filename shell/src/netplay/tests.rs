@@ -356,6 +356,41 @@ fn a_silent_connection_is_closed_after_the_greeting_timeout() {
 }
 
 #[test]
+fn connections_past_the_greeting_cap_wait_to_be_accepted() {
+    use std::io::BufRead as _;
+    let mut host = HostLobby::new("127.0.0.1:0", duel(), HOST, COMMIT).unwrap();
+    let silent: Vec<_> = (0..MAX_GREETING)
+        .map(|_| std::net::TcpStream::connect(&host.address).unwrap())
+        .collect();
+    wait(|| {
+        assert!(host.poll(Duration::ZERO, viewport()).is_none());
+        (host.greeting.len() == MAX_GREETING).then_some(())
+    });
+    let waiting = std::net::TcpStream::connect(&host.address).unwrap();
+    for _ in 0..10 {
+        assert!(host.poll(Duration::ZERO, viewport()).is_none());
+    }
+    assert_eq!(host.greeting.len(), MAX_GREETING);
+
+    // The full slots time out, and only then is the waiting peer accepted
+    // and greeted.
+    assert!(host.poll(GREETING_TIMEOUT, viewport()).is_none());
+    wait(|| {
+        assert!(host.poll(GREETING_TIMEOUT, viewport()).is_none());
+        (host.greeting.len() == 1).then_some(())
+    });
+    waiting
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut hello = String::new();
+    std::io::BufReader::new(&waiting)
+        .read_line(&mut hello)
+        .unwrap();
+    assert_eq!(hello.trim_end(), LobbyMessage::hello(COMMIT).encode());
+    drop(silent);
+}
+
+#[test]
 fn a_host_needs_its_own_seat_and_another_human_seat() {
     assert!(HostLobby::new("127.0.0.1:0", Scenario::skirmish(), HOST, COMMIT).is_err());
     assert!(HostLobby::new("127.0.0.1:0", duel(), PlayerId(2), COMMIT).is_err());
