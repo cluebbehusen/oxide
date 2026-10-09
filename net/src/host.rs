@@ -59,7 +59,7 @@ struct Client {
     blocked_since: Option<Duration>,
 }
 
-/// A command waiting to be sealed, with its encoded size.
+/// A command waiting to be sealed, with the bytes it adds to a batch line.
 #[derive(Debug)]
 struct Pending {
     command: PlayerCommand,
@@ -68,11 +68,10 @@ struct Pending {
 
 impl Pending {
     fn new(player: PlayerId, command: Command) -> Self {
-        let bytes = serde_json::to_string(&command).map_or(0, |line| line.len());
-        Self {
-            command: PlayerCommand { player, command },
-            bytes,
-        }
+        let command = PlayerCommand { player, command };
+        // The batch line carries the attributed command plus a separator.
+        let bytes = serde_json::to_string(&command).map_or(0, |entry| entry.len() + 1);
+        Self { command, bytes }
     }
 }
 

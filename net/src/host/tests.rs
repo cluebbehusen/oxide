@@ -472,6 +472,23 @@ fn a_client_flooding_a_paused_host_is_dropped() {
 }
 
 #[test]
+fn pending_bytes_cover_the_published_batch() {
+    let pending =
+        [Command::Surrender, stop(1), stop(70_000)].map(|command| Pending::new(A, command));
+    let batch = |commands: Vec<PlayerCommand>| HostMessage::Batch { tick: 9, commands }.encode();
+    let empty = batch(Vec::new()).len();
+    let full = batch(
+        pending
+            .iter()
+            .map(|queued| queued.command.clone())
+            .collect(),
+    )
+    .len();
+    let counted: usize = pending.iter().map(|queued| queued.bytes).sum();
+    assert!(full <= empty + counted, "{full} > {empty} + {counted}");
+}
+
+#[test]
 fn every_published_batch_fits_one_line() {
     let clients = [1, 2, 3, 4, 5, 6].map(PlayerId);
     let mut host = HostSession::new(HOST, &clients, secs(0));
