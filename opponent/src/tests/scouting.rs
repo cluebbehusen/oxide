@@ -199,6 +199,10 @@ fn veteran() -> BotConfig {
     BotConfig::new(BotDifficulty::Veteran, BotStance::Balanced, 11)
 }
 
+fn scrapheap() -> BotConfig {
+    BotConfig::new(BotDifficulty::Scrapheap, BotStance::Balanced, 11)
+}
+
 fn attacks(commands: &[PlayerCommand]) -> Vec<(Vec<UnitId>, AttackTarget)> {
     commands
         .iter()
@@ -215,9 +219,16 @@ fn veteran_focuses_the_weakest_enemy_every_member_reaches() {
     let mut members = vec![at(&state, 8, 5), at(&state, 8, 6)];
     members.sort_unstable();
     let commands = seat_with(&scenario, 0, veteran()).act(&state, &mut OwnEvents::default());
-    assert_eq!(attacks(&commands), [(members, AttackTarget::Unit(weakest))]);
+    assert_eq!(
+        attacks(&commands),
+        [(members.clone(), AttackTarget::Unit(weakest))]
+    );
     let standard = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
-    assert!(attacks(&standard).is_empty(), "Standard does not focus");
+    assert_eq!(
+        attacks(&standard),
+        [(members, AttackTarget::Unit(weakest))],
+        "a wound this deep shows on Standard's health bars too"
+    );
 
     let (scenario, state, _) = skirmish([(5, 8), (8, 5)], 20);
     let commands = seat_with(&scenario, 0, veteran()).act(&state, &mut OwnEvents::default());
@@ -225,6 +236,64 @@ fn veteran_focuses_the_weakest_enemy_every_member_reaches() {
     assert!(
         attacks(&commands).is_empty(),
         "a member out of reach would have to chase"
+    );
+}
+
+/// Two West Sentinels beside the Foundry and two East raiders beside them:
+/// a Warden down to `warden` health at (10, 5) and a Sentinel down to
+/// `sentinel` at (10, 6), with each raider's id.
+fn wounded_raiders(warden: u32, sentinel: u32) -> (Scenario, State, [UnitId; 2]) {
+    let mut scenario = arena(0);
+    scenario.units.extend([
+        unit(0, UnitKind::Sentinel, 8, 5),
+        unit(0, UnitKind::Sentinel, 8, 6),
+        unit(1, UnitKind::Warden, 10, 5),
+        unit(1, UnitKind::Sentinel, 10, 6),
+    ]);
+    let state = scenario.build().unwrap();
+    let raiders = [at(&state, 10, 5), at(&state, 10, 6)];
+    let state = wounded(&state, raiders[0], warden);
+    let state = wounded(&state, raiders[1], sentinel);
+    (scenario, state, raiders)
+}
+
+/// The enemy `config`'s first decision focuses.
+fn focused(scenario: &Scenario, state: &State, config: BotConfig) -> AttackTarget {
+    let commands = seat_with(scenario, 0, config).act(state, &mut OwnEvents::default());
+    let [(_, target)] = attacks(&commands)[..] else {
+        panic!("{commands:?}");
+    };
+    target
+}
+
+#[test]
+fn standard_focuses_by_health_bar_quarters() {
+    // The Warden shows under half a bar at 78 of 260; the Sentinel shows
+    // two thirds at 40 of 60, though it is nearer to dying.
+    let (scenario, state, [warden, sentinel]) = wounded_raiders(78, 40);
+    assert_eq!(
+        focused(&scenario, &state, veteran()),
+        AttackTarget::Unit(sentinel)
+    );
+    assert_eq!(
+        focused(&scenario, &state, config()),
+        AttackTarget::Unit(warden)
+    );
+}
+
+#[test]
+fn scrapheap_focuses_the_nearest_threat_whatever_its_wounds() {
+    let near = |hp: [u32; 2]| {
+        let (scenario, state, raiders) = wounded_raiders(hp[0], hp[1]);
+        let target = focused(&scenario, &state, scrapheap());
+        assert!(raiders.iter().any(|id| target == AttackTarget::Unit(*id)));
+        target
+    };
+    assert_eq!(near([20, 60]), near([260, 5]), "wounds do not move it");
+    let (scenario, state, [warden, _]) = wounded_raiders(20, 60);
+    assert_eq!(
+        focused(&scenario, &state, veteran()),
+        AttackTarget::Unit(warden)
     );
 }
 
@@ -243,7 +312,7 @@ fn a_focus_is_not_reissued_while_it_holds() {
 }
 
 #[test]
-fn mirrored_veterans_focus_alike() {
+fn mirrored_seats_focus_alike_at_every_rung() {
     let mut scenario = arena(0);
     scenario.units.extend([
         unit(0, UnitKind::Sentinel, 8, 5),
@@ -258,10 +327,12 @@ fn mirrored_veterans_focus_alike() {
     let state = scenario.build().unwrap();
     let state = wounded(&state, at(&state, 10, 5), 20);
     let state = wounded(&state, at(&state, 13, 6), 20);
-    let west = seat_with(&scenario, 0, veteran()).act(&state, &mut OwnEvents::default());
-    let east = seat_with(&scenario, 1, veteran()).act(&state, &mut OwnEvents::default());
-    assert_eq!(attacks(&west).len(), 1);
-    assert_eq!(mirror(&state, west), east);
+    for config in [veteran(), config(), scrapheap()] {
+        let west = seat_with(&scenario, 0, config).act(&state, &mut OwnEvents::default());
+        let east = seat_with(&scenario, 1, config).act(&state, &mut OwnEvents::default());
+        assert_eq!(attacks(&west).len(), 1);
+        assert_eq!(mirror(&state, west), east);
+    }
 }
 
 #[test]

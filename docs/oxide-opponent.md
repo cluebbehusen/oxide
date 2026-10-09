@@ -195,10 +195,10 @@ go stale again rather than drawing scouts one after another into the same fire,
 Scuttler raids, harvest-line harassment by air, team relief, escorts, repair,
 harvester evacuation, emergency and voluntary static defense sized to hold off
 the known threat, Extractor restoration, expansion timing, tech prerequisites,
-memory of failed objectives, a response to stalled production, focus fire at
-Veteran and Prime, and pulling wounded units back between fights. It does no
-other per-unit micro. It builds every building kind, reaches every upgrade tier,
-and trains every unit its faction fields.
+memory of failed objectives, a response to stalled production, focus fire, and
+pulling wounded units back between fights. It does no other per-unit micro. It
+builds every building kind, reaches every upgrade tier, and trains every unit
+its faction fields.
 
 ## Difficulty, stance and personality
 
@@ -211,8 +211,9 @@ and trains every unit its faction fields.
 - **Difficulty** sets cognitive and execution limits: reaction delay,
   hesitation, unit orders per decision, memory decay, deterministic noise in
   estimates, and decision interval. It also sets how well a seat carries out its
-  repertoire: lower rungs attack piecemeal, pick targets worse, leave
-  reinforcements at home, end fights on time while winning, withdraw at even
-  odds, and lift without a fresh look or without counting bomber cover. Every
-  rung keeps every capability. Lower rungs make understandable mistakes, and
-  higher rungs beat lower ones.
+  repertoire: lower rungs attack piecemeal, pick targets worse, focus fire on
+  the nearest enemy or by a rough read of its wounds, leave reinforcements at
+  home, end fights on time while winning, withdraw at even odds, and lift
+  without a fresh look or without counting bomber cover. Every rung keeps every
+  capability. Lower rungs make understandable mistakes, and higher rungs beat
+  lower ones.
