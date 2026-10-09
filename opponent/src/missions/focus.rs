@@ -107,7 +107,7 @@ fn threatens(enemy: &UnitObs, members: &[&UnitObs]) -> bool {
                 .weapons
                 .iter()
                 .any(|weapon| weapon.targets.covers(domain))
-                || (stats.demolition && domain == Domain::Ground))
+                || (stats.demolition.is_some() && domain == Domain::Ground))
     })
 }
 

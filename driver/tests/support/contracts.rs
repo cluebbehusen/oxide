@@ -21,7 +21,6 @@ fn arena(name: &str, units: Vec<UnitSpec>) -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: name.into(),
-        seed: 42,
         map: rows
             .into_iter()
             .map(|row| row.into_iter().collect())

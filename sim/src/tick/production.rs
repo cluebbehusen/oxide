@@ -184,7 +184,7 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
         // production still needs a passable doorstep outside the footprint.
         let (anchor, size, player, rally, producer, center) = (
             b.anchor,
-            b.stats().size,
+            b.kind.size(),
             b.player,
             b.rally,
             b.kind,
@@ -297,7 +297,7 @@ pub(super) fn decay_abandoned_sites(state: &mut State) {
                         || super::tile_adjacent_to_rect(
                             unit.tile(),
                             building.anchor,
-                            building.stats().size,
+                            building.kind.size(),
                         ))
             })
         })

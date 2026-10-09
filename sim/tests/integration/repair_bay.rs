@@ -42,7 +42,6 @@ fn arena(units: Vec<UnitSpec>, factions: [Faction; 2], scrap: u32, bay: bool) ->
     Scenario {
         mode: ScenarioMode::Match,
         name: "bay-arena".into(),
-        seed: 42,
         map: vec![
             "####################".into(),
             "#1.................#".into(),

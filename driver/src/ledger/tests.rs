@@ -18,7 +18,6 @@ fn field(
     Scenario {
         mode: ScenarioMode::Match,
         name: "ledger".into(),
-        seed: 5,
         map,
         players: [Faction::Ferrous, Faction::Cupric]
             .into_iter()

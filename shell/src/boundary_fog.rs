@@ -79,7 +79,7 @@ impl BoundaryFog {
         {
             self.stamp(
                 building.anchor,
-                building.stats().size,
+                building.kind.size(),
                 building.stats().vision,
             );
         }

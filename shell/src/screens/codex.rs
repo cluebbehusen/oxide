@@ -358,7 +358,7 @@ fn unit_notes(kind: UnitKind) -> Vec<String> {
                 .to_string(),
         );
     }
-    if stats.demolition {
+    if stats.demolition.is_some() {
         notes.push("Detonates on its target; always fatal to itself.".to_string());
     }
     if !stats.requires.is_empty() {

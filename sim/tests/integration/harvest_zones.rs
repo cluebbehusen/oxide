@@ -808,6 +808,43 @@ fn a_hidden_gun_is_remembered_even_when_its_old_launch_tile_is_seen() {
 }
 
 #[test]
+fn a_hidden_hit_on_any_harvesting_worker_is_remembered() {
+    let mut state = state_with_salvage(
+        32,
+        &[],
+        &[],
+        vec![
+            unit(0, UnitKind::Excavator, 12, 5),
+            unit(1, UnitKind::Bombard, 21, 5),
+            unit(1, UnitKind::Harvester, 16, 5),
+        ],
+        vec![],
+    );
+    let (worker, bombard) = (state.units()[0].id, state.units()[1].id);
+    let before = state.unit(worker).unwrap().hp;
+    state.tick(&[cmd(
+        1,
+        Command::Attack {
+            units: vec![bombard],
+            target: Target::Unit(worker).into(),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 200, |state, _| {
+        state.unit(worker).unwrap().hp < before
+    });
+    assert!(state.unit(worker).unwrap().hp > 0, "the hit was not a loss");
+    assert!(!state.can_see(PlayerId(0), state.unit(bombard).unwrap().tile()));
+    let doc = serde_json::to_value(&state).unwrap();
+    assert!(
+        doc["vision"][0]["salvage_incidents"]
+            .as_array()
+            .is_some_and(|incidents| !incidents.is_empty()),
+        "an Excavator's wound warns its team like a Harvester's"
+    );
+}
+
+#[test]
 fn an_own_loss_retires_a_worker_home_before_it_surfaces_idle() {
     let anchor = TilePos::new(13, 5);
     let exposed = TilePos::new(15, 5);

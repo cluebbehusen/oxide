@@ -12,7 +12,6 @@ pub fn arena(units: Vec<UnitSpec>) -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "test-arena".into(),
-        seed: 42,
         map: vec![
             "################".into(),
             "#1.............#".into(),
@@ -83,7 +82,6 @@ pub fn open_arena_with(
     Scenario {
         mode: ScenarioMode::Match,
         name: "open-arena".into(),
-        seed: 42,
         map: rows.into_iter().map(|r| r.into_iter().collect()).collect(),
         players: vec![
             PlayerSpec {
@@ -130,7 +128,10 @@ pub fn commanded(order: Order) -> Order {
         Order::Run { goal } => Order::Run { goal: tile(goal) },
         Order::Hunt { goal } => Order::Hunt { goal: tile(goal) },
         Order::Advance { goal } => Order::Advance { goal: tile(goal) },
-        Order::Unload { at } => Order::Unload { at: tile(at) },
+        Order::Unload { at, reverse } => Order::Unload {
+            at: tile(at),
+            reverse,
+        },
         Order::Attack {
             target,
             pursue,

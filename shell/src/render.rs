@@ -688,7 +688,7 @@ fn tracked_mount_angle(
                 return None;
             }
             let from = game.presentation.draw_pos(unit.id, unit.pos, alpha);
-            let (width, height) = target.stats().size;
+            let (width, height) = target.kind.size();
             from.clamp(
                 vec2(target.anchor.x as f32, target.anchor.y as f32),
                 vec2(
@@ -910,8 +910,8 @@ pub(crate) fn unit_body_pose(
         .and_then(|_| tracked_mount_angle(game, unit, alpha));
     let rotation = if unit.kind.stats().turn_rate > 0
         || unit.kind.ground_turn_rate() > 0
-        || unit.kind.cruise_turn_rate() > 0
-        || unit.kind.turret_turn_rate() > 0
+        || unit.kind.stats().cruise_turn_rate > 0
+        || unit.kind.stats().turret_turn_rate > 0
     {
         game.presentation
             .draw_heading(unit.id, unit.weapon_heading(), alpha)

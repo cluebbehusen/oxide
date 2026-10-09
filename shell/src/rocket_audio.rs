@@ -45,9 +45,7 @@ fn audible_motors(game: &Scene<'_>) -> Vec<Motor> {
         }
         let launch = world_vec(shell.launch);
         let impact = world_vec(shell.impact);
-        let total = (launch.distance(impact) / oxide_sim::stats::SHELL_SPEED.to_num::<f32>())
-            .ceil()
-            .max(1.0);
+        let total = shell.arrival.saturating_sub(shell.launched_at).max(1) as f32;
         let elapsed = projectile_elapsed_ticks(now, shell.arrival, total);
         let envelope = motor_envelope(elapsed, total);
         if envelope <= 0.0 {

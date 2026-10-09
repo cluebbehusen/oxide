@@ -404,7 +404,9 @@ fn fabricated_and_corrupted_contact_histories_are_rejected() {
 #[test]
 fn every_ground_combat_chassis_can_act_on_a_building_memory() {
     for kind in UnitKind::ALL {
-        if !kind.stats().can_target(oxide_sim::stats::Domain::Ground) && !kind.stats().demolition {
+        if !kind.stats().can_target(oxide_sim::stats::Domain::Ground)
+            && kind.stats().demolition.is_none()
+        {
             continue;
         }
         let mut scenario = open_arena(
@@ -886,7 +888,7 @@ fn building_radar_scene(
     let (width, height) = (40, 30);
     let (me, them) = if rotated { (1, 0) } else { (0, 1) };
     let place = |player, kind: BuildingKind, x: i32, y: i32| {
-        let (w, h) = kind.base_stats().size;
+        let (w, h) = kind.size();
         if rotated {
             building(player, kind, width - w - x, height - h - y)
         } else {

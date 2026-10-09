@@ -425,8 +425,8 @@ fn apply_attack(
     // A demolition machine carries no gun, but its charge covers ground the
     // same way a weapon would.
     let covers = |stats: &crate::stats::UnitStats| {
-        victim_domain.map_or(!stats.weapons.is_empty() || stats.demolition, |domain| {
-            stats.can_target(domain) || (stats.demolition && domain == Domain::Ground)
+        victim_domain.map_or(stats.can_fight(), |domain| {
+            stats.can_target(domain) || (stats.demolition.is_some() && domain == Domain::Ground)
         })
     };
     // Machines that cannot hit the target walk to its tile instead, each
@@ -794,7 +794,7 @@ fn found_site(
     // building id.
     let site = state.place_site(player, kind, anchor);
     let from = state.unit(builder).expect("caller checked").tile();
-    let size = kind.base_stats().size;
+    let size = kind.size();
     // An enclosed founder uses the same post-acceptance perimeter relocation
     // as other friendly bodies trapped by a newly claimed footprint.
     let inside = state.building(site).expect("just placed").contains(from);
@@ -816,7 +816,7 @@ fn found_site(
 
 pub(super) fn finish_site_claim(state: &mut State, site: BuildingId, builder: UnitId) {
     let building = state.building(site).expect("accepted site");
-    let (player, anchor, size) = (building.player, building.anchor, building.stats().size);
+    let (player, anchor, size) = (building.player, building.anchor, building.kind.size());
     let from = state.unit(builder).expect("committed builder").tile();
     // Friendly machines make way as the site claims the ground: nothing may
     // end up inside a finished building. The builders' own approach and the
@@ -1160,7 +1160,7 @@ fn apply_unload(
     let reverse = spread_scan_reversed(state, at, &[transport]);
     let at = goals::issue(state, player, at, domain, reverse).goal(0);
     let unit = state.unit_mut(transport).expect("just seen");
-    if assign(unit, Order::Unload { at }, queue) {
+    if assign(unit, Order::Unload { at, reverse }, queue) {
         Ok(())
     } else {
         Err(RejectReason::QueueFull)
@@ -1445,8 +1445,7 @@ fn apply_focus_fire(
             return Err(RejectReason::InvalidTarget);
         }
         let weapon = building
-            .kind
-            .base_stats()
+            .stats()
             .weapons
             .first()
             .copied()

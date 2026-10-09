@@ -31,12 +31,12 @@ pub(super) fn steer_ground_heading(unit: &mut crate::state::Unit, direction: Vec
 pub(super) fn steer_weapon_heading(unit: &mut crate::state::Unit, direction: Vec2Fx) -> bool {
     if unit.kind.has_ground_turret() {
         let bearing = unit.turret_heading.get_or_insert(unit.heading);
-        return steer_bearing(bearing, direction, unit.kind.turret_turn_rate());
+        return steer_bearing(bearing, direction, unit.kind.stats().turret_turn_rate);
     }
     if unit.drive_speed > Fx::ZERO {
         return false;
     }
-    if unit.kind == crate::UnitKind::Bombard {
+    if let Some(brace) = unit.kind.stats().brace {
         if !ground_weapon_aligned(unit, direction) {
             if unit.brace_ticks > 0 {
                 unit.retract_braces();
@@ -45,14 +45,14 @@ pub(super) fn steer_weapon_heading(unit: &mut crate::state::Unit, direction: Vec
             }
             return false;
         }
-        unit.brace_ticks = (unit.brace_ticks + 1).min(crate::stats::BOMBARD_BRACE_TICKS);
-        return unit.brace_ticks == crate::stats::BOMBARD_BRACE_TICKS;
+        unit.brace_ticks = (unit.brace_ticks + 1).min(brace.deploy_ticks);
+        return unit.brace_ticks == brace.deploy_ticks;
     }
     let rate = unit
         .kind
         .ground_turn_rate()
-        .max(unit.kind.turret_turn_rate())
-        .max(unit.kind.cruise_turn_rate());
+        .max(unit.kind.stats().turret_turn_rate)
+        .max(unit.kind.stats().cruise_turn_rate);
     steer_heading(unit, direction, rate)
 }
 
@@ -77,7 +77,7 @@ fn heading_aligned(current: u8, desired: u8) -> bool {
 }
 
 pub(super) fn ground_weapon_aligned(unit: &crate::state::Unit, direction: Vec2Fx) -> bool {
-    (unit.kind.ground_turn_rate() == 0 && unit.kind.cruise_turn_rate() == 0)
+    (unit.kind.ground_turn_rate() == 0 && unit.kind.stats().cruise_turn_rate == 0)
         || direction == Vec2Fx::ZERO
         || heading_aligned(
             unit.weapon_heading(),
@@ -351,7 +351,7 @@ pub(super) fn run(state: &mut State) -> (Vec<Vec2Fx>, Vec<bool>) {
             }
             continue;
         }
-        if unit.kind.cruise_turn_rate() > 0 {
+        if unit.kind.stats().cruise_turn_rate > 0 {
             cruise::advance(unit, map);
             travel[slot] = unit.pos - before;
             continue;

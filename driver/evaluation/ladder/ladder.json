@@ -2,7 +2,6 @@
   "name": "ladder",
   "tick_limit": 60000,
   "runs": 4,
-  "scenario_seed_base": 7000,
   "personality_seed_base": 9000,
   "stances": ["turtle", "balanced", "aggressive"],
   "comparisons": [

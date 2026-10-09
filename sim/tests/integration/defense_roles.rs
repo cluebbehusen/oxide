@@ -16,7 +16,7 @@ fn mirrored_tile(tile: TilePos) -> TilePos {
 }
 
 fn mirrored_anchor(anchor: TilePos, kind: BuildingKind) -> TilePos {
-    let (width, height) = kind.base_stats().size;
+    let (width, height) = kind.size();
     TilePos::new(WIDTH - width - anchor.x, HEIGHT - height - anchor.y)
 }
 

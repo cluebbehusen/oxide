@@ -6,7 +6,7 @@ use oxide_sim::{Command, Event, PlayerCommand, PlayerId, Scenario, State};
 fn sandbox() -> Scenario {
     Scenario::from_json(
         r#"{
-            "name": "Unit sandbox", "seed": 7, "mode": "sandbox",
+            "name": "Unit sandbox", "mode": "sandbox",
             "map": ["............", "............", "............", "............", "............", "............"],
             "players": [{"name": "Local", "faction": "ferrous", "scrap": 0, "bot": false}],
             "units": [{"player": 0, "kind": "scuttler", "x": 2, "y": 2}]

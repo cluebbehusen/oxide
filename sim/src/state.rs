@@ -22,11 +22,10 @@ pub use targeting::AttackView;
 
 use crate::ids::{BuildingId, PlayerId, Target, UnitId};
 use crate::map::{MAX_MAP_EDGE, Map};
-use crate::stats::{BuildingKind, UnitKind};
+use crate::stats::{BuildingKind, ProjectileKind, UnitKind};
 use chassis::Tick;
 use chassis::fx::{Fx, Vec2Fx};
 use chassis::grid::{TilePos, cell_count};
-use chassis::rng::Pcg32;
 use serde::{Deserialize, Serialize};
 
 /// A seat's allegiance: which roster it runs, and its sprite tint.
@@ -192,6 +191,11 @@ pub enum Order {
     Unload {
         /// The drop point.
         at: Goal,
+        /// Whether the drop ring scans half-turned, in the frame of the
+        /// transport's approach when the order was issued, so mirrored
+        /// drops set riders on mirrored tiles.
+        #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+        reverse: bool,
     },
     /// Fly a run-in onto a ground tile and set the airframe down on its
     /// center.
@@ -217,7 +221,7 @@ impl Order {
     pub(crate) fn walk_goal(&self) -> Option<Goal> {
         match *self {
             Order::Run { goal } | Order::Hunt { goal } | Order::Advance { goal } => Some(goal),
-            Order::Unload { at } => Some(at),
+            Order::Unload { at, .. } => Some(at),
             _ => None,
         }
     }
@@ -226,7 +230,7 @@ impl Order {
     pub(crate) fn walk_goal_mut(&mut self) -> Option<&mut Goal> {
         match self {
             Order::Run { goal } | Order::Hunt { goal } | Order::Advance { goal } => Some(goal),
-            Order::Unload { at } => Some(at),
+            Order::Unload { at, .. } => Some(at),
             _ => None,
         }
     }
@@ -240,17 +244,21 @@ impl Order {
             (Order::Run { goal: a }, Order::Run { goal: b })
             | (Order::Hunt { goal: a }, Order::Hunt { goal: b })
             | (Order::Advance { goal: a }, Order::Advance { goal: b })
-            | (Order::Unload { at: a }, Order::Unload { at: b }) => a.tile() == b.tile(),
+            | (Order::Unload { at: a, .. }, Order::Unload { at: b, .. }) => a.tile() == b.tile(),
             _ => self == other,
         }
     }
 
     /// Continues this order as the matching re-issue `other`: a walk takes
     /// the new aim and keeps its endpoint only while its target is
-    /// unchanged. Callers check [`Order::reissue_matches`] first.
+    /// unchanged, and an unload takes the new drop frame. Callers check
+    /// [`Order::reissue_matches`] first.
     pub(crate) fn reissue(&mut self, other: Order) {
         if let (Some(goal), Some(new)) = (self.walk_goal_mut(), other.walk_goal()) {
             goal.adopt(new);
+        }
+        if let (Order::Unload { reverse, .. }, Order::Unload { reverse: new, .. }) = (self, other) {
+            *reverse = new;
         }
     }
 }
@@ -400,10 +408,11 @@ impl Unit {
     }
 
     pub(crate) fn retract_braces(&mut self) {
-        if self.kind == UnitKind::Bombard
-            && self.cooldowns[0] <= self.kind.stats().weapons[0].cooldown_ticks - 8
+        let stats = self.kind.stats();
+        if let Some(brace) = stats.brace
+            && self.cooldowns[0] <= stats.weapons[0].cooldown_ticks - brace.recoil_ticks
         {
-            self.brace_ticks = self.brace_ticks.saturating_sub(3);
+            self.brace_ticks = self.brace_ticks.saturating_sub(brace.retract_per_tick);
         }
     }
 
@@ -628,14 +637,14 @@ impl Building {
 
     /// Iterates the footprint tiles row-major.
     pub fn tiles(&self) -> impl Iterator<Item = TilePos> + use<> {
-        let (w, h) = self.stats().size;
+        let (w, h) = self.kind.size();
         let anchor = self.anchor;
         (0..h).flat_map(move |dy| (0..w).map(move |dx| anchor.offset(dx, dy)))
     }
 
     /// Whether `pos` lies inside the footprint.
     pub fn contains(&self, pos: TilePos) -> bool {
-        let (w, h) = self.stats().size;
+        let (w, h) = self.kind.size();
         pos.x >= self.anchor.x
             && pos.y >= self.anchor.y
             && pos.x < self.anchor.x + w
@@ -644,13 +653,13 @@ impl Building {
 
     /// Center of the footprint in world coordinates.
     pub fn center(&self) -> Vec2Fx {
-        crate::geometry::footprint_center(self.anchor, self.stats().size)
+        crate::geometry::footprint_center(self.anchor, self.kind.size())
     }
 
     /// The point of the footprint rectangle closest to `from` — what range
     /// checks measure against, so big buildings don't get phantom reach.
     pub fn closest_point_to(&self, from: Vec2Fx) -> Vec2Fx {
-        let (w, h) = self.stats().size;
+        let (w, h) = self.kind.size();
         let min = self.anchor.center() - Vec2Fx::new(chassis::fx::HALF, chassis::fx::HALF);
         let max = min + Vec2Fx::new(chassis::fx::Fx::from_num(w), chassis::fx::Fx::from_num(h));
         Vec2Fx::new(from.x.clamp(min.x, max.x), from.y.clamp(min.y, max.y))
@@ -667,7 +676,6 @@ pub struct State {
     #[serde(default, skip_serializing_if = "crate::is_default")]
     pub(crate) mode: crate::scenario::ScenarioMode,
     pub(crate) tick: Tick,
-    pub(crate) rng: Pcg32,
     pub(crate) map: Map,
     pub(crate) players: Vec<Player>,
     pub(crate) vision: Vec<crate::vision::Vision>,
@@ -793,7 +801,7 @@ impl<'a> GroundTerrain<'a> {
 impl State {
     /// Assembles a state from parts; [`crate::Scenario::build`] is the public
     /// entry point.
-    pub(crate) fn assemble(map: Map, players: Vec<Player>, seed: u64) -> Self {
+    pub(crate) fn assemble(map: Map, players: Vec<Player>) -> Self {
         let (map_width, map_height) = (map.width().max(0), map.height().max(0));
         let vision = players
             .iter()
@@ -802,7 +810,6 @@ impl State {
         Self {
             mode: crate::scenario::ScenarioMode::Match,
             tick: 0,
-            rng: Pcg32::new(seed, 0),
             map,
             players,
             vision,
@@ -847,9 +854,11 @@ impl State {
                 }))
     }
 
-    /// Whether a living Foundry owns neither a live Harvester nor a prepaid
-    /// one in a live production queue.
+    /// Whether a living Foundry owns no machine that can harvest: none in the
+    /// world, none riding a transport, and none prepaid in a live production
+    /// queue.
     pub(crate) fn harvester_recovery_needed(&self, player: PlayerId) -> bool {
+        let harvests = |kind: UnitKind| kind.stats().harvest.is_some();
         !self.player(player).resigned
             && self.buildings.iter().any(|building| {
                 building.player == player
@@ -857,17 +866,16 @@ impl State {
                     && building.built
                     && building.kind == BuildingKind::Foundry
             })
-            && !self.units.iter().any(|unit| {
-                unit.player == player && unit.hp > 0 && unit.kind == UnitKind::Harvester
-            })
+            && !self
+                .units
+                .iter()
+                .flat_map(|unit| core::iter::once(unit).chain(&unit.cargo))
+                .any(|unit| unit.player == player && unit.hp > 0 && harvests(unit.kind))
             && !self.buildings.iter().any(|building| {
                 building.player == player
                     && building.hp > 0
                     && building.built
-                    && building
-                        .queue
-                        .iter()
-                        .any(|kind| *kind == UnitKind::Harvester)
+                    && building.queue.iter().any(|kind| harvests(*kind))
             })
     }
 
@@ -1038,7 +1046,6 @@ impl State {
         let Self {
             mode: _,
             tick,
-            rng: _,
             map,
             players,
             vision,
@@ -1289,9 +1296,7 @@ impl State {
         if queue.len() > crate::stats::ORDER_QUEUE_CAP {
             return Err(E::OverlongUnitQueue(id));
         }
-        if *brace_ticks > crate::stats::BOMBARD_BRACE_TICKS
-            || (*brace_ticks != 0 && *kind != UnitKind::Bombard)
-        {
+        if *brace_ticks > stats.brace.map_or(0, |brace| brace.deploy_ticks) {
             return Err(E::InvalidUnitBraces(id));
         }
         if *drive_speed < Fx::ZERO
@@ -1613,7 +1618,7 @@ impl State {
             .iter()
             .filter(|b| !b.kind.is_stealthy() && !b.provisional)
         {
-            let (w, h) = b.kind.base_stats().size;
+            let (w, h) = b.kind.size();
             for tile in (0..h).flat_map(|dy| (0..w).map(move |dx| b.anchor.offset(dx, dy))) {
                 if self.map.tile(tile).is_none() {
                     continue;
@@ -1647,7 +1652,7 @@ impl State {
         if usize::from(player.0) >= self.players.len()
             || unit.0 >= self.next_unit_id
             || live
-            || kind.crash_profile().is_none()
+            || kind.stats().crash.is_none()
             || !point_inside_envelope(*launch)
             || !point_inside_envelope(*impact)
             || *started >= self.tick
@@ -1671,14 +1676,16 @@ impl State {
     fn validate_shell(&self, i: usize, s: &Shell) -> Result<(), StateIntegrityError> {
         use StateIntegrityError as E;
         // Arrival and damage only change play: landing compares ticks and
-        // damage saturates, so neither can overflow.
+        // damage saturates, so neither can overflow. The payload kind only
+        // drives presentation.
         let Shell {
-            kind,
+            kind: _,
             shooter,
             player,
             launch,
             impact,
-            arrival: _,
+            launched_at,
+            arrival,
             damage: _,
             targets: _,
             splash,
@@ -1697,20 +1704,8 @@ impl State {
         if !self.minted(*shooter) {
             return Err(E::UnmintedShellShooter(i));
         }
-        let expected = match *shooter {
-            Target::Unit(id) => self
-                .unit(id)
-                .or_else(|| {
-                    self.units
-                        .iter()
-                        .flat_map(|carrier| &carrier.cargo)
-                        .find(|rider| rider.id == id)
-                })
-                .map(|unit| ProjectileKind::for_unit(unit.kind)),
-            Target::Building(_) => Some(ProjectileKind::Shell),
-        };
-        if expected.is_some_and(|expected| expected != *kind) {
-            return Err(E::ShellKindMismatch(i));
+        if launched_at > arrival {
+            return Err(E::ShellLaunchedAfterArrival(i));
         }
         Ok(())
     }
@@ -1906,7 +1901,8 @@ impl State {
                 if self.attack_view(unit.player, target).is_some_and(|view| {
                     view.domain.is_none_or(|domain| {
                         stats.can_target(domain)
-                            || (stats.demolition && domain == crate::stats::Domain::Ground)
+                            || (stats.demolition.is_some()
+                                && domain == crate::stats::Domain::Ground)
                     })
                 }) {
                     break;
@@ -2034,7 +2030,7 @@ impl State {
         let (anchor, kind) = (b.anchor, b.kind);
         let width = self.map.width();
         let height = self.map.height();
-        let (w, h) = kind.base_stats().size;
+        let (w, h) = kind.size();
         for dy in 0..h {
             for dx in 0..w {
                 // Checked: this runs on deserialized bytes BEFORE the
@@ -2243,8 +2239,8 @@ fn footprint_distance(a: &Building, b: &Building) -> i32 {
         (a - b_far).max(b - a_far).max(0)
     }
 
-    let a_size = a.stats().size;
-    let b_size = b.stats().size;
+    let a_size = a.kind.size();
+    let b_size = b.kind.size();
     axis_distance(a.anchor.x, a_size.0, b.anchor.x, b_size.0)
         .max(axis_distance(a.anchor.y, a_size.1, b.anchor.y, b_size.1))
 }
@@ -2312,7 +2308,7 @@ fn goal_inside_envelope(goal: &Goal) -> bool {
 fn order_goals_canonical(order: &Order) -> bool {
     match order {
         Order::Run { goal } | Order::Hunt { goal } | Order::Advance { goal } => goal.canonical(),
-        Order::Unload { at } => at.canonical(),
+        Order::Unload { at, .. } => at.canonical(),
         Order::Attack { resume, .. } => resume.as_ref().is_none_or(Goal::canonical),
         _ => true,
     }
@@ -2338,7 +2334,7 @@ fn order_inside_envelope(order: &Order) -> bool {
         Order::Attack { resume, .. } => resume.as_ref().is_none_or(goal_inside_envelope),
         Order::Found { anchor, .. } => tile_inside_envelope(*anchor),
         Order::Board { .. } => true,
-        Order::Unload { at } => goal_inside_envelope(at),
+        Order::Unload { at, .. } => goal_inside_envelope(at),
         Order::Land { goal, from } => {
             tile_inside_envelope(*goal) && from.is_none_or(tile_inside_envelope)
         }
@@ -2681,9 +2677,9 @@ pub enum StateIntegrityError {
     /// A shell was fired by an entity id this run never handed out.
     #[error("shell {0} was fired by an id the run never minted")]
     UnmintedShellShooter(usize),
-    /// A surviving shooter contradicts its projectile's retained identity.
-    #[error("shell {0} has a projectile kind inconsistent with its shooter")]
-    ShellKindMismatch(usize),
+    /// A shell lands before it launched, so its flight has no length.
+    #[error("shell {0} lands before it launched")]
+    ShellLaunchedAfterArrival(usize),
     /// A remembered building is owned by a player outside the table.
     #[error("player {0} remembers a building owned outside the table")]
     ForeignGhostOwner(PlayerId),
@@ -2742,7 +2738,7 @@ fn valid_air_motion(unit: &Unit) -> bool {
     if motion == Vec2Fx::ZERO {
         return true;
     }
-    unit.kind.crash_profile().is_some()
+    unit.kind.stats().crash.is_some()
         && unit.domain() == crate::stats::Domain::Air
         && motion.x >= -speed
         && motion.x <= speed
@@ -2787,6 +2783,8 @@ pub struct Shell {
     pub launch: Vec2Fx,
     /// Where it will land — fixed at fire time.
     pub impact: Vec2Fx,
+    /// The tick it launched on.
+    pub launched_at: Tick,
     /// The tick it resolves on.
     pub arrival: Tick,
     /// Damage on the direct hit.
@@ -2795,29 +2793,6 @@ pub struct Shell {
     pub targets: crate::stats::DomainMask,
     /// Splash radius, if the weapon splashes.
     pub splash: Option<chassis::fx::Fx>,
-}
-
-/// Physical identity of an in-flight payload, independent of its damage.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProjectileKind {
-    /// An artillery shell.
-    Shell,
-    /// An Avalanche missile.
-    Missile,
-    /// An air-dropped bomb.
-    Bomb,
-}
-
-impl ProjectileKind {
-    /// Payload identity for a unit's projectile weapon.
-    pub const fn for_unit(kind: UnitKind) -> Self {
-        match kind {
-            UnitKind::Avalanche => Self::Missile,
-            UnitKind::Condor | UnitKind::Moth => Self::Bomb,
-            _ => Self::Shell,
-        }
-    }
 }
 
 /// The wire shape of [`State`]: a private mirror that derives the actual
@@ -2832,7 +2807,6 @@ struct StateWire {
     #[serde(default)]
     mode: crate::scenario::ScenarioMode,
     tick: Tick,
-    rng: Pcg32,
     map: Map,
     players: Vec<Player>,
     vision: Vec<crate::vision::Vision>,
@@ -2852,7 +2826,6 @@ impl From<StateWire> for State {
         let StateWire {
             mode,
             tick,
-            rng,
             map,
             players,
             vision,
@@ -2868,7 +2841,6 @@ impl From<StateWire> for State {
             mode,
             building_occupancy: Vec::new(),
             tick,
-            rng,
             map,
             players,
             vision,

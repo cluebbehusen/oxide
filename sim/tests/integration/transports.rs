@@ -16,7 +16,6 @@ fn arena(map: Vec<String>, units: Vec<UnitSpec>) -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "sling-arena".into(),
-        seed: 13,
         map,
         players: players(500),
         units,
@@ -938,5 +937,111 @@ fn mirrored_boarders_take_mirrored_tiles() {
         state.units().len(),
         4,
         "only the slings remain in the world"
+    );
+}
+
+#[test]
+fn mirrored_slings_set_riders_on_mirrored_tiles() {
+    let (width, height) = (20, 10);
+    let map: Vec<String> = (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| match (x, y) {
+                    (1, 1) => '1',
+                    (17, 7) => '2',
+                    _ if x == 0 || y == 0 || x == width - 1 || y == height - 1 => '#',
+                    _ => '.',
+                })
+                .collect()
+        })
+        .collect();
+    let mirror = |t: TilePos| TilePos::new(width - 1 - t.x, height - 1 - t.y);
+    let squad = [
+        (UnitKind::Skyhook, TilePos::new(5, 3)),
+        (UnitKind::Sentinel, TilePos::new(4, 3)),
+        (UnitKind::Sentinel, TilePos::new(6, 3)),
+        (UnitKind::Sentinel, TilePos::new(5, 2)),
+    ];
+    let units = squad
+        .iter()
+        .map(|&(kind, at)| unit(0, kind, at.x, at.y))
+        .chain(squad.iter().map(|&(kind, at)| {
+            let at = mirror(at);
+            unit(1, kind, at.x, at.y)
+        }))
+        .collect();
+    let mut state = arena(map, units).build().unwrap();
+    let ids: Vec<UnitId> = state.units().iter().map(|u| u.id).collect();
+    let (west, east) = ids.split_at(squad.len());
+    state.tick(&[
+        cmd(
+            0,
+            Command::Load {
+                units: west[1..].to_vec(),
+                transport: west[0],
+                queue: false,
+            },
+        ),
+        cmd(
+            1,
+            Command::Load {
+                units: east[1..].to_vec(),
+                transport: east[0],
+                queue: false,
+            },
+        ),
+    ]);
+    for _ in 0..100 {
+        if state.units().len() == 2 {
+            break;
+        }
+        state.tick(&[]);
+    }
+    assert_eq!(state.units().len(), 2, "both squads boarded");
+
+    let drop = TilePos::new(7, 4);
+    let mut landed: [Vec<TilePos>; 2] = [Vec::new(), Vec::new()];
+    let mut record = |events: &[Event]| {
+        for event in events {
+            if let Event::UnitUnloaded { player, at, .. } = *event {
+                landed[usize::from(player.0)].push(at);
+            }
+        }
+    };
+    let report = state.tick(&[
+        cmd(
+            0,
+            Command::Unload {
+                transport: west[0],
+                at: drop,
+                queue: false,
+            },
+        ),
+        cmd(
+            1,
+            Command::Unload {
+                transport: east[0],
+                at: mirror(drop),
+                queue: false,
+            },
+        ),
+    ]);
+    record(&report.events);
+    assert!(matches!(
+        state.unit(east[0]).unwrap().order,
+        Order::Unload { reverse: true, .. }
+    ));
+    let restored: State = serde_json::from_value(serde_json::to_value(&state).unwrap()).unwrap();
+    assert_eq!(restored.hash(), state.hash(), "the drop frame round-trips");
+    for _ in 0..200 {
+        if state.units().len() == ids.len() {
+            break;
+        }
+        record(&state.tick(&[]).events);
+    }
+    assert_eq!(landed[0].len(), 3, "the west squad landed");
+    assert_eq!(
+        landed[1],
+        landed[0].iter().copied().map(mirror).collect::<Vec<_>>()
     );
 }

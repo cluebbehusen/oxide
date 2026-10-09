@@ -95,7 +95,7 @@ impl State {
                 }
             }
             AttackTarget::RememberedBuilding(memory) => {
-                let size = memory.building_kind.base_stats().size;
+                let size = memory.building_kind.size();
                 let entity = self
                     .buildings()
                     .iter()
@@ -131,12 +131,12 @@ impl State {
                     && memory
                         .anchor
                         .x
-                        .checked_add(memory.building_kind.base_stats().size.0)
+                        .checked_add(memory.building_kind.size().0)
                         .is_some_and(|edge| edge <= self.map().width())
                     && memory
                         .anchor
                         .y
-                        .checked_add(memory.building_kind.base_stats().size.1)
+                        .checked_add(memory.building_kind.size().1)
                         .is_some_and(|edge| edge <= self.map().height())
             }
             other => other.entity().is_some_and(|entity| self.minted(entity)),

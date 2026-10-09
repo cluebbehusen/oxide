@@ -40,7 +40,6 @@ fn ridge(gap: bool, units: Vec<UnitSpec>) -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "ridge".into(),
-        seed: 9,
         map,
         players: players(300),
         units,
@@ -327,7 +326,7 @@ fn a_ridge_match_stays_bit_identical() {
 
 #[test]
 fn a_patrol_leg_on_the_ridge_snaps_to_open_sky() {
-    // Patrol waypoints skip the group-order goal snap, and line_blocked
+    // A leg on unexplored ground keeps its clicked tile, and line_blocked
     // ignores endpoints by design — the route funnel itself must refuse
     // to hand a flyer the mountain.
     let mut state = ridge(true, vec![unit(0, UnitKind::Wisp, 9, 5)])
@@ -379,7 +378,6 @@ fn a_building_flush_against_the_ridge_is_safe_from_the_far_side() {
     let mut state = Scenario {
         mode: ScenarioMode::Match,
         name: "flush".into(),
-        seed: 9,
         map,
         players: players(300),
         units: vec![unit(0, UnitKind::Lancer, 14, 5)],

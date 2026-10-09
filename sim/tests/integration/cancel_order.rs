@@ -19,7 +19,6 @@ fn sandbox(width: usize, height: usize, units: &[(u8, UnitKind, i32, i32)]) -> S
     Scenario {
         mode: ScenarioMode::Sandbox,
         name: "cancel-order".into(),
-        seed: 5,
         map: vec![".".repeat(width); height],
         players: [Faction::Ferrous, Faction::Cupric]
             .into_iter()

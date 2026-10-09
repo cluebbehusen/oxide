@@ -11,6 +11,7 @@ fn coincident_impacts_keep_projectile_order_and_player_identity() {
         player,
         launch: Vec2Fx::ZERO,
         impact: Vec2Fx::ZERO,
+        launched_at: 0,
         arrival: 10,
         damage: 1,
         targets: oxide_sim::stats::DomainMask::GROUND,

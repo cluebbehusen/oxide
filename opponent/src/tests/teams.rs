@@ -39,7 +39,6 @@ pub(super) fn trio(teams: [Option<u8>; 3]) -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "opponent trio".into(),
-        seed: 5,
         map: TRIO.map(str::to_owned).to_vec(),
         players: vec![
             seat("west", Faction::Ferrous, teams[0]),

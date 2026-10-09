@@ -872,7 +872,7 @@ fn occupied(scenario: &Scenario, tile: TilePos) -> bool {
         .iter()
         .any(|unit| TilePos::new(unit.x, unit.y) == tile)
         || state.buildings().iter().any(|building| {
-            let (width, height) = building.kind.base_stats().size;
+            let (width, height) = building.kind.size();
             (building.anchor.x..building.anchor.x + width).contains(&tile.x)
                 && (building.anchor.y..building.anchor.y + height).contains(&tile.y)
         })

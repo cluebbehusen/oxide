@@ -206,7 +206,7 @@ pub(crate) fn look(observation: &ObservationData, map: &MapModel, memory: &mut M
     let now = observation.tick;
     let points = points(map, observation.me);
     let scouted = memory.scouted(points.len());
-    let (width, height) = BuildingKind::Foundry.base_stats().size;
+    let (width, height) = BuildingKind::Foundry.size();
     for (point, seen) in points.iter().zip(scouted.iter_mut()) {
         let visible = (0..height)
             .any(|dy| (0..width).any(|dx| observation.visible(point.anchor.offset(dx, dy))));
@@ -268,7 +268,7 @@ impl Goals<'_> {
         let frame = self.frame;
         if air {
             self.air.get_or_init(|| {
-                let (width, height) = BuildingKind::Foundry.base_stats().size;
+                let (width, height) = BuildingKind::Foundry.size();
                 self.points
                     .iter()
                     .map(|point| {

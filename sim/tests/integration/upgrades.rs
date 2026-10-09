@@ -40,7 +40,6 @@ fn arena(scrap: u32, crucible: bool, reclaimer: bool) -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "upgrade-arena".into(),
-        seed: 3,
         map: vec![
             "####################".into(),
             "#1.................#".into(),

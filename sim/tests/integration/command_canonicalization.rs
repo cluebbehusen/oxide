@@ -115,7 +115,6 @@ fn stage() -> Stage {
     let mut state = Scenario {
         mode: ScenarioMode::Match,
         name: "canonicalization-arena".into(),
-        seed: 42,
         map: map(),
         players: vec![
             seat("Ferrous", Faction::Ferrous),

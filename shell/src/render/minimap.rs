@@ -232,7 +232,7 @@ pub(crate) fn draw_minimap(game: &crate::game::Scene<'_>) {
 
     if !omniscient {
         for ghost in vision.ghosts() {
-            let (w, h) = ghost.kind.base_stats().size;
+            let (w, h) = ghost.kind.size();
             let age = memory_age(game, (ghost.anchor.x, ghost.anchor.y));
             // Ghosts keep their dimmed seat color as it fades, so
             // allegiance stays readable when the player plans from memory.
@@ -260,7 +260,7 @@ pub(crate) fn draw_minimap(game: &crate::game::Scene<'_>) {
         if !seen {
             continue;
         }
-        let (w, h) = building.stats().size;
+        let (w, h) = building.kind.size();
         draw_rectangle(
             rect.x + building.anchor.x as f32 * scale,
             rect.y + building.anchor.y as f32 * scale,

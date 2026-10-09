@@ -20,7 +20,6 @@ fn arena(scrap: u32, fabricator: bool, units: Vec<UnitSpec>) -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "roster-arena".into(),
-        seed: 9,
         map: vec![
             "####################".into(),
             "#1.................#".into(),

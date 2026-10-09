@@ -118,7 +118,6 @@ fn sandbox(map: &[&str], units: &[(crate::UnitKind, i32, i32)]) -> crate::State 
     crate::Scenario {
         mode: crate::scenario::ScenarioMode::Sandbox,
         name: "locomotion".into(),
-        seed: 5,
         map: map.iter().map(|row| (*row).to_owned()).collect(),
         players: vec![crate::scenario::PlayerSpec {
             name: "p0".into(),

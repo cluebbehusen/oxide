@@ -19,7 +19,6 @@ use oxide_sim::{Faction, PlayerId, Scenario, State, UnitKind};
 /// smelter feeds it.
 fn yard() -> Scenario {
     Scenario {
-        seed: 11,
         players: vec![
             PlayerSpec {
                 name: "Ferrous".into(),
@@ -157,7 +156,7 @@ fn mirrored_crucibles_smelt_mirrored_wreck_tiles() {
     rows[height - 1] = vec!['#'; width];
     rows[1][1] = '1';
     rows[height - 3][width - 3] = '2';
-    let (cw, ch) = BuildingKind::Crucible.base_stats().size;
+    let (cw, ch) = BuildingKind::Crucible.size();
     let left_anchor = TilePos::new(6, 4);
     let right_anchor = TilePos::new(
         i32::try_from(width).unwrap() - cw - left_anchor.x,
@@ -166,7 +165,6 @@ fn mirrored_crucibles_smelt_mirrored_wreck_tiles() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "mirrored-smelters".into(),
-        seed: 3,
         map: rows.into_iter().map(|r| r.into_iter().collect()).collect(),
         players: vec![
             PlayerSpec {
@@ -261,7 +259,6 @@ fn a_centered_crucible_smelts_in_its_owners_home_frame() {
         let scenario = Scenario {
             mode: ScenarioMode::Match,
             name: "centered-smelter".into(),
-            seed: 3,
             map: rows.into_iter().map(|r| r.into_iter().collect()).collect(),
             players: vec![
                 PlayerSpec {
@@ -298,7 +295,7 @@ fn a_centered_crucible_smelts_in_its_owners_home_frame() {
             i32::try_from(height).unwrap() - 1 - tile.y,
         )
     };
-    let (cw, ch) = BuildingKind::Crucible.base_stats().size;
+    let (cw, ch) = BuildingKind::Crucible.size();
     assert_eq!(
         (anchor.x * 2 + cw, anchor.y * 2 + ch),
         (

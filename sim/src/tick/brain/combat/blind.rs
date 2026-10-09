@@ -60,13 +60,14 @@ fn predicted_aim(
     weapon: &WeaponStats,
 ) -> Vec2Fx {
     let current = view.aim_from(from);
-    if view.footprint.is_some() || !weapon.projectile {
+    let Some(projectile) = weapon.projectile.filter(|_| view.footprint.is_none()) else {
         return current;
-    }
+    };
     let mut aim = current;
-    let mut flight = shell_flight(from, aim);
+    let mut flight = shell_flight(from, aim, projectile.speed);
     for _ in 0..8 {
-        let predicted = current + view.velocity * Fx::from_num(flight.min(96));
+        let predicted =
+            current + view.velocity * Fx::from_num(flight.min(crate::stats::MAX_LEAD_TICKS));
         let next = weapon.splash.map_or(predicted, |radius| {
             aim_at_near_splash_edge(current, predicted, radius)
         });
@@ -78,7 +79,7 @@ fn predicted_aim(
         } else {
             next
         };
-        let next_flight = shell_flight(from, aim);
+        let next_flight = shell_flight(from, aim, projectile.speed);
         if next_flight == flight {
             break;
         }
@@ -184,7 +185,7 @@ pub(super) fn fire_building(
         (b.player, b.center(), b.kind, b.tier, b.stats().weapons[0]);
     let aim = predicted_aim(state, from, Domain::Ground, view, &weapon);
     state.building_mut(id).expect("live defense").cooldown = weapon.cooldown_ticks;
-    if weapon.projectile {
+    if weapon.projectile.is_some() {
         let flight = launch_shell(
             state,
             launches,
@@ -245,7 +246,7 @@ fn fire_unit(
     if !moving {
         u.path = None;
     }
-    if moving && !kind.has_ground_turret() && kind != crate::UnitKind::Buzzard {
+    if moving && kind.stats().turret_turn_rate == 0 {
         if !super::super::super::movement::ground_weapon_aligned(u, aim - from) {
             return;
         }
@@ -256,7 +257,7 @@ fn fire_unit(
         return;
     }
     u.cooldowns[primary] = weapon.cooldown_ticks;
-    if weapon.projectile {
+    if weapon.projectile.is_some() {
         let flight = launch_shell(state, launches, Target::Unit(id), player, from, aim, weapon);
         events.push(Event::ShellLaunched {
             shooter: Target::Unit(id),
@@ -311,7 +312,7 @@ pub(in crate::tick::brain) fn automatic_radar(
     if u.kind.stats().contact_reach.is_some()
         || stats.turn_rate > 0
         || stats.weapons.is_empty()
-        || (moving && u.kind == crate::UnitKind::Bombard)
+        || (moving && stats.brace.is_some())
         || {
             let target = acquire_target(state, index, id);
             *acquired = Some(target);
@@ -462,7 +463,7 @@ pub(in crate::tick::brain) fn attack_known(
                 return;
             }
         }
-    } else if !stats.demolition {
+    } else if stats.demolition.is_none() {
         complete(state, id, resume);
         return;
     }
@@ -522,48 +523,15 @@ fn route_to_firing_stand(
     view: AttackView,
     weapon: &WeaponStats,
 ) -> bool {
-    let unit = state.unit(id).expect("live unit");
-    let (kind, from, start) = (unit.kind, unit.pos, unit.tile());
-    let domain = kind.stats().domain;
-    let legal = |state: &State, tile| {
+    let domain = state.unit(id).expect("live unit").kind.stats().domain;
+    let legal = |state: &State, tile: TilePos| {
         state.passable_for(domain, tile) && solution(state, tile.center(), domain, view, weapon)
     };
-    if unit
-        .path
-        .as_ref()
-        .is_some_and(|path| legal(state, path.goal))
-    {
-        return true;
-    }
-    let (anchor, (width, height)) = view
+    let footprint = view
         .footprint
         .unwrap_or((TilePos::containing(view.position), (1, 1)));
     let reach = weapon.range.ceil().to_num::<i32>();
-    let mut candidates = Vec::new();
-    for y in
-        (anchor.y - reach).max(0)..=(anchor.y + height - 1 + reach).min(state.map().height() - 1)
-    {
-        for x in
-            (anchor.x - reach).max(0)..=(anchor.x + width - 1 + reach).min(state.map().width() - 1)
-        {
-            let tile = TilePos::new(x, y);
-            if legal(state, tile) {
-                candidates.push((from.dist_sq(tile.center()), y, x, tile));
-            }
-        }
-    }
-    candidates.sort_unstable_by_key(|candidate| (candidate.0, candidate.1, candidate.2));
-    let routed = candidates.into_iter().find_map(|(_, _, _, goal)| {
-        route_for(state, kind, start, goal).map(|waypoints| PathFollow {
-            final_point: None,
-            goal,
-            waypoints,
-            next: 0,
-        })
-    });
-    let found = routed.is_some();
-    state.unit_mut(id).expect("live unit").path = routed;
-    found
+    route_to_stand(state, id, footprint, reach, legal)
 }
 
 pub(in crate::tick::brain) fn normalize_order(state: &mut State, id: UnitId) {

@@ -106,7 +106,7 @@ fn known_hostile_target_at(
         ));
     }
     if let Some(ghost) = game.my_vision().ghosts().iter().find(|ghost| {
-        let (w, h) = ghost.kind.base_stats().size;
+        let (w, h) = ghost.kind.size();
         tile.x >= ghost.anchor.x
             && tile.y >= ghost.anchor.y
             && tile.x < ghost.anchor.x + w

@@ -326,9 +326,9 @@ fn every_map_offers_a_home_extractor_and_expansion_value() {
                 assert!(
                     !rects_overlap(
                         frame,
-                        BuildingKind::Extractor.base_stats().size,
+                        BuildingKind::Extractor.size(),
                         other,
-                        BuildingKind::Extractor.base_stats().size,
+                        BuildingKind::Extractor.size(),
                     ),
                     "{name}: Extractor frames at ({}, {}) and ({}, {}) overlap",
                     frame.x,
@@ -347,11 +347,7 @@ fn every_map_offers_a_home_extractor_and_expansion_value() {
         for &frame in frames {
             assert!(
                 state.units().iter().all(|unit| {
-                    !rect_contains(
-                        frame,
-                        BuildingKind::Extractor.base_stats().size,
-                        unit.tile(),
-                    )
+                    !rect_contains(frame, BuildingKind::Extractor.size(), unit.tile())
                 }),
                 "{name}: Extractor frame ({}, {}) overlaps a starting unit",
                 frame.x,
@@ -359,8 +355,8 @@ fn every_map_offers_a_home_extractor_and_expansion_value() {
             );
             assert!(
                 state.buildings().iter().all(|building| {
-                    !(0..BuildingKind::Extractor.base_stats().size.1).any(|dy| {
-                        (0..BuildingKind::Extractor.base_stats().size.0)
+                    !(0..BuildingKind::Extractor.size().1).any(|dy| {
+                        (0..BuildingKind::Extractor.size().0)
                             .any(|dx| building.contains(frame.offset(dx, dy)))
                     })
                 }),
@@ -401,7 +397,7 @@ fn every_map_offers_a_home_extractor_and_expansion_value() {
                             reachable_rect_perimeter(
                                 &map,
                                 *frame,
-                                BuildingKind::Extractor.base_stats().size,
+                                BuildingKind::Extractor.size(),
                                 &reachable,
                             )
                         }
@@ -446,7 +442,7 @@ fn every_map_offers_a_home_extractor_and_expansion_value() {
                             reachable_rect_perimeter(
                                 &map,
                                 *frame,
-                                BuildingKind::Extractor.base_stats().size,
+                                BuildingKind::Extractor.size(),
                                 &reachable,
                             ) && supportable_foundry_anchor(
                                 &map,
@@ -469,13 +465,15 @@ fn every_map_offers_a_home_extractor_and_expansion_value() {
         for &frame in frames {
             let ground_usable = foundries.iter().any(|(seat, foundry)| {
                 let reachable = reachable_builder_ground(&map, &state, *seat, Some(frame));
-                reachable_rect_perimeter(
-                    &map,
-                    frame,
-                    BuildingKind::Extractor.base_stats().size,
-                    &reachable,
-                ) && (extractor_foundry_distance(*foundry, frame) <= support_radius
-                    || supportable_foundry_anchor(&map, &state, frame, &reachable, support_radius)
+                reachable_rect_perimeter(&map, frame, BuildingKind::Extractor.size(), &reachable)
+                    && (extractor_foundry_distance(*foundry, frame) <= support_radius
+                        || supportable_foundry_anchor(
+                            &map,
+                            &state,
+                            frame,
+                            &reachable,
+                            support_radius,
+                        )
                         .is_some())
             });
             let transport_usable = air_reachability.iter().any(|air_reachable| {
@@ -483,7 +481,7 @@ fn every_map_offers_a_home_extractor_and_expansion_value() {
                     &map,
                     &state,
                     frame,
-                    BuildingKind::Extractor.base_stats().size,
+                    BuildingKind::Extractor.size(),
                     air_reachable,
                 ) && supportable_foundry_anchor_from_air(
                     &map,
@@ -596,8 +594,8 @@ fn reachable_ground_rect_perimeter(
 }
 
 fn extractor_foundry_distance(foundry: TilePos, extractor: TilePos) -> i32 {
-    let foundry_size = BuildingKind::Foundry.base_stats().size;
-    let extractor_size = BuildingKind::Extractor.base_stats().size;
+    let foundry_size = BuildingKind::Foundry.size();
+    let extractor_size = BuildingKind::Extractor.size();
     let axis = |a: i32, a_len: i32, b: i32, b_len: i32| {
         let a_far = a + a_len - 1;
         let b_far = b + b_len - 1;
@@ -646,12 +644,12 @@ fn reachable_builder_ground(
 ) -> Vec<bool> {
     let index = |tile: TilePos| as_index(tile.y * map.width() + tile.x);
     let blocked = |tile: TilePos| {
-        restored_frame.is_some_and(|frame| {
-            rect_contains(frame, BuildingKind::Extractor.base_stats().size, tile)
-        }) || state
-            .buildings()
-            .iter()
-            .any(|building| building.contains(tile))
+        restored_frame
+            .is_some_and(|frame| rect_contains(frame, BuildingKind::Extractor.size(), tile))
+            || state
+                .buildings()
+                .iter()
+                .any(|building| building.contains(tile))
     };
     let passable = |tile: TilePos| map.terrain_passable(tile) && !blocked(tile);
     let mut reachable = vec![false; as_index(map.width() * map.height())];
@@ -747,7 +745,7 @@ fn largest_supportable_cluster(
                                 map,
                                 state,
                                 **frame,
-                                BuildingKind::Extractor.base_stats().size,
+                                BuildingKind::Extractor.size(),
                                 air_reachable,
                             )
                     })
@@ -804,7 +802,7 @@ fn supportable_foundry_anchor_from_air(
 }
 
 fn foundry_doorstep_reached(map: &Map, anchor: TilePos, reachable: &[bool]) -> bool {
-    let foundry_size = BuildingKind::Foundry.base_stats().size;
+    let foundry_size = BuildingKind::Foundry.size();
     (anchor.y - 1..=anchor.y + foundry_size.1).any(|door_y| {
         (anchor.x - 1..=anchor.x + foundry_size.0).any(|door_x| {
             let inside = door_x >= anchor.x
@@ -827,7 +825,7 @@ fn foundry_ground_doorstep_reached(
     anchor: TilePos,
     reachable: &[bool],
 ) -> bool {
-    let foundry_size = BuildingKind::Foundry.base_stats().size;
+    let foundry_size = BuildingKind::Foundry.size();
     (anchor.y - 1..=anchor.y + foundry_size.1).any(|door_y| {
         (anchor.x - 1..=anchor.x + foundry_size.0).any(|door_x| {
             let tile = TilePos::new(door_x, door_y);
@@ -847,7 +845,7 @@ fn foundry_ground_doorstep_reached(
 }
 
 fn foundry_site_is_legal(map: &Map, state: &State, anchor: TilePos) -> bool {
-    let (width, height) = BuildingKind::Foundry.base_stats().size;
+    let (width, height) = BuildingKind::Foundry.size();
     (0..height).all(|dy| {
         (0..width).all(|dx| {
             let tile = anchor.offset(dx, dy);
@@ -917,7 +915,7 @@ fn every_map_mirrors_its_paired_seats_entry_by_entry() {
                 pos.y
             );
         }
-        let (ew, eh) = BuildingKind::Extractor.base_stats().size;
+        let (ew, eh) = BuildingKind::Extractor.size();
         for frame in map.extractor_frames() {
             let image = TilePos {
                 x: w - ew - frame.x,
@@ -933,7 +931,7 @@ fn every_map_mirrors_its_paired_seats_entry_by_entry() {
             );
         }
 
-        let (fw, fh) = BuildingKind::Foundry.base_stats().size;
+        let (fw, fh) = BuildingKind::Foundry.size();
         let anchor = |seat: PlayerId| {
             anchors.iter().find(|(p, _)| *p == seat).map_or_else(
                 || panic!("{name}: seat {} has no Foundry anchor", seat.0),
@@ -1033,7 +1031,7 @@ fn every_map_mirrors_its_paired_seats_entry_by_entry() {
                     a.kind, b.kind,
                     "{name}: seat {index}'s structure #{k} differs in kind from its mirror's"
                 );
-                let (bw, bh) = a.kind.base_stats().size;
+                let (bw, bh) = a.kind.size();
                 assert_eq!(
                     (b.x, b.y),
                     (w - bw - a.x, h - bh - a.y),

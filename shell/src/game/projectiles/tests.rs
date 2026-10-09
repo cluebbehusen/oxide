@@ -10,7 +10,7 @@ fn edge_release_uses_the_firing_pose_before_egress_and_survives_shooter_loss() {
         map[1] = ".1......................".into();
         map[17] = ".....................2..".into();
         let scenario: Scenario = serde_json::from_value(serde_json::json!({
-            "name": "Edge release", "seed": 42, "map": map,
+            "name": "Edge release", "map": map,
             "players": [
                 {"name":"Own", "faction":"ferrous", "scrap":0, "bot":false},
                 {"name":"Enemy", "faction":"cupric", "scrap":0, "bot":false}
@@ -62,8 +62,7 @@ fn edge_release_uses_the_firing_pose_before_egress_and_survives_shooter_loss() {
 #[test]
 fn replay_projectile_releases_retain_heading_slots_and_simulation_parity() {
     let scenario: Scenario = serde_json::from_value(serde_json::json!({
-        "name": "Bomber release", "seed": 619,
-        "map": [
+        "name": "Bomber release", "map": [
             "....................................",
             ".1............................2.....",
             "....................................",

@@ -290,7 +290,7 @@ impl Cover {
             min2: i64::MAX,
             range: Fx::ZERO,
             minimum: Fx::MAX,
-            size: stats.size,
+            size: kind.size(),
             ground: false,
             air: false,
         };
@@ -602,7 +602,7 @@ impl<'a> Guard<'a> {
         for gun in observation.my_buildings.iter().filter(|building| {
             building.built && matches!(building.kind, BuildingKind::Turret | BuildingKind::Bastion)
         }) {
-            let size = gun.kind.base_stats().size;
+            let size = gun.kind.size();
             let fronted = barricades.iter().any(|barricade| {
                 gap(gun.anchor, size, barricade.anchor, (1, 1)) <= BARRICADE_GAP + 1
             });
@@ -748,7 +748,7 @@ impl<'a> Guard<'a> {
     /// anchor and that value.
     fn bay(&self) -> Option<(TilePos, u64)> {
         let observation = self.observation;
-        let size = BuildingKind::RepairBay.base_stats().size;
+        let size = BuildingKind::RepairBay.size();
         let bays: Vec<TilePos> = observation
             .my_buildings
             .iter()
@@ -784,7 +784,7 @@ impl<'a> Guard<'a> {
                     .construction
                     .as_ref()
                     .map_or(FOUNDRY_REPAIR_PRICE, |construction| construction.cost);
-                let span = Span::of(building.kind.base_stats().size, building.anchor);
+                let span = Span::of(building.kind.size(), building.anchor);
                 (span, price, building.hp, stats.max_hp)
             });
         let wounds: Vec<(Span, u64)> = units
@@ -848,7 +848,7 @@ impl<'a> Guard<'a> {
             .map
             .component(anchor)
             .is_some_and(|ground| self.crews.contains(&ground));
-        let (width, height) = kind.base_stats().size;
+        let (width, height) = kind.size();
         let laned = || {
             (0..height)
                 .flat_map(|dy| (0..width).map(move |dx| anchor.offset(dx, dy)))
@@ -1093,12 +1093,8 @@ fn upgrade(guard: &Guard<'_>, building: &BuildingObs, weight: u64) -> Option<(In
             return false;
         }
         let strike = strike.ceil().to_num::<i32>();
-        gap(
-            building.anchor,
-            building.kind.base_stats().size,
-            enemy.tile,
-            (1, 1),
-        ) < reach.max(strike) + UPGRADE_CLEARANCE
+        gap(building.anchor, building.kind.size(), enemy.tile, (1, 1))
+            < reach.max(strike) + UPGRADE_CLEARANCE
     });
     if !ready || threatened {
         return None;
@@ -1195,7 +1191,7 @@ pub(crate) fn emergency(
         (Domain::Ground, BuildingKind::Turret),
         (Domain::Air, BuildingKind::FlakTurret),
     ] {
-        let size = kind.base_stats().size;
+        let size = kind.size();
         // An unfinished one beside its buildings already answers it.
         let unanswered = |asset: &Asset| {
             !observation.my_buildings.iter().any(|building| {
@@ -1306,9 +1302,7 @@ fn health(memory: &Memory, now: u64, source: (i64, i64), stakes: Stakes) -> u64 
 /// included; zero when it cannot.
 pub(crate) fn reach(kind: UnitKind) -> Fx {
     let stats = kind.stats();
-    let contact = stats
-        .demolition
-        .then_some(oxide_sim::stats::SAPPER_CONTACT_RANGE);
+    let contact = stats.demolition.map(|charge| charge.contact_range);
     stats
         .weapons
         .iter()
@@ -1403,7 +1397,7 @@ fn buildings(observation: &ObservationData, frame: HomeFrame) -> Vec<Asset> {
         .iter()
         .filter(|building| building.built)
         .filter_map(|building| {
-            let size = building.kind.base_stats().size;
+            let size = building.kind.size();
             let value = match building.kind {
                 BuildingKind::Foundry if foundries.len() == 1 => 16,
                 BuildingKind::Foundry => FOUNDRY_VALUE,
@@ -1412,12 +1406,8 @@ fn buildings(observation: &ObservationData, frame: HomeFrame) -> Vec<Asset> {
                 BuildingKind::Fabricator => 8,
                 BuildingKind::Extractor => {
                     let supported = foundries.iter().any(|foundry| {
-                        gap(
-                            foundry.anchor,
-                            foundry.kind.base_stats().size,
-                            building.anchor,
-                            size,
-                        ) <= OUTLYING_GAP
+                        gap(foundry.anchor, foundry.kind.size(), building.anchor, size)
+                            <= OUTLYING_GAP
                     });
                     if supported { 8 } else { OUTLYING_VALUE }
                 }
@@ -1445,7 +1435,7 @@ fn buildings(observation: &ObservationData, frame: HomeFrame) -> Vec<Asset> {
 /// those any Foundry on its ground, and holds every other built building but
 /// defenses nearest it on that ground.
 fn bases(observation: &ObservationData, map: &MapModel, frame: HomeFrame) -> Vec<Asset> {
-    let size = |building: &BuildingObs| building.kind.base_stats().size;
+    let size = |building: &BuildingObs| building.kind.size();
     let foundries: Vec<&BuildingObs> = observation
         .my_buildings
         .iter()
@@ -1622,7 +1612,7 @@ impl Known<'_> {
                 )
                 .map(|(kind, anchor)| Base {
                     centre: footprint_centre(kind, anchor),
-                    grounds: grounds(self.map, anchor, kind.base_stats().size),
+                    grounds: grounds(self.map, anchor, kind.size()),
                 })
                 .collect()
         })
@@ -1948,7 +1938,7 @@ pub(crate) fn keeps_paths(
             .then(|| tile.row_major(width))
     };
     let tiles = |kind: BuildingKind, anchor: TilePos| {
-        let (w, h) = kind.base_stats().size;
+        let (w, h) = kind.size();
         (0..h).flat_map(move |dy| (0..w).map(move |dx| anchor.offset(dx, dy)))
     };
     let claims: Vec<(BuildingKind, TilePos)> = observation
@@ -1985,7 +1975,7 @@ pub(crate) fn keeps_paths(
     let open = |tile: TilePos| {
         index(tile).is_some_and(|at| !blocked[at]) && map.component(tile) == Some(ground)
     };
-    let foundry = BuildingKind::Foundry.base_stats().size;
+    let foundry = BuildingKind::Foundry.size();
     let mut reached = vec![false; chassis::grid::cell_count(width, height)];
     let foundries: Vec<TilePos> = observation
         .my_buildings
@@ -2034,7 +2024,7 @@ pub(crate) fn keeps_paths(
     let reached_at = |tile: TilePos| index(tile).is_some_and(|at| reached[at]);
     // Workers build from a tile beside a footprint's edge, not its corner.
     let sides = |kind: BuildingKind, anchor: TilePos| {
-        let (w, h) = kind.base_stats().size;
+        let (w, h) = kind.size();
         let inside = |v: i32, low: i32, len: i32| (low..low + len).contains(&v);
         ring(anchor, (w, h))
             .filter(move |tile| inside(tile.x, anchor.x, w) || inside(tile.y, anchor.y, h))
@@ -2056,7 +2046,7 @@ pub(crate) fn keeps_paths(
         .iter()
         .filter(|building| building.built && !building.kind.base_stats().produces.is_empty())
         .filter(|building| on(building.anchor))
-        .all(|building| beside(building.anchor, building.kind.base_stats().size));
+        .all(|building| beside(building.anchor, building.kind.size()));
     let nodes = map
         .home_nodes(me)
         .iter()
@@ -2156,7 +2146,7 @@ fn guard_sites(
     approach: &Approach,
     kind: BuildingKind,
 ) -> Vec<TilePos> {
-    let size = kind.base_stats().size;
+    let size = kind.size();
     if let Some(cut) = &approach.cut {
         let mut sites: Vec<TilePos> = cut
             .gates

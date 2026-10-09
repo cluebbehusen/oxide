@@ -145,12 +145,10 @@ pub fn seat_teams(source: &Scenario) -> Result<Vec<u8>> {
 /// A plan with every seat controlled, the authored human chair included.
 pub fn seated_plan(
     source: &Scenario,
-    scenario_seed: u64,
     leg: EvaluationLeg,
     seats: impl Iterator<Item = BotConfig>,
 ) -> EvaluationPlan {
     let mut scenario = source.clone();
-    scenario.seed = scenario_seed;
     for player in &mut scenario.players {
         player.bot = false;
         player.bot_config = None;

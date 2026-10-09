@@ -323,7 +323,7 @@ fn resolve_hits(
         match hit.victim {
             Target::Unit(uid) => {
                 if let Some(v) = state.unit_mut(uid) {
-                    let relevant_hit = v.kind == crate::stats::UnitKind::Harvester;
+                    let relevant_hit = v.kind.stats().harvest.is_some();
                     let relevant_loss =
                         hit.damage >= v.hp && v.domain() == crate::stats::Domain::Ground;
                     if v.hp > 0 && hit.damage > 0 && (relevant_hit || relevant_loss) {
@@ -340,7 +340,7 @@ fn resolve_hits(
                     (hit.approach != chassis::fx::Vec2Fx::ZERO).then(|| {
                         super::footprint_incident_tile(
                             b.anchor,
-                            b.stats().size,
+                            b.kind.size(),
                             hit.impact,
                             hit.approach,
                         )
@@ -797,7 +797,7 @@ fn crucible_smelter(state: &mut State) {
         };
         let owner = b.player;
         let anchor = b.anchor;
-        let (w, h) = b.stats().size;
+        let (w, h) = b.kind.size();
         let reach = radius.to_num::<i32>() + 1;
         // The nearest wreck feeds first, then the richer one; exact ties fall
         // to tile order in the crucible's half-turn frame, so mirrored
@@ -822,7 +822,7 @@ fn crucible_smelter(state: &mut State) {
                 .iter()
                 .filter(|f| f.player == owner && f.kind == BuildingKind::Foundry)
                 .min_by_key(|f| f.id)
-                .map_or(hearth, |f| footprint_center(f.anchor, f.stats().size))
+                .map_or(hearth, |f| footprint_center(f.anchor, f.kind.size()))
         } else {
             hearth
         };

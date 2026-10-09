@@ -363,10 +363,7 @@ fn draw_unit_wreck(
 }
 
 fn large_airframe(kind: oxide_sim::UnitKind) -> bool {
-    matches!(
-        kind,
-        oxide_sim::UnitKind::Condor | oxide_sim::UnitKind::Moth | oxide_sim::UnitKind::Skyhook
-    )
+    kind.stats().crash.is_some()
 }
 
 const CRASH_TIME: f32 = oxide_sim::stats::AIRCRAFT_CRASH_TICKS as f32 * crate::game::TICK_DT;
@@ -717,7 +714,7 @@ pub(super) fn draw_ground_effects(game: &Scene<'_>, sprites: &Sprites) {
                 if visible(game, at) || body.player == game.presentation.human =>
             {
                 let center = game.presentation.camera.to_screen(at);
-                let (w, h) = body.kind.base_stats().size;
+                let (w, h) = body.kind.size();
                 let size = vec2(w as f32, h as f32) * zoom;
                 let age = if reduced_motion() {
                     effect.age + 0.5

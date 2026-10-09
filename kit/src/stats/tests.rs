@@ -14,7 +14,6 @@ fn record_activity(ticks: u64) -> GameReplay {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "statistics activity".into(),
-        seed: 42,
         map: map
             .into_iter()
             .map(|row| row.into_iter().collect())

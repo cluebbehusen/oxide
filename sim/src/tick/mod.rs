@@ -101,8 +101,8 @@ impl CommandPhaseView<'_> {
 ///
 /// Keep every automatic consumer of the recovery reserve on this one
 /// predicate: a living, completed Foundry can rebuild an economy only when
-/// its owner has neither a Harvester in the world nor one prepaid in a live
-/// production queue.
+/// its owner has no machine that can harvest, whether in the world, aboard a
+/// transport, or prepaid in a live production queue.
 fn harvester_recovery_needed(state: &State, player: crate::ids::PlayerId) -> bool {
     state.harvester_recovery_needed(player)
 }
@@ -268,8 +268,8 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
             .construction
             .map_or(crate::stats::FOUNDRY_WRECK_VALUE, |c| c.cost);
         let value = price * crate::stats::WRECK_VALUE_NUM / crate::stats::WRECK_VALUE_DEN;
-        let tiles = u32::try_from(stats.size.0 * stats.size.1)
-            .expect("building footprints have positive area");
+        let (width, height) = building.kind.size();
+        let tiles = u32::try_from(width * height).expect("building footprints have positive area");
         for tile in building.tiles() {
             deposits.push((tile, value / tiles));
         }
@@ -409,7 +409,17 @@ pub(crate) fn route_for_position(
             let to = if state.passable_for(crate::stats::Domain::Air, to) {
                 to
             } else {
-                snap_air_goal(state, to)?
+                // The flyer's own approach sets the scan frame, so mirrored
+                // flights snap to mirrored sky. A flyer already over the goal
+                // tile falls back to the map-center frame.
+                let reverse = group_spread_scan_reversed(
+                    to,
+                    [from_tile],
+                    None,
+                    (state.map.width(), state.map.height()),
+                    crate::ids::PlayerId(0),
+                );
+                goals::group_domain_goal(state, to, crate::stats::Domain::Air, reverse)?
             };
             let sky_open = |t: TilePos| {
                 state
@@ -432,26 +442,6 @@ pub(crate) fn route_for_position(
     }
 }
 
-/// The first air-passable tile in square rings around `goal`, scanned outward
-/// by Chebyshev radius and row-major (y, then x) within each ring. `None` when
-/// nothing within reach is open sky.
-fn snap_air_goal(state: &State, goal: TilePos) -> Option<TilePos> {
-    for r in 0..=crate::stats::GOAL_SNAP_RADIUS + 3 {
-        for dy in -r..=r {
-            for dx in -r..=r {
-                if dx.abs().max(dy.abs()) != r {
-                    continue;
-                }
-                let t = goal.offset(dx, dy);
-                if state.passable_for(crate::stats::Domain::Air, t) {
-                    return Some(t);
-                }
-            }
-        }
-    }
-    None
-}
-
 /// A nonzero local frame for doorstep ties. Most bodies supply their own
 /// approach ray. A body exactly at the center of an odd footprint has no ray,
 /// so use the home-side corner of its earliest Foundry instead; mirrored
@@ -472,7 +462,7 @@ pub(crate) fn rect_approach_origin(
                 && building.kind == crate::stats::BuildingKind::Foundry
         })
         .min_by_key(|building| building.id)
-        .map(|foundry| (foundry.anchor, foundry.kind.base_stats().size));
+        .map(|foundry| (foundry.anchor, foundry.kind.size()));
     rect_approach_origin_for_map(
         (state.map.width(), state.map.height()),
         player,

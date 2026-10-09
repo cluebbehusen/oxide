@@ -238,7 +238,7 @@ pub(crate) fn build_defer_needed(
     kind: oxide_sim::BuildingKind,
     anchor: TilePos,
 ) -> bool {
-    let (w, h) = kind.base_stats().size;
+    let (w, h) = kind.size();
     (0..h).any(|dy| {
         (0..w).any(|dx| {
             !game
@@ -389,10 +389,7 @@ pub(crate) fn placement_anchor(
 }
 
 fn placement_ping(kind: oxide_sim::BuildingKind, anchor: TilePos) -> Vec2 {
-    crate::game::world_vec(oxide_sim::geometry::footprint_center(
-        anchor,
-        kind.base_stats().size,
-    ))
+    crate::game::world_vec(oxide_sim::geometry::footprint_center(anchor, kind.size()))
 }
 
 /// The map tile a ground order names. The camera's edge slack lets the
@@ -1137,7 +1134,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     let world = game.presentation.camera.to_world(vec2(x, y));
                     let clicked = numeric::tile_at(world);
                     let anchor = placement_anchor(&game.view(), kind, clicked);
-                    let (w, h) = kind.base_stats().size;
+                    let (w, h) = kind.size();
                     let overlaps = stroke
                         .anchors
                         .iter()
@@ -1500,7 +1497,7 @@ fn ghost_anchor_under(
         let tile = numeric::tile_at(world);
         return placement_anchor(game, kind, tile);
     }
-    let (w, h) = kind.base_stats().size;
+    let (w, h) = kind.size();
     TilePos::new(
         numeric::to_i32((world.x - w as f32 * 0.5).round()),
         numeric::to_i32((world.y - h as f32 * 0.5).round()),
@@ -1513,7 +1510,7 @@ pub(crate) fn ghost_touch_rect(
     input: &InputState,
 ) -> Option<macroquad::math::Rect> {
     let (kind, anchor) = (input.placing?, input.ghost_anchor()?);
-    let (w, h) = kind.base_stats().size;
+    let (w, h) = kind.size();
     let zoom = game.presentation.camera.zoom;
     let corner = game
         .presentation

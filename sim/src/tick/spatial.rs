@@ -213,7 +213,7 @@ impl UnitIndex {
                 team_bits[state.units[slot].player.0 as usize];
         }
         for building in state.buildings() {
-            let (width, height) = building.stats().size;
+            let (width, height) = building.kind.size();
             let (low_column, low_row) = presence.cell(building.anchor);
             let (high_column, high_row) =
                 presence.cell(building.anchor.offset(width - 1, height - 1));

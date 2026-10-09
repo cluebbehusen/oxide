@@ -405,7 +405,7 @@ fn air_defenders_guard_the_building_a_flyer_raids() {
     let [(_, goal)] = &hunts(&commands)[..] else {
         panic!("{commands:?}");
     };
-    let size = BuildingKind::Fabricator.base_stats().size;
+    let size = BuildingKind::Fabricator.size();
     assert_eq!(
         gap(TilePos::new(12, 8), size, *goal, (1, 1)),
         0,

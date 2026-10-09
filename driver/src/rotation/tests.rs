@@ -12,7 +12,7 @@ fn rotation_is_an_involution_and_preserves_the_world() {
 
     let (before_map, _) = oxide_sim::map::Map::parse(&base.map).unwrap();
     let (after_map, _) = oxide_sim::map::Map::parse(&once.map).unwrap();
-    let (ew, eh) = BuildingKind::Extractor.base_stats().size;
+    let (ew, eh) = BuildingKind::Extractor.size();
     let mut expected_frames: Vec<_> = before_map
         .extractor_frames()
         .iter()
