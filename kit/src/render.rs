@@ -195,7 +195,7 @@ pub fn render_state(state: &State) -> Pixmap {
         let r = unit.kind.stats().radius.to_num::<f32>() * TILE_PX;
         fill_circle(&mut pixmap, cx, cy, r + 1.0, darken(color));
         fill_circle(&mut pixmap, cx, cy, r, color);
-        if unit.kind == UnitKind::Harvester && unit.carrying > 0 {
+        if unit.kind == UnitKind::Harvester && unit.carrying() > 0 {
             fill_circle(&mut pixmap, cx, cy, r * 0.4, SCRAP_FULL);
         }
         let max_hp = unit.kind.stats().max_hp;

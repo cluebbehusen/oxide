@@ -93,7 +93,7 @@ fn work_aim(state: &State, unit: &crate::state::Unit) -> Option<Vec2Fx> {
     if unit.path.is_some() || unit.kind.ground_turn_rate() == 0 {
         return None;
     }
-    if let Some(release) = unit.unloading {
+    if let Some(release) = unit.unloading() {
         return state
             .building(release.foundry)
             .map(|b| state.contact_surface(b).closest(unit.pos));

@@ -1378,7 +1378,7 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
     if !build_menu_open
         && units
             .iter()
-            .any(|unit| unit.kind.stats().harvest.is_some() && unit.carrying > 0)
+            .any(|unit| unit.kind.stats().harvest.is_some() && unit.carrying() > 0)
     {
         panel.cards.push(Card {
             icon: CardIcon::Verb(VerbIcon::Harvest),

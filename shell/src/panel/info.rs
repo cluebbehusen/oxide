@@ -288,7 +288,7 @@ pub(crate) fn selection_info(game: &Scene<'_>, panel: &Panel) -> SelectionInfo {
             info.row(
                 "Scrap load",
                 if u.player == game.presentation.human {
-                    format!("{}/{}", u.carrying, harvest.capacity)
+                    format!("{}/{}", u.carrying(), harvest.capacity)
                 } else {
                     format!("{} capacity", harvest.capacity)
                 },

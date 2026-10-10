@@ -86,7 +86,7 @@ pub(super) fn dispatch_action(
             if !game.presentation.selection.units.iter().any(|id| {
                 game.state
                     .unit(*id)
-                    .is_some_and(|unit| unit.kind.stats().harvest.is_some() && unit.carrying > 0)
+                    .is_some_and(|unit| unit.kind.stats().harvest.is_some() && unit.carrying() > 0)
             }) {
                 game.presentation.toast("No scrap carried");
                 return;

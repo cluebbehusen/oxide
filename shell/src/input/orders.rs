@@ -251,7 +251,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
             && units.iter().any(|id| {
                 game.state
                     .unit(*id)
-                    .is_some_and(|unit| unit.kind.stats().harvest.is_some() && unit.carrying > 0)
+                    .is_some_and(|unit| unit.kind.stats().harvest.is_some() && unit.carrying() > 0)
             })
         {
             let foundry = building.id;
@@ -259,7 +259,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
             let (loaded, others): (Vec<_>, Vec<_>) = units.into_iter().partition(|id| {
                 game.state
                     .unit(*id)
-                    .is_some_and(|unit| unit.kind.stats().harvest.is_some() && unit.carrying > 0)
+                    .is_some_and(|unit| unit.kind.stats().harvest.is_some() && unit.carrying() > 0)
             });
             let welders: Vec<_> = others
                 .into_iter()

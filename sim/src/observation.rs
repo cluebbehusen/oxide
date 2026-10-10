@@ -624,7 +624,7 @@ fn own_unit(state: &State, u: &crate::state::Unit) -> UnitObs {
         tile: u.tile(),
         hp: u.hp,
         idle: u.order == Order::Idle,
-        carrying: u.carrying,
+        carrying: u.carrying(),
         harvesting: match u.order {
             Order::Harvest { node, .. } => Some(node),
             _ => None,

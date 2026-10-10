@@ -221,7 +221,7 @@ pub(crate) fn productive(state: &State, unit: &Unit) -> bool {
     if unit.kind.stats().turn_rate > 0 || !unit.work_stopped() {
         return false;
     }
-    if unit.unloading.is_some() {
+    if unit.unloading().is_some() {
         return true;
     }
     match unit.order {
@@ -233,7 +233,7 @@ pub(crate) fn productive(state: &State, unit: &Unit) -> bool {
             unit.kind
                 .stats()
                 .harvest
-                .is_some_and(|h| unit.carrying < h.capacity)
+                .is_some_and(|h| unit.carrying() < h.capacity)
                 && unit.in_work_reach(node, (1, 1))
         }
         crate::Order::Build { site } => state.in_building_work_reach(unit, site),

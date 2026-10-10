@@ -87,7 +87,9 @@ fn a_worker_displaced_to_the_far_edge_of_its_doorstep_closes_the_gap() {
             queue: false,
         },
     )]);
-    run_until(&mut state, 200, |s, _| s.unit(worker).unwrap().carrying > 0);
+    run_until(&mut state, 200, |s, _| {
+        s.unit(worker).unwrap().carrying() > 0
+    });
     assert!(state.unit(worker).unwrap().in_work_reach(node, (1, 1)));
 }
 
@@ -112,10 +114,12 @@ fn harvesting_waits_for_physical_reach_from_each_approach() {
                     queue: false,
                 },
             )]);
-            run_until(&mut state, 600, |s, _| s.unit(worker).unwrap().carrying > 0);
+            run_until(&mut state, 600, |s, _| {
+                s.unit(worker).unwrap().carrying() > 0
+            });
             let worker = state.unit(worker).unwrap();
             assert!(
-                worker.carrying > 0,
+                worker.carrying() > 0,
                 "{kind:?} never reached scrap from {start:?}"
             );
             let dx = (worker.pos.x - chassis::fx::Fx::from_num(10)).min(chassis::fx::Fx::ZERO)
@@ -172,10 +176,14 @@ fn unloading_waits_for_physical_reach_on_each_foundry_side() {
                     .any(|e| matches!(e, Event::CommandRejected { .. }))
             );
             run_until(&mut state, 600, |s, _| {
-                s.unit(worker).unwrap().carrying == 0
+                s.unit(worker).unwrap().carrying() == 0
             });
             let worker = state.unit(worker).unwrap();
-            assert_eq!(worker.carrying, 0, "{kind:?} never unloaded from {start:?}");
+            assert_eq!(
+                worker.carrying(),
+                0,
+                "{kind:?} never unloaded from {start:?}"
+            );
             let foundry = state
                 .buildings()
                 .iter()
@@ -231,7 +239,7 @@ fn set_cargo(mut state: State, worker: oxide_sim::UnitId, carrying: u32) -> Stat
         .position(|unit| unit.id == worker)
         .expect("worker exists");
     let mut doc = serde_json::to_value(&state).unwrap();
-    doc["units"][slot]["carrying"] = json!(carrying);
+    doc["units"][slot]["worker"]["carrying"] = json!(carrying);
     state = serde_json::from_value(doc).unwrap();
     state
 }
@@ -278,7 +286,7 @@ fn the_fixed_anchor_reaches_the_widest_deposit_but_cannot_chain_past_it() {
     )]);
     run_until(&mut state, 2_000, |state, _| {
         let unit = state.unit(worker).unwrap();
-        unit.order == Order::Idle && unit.carrying == 0
+        unit.order == Order::Idle && unit.carrying() == 0
     });
 
     assert_eq!(state.map().scrap_at(anchor), 0);
@@ -401,10 +409,10 @@ fn a_delivery_returns_to_the_same_zone_while_salvage_remains() {
             retiring: false,
         } if node == source && anchor == source
     ));
-    assert_eq!(state.unit(worker).unwrap().carrying, 0);
+    assert_eq!(state.unit(worker).unwrap().carrying(), 0);
 
     run_until(&mut state, 500, |state, _| {
-        state.unit(worker).unwrap().carrying > 0
+        state.unit(worker).unwrap().carrying() > 0
     });
     assert!(
         state.map().scrap_at(source) < 2,
@@ -448,7 +456,11 @@ fn retirement_deposits_then_advances_one_queued_order_at_the_foundry() {
         |state, _| matches!(state.unit(worker).unwrap().order, Order::Run { goal: g } if g.tile() == goal),
     );
     let unit = state.unit(worker).unwrap();
-    assert_eq!(unit.carrying, 0, "the queued leg starts only after deposit");
+    assert_eq!(
+        unit.carrying(),
+        0,
+        "the queued leg starts only after deposit"
+    );
     assert!(
         unit.queue.is_empty(),
         "the queued leg was popped exactly once"
@@ -501,7 +513,7 @@ fn shared_sight_retires_an_autonomous_retarget_but_not_before_it_is_known() {
         },
     )]);
     run_until(&mut state, 300, |state, _| {
-        state.unit(worker).unwrap().carrying > 1
+        state.unit(worker).unwrap().carrying() > 1
             && matches!(
                 state.unit(worker).unwrap().order,
                 Order::Harvest {
@@ -613,7 +625,7 @@ fn a_hidden_artillery_hit_diverts_autonomous_work_without_revealing_the_gun() {
     let mut doc = serde_json::to_value(&state).unwrap();
     doc["shells"] = json!([]);
     doc["units"][bombard_slot]["cooldowns"][0] = json!(0);
-    doc["units"][worker_slot]["carrying"] = json!(0);
+    doc["units"][worker_slot]["worker"]["carrying"] = json!(0);
     doc["units"][worker_slot]["progress"] = json!(0);
     state = serde_json::from_value(doc).unwrap();
     let before = state.unit(worker).unwrap().hp;
@@ -969,7 +981,7 @@ fn a_far_radar_contact_does_not_retire_an_unrelated_zone() {
         state.tick(&[]);
     }
     assert!(
-        state.unit(worker).unwrap().carrying > 0
+        state.unit(worker).unwrap().carrying() > 0
             && matches!(
                 state.unit(worker).unwrap().order,
                 Order::Harvest {
@@ -1451,7 +1463,7 @@ fn stacked_heaps_hand_two_workers_distinct_work_tiles() {
     for tick in 1..=160u32 {
         state.tick(&[]);
         for (slot, id) in [a, b].into_iter().enumerate() {
-            if first_scrap[slot].is_none() && state.unit(id).unwrap().carrying > 0 {
+            if first_scrap[slot].is_none() && state.unit(id).unwrap().carrying() > 0 {
                 first_scrap[slot] = Some(tick);
             }
         }
@@ -1546,7 +1558,7 @@ fn a_claimed_work_tile_still_serves_when_the_free_ones_are_sealed() {
         }
         chained = true;
         assert!(!retiring, "the chained worker gave the source up");
-        if worker.carrying > 1 {
+        if worker.carrying() > 1 {
             extracted = true;
             break;
         }
@@ -1584,7 +1596,9 @@ fn wreck_workers_leave_the_pile_and_work_from_beside_it() {
                     queue: false,
                 },
             )]);
-            run_until(&mut state, 300, |s, _| s.unit(worker).unwrap().carrying > 0);
+            run_until(&mut state, 300, |s, _| {
+                s.unit(worker).unwrap().carrying() > 0
+            });
             let unit = state.unit(worker).unwrap();
             assert_ne!(unit.tile(), node, "{kind:?} stood inside the wreck");
             assert!(unit.in_work_reach(node, (1, 1)));

@@ -313,6 +313,23 @@ pub struct PathFollow {
     pub next: u32,
 }
 
+/// What a harvesting machine has aboard and how its delivery stands.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Worker {
+    /// Scrap on board.
+    #[serde(default, skip_serializing_if = "crate::is_default")]
+    pub carrying: u32,
+    /// Cargo release in progress, separate from extraction and welding
+    /// meters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unloading: Option<Unloading>,
+    /// While held by danger, the tick from which it searches again. See
+    /// [`crate::stats::HARVEST_DANGER_RETRY_TICKS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub danger_retry_at: Option<crate::Tick>,
+}
+
 /// An uninterrupted cargo release at a completed Foundry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Unloading {
@@ -338,11 +355,10 @@ pub struct Unit {
     pub air_motion: Vec2Fx,
     /// Current hit points.
     pub hp: u32,
-    /// Scrap on board (harvesters only).
-    pub carrying: u32,
-    /// Cargo release in progress, separate from extraction and welding meters.
+    /// The harvest gear's load and delivery, for exactly the kinds that
+    /// harvest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub unloading: Option<Unloading>,
+    pub worker: Option<Worker>,
     /// Ticks until each weapon may fire again, indexed like
     /// `kind.stats().weapons` (unused slots stay zero).
     pub cooldowns: [u32; crate::stats::MAX_WEAPONS],
@@ -386,10 +402,6 @@ pub struct Unit {
     /// drops the route for a fresh plan.
     #[serde(default, skip_serializing_if = "crate::is_default")]
     pub stall_ticks: u8,
-    /// While this Harvester is held by danger, the tick from which it searches
-    /// again. See [`crate::stats::HARVEST_DANGER_RETRY_TICKS`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub danger_retry_at: Option<crate::Tick>,
     /// Independent ground gun bearing; absent mounts follow the hull initially.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turret_heading: Option<u8>,
@@ -441,7 +453,6 @@ impl Rider {
             id,
             kind,
             hp,
-            carrying,
             cooldowns,
             heading,
             turret_heading,
@@ -451,7 +462,7 @@ impl Rider {
             id,
             kind,
             hp,
-            carrying,
+            carrying: unit.carrying(),
             cooldowns,
             heading,
             turret_heading,
@@ -460,17 +471,56 @@ impl Rider {
 
     /// Sets the rider down at `pos` as an idle machine at rest.
     pub(crate) fn disembark(self, player: PlayerId, pos: Vec2Fx) -> Unit {
-        Unit {
+        let mut unit = Unit {
             hp: self.hp,
-            carrying: self.carrying,
             cooldowns: self.cooldowns,
             turret_heading: self.turret_heading,
             ..Unit::at_rest(self.id, player, self.kind, pos, self.heading)
+        };
+        if let Some(worker) = &mut unit.worker {
+            worker.carrying = self.carrying;
         }
+        unit
     }
 }
 
 impl Unit {
+    /// Scrap on board; none for a machine that cannot harvest.
+    pub fn carrying(&self) -> u32 {
+        self.worker.map_or(0, |worker| worker.carrying)
+    }
+
+    /// The cargo release under way, if any.
+    pub fn unloading(&self) -> Option<Unloading> {
+        self.worker.and_then(|worker| worker.unloading)
+    }
+
+    /// The tick a danger-held harvester searches again, if it is held.
+    pub fn danger_retry_at(&self) -> Option<crate::Tick> {
+        self.worker.and_then(|worker| worker.danger_retry_at)
+    }
+
+    /// The harvest gear of a machine whose work needs it.
+    pub(crate) fn worker_mut(&mut self) -> &mut Worker {
+        self.worker
+            .as_mut()
+            .expect("only machines with harvest gear do harvest work")
+    }
+
+    /// Abandons any cargo release under way.
+    pub(crate) fn end_release(&mut self) {
+        if let Some(worker) = &mut self.worker {
+            worker.unloading = None;
+        }
+    }
+
+    /// Lets a danger-held harvester search again at once.
+    pub(crate) fn clear_danger_hold(&mut self) {
+        if let Some(worker) = &mut self.worker {
+            worker.danger_retry_at = None;
+        }
+    }
+
     /// A healthy, idle machine standing at `pos` with nothing aboard.
     fn at_rest(id: UnitId, player: PlayerId, kind: UnitKind, pos: Vec2Fx, heading: u8) -> Self {
         Self {
@@ -480,14 +530,12 @@ impl Unit {
             pos,
             air_motion: Vec2Fx::ZERO,
             hp: kind.stats().max_hp,
-            carrying: 0,
-            unloading: None,
+            worker: kind.stats().harvest.map(|_| Worker::default()),
             cooldowns: [0; crate::stats::MAX_WEAPONS],
             brace_ticks: 0,
             turret_heading: None,
             drive_speed: Fx::ZERO,
             stall_ticks: 0,
-            danger_retry_at: None,
             progress: 0,
             order: Order::Idle,
             queue: std::collections::VecDeque::new(),
@@ -583,7 +631,7 @@ impl Unit {
         }
         self.path = None;
         self.progress = 0;
-        self.unloading = None;
+        self.end_release();
     }
 
     /// Drops the active order without rotating it into a looping program:
@@ -595,7 +643,7 @@ impl Unit {
         }
         self.path = None;
         self.progress = 0;
-        self.unloading = None;
+        self.end_release();
     }
 
     /// Completes an engagement without recycling its target into a patrol.
@@ -613,7 +661,7 @@ impl Unit {
         };
         self.path = None;
         self.progress = 0;
-        self.unloading = None;
+        self.end_release();
     }
 
     /// Abandons the whole program. Overrides use it, and so do the stalls a
@@ -625,7 +673,7 @@ impl Unit {
         self.looping = false;
         self.path = None;
         self.progress = 0;
-        self.unloading = None;
+        self.end_release();
     }
 }
 
@@ -1446,8 +1494,7 @@ impl State {
             pos,
             air_motion: _,
             hp,
-            carrying,
-            unloading,
+            worker,
             cooldowns,
             brace_ticks,
             progress,
@@ -1460,7 +1507,6 @@ impl State {
             heading,
             drive_speed,
             stall_ticks,
-            danger_retry_at,
             turret_heading,
             cargo,
             landed,
@@ -1476,11 +1522,19 @@ impl State {
         if *hp == 0 || *hp > stats.max_hp {
             return Err(E::UnitHpOutOfRange(id));
         }
-        if *carrying > stats.harvest.map_or(0, |harvest| harvest.capacity) {
+        if worker.is_some() != stats.harvest.is_some() {
+            return Err(E::UnitPartMismatch(id));
+        }
+        let Worker {
+            carrying,
+            unloading,
+            danger_retry_at,
+        } = worker.unwrap_or_default();
+        if carrying > stats.harvest.map_or(0, |harvest| harvest.capacity) {
             return Err(E::ScrapBeyondCapacity(id));
         }
         if let Some(release) = unloading
-            && (*carrying == 0
+            && (carrying == 0
                 || release.elapsed == 0
                 || release.elapsed >= crate::stats::UNLOAD_TICKS
                 || !matches!(order, Order::Harvest { .. } | Order::ReturnCargo { .. })
@@ -1532,11 +1586,9 @@ impl State {
             return Err(E::InvalidStallTicks(id));
         }
         if danger_retry_at.is_some_and(|tick| {
-            stats.harvest.is_none()
-                || tick
-                    > self
-                        .tick
-                        .saturating_add(crate::stats::HARVEST_DANGER_RETRY_TICKS)
+            tick > self
+                .tick
+                .saturating_add(crate::stats::HARVEST_DANGER_RETRY_TICKS)
         }) {
             return Err(E::InvalidDangerRetry(id));
         }
@@ -2798,6 +2850,9 @@ pub enum StateIntegrityError {
     /// A rider of a kind no sling can take (a flyer, or a transport).
     #[error("unit {0} carries a rider that can never be carried")]
     UncarriableCargo(UnitId),
+    /// A unit carries a part its kind does not have, or lacks one it does.
+    #[error("unit {0} carries parts that do not match its kind")]
+    UnitPartMismatch(UnitId),
     /// A rider outside the living hp range.
     #[error("unit {0} carries a rider with impossible hp")]
     CargoHpOutOfRange(UnitId),

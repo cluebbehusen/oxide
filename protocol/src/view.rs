@@ -497,7 +497,7 @@ fn unit_view(u: &Unit) -> UnitView {
         pos: [u.pos.x.to_num(), u.pos.y.to_num()],
         tile: [u.tile().x, u.tile().y],
         hp: u.hp,
-        carrying: u.carrying,
+        carrying: u.carrying(),
         order: Some(u.order),
         queue: u.queue.iter().copied().collect(),
         patrolling: Some(u.looping),

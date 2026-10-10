@@ -7811,7 +7811,7 @@ fn return_cargo_card_and_shortcut_replace_work_for_both_workers() {
                 .find(|u| u["id"] == serde_json::json!(worker))
                 .unwrap();
             row["kind"] = serde_json::json!(kind);
-            row["carrying"] = serde_json::json!(4);
+            row["worker"]["carrying"] = serde_json::json!(4);
             *game.state = serde_json::from_value(data).unwrap();
             game.presentation.selection.units = vec![worker];
             let mut input = InputState::new();
@@ -7921,7 +7921,7 @@ fn return_cargo_foundry_click_keeps_empty_welders_and_loaded_workers() {
             .iter_mut()
             .find(|u| u["id"] == serde_json::json!(workers[0]))
             .unwrap();
-        loaded["carrying"] = serde_json::json!(4);
+        loaded["worker"]["carrying"] = serde_json::json!(4);
         if damaged {
             let building = data["buildings"]
                 .as_array_mut()
@@ -8026,7 +8026,7 @@ fn mixed_workers_use_the_cargo_shortcut_and_keep_other_unit_bindings() {
         .iter_mut()
         .find(|u| u["id"] == serde_json::json!(worker))
         .unwrap();
-    row["carrying"] = serde_json::json!(4);
+    row["worker"]["carrying"] = serde_json::json!(4);
     *game.state = serde_json::from_value(data).unwrap();
     game.presentation.selection.units = game
         .state

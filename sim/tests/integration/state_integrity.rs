@@ -395,12 +395,13 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::SandboxElimination => 79,
         E::NonCanonicalGoal(_) => 80,
         E::InvalidUnloading(_) => 59,
+        E::UnitPartMismatch(_) => 81,
         E::InvalidWorkEndpoint(_) => 56,
         E::InvalidDangerRetry(_) => 55,
     }
 }
 
-const ROWS: usize = 81;
+const ROWS: usize = 82;
 
 /// One rendered message per row, with the entity ids the forgeries
 /// provoke (everything targets seat p0 and entity 0). A fixture's
@@ -494,6 +495,7 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::InvalidLeashClock(UnitId(0)),
         E::SandboxElimination,
         E::NonCanonicalGoal(UnitId(0)),
+        E::UnitPartMismatch(UnitId(0)),
     ]
 }
 
@@ -534,8 +536,8 @@ fn make_transport(d: &mut Value) {
     d["units"][0]["kind"] = json!("skyhook");
     d["units"][0]["hp"] = json!(150);
     d["units"][0]["order"] = json!({"order": "idle"});
-    d["units"][0]["carrying"] = json!(0);
     let unit = d["units"][0].as_object_mut().expect("unit is a map");
+    unit.remove("worker");
     unit.remove("path");
     unit.remove("drive_speed");
     unit.remove("leash");
@@ -589,10 +591,19 @@ fn scrap_load_is_bounded_for_walking_and_carried_units() {
                 if carried {
                     data["units"][0]["cargo"][0]["carrying"] = json!(amount);
                 } else {
-                    data["units"][0]["carrying"] = json!(amount);
+                    data["units"][0]["worker"]["carrying"] = json!(amount);
                 }
                 let restored = serde_json::from_value::<State>(data);
-                if amount <= capacity {
+                if !carried && kind.stats().harvest.is_none() {
+                    // A walking machine without harvest gear has nowhere to
+                    // hold scrap at all.
+                    assert!(
+                        restored
+                            .unwrap_err()
+                            .to_string()
+                            .contains("parts that do not match its kind")
+                    );
+                } else if amount <= capacity {
                     let state = restored.unwrap();
                     let round_trip: State =
                         serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
@@ -616,7 +627,10 @@ fn make_landed(d: &mut Value) {
     d["units"][0]["kind"] = json!("condor");
     d["units"][0]["hp"] = json!(260);
     d["units"][0]["order"] = json!({"order": "idle"});
-    d["units"][0]["carrying"] = json!(0);
+    d["units"][0]
+        .as_object_mut()
+        .expect("unit is a map")
+        .remove("worker");
     d["units"][0]["pos"] = json!({
         "x": {"bits": chassis::fx::Fx::lit("4.5").to_bits()},
         "y": {"bits": chassis::fx::Fx::lit("4.5").to_bits()},
@@ -662,8 +676,8 @@ fn every_checklist_row_refuses_its_forgery() {
         (
             "release without cargo",
             |d| {
-                d["units"][0]["carrying"] = json!(0);
-                d["units"][0]["unloading"] = json!({"foundry": 0, "elapsed": 3});
+                d["units"][0]["worker"]["carrying"] = json!(0);
+                d["units"][0]["worker"]["unloading"] = json!({"foundry": 0, "elapsed": 3});
             },
             "unit u0 carries invalid unloading state",
         ),
@@ -689,7 +703,7 @@ fn every_checklist_row_refuses_its_forgery() {
         ),
         (
             "an oversized scrap load",
-            |d| d["units"][0]["carrying"] = json!(1_000_000),
+            |d| d["units"][0]["worker"]["carrying"] = json!(1_000_000),
             "unit u0 carries scrap beyond its harvest capacity",
         ),
         (
@@ -879,13 +893,13 @@ fn every_checklist_row_refuses_its_forgery() {
         ),
         (
             "a danger retry no failed search could schedule",
-            |d| d["units"][0]["danger_retry_at"] = json!(u64::MAX),
+            |d| d["units"][0]["worker"]["danger_retry_at"] = json!(u64::MAX),
             "unit u0 carries an invalid danger retry",
         ),
         (
-            "a danger retry on a machine that never harvests",
-            |d| d["units"][1]["danger_retry_at"] = d["tick"].clone(),
-            "unit u1 carries an invalid danger retry",
+            "harvest gear on a machine that never harvests",
+            |d| d["units"][1]["worker"]["danger_retry_at"] = d["tick"].clone(),
+            "unit u1 carries parts that do not match its kind",
         ),
         (
             "a unit shoved to the far end of the coordinate space",
@@ -1668,7 +1682,7 @@ fn a_full_verb_run_stays_valid_every_tick() {
             |u| matches!(u.order, oxide_sim::Order::Land { from, .. } if from == Some(tile(6, 6))),
         );
         saw_shell |= !state.shells().is_empty();
-        saw_haul |= state.units().iter().any(|u| u.carrying > 0);
+        saw_haul |= state.units().iter().any(|u| u.carrying() > 0);
         saw_site |= state.buildings().iter().any(|b| !b.built());
         let hp = state.building(fabricator).map(|b| b.hp);
         saw_strip |= matches!((last_hp, hp), (Some(was), Some(now)) if now < was);

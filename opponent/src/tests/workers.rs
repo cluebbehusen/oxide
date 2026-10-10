@@ -175,7 +175,7 @@ fn loaded(state: &State, unit: UnitId, scrap: u32) -> State {
         .iter_mut()
         .find(|entry| entry["id"] == unit.0)
         .unwrap();
-    entry["carrying"] = scrap.into();
+    entry["worker"]["carrying"] = scrap.into();
     serde_json::from_value(value).unwrap()
 }
 

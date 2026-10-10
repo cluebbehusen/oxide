@@ -236,7 +236,7 @@ fn a_held_drop_off_route_yields_only_to_a_nearer_worker() {
     let ids = [state.units[0].id, state.units[1].id];
     for (slot, offset) in [(0, Fx::lit("0.3")), (1, Fx::lit("0.8"))] {
         let unit = &mut state.units[slot];
-        unit.carrying = 1;
+        unit.worker_mut().carrying = 1;
         unit.pos = point + Vec2Fx::new(offset, Fx::ZERO);
         unit.path = Some(PathFollow {
             goal,
@@ -351,17 +351,17 @@ fn a_worker_held_by_danger_searches_at_once_then_backs_off_after_a_failure() {
         Some(&ordered),
         "the ordered route stays in force"
     );
-    assert_eq!(state.units[0].danger_retry_at, Some(state.tick + 1));
+    assert_eq!(state.units[0].danger_retry_at(), Some(state.tick + 1));
 }
 
 #[test]
 fn a_danger_retry_round_trips_up_to_its_bound() {
     let (mut state, ..) = held_worker(None);
     let bound = state.tick + crate::stats::HARVEST_DANGER_RETRY_TICKS;
-    state.units[0].danger_retry_at = Some(bound);
+    state.units[0].worker_mut().danger_retry_at = Some(bound);
     let restored: State = serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
-    assert_eq!(restored.units[0].danger_retry_at, Some(bound));
-    state.units[0].danger_retry_at = Some(bound + 1);
+    assert_eq!(restored.units[0].danger_retry_at(), Some(bound));
+    state.units[0].worker_mut().danger_retry_at = Some(bound + 1);
     assert!(serde_json::from_str::<State>(&serde_json::to_string(&state).unwrap()).is_err());
 }
 
@@ -372,7 +372,7 @@ fn a_waypoint_turned_impassable_replans_every_tick() {
         searches(&mut state, worker, source, &ordered, 4),
         [0, 1, 2, 3]
     );
-    assert_eq!(state.units[0].danger_retry_at, None);
+    assert_eq!(state.units[0].danger_retry_at(), None);
 }
 
 #[test]
@@ -434,7 +434,7 @@ fn a_worker_held_from_its_drop_off_rescans_after_the_retry_period_and_on_command
         .build()
         .unwrap();
     let worker = state.units[0].id;
-    state.units[0].carrying = 1;
+    state.units[0].worker_mut().carrying = 1;
     let foundry = state
         .buildings
         .iter()
@@ -479,7 +479,7 @@ fn a_worker_held_from_its_drop_off_rescans_after_the_retry_period_and_on_command
         [crate::stats::DANGER_HOLD_REPORT_PERIOD],
         "the hold stays visible"
     );
-    assert!(state.units[0].danger_retry_at.is_some());
+    assert!(state.units[0].danger_retry_at().is_some());
     crate::tick::commands::apply(
         &mut state,
         &[crate::PlayerCommand {
@@ -491,7 +491,8 @@ fn a_worker_held_from_its_drop_off_rescans_after_the_retry_period_and_on_command
         &mut Vec::new(),
     );
     assert_eq!(
-        state.units[0].danger_retry_at, None,
+        state.units[0].danger_retry_at(),
+        None,
         "a command is judged at once"
     );
 }
@@ -503,7 +504,7 @@ fn arriving_at_the_source_ends_a_route_hold() {
     let radius = state.units[0].kind.stats().radius;
     state.units[0].pos =
         crate::geometry::work_approach_point(TilePos::new(7, 3), node, (1, 1), radius);
-    state.units[0].danger_retry_at = Some(state.tick + 8);
+    state.units[0].worker_mut().danger_retry_at = Some(state.tick + 8);
     assert!(state.units[0].in_work_reach(node, (1, 1)), "premise");
     let danger = GroundSalvageDanger::capture(&state, PlayerId(0));
     harvest(
@@ -515,7 +516,7 @@ fn arriving_at_the_source_ends_a_route_hold() {
         false,
         &mut Vec::new(),
     );
-    assert_eq!(state.units[0].danger_retry_at, None);
+    assert_eq!(state.units[0].danger_retry_at(), None);
 }
 
 #[test]

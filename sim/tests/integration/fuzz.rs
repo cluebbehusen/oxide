@@ -795,7 +795,7 @@ fn exercise_return_cargo_reach(state: &mut State) {
         .iter_mut()
         .find(|u| u["id"] == serde_json::json!(worker))
         .unwrap();
-    row["carrying"] = serde_json::json!(3);
+    row["worker"]["carrying"] = serde_json::json!(3);
     *state = serde_json::from_value(data).unwrap();
     let report = state.tick(&[PlayerCommand {
         player: PlayerId(0),
