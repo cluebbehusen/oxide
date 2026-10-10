@@ -884,9 +884,6 @@ fn every_map_mirrors_its_paired_seats_entry_by_entry() {
     // that relation is an involution. It reads {0<->1} on duels,
     // {0<->3, 1<->2} or {0<->2, 1<->3} on the 4p maps, and
     // {i <-> n-1-i} on the 6p/8p lane stacks.
-    //
-    // Kinds compare by Role, not by kind: a launch-time retint and any
-    // future faction-varied starting unit must still read as a mirror.
     for (name, scenario) in shipped() {
         if scenario
             .meta
@@ -1005,9 +1002,8 @@ fn every_map_mirrors_its_paired_seats_entry_by_entry() {
                     "{name}: seat {index}'s unit #{k} is not placed opposite its mirror's",
                 );
                 assert_eq!(
-                    a.kind.role(),
-                    b.kind.role(),
-                    "{name}: seat {index}'s unit #{k} fills a different role than its mirror's"
+                    a.kind, b.kind,
+                    "{name}: seat {index}'s unit #{k} is a different kind than its mirror's"
                 );
             }
 

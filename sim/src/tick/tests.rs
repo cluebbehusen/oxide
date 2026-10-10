@@ -191,7 +191,7 @@ fn a_building_upgraded_on_the_tick_it_falls_reports_the_new_tier() {
                 .is_some_and(|up| up.requires == [BuildingKind::Fabricator])
         })
         .expect("some building upgrades once a Fabricator stands");
-    let mut scenario = calibration_open_cupric();
+    let mut scenario = calibration_open();
     scenario.units = vec![UnitSpec {
         player: 0,
         kind: UnitKind::Sentinel,
@@ -271,7 +271,7 @@ fn mirrored_lethal_hits_record_mirrored_footprint_incidents() {
     use crate::scenario::{BuildingSpec, UnitSpec};
     use crate::{BuildingKind, Order, PlayerId, Target, UnitKind};
 
-    let mut scenario = calibration_open_cupric();
+    let mut scenario = calibration_open();
     scenario.units = vec![
         UnitSpec {
             player: 0,
@@ -385,13 +385,13 @@ fn adjacency_excludes_inside_and_far() {
     assert!(!tile_adjacent_to_rect(TilePos::new(6, 4), anchor, (2, 2)));
 }
 
-fn calibration_open_cupric() -> crate::Scenario {
+fn calibration_open() -> crate::Scenario {
+    use crate::UnitKind;
     use crate::scenario::{PlayerSpec, UnitSpec};
-    use crate::{Faction, UnitKind};
 
     crate::Scenario {
         mode: ScenarioMode::Match,
-        name: "Calibration Open - Cupric".into(),
+        name: "Calibration Open".into(),
         map: [
             "################################################",
             "#..............................................#",
@@ -426,10 +426,9 @@ fn calibration_open_cupric() -> crate::Scenario {
         ]
         .map(str::to_owned)
         .into(),
-        players: ["West Cupric", "East Cupric"]
+        players: ["West", "East"]
             .map(|name| PlayerSpec {
                 name: name.into(),
-                faction: Faction::Cupric,
                 team: None,
                 scrap: 150,
                 bot: false,
@@ -751,7 +750,7 @@ fn run_calibration_open_tick(
 fn fixed_facing_opening_replays_identically_through_harvest_cycles() {
     use crate::{Command, PlayerId, UnitId};
 
-    let mut state = calibration_open_cupric()
+    let mut state = calibration_open()
         .build()
         .expect("the calibration scenario builds");
     let commands = calibration_open_tick_zero_commands();
@@ -793,7 +792,7 @@ fn mirrored_haulers_replan_together_when_construction_closes_their_routes() {
     use crate::{BuildingKind, Command, Order, PlayerId, UnitId, UnitKind};
     use chassis::fx::{Fx, Vec2Fx};
 
-    let mut scenario = calibration_open_cupric();
+    let mut scenario = calibration_open();
     scenario.units = vec![
         UnitSpec {
             player: 0,
@@ -940,7 +939,7 @@ fn centered_builders_leave_new_footprints_through_legal_doorsteps() {
 
     let left_anchor = TilePos::new(8, 7);
     let right_anchor = TilePos::new(39, 22);
-    let mut scenario = calibration_open_cupric();
+    let mut scenario = calibration_open();
     scenario.units = vec![
         UnitSpec {
             player: 0,
@@ -1038,7 +1037,7 @@ fn mirrored_six_unit_hunt_spreads_in_each_armys_local_frame() {
     use crate::scenario::{BuildingSpec, UnitSpec};
     use crate::{BuildingKind, Command, PlayerId, UnitId, UnitKind};
 
-    let mut scenario = calibration_open_cupric();
+    let mut scenario = calibration_open();
     scenario.units.extend(
         [
             (0, 9, 9),
@@ -1116,7 +1115,7 @@ fn mirrored_groups_sent_beyond_sight_take_mirrored_slots_on_exposure() {
     use crate::scenario::UnitSpec;
     use crate::{Aim, Command, Order, PlayerId, UnitId, UnitKind};
 
-    let mut scenario = calibration_open_cupric();
+    let mut scenario = calibration_open();
     scenario.units.extend(
         [
             (0, 9, 9),
@@ -1254,7 +1253,7 @@ fn mirrored_avalanches_back_out_to_mirrored_stands() {
     use crate::scenario::UnitSpec;
     use crate::{Command, PlayerId, Target, UnitKind};
 
-    let mut scenario = calibration_open_cupric();
+    let mut scenario = calibration_open();
     scenario.map = mirrored_field(24, 12);
     // Rock on the straight line back leaves two equally near stands.
     for (x, y) in [(3, 5), (20, 6)] {
@@ -1300,7 +1299,7 @@ fn mirrored_sappers_press_mirrored_doorsteps() {
     use crate::scenario::{BuildingSpec, UnitSpec};
     use crate::{BuildingKind, Command, PlayerId, Target, UnitKind};
 
-    let mut scenario = calibration_open_cupric();
+    let mut scenario = calibration_open();
     scenario.map = mirrored_field(24, 12);
     // Rock on the nearest doorstep leaves two equally near ones.
     for (x, y) in [(8, 5), (15, 6)] {

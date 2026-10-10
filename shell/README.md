@@ -18,7 +18,7 @@ crate-level rustdoc.
   delivers notices, and draws one active screen. `app/debug` answers debug
   requests, `app/ui_view` reports what the window shows, and `app/audio` feeds
   the visible session's sounds to the mixer.
-- `screens/wizard` owns New Match seat, team, faction, and opponent choices, and
+- `screens/wizard` owns New Match seat, team, and opponent choices, and
   `screens/wizard/launch` turns a finished draft into a match; `bot_label` keeps
   configured opponent names consistent across the wizard, HUD, and result
   report. Every bot seat of a new match runs `oxide-opponent`; rematches, saves

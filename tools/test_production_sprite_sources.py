@@ -58,12 +58,12 @@ class ProductionSpriteSourceTests(unittest.TestCase):
             for phase in range(6):
                 gen.ground(phase)
             cls.ground_controls = cls.registry.copy()
-            for faction in gen.FACTIONS:
-                gen.harvester(faction)
-                gen.harvester(faction, dig=1)
-                gen.harvester(faction, dig=2)
-                gen.barricade(faction)
-                gen.scuttle_charge(faction)
+            for variant in gen.PALETTES:
+                gen.harvester(variant)
+                gen.harvester(variant, dig=1)
+                gen.harvester(variant, dig=2)
+                gen.barricade(variant)
+                gen.scuttle_charge(variant)
             finalized.install_finalized_sprites(cls.registry, cls.out)
             construction_final.install_finalized_construction(cls.registry, cls.out)
             environment_final.install_finalized_environment(cls.registry, cls.out)
@@ -90,7 +90,7 @@ class ProductionSpriteSourceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             frames = {}
             mechanical_final.install_machines(frames, Path(directory))
-        self.assertEqual(len(frames), 617)
+        self.assertEqual(len(frames), 541)
         digest = hashlib.sha256()
         for key, image in sorted(frames.items()):
             self.assertEqual(self.registry[key].tobytes(), image.tobytes(), key)
@@ -98,37 +98,36 @@ class ProductionSpriteSourceTests(unittest.TestCase):
             digest.update(image.tobytes())
         self.assertEqual(
             digest.hexdigest(),
-            "3d47503eef2e1f3982c42fe5e579521e4715cf8905becb87d812f1834c84a4c8",
+            "d628781627dc375e2b6005463e54938504143ee586cc91c5fafbd8ac4b3f750c",
         )
 
-    def test_lift_rotors_keep_three_distinct_poses_during_actions(self) -> None:
-        for stem, bounds in (("wisp", (20, 25, 48, 48)), ("skyhook", (6, 13, 42, 52))):
-            for faction in gen.FACTIONS:
-                rotors = []
-                for suffix in ("", "_move1", "_move2"):
-                    hull = self.registry[f"rig_{stem}_hull_{faction}{suffix}"]
-                    resting = hull.copy()
-                    resting.alpha_composite(
-                        self.registry[f"rig_{stem}_mount_{faction}"]
+    def test_skyhook_rotors_keep_three_distinct_poses_during_actions(self) -> None:
+        bounds = (6, 13, 42, 52)
+        for variant in gen.PALETTES:
+            tag = gen.variant_tag(variant)
+            rotors = []
+            for suffix in ("", "_move1", "_move2"):
+                hull = self.registry[f"rig_skyhook_hull{tag}{suffix}"]
+                resting = hull.copy()
+                resting.alpha_composite(self.registry[f"rig_skyhook_mount{tag}"])
+                rotor = resting.crop(bounds).tobytes()
+                rotors.append(rotor)
+                for action in ("", "_action1", "_action2", "_action3", "_action4"):
+                    combined = hull.copy()
+                    combined.alpha_composite(
+                        self.registry[f"rig_skyhook_mount{tag}{action}"]
                     )
-                    rotor = resting.crop(bounds).tobytes()
-                    rotors.append(rotor)
-                    for action in ("", "_action1", "_action2", "_action3", "_action4"):
-                        combined = hull.copy()
-                        combined.alpha_composite(
-                            self.registry[f"rig_{stem}_mount_{faction}{action}"]
-                        )
-                        self.assertEqual(
-                            combined.crop(bounds).tobytes(),
-                            rotor,
-                            (stem, faction, suffix, action),
-                        )
-                self.assertEqual(len(set(rotors)), 3, (stem, faction))
+                    self.assertEqual(
+                        combined.crop(bounds).tobytes(),
+                        rotor,
+                        (variant, suffix, action),
+                    )
+            self.assertEqual(len(set(rotors)), 3, variant)
 
     def test_sapper_preparation_visibly_advances_through_all_poses(self) -> None:
-        for faction in gen.FACTIONS:
+        for variant in gen.PALETTES:
             poses = [
-                self.registry[f"sapper_{faction}_action{phase}"]
+                self.registry[f"sapper{gen.variant_tag(variant)}_action{phase}"]
                 for phase in range(1, 4)
             ]
             self.assertTrue(
@@ -140,15 +139,15 @@ class ProductionSpriteSourceTests(unittest.TestCase):
 
     def test_reclaimer_rollers_advance_evenly_across_the_loop_seam(self) -> None:
         for stem in ("reclaimer", "reclaimer_t1"):
-            for faction in gen.FACTIONS:
+            for variant in gen.PALETTES:
                 frames = [
-                    self.registry[f"{stem}_{faction}_work{phase}"]
+                    self.registry[f"{stem}{gen.variant_tag(variant)}_work{phase}"]
                     for phase in range(1, 13)
                 ]
                 for phase, (before, after) in enumerate(
                     zip(frames, frames[1:] + frames[:1], strict=True)
                 ):
-                    with self.subTest(stem=stem, faction=faction, phase=phase):
+                    with self.subTest(stem=stem, variant=variant, phase=phase):
                         self.assertEqual(
                             before.crop((54, 54, 73, 59)).tobytes(),
                             after.crop((55, 54, 74, 59)).tobytes(),
@@ -177,7 +176,7 @@ class ProductionSpriteSourceTests(unittest.TestCase):
             digest.update(image.tobytes())
         self.assertEqual(
             digest.hexdigest(),
-            "a3887ffc13de6447106bbd757a3aa3f5e6ffa2d2b29954b6adb9de1e4f7400dd",
+            "c3fec01ecaad033daa146b8d2539b549587c22eefbda7266f280b7422645d237",
         )
 
     def test_promoted_defenses_match_approved_pixels(self) -> None:
@@ -188,7 +187,7 @@ class ProductionSpriteSourceTests(unittest.TestCase):
             digest.update(image.tobytes())
         self.assertEqual(
             digest.hexdigest(),
-            "3711c93033f318f198d469c81c136a9eddbc31df1f40f83ce76a156441025d3f",
+            "5f3c95e5eaa54f701ee9462f32508c053ebddbca412aa2aeea94c07e6f85c837",
         )
 
     def test_construction_bank_covers_every_building(self) -> None:
@@ -260,54 +259,59 @@ class ProductionSpriteSourceTests(unittest.TestCase):
     def test_metadata_counts_match_every_generated_action_row(self) -> None:
         for stem, frame_set in finalized.UNIT_ACTIONS.items():
             self.assertEqual(finalized.ACTION_COUNTS[stem], len(frame_set))
-            for faction in gen.FACTIONS:
+            for variant in gen.PALETTES:
                 for suffix in frame_set:
-                    self.assertIn(f"{stem}_{faction}{suffix}", self.registry)
+                    self.assertIn(
+                        f"{stem}{gen.variant_tag(variant)}{suffix}", self.registry
+                    )
 
         for stem, frame_set in finalized.BUILDING_WORK.items():
             self.assertEqual(finalized.ACTION_COUNTS[stem], len(frame_set))
-            for faction in gen.FACTIONS:
+            for variant in gen.PALETTES:
                 for suffix in frame_set:
-                    self.assertIn(f"{stem}_{faction}{suffix}", self.registry)
+                    self.assertIn(
+                        f"{stem}{gen.variant_tag(variant)}{suffix}", self.registry
+                    )
 
         for stem, frame_set in finalized.DEFENSE_ACTIONS.items():
             self.assertEqual(finalized.ACTION_COUNTS[stem], len(frame_set))
-            for faction in gen.FACTIONS:
+            for variant in gen.PALETTES:
                 for suffix in frame_set:
-                    self.assertIn(f"{stem}_{faction}{suffix}", self.registry)
+                    self.assertIn(
+                        f"{stem}{gen.variant_tag(variant)}{suffix}", self.registry
+                    )
 
         for stem, frame_set in finalized.DEFENSE_BASE_ACTIONS.items():
             self.assertEqual(finalized.ACTION_COUNTS[stem], len(frame_set))
-            for faction in gen.FACTIONS:
+            for variant in gen.PALETTES:
                 for suffix in frame_set:
-                    self.assertIn(f"{stem}_{faction}{suffix}", self.registry)
+                    self.assertIn(
+                        f"{stem}{gen.variant_tag(variant)}{suffix}", self.registry
+                    )
 
     def test_movement_metadata_matches_every_generated_row(self) -> None:
         self.assertEqual(set(finalized.UNIT_MOVEMENT), set(finalized.UNIT_ACTIONS))
         for stem, frame_set in finalized.UNIT_MOVEMENT.items():
-            for faction in gen.FACTIONS:
-                base = self.registry[f"{stem}_{faction}"]
+            for variant in gen.PALETTES:
+                tag = gen.variant_tag(variant)
+                base = self.registry[f"{stem}{tag}"]
                 for suffix in frame_set:
-                    frame = self.registry[f"{stem}_{faction}{suffix}"]
+                    frame = self.registry[f"{stem}{tag}{suffix}"]
                     self.assertEqual(frame.size, base.size)
                 self.assertTrue(
                     any(
-                        _changed_pixels(
-                            base, self.registry[f"{stem}_{faction}{suffix}"]
-                        )
-                        > 2
+                        _changed_pixels(base, self.registry[f"{stem}{tag}{suffix}"]) > 2
                         for suffix in frame_set
                     ),
                     stem,
                 )
 
     def test_air_support_detail_passes_preserve_the_approved_silhouettes(self) -> None:
-        for faction in ("ferrous", "cupric"):
-            with finalized._faction_palette(faction):
+        for variant in ("base", "probe"):
+            with finalized._variant_palette(variant):
                 for base_builder, approved_builder in (
                     (air_final.buzzard_sequence, air_support_final.buzzard_sequence),
                     (air_final.talon_sequence, air_support_final.talon_sequence),
-                    (air_final.wisp_sequence, air_support_final.wisp_sequence),
                 ):
                     base = base_builder()
                     approved = approved_builder()
@@ -320,24 +324,11 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                             approved_frame.image.getchannel("A").tobytes(),
                         )
 
-    def test_darter_action_frames_keep_transparent_canvas_margin(self) -> None:
-        for faction in ("ferrous", "cupric"):
-            for suffix in finalized.UNIT_ACTIONS["darter"]:
-                image = self.registry[f"darter_{faction}{suffix}"]
-                bbox = image.getchannel("A").getbbox()
-                self.assertIsNotNone(bbox)
-                assert bbox is not None
-                self.assertGreater(bbox[0], 0)
-                self.assertGreater(bbox[1], 0)
-                self.assertLess(bbox[2], image.width)
-                self.assertLess(bbox[3], image.height)
-
     def test_tier_one_combat_art_preserves_motion_and_attack_contracts(self) -> None:
         for builder in (
             tier_one_combat_final.lancer_sequence,
             tier_one_combat_final.bombard_sequence,
             tier_one_combat_final.flakhound_sequence,
-            tier_one_combat_final.stinger_sequence,
         ):
             sequence = builder()
             idle, move1, move2 = (frame.image for frame in sequence.frames[:3])
@@ -349,9 +340,9 @@ class ProductionSpriteSourceTests(unittest.TestCase):
             self.assertGreaterEqual(damage_frames[0].report_count, 1)
 
     def test_kestrel_sequence_keeps_its_airframe_fixed(self) -> None:
-        for faction in ("ferrous", "cupric"):
+        for variant in ("base", "probe"):
             frames = [
-                airworks_scouts_final.render_kestrel(faction, phase)
+                airworks_scouts_final.render_kestrel(variant, phase)
                 for phase in range(3)
             ]
             alpha = frames[0].getchannel("A").tobytes()
@@ -365,9 +356,9 @@ class ProductionSpriteSourceTests(unittest.TestCase):
             )
 
     def test_airworks_queue_frames_keep_the_doors_closed(self) -> None:
-        for faction in ("ferrous", "cupric"):
+        for variant in ("base", "probe"):
             frames = [
-                airworks_scouts_final.render_airworks(faction, stage)
+                airworks_scouts_final.render_airworks(variant, stage)
                 for stage in range(5)
             ]
             door_box = (29, 44, 100, 106)
@@ -378,23 +369,26 @@ class ProductionSpriteSourceTests(unittest.TestCase):
             self.assertNotEqual(frames[4].crop(door_box).tobytes(), closed)
 
     def test_skyhook_rotors_and_sapper_legs_have_real_movement(self) -> None:
-        for faction in ("ferrous", "cupric"):
+        for variant in ("base", "probe"):
+            tag = gen.variant_tag(variant)
             for stem in ("skyhook", "sapper"):
-                idle = self.registry[f"{stem}_{faction}"]
-                move1 = self.registry[f"{stem}_{faction}_move1"]
-                move2 = self.registry[f"{stem}_{faction}_move2"]
+                idle = self.registry[f"{stem}{tag}"]
+                move1 = self.registry[f"{stem}{tag}_move1"]
+                move2 = self.registry[f"{stem}{tag}_move2"]
                 self.assertNotEqual(idle.tobytes(), move1.tobytes())
                 self.assertNotEqual(move1.tobytes(), move2.tobytes())
             self.assertIsNone(
-                skyhook_sapper_crucible_final.render_sapper(faction, action=4)
+                skyhook_sapper_crucible_final.render_sapper(variant, action=4)
                 .getchannel("A")
                 .getbbox()
             )
 
     def test_crucible_opens_and_closes_its_segmented_lid(self) -> None:
-        for faction in gen.FACTIONS:
+        for variant in gen.PALETTES:
             frames = [
-                self.registry[f"crucible_{faction}" + (f"_work{i}" if i else "")]
+                self.registry[
+                    f"crucible{gen.variant_tag(variant)}" + (f"_work{i}" if i else "")
+                ]
                 for i in range(4)
             ]
             self.assertEqual(frames[1].tobytes(), frames[3].tobytes())
@@ -413,10 +407,11 @@ class ProductionSpriteSourceTests(unittest.TestCase):
 
     def test_crucible_units_animate_treads_without_wobbling_the_hull(self) -> None:
         for stem in ("breaker", "avalanche"):
-            for faction in ("ferrous", "cupric"):
-                idle = self.registry[f"{stem}_{faction}"]
-                move1 = self.registry[f"{stem}_{faction}_move1"]
-                move2 = self.registry[f"{stem}_{faction}_move2"]
+            for variant in ("base", "probe"):
+                tag = gen.variant_tag(variant)
+                idle = self.registry[f"{stem}{tag}"]
+                move1 = self.registry[f"{stem}{tag}_move1"]
+                move2 = self.registry[f"{stem}{tag}_move2"]
                 self.assertEqual(
                     idle.getchannel("A").tobytes(), move1.getchannel("A").tobytes()
                 )
@@ -430,19 +425,21 @@ class ProductionSpriteSourceTests(unittest.TestCase):
         self,
     ) -> None:
         for stem in ("breaker", "avalanche"):
-            for faction in gen.FACTIONS:
+            for variant in gen.PALETTES:
                 frames = [
-                    self.registry[f"{stem}_{faction}_action{i}"] for i in range(1, 5)
+                    self.registry[f"{stem}{gen.variant_tag(variant)}_action{i}"]
+                    for i in range(1, 5)
                 ]
                 self.assertGreaterEqual(len({frame.tobytes() for frame in frames}), 3)
                 self.assertNotEqual(frames[0].tobytes(), frames[1].tobytes())
 
     def test_tracked_workers_move_only_their_treads(self) -> None:
         for stem in ("tender", "excavator"):
-            for faction in gen.FACTIONS:
-                idle = self.registry[f"{stem}_{faction}"]
+            for variant in gen.PALETTES:
+                tag = gen.variant_tag(variant)
+                idle = self.registry[f"{stem}{tag}"]
                 for phase in (1, 2):
-                    frame = self.registry[f"{stem}_{faction}_move{phase}"]
+                    frame = self.registry[f"{stem}{tag}_move{phase}"]
                     self.assertEqual(
                         idle.getchannel("A").tobytes(), frame.getchannel("A").tobytes()
                     )
@@ -468,39 +465,24 @@ class ProductionSpriteSourceTests(unittest.TestCase):
         ]
         self.assertTrue(all(left < right for left, right in pairwise(areas)))
 
-    def test_moth_and_warden_move_without_wobbling_the_hull(self) -> None:
-        for stem in ("moth", "warden"):
-            for faction in ("ferrous", "cupric"):
-                idle = self.registry[f"{stem}_{faction}"]
-                phases = [
-                    self.registry[f"{stem}_{faction}_move{phase}"] for phase in (1, 2)
-                ]
-                for frame in phases:
-                    self.assertEqual(
-                        idle.getchannel("A").tobytes(),
-                        frame.getchannel("A").tobytes(),
-                    )
-                self.assertTrue(
-                    any(idle.tobytes() != frame.tobytes() for frame in phases)
+    def test_warden_moves_without_wobbling_the_hull(self) -> None:
+        for variant in ("base", "probe"):
+            tag = gen.variant_tag(variant)
+            idle = self.registry[f"warden{tag}"]
+            phases = [self.registry[f"warden{tag}_move{phase}"] for phase in (1, 2)]
+            for frame in phases:
+                self.assertEqual(
+                    idle.getchannel("A").tobytes(),
+                    frame.getchannel("A").tobytes(),
                 )
-                self.assertNotEqual(phases[0].tobytes(), phases[1].tobytes())
-
-    def test_moth_reloads_its_six_racks_in_pairs(self) -> None:
-        centers = ((49, 45), (79, 45), (49, 59), (79, 59), (49, 73), (79, 73))
-        for faction in gen.FACTIONS:
-            idle = self.registry[f"moth_{faction}"]
-            for action, expected in enumerate((0, 0, 0, 2, 4, 6), start=1):
-                frame = self.registry[f"moth_{faction}_action{action}"]
-                loaded = sum(
-                    frame.getpixel(center) == idle.getpixel(center)
-                    for center in centers
-                )
-                self.assertEqual(loaded, expected)
+            self.assertTrue(any(idle.tobytes() != frame.tobytes() for frame in phases))
+            self.assertNotEqual(phases[0].tobytes(), phases[1].tobytes())
 
     def test_tender_adds_sparks_only_at_welding_contact(self) -> None:
-        for faction in gen.FACTIONS:
-            contact = self.registry[f"tender_{faction}_action2"]
-            weld = self.registry[f"tender_{faction}_action3"]
+        for variant in gen.PALETTES:
+            tag = gen.variant_tag(variant)
+            contact = self.registry[f"tender{tag}_action2"]
+            weld = self.registry[f"tender{tag}_action3"]
             self.assertEqual(
                 contact.crop((0, 32, 128, 128)).tobytes(),
                 weld.crop((0, 32, 128, 128)).tobytes(),
@@ -513,61 +495,43 @@ class ProductionSpriteSourceTests(unittest.TestCase):
             )
 
     def test_condor_keeps_its_wing_fixed_while_the_nose_opens(self) -> None:
-        for faction in gen.FACTIONS:
-            idle = self.registry[f"condor_{faction}"]
+        for variant in gen.PALETTES:
+            tag = gen.variant_tag(variant)
+            idle = self.registry[f"condor{tag}"]
             self.assertEqual(idle.size, (128, 128))
             for phase in (1, 2):
                 self.assertEqual(
                     idle.tobytes(),
-                    self.registry[f"condor_{faction}_move{phase}"].tobytes(),
+                    self.registry[f"condor{tag}_move{phase}"].tobytes(),
                 )
             for action in range(1, 5):
-                frame = self.registry[f"condor_{faction}_action{action}"]
+                frame = self.registry[f"condor{tag}_action{action}"]
                 self.assertEqual(
                     frame.crop((0, 40, 128, 128)).tobytes(),
                     idle.crop((0, 40, 128, 128)).tobytes(),
                 )
-            open_nose = self.registry[f"condor_{faction}_action2"]
+            open_nose = self.registry[f"condor{tag}_action2"]
             self.assertLess(open_nose.getpixel((64, 24))[3], idle.getpixel((64, 24))[3])
 
-    def test_factions_share_dimensions_but_not_accent_pixels(self) -> None:
-        stems = (
-            "harvester",
-            "sentinel",
-            "scuttler",
-            "lancer",
-            "bombard",
-            "flakhound",
-            "stinger",
-            "buzzard",
-            "darter",
-            "talon",
-            "wisp",
-            "foundry",
-            "turret",
-            "fabricator",
-            "flak_turret",
-            "bastion",
-            "array",
-            "reclaimer",
-            "repair_bay",
-        )
-        for stem in stems:
-            ferrous = self.registry[f"{stem}_ferrous"]
-            cupric = self.registry[f"{stem}_cupric"]
-            with self.subTest(stem=stem):
-                self.assertEqual(ferrous.size, cupric.size)
+    def test_probe_renders_share_alpha_but_not_accent_pixels(self) -> None:
+        probes = [key for key in self.registry if gen.PROBE_TAG in key]
+        self.assertTrue(probes)
+        for key in probes:
+            base = self.registry[key.replace(gen.PROBE_TAG, "")]
+            probe = self.registry[key]
+            with self.subTest(key=key):
+                self.assertEqual(base.size, probe.size)
                 self.assertEqual(
-                    ferrous.getchannel("A").tobytes(),
-                    cupric.getchannel("A").tobytes(),
+                    base.getchannel("A").tobytes(),
+                    probe.getchannel("A").tobytes(),
                 )
-                self.assertGreater(_changed_pixels(ferrous, cupric), 8)
+                self.assertGreater(_changed_pixels(base, probe), 8)
 
     def test_harvester_keeps_cargo_separate_from_tracks_and_grapple(self) -> None:
-        for faction in gen.FACTIONS:
+        for variant in gen.PALETTES:
             loads = []
             for cargo in range(finalized.HARVESTER_CARGO_LEVELS):
-                prefix = f"harvester_{faction}_cargo{cargo}"
+                prefix = f"harvester{gen.variant_tag(variant)}_cargo{cargo}"
                 idle = self.registry[prefix]
                 loads.append(idle.crop((44, 67, 84, 101)).tobytes())
                 for suffix in ("_tread1", "_tread2", "_scoop1", "_scoop2"):
@@ -600,18 +564,19 @@ class ProductionSpriteSourceTests(unittest.TestCase):
             ("flak_turret", "flak_mount", 128),
             ("bastion", "bastion_mount", 128),
         )
-        for faction in gen.FACTIONS:
+        for variant in gen.PALETTES:
+            tag = gen.variant_tag(variant)
             for base_stem, mount_stem, side in pairs:
-                base = self.registry[f"{base_stem}_{faction}"]
-                mount = self.registry[f"{mount_stem}_{faction}"]
-                with self.subTest(faction=faction, mount=mount_stem):
+                base = self.registry[f"{base_stem}{tag}"]
+                mount = self.registry[f"{mount_stem}{tag}"]
+                with self.subTest(variant=variant, mount=mount_stem):
                     self.assertEqual(base.size, (side, side))
                     self.assertEqual(mount.size, (side, side))
                     self.assertIsNotNone(base.getchannel("A").getbbox())
                     self.assertIsNotNone(mount.getchannel("A").getbbox())
                     self.assertGreater(_changed_pixels(base, mount), side)
                 for suffix in finalized.DEFENSE_ACTIONS[mount_stem]:
-                    action = self.registry[f"{mount_stem}_{faction}{suffix}"]
+                    action = self.registry[f"{mount_stem}{tag}{suffix}"]
                     self.assertEqual(action.size, (side, side))
                     if mount_stem == "bastion_mount":
                         self.assertLess(
@@ -621,28 +586,29 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                         )
 
     def test_action_rows_contain_real_frame_changes(self) -> None:
-        for faction in gen.FACTIONS:
+        for variant in gen.PALETTES:
+            tag = gen.variant_tag(variant)
             for stem, frame_set in finalized.UNIT_ACTIONS.items():
-                base = self.registry[f"{stem}_{faction}"]
+                base = self.registry[f"{stem}{tag}"]
                 changed = [
-                    _changed_pixels(base, self.registry[f"{stem}_{faction}{suffix}"])
+                    _changed_pixels(base, self.registry[f"{stem}{tag}{suffix}"])
                     for suffix in frame_set
                 ]
-                with self.subTest(faction=faction, stem=stem):
+                with self.subTest(variant=variant, stem=stem):
                     self.assertGreater(max(changed), 12)
             for stem, frame_set in finalized.BUILDING_WORK.items():
-                base = self.registry[f"{stem}_{faction}"]
+                base = self.registry[f"{stem}{tag}"]
                 changed = [
-                    _changed_pixels(base, self.registry[f"{stem}_{faction}{suffix}"])
+                    _changed_pixels(base, self.registry[f"{stem}{tag}{suffix}"])
                     for suffix in frame_set
                 ]
-                with self.subTest(faction=faction, stem=stem):
+                with self.subTest(variant=variant, stem=stem):
                     self.assertGreater(max(changed), 12)
 
     def test_construction_keeps_the_complete_hull_visible_from_stage_zero(self) -> None:
-        for faction in gen.FACTIONS:
+        for variant in gen.PALETTES:
             for stem in construction_final.BUILDING_STEMS:
-                hull = construction_final.complete_hull(self.registry, stem, faction)
+                hull = construction_final.complete_hull(self.registry, stem, variant)
                 occupied = [
                     index
                     for index, value in enumerate(
@@ -653,9 +619,9 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                 self.assertTrue(occupied)
                 for stage in range(3):
                     frame_alpha = self.registry[
-                        f"{stem}_{faction}_site{stage}_0"
+                        f"{stem}{gen.variant_tag(variant)}_site{stage}_0"
                     ].getchannel("A")
-                    with self.subTest(faction=faction, stem=stem, stage=stage):
+                    with self.subTest(variant=variant, stem=stem, stage=stage):
                         self.assertTrue(
                             all(
                                 frame_alpha.getpixel(
@@ -666,9 +632,9 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                         )
 
     def test_construction_hull_energy_increases_without_a_reveal_wipe(self) -> None:
-        for faction in gen.FACTIONS:
+        for variant in gen.PALETTES:
             for stem in construction_final.BUILDING_STEMS:
-                hull = construction_final.complete_hull(self.registry, stem, faction)
+                hull = construction_final.complete_hull(self.registry, stem, variant)
                 alpha_totals = [
                     sum(
                         construction_final.dimmed_hull(hull, stage)
@@ -677,14 +643,15 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                     )
                     for stage in range(3)
                 ]
-                with self.subTest(faction=faction, stem=stem):
+                with self.subTest(variant=variant, stem=stem):
                     self.assertLess(alpha_totals[0], alpha_totals[1])
                     self.assertLess(alpha_totals[1], alpha_totals[2])
 
     def test_construction_cage_is_fixed_and_active_delta_is_local(self) -> None:
-        for faction in gen.FACTIONS:
+        for variant in gen.PALETTES:
+            tag = gen.variant_tag(variant)
             for stem in construction_final.BUILDING_STEMS:
-                first = self.registry[f"{stem}_{faction}_site0_0"]
+                first = self.registry[f"{stem}{tag}_site0_0"]
                 scale = first.width / 64
                 fixed_points = (
                     (round(6 * scale), round(16 * scale)),
@@ -695,11 +662,11 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                 )
                 fixed_colors = tuple(first.getpixel(point) for point in fixed_points)
                 for stage in range(3):
-                    still = self.registry[f"{stem}_{faction}_site{stage}_0"]
-                    active = self.registry[f"{stem}_{faction}_site{stage}_1"]
+                    still = self.registry[f"{stem}{tag}_site{stage}_0"]
+                    active = self.registry[f"{stem}{tag}_site{stage}_1"]
                     difference = ImageChops.difference(still, active)
                     bbox = difference.getbbox()
-                    with self.subTest(faction=faction, stem=stem, stage=stage):
+                    with self.subTest(variant=variant, stem=stem, stage=stage):
                         self.assertEqual(
                             tuple(still.getpixel(point) for point in fixed_points),
                             fixed_colors,
@@ -709,16 +676,17 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                         self.assertLessEqual(bbox[3] - bbox[1], round(9 * scale))
 
     def test_defense_sites_include_their_recognizable_mounts(self) -> None:
-        for faction in gen.FACTIONS:
+        for variant in gen.PALETTES:
+            tag = gen.variant_tag(variant)
             for stem, mount_stem in construction_final.DEFENSE_MOUNTS.items():
-                mount = self.registry[f"{mount_stem}_{faction}"].getchannel("A")
-                site = self.registry[f"{stem}_{faction}_site0_0"].getchannel("A")
+                mount = self.registry[f"{mount_stem}{tag}"].getchannel("A")
+                site = self.registry[f"{stem}{tag}_site0_0"].getchannel("A")
                 mount_pixels = [
                     index
                     for index, value in enumerate(mount.get_flattened_data())
                     if value
                 ]
-                with self.subTest(faction=faction, stem=stem):
+                with self.subTest(variant=variant, stem=stem):
                     self.assertTrue(mount_pixels)
                     self.assertTrue(
                         all(
@@ -746,15 +714,19 @@ class ProductionSpriteSourceTests(unittest.TestCase):
         self.assertEqual(actual, expected)
 
     def test_buzzard_attack_flare_does_not_touch_the_canvas_edge(self) -> None:
-        for faction in gen.FACTIONS:
-            frame = self.registry[f"buzzard_{faction}_action2"].getchannel("A")
+        for variant in gen.PALETTES:
+            frame = self.registry[
+                f"buzzard{gen.variant_tag(variant)}_action2"
+            ].getchannel("A")
             edge = list(frame.crop((0, 0, frame.width, 1)).get_flattened_data())
-            self.assertFalse(any(edge), f"{faction} muzzle flare is clipped")
+            self.assertFalse(any(edge), f"{variant} muzzle flare is clipped")
 
     def test_foundry_gantry_moves_over_a_fixed_foundation(self) -> None:
-        for faction in gen.FACTIONS:
+        for variant in gen.PALETTES:
             frames = [
-                self.registry[f"foundry_{faction}" + (f"_work{i}" if i else "")]
+                self.registry[
+                    f"foundry{gen.variant_tag(variant)}" + (f"_work{i}" if i else "")
+                ]
                 for i in range(5)
             ]
             self.assertEqual(len({frame.tobytes() for frame in frames}), 5)
@@ -785,9 +757,9 @@ class ProductionSpriteSourceTests(unittest.TestCase):
             "_action8": 0,
             "_action9": 0,
         }
-        for faction in gen.FACTIONS:
+        for variant in gen.PALETTES:
             for suffix, count in expected.items():
-                image = self.registry[f"bastion_{faction}{suffix}"]
+                image = self.registry[f"bastion{gen.variant_tag(variant)}{suffix}"]
                 lit = sum(
                     sum(
                         (a - b) ** 2
@@ -798,19 +770,19 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                     < 100
                     for center in centers
                 )
-                with self.subTest(faction=faction, suffix=suffix):
+                with self.subTest(variant=variant, suffix=suffix):
                     self.assertEqual(lit, count)
 
     def test_bastion_recoils_after_report_then_returns_quickly(self) -> None:
-        for faction in gen.FACTIONS:
+        for variant in gen.PALETTES:
             muzzle_tops = [
-                self.registry[f"bastion_mount_{faction}{suffix}"]
+                self.registry[f"bastion_mount{gen.variant_tag(variant)}{suffix}"]
                 .crop((55, 0, 73, 40))
                 .getchannel("A")
                 .getbbox()[1]
                 for suffix in ("_action5", "_action7", "_action8", "_action9")
             ]
-            with self.subTest(faction=faction):
+            with self.subTest(variant=variant):
                 ready, recoil, settling, returned = muzzle_tops
                 self.assertEqual(recoil - ready, 7)
                 self.assertEqual(settling - ready, 3)
@@ -831,9 +803,9 @@ class ProductionSpriteSourceTests(unittest.TestCase):
             "_action8": 1,
             "_action9": 1,
         }
-        for faction in gen.FACTIONS:
+        for variant in gen.PALETTES:
             for suffix, count in expected.items():
-                image = self.registry[f"flakhound_{faction}{suffix}"]
+                image = self.registry[f"flakhound{gen.variant_tag(variant)}{suffix}"]
                 for x in (34, 94):
                     loaded = 0
                     for index in range(4):
@@ -845,7 +817,7 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                             (a - b) ** 2 for a, b in zip(pixel, specialists_final.DEEP)
                         )
                         loaded += brass < empty
-                    self.assertEqual(loaded, count, (faction, suffix, x))
+                    self.assertEqual(loaded, count, (variant, suffix, x))
 
     def test_bombard_spades_and_muzzle_report_fit_their_canvases(self) -> None:
         for phase in range(5):
@@ -853,8 +825,8 @@ class ProductionSpriteSourceTests(unittest.TestCase):
             left, top, right, bottom = image.getbbox()
             self.assertTrue(0 < left < right < image.width)
             self.assertTrue(0 < top < bottom < image.height)
-        for faction in gen.FACTIONS:
-            report = self.registry[f"bombard_{faction}_action4"]
+        for variant in gen.PALETTES:
+            report = self.registry[f"bombard{gen.variant_tag(variant)}_action4"]
             flashes = sum(
                 pixel[0] > 200 and pixel[1] > 130 and pixel[3] > 128
                 for pixel in report.crop((50, 8, 79, 35)).get_flattened_data()

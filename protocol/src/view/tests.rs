@@ -184,9 +184,8 @@ fn the_fog_view_keeps_a_hostile_landing_while_hiding_its_program() {
     // An open field: seat 0's unarmed Harvester holds sight on the
     // ground a seat-1 Condor is ordered onto, so nothing shoots the
     // airframe down or draws it back into the air.
-    let player = |name: &str, faction| PlayerSpec {
+    let player = |name: &str| PlayerSpec {
         name: name.into(),
-        faction,
         team: None,
         scrap: 100,
         bot: false,
@@ -214,10 +213,7 @@ fn the_fog_view_keeps_a_hostile_landing_while_hiding_its_program() {
             "#......................#".into(),
             "########################".into(),
         ],
-        players: vec![
-            player("Ferrous", Faction::Ferrous),
-            player("Cupric", Faction::Cupric),
-        ],
+        players: vec![player("West"), player("East")],
         units: vec![
             // Beyond the Condor's acquisition range from its landing
             // tile at (13, 8) and off its approach, inside its own sight.

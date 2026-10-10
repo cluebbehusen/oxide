@@ -3,8 +3,7 @@
 
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, ScenarioMode, UnitSpec};
 use oxide_sim::{
-    BuildingKind, Command, Event, Faction, Goal, Order, PlayerCommand, PlayerId, Scenario, State,
-    UnitKind,
+    BuildingKind, Command, Event, Goal, Order, PlayerCommand, PlayerId, Scenario, State, UnitKind,
 };
 
 /// A small arena: two Foundries in opposite corners, open ground between.
@@ -30,20 +29,18 @@ pub fn arena(units: Vec<UnitSpec>) -> Scenario {
     }
 }
 
-/// Two human seats, Ferrous then Cupric, each banking `scrap`.
+/// Two human seats, each banking `scrap`.
 pub fn players(scrap: u32) -> Vec<PlayerSpec> {
     vec![
         PlayerSpec {
-            name: "Ferrous".into(),
-            faction: Faction::Ferrous,
+            name: "West".into(),
             team: None,
             scrap,
             bot: false,
             bot_config: None,
         },
         PlayerSpec {
-            name: "Cupric".into(),
-            faction: Faction::Cupric,
+            name: "East".into(),
             team: None,
             scrap,
             bot: false,
@@ -86,7 +83,6 @@ pub fn open_arena_with(
         players: vec![
             PlayerSpec {
                 name: "West".into(),
-                faction: Faction::Ferrous,
                 team: None,
                 scrap: 0,
                 bot: false,
@@ -94,7 +90,6 @@ pub fn open_arena_with(
             },
             PlayerSpec {
                 name: "East".into(),
-                faction: Faction::Cupric,
                 team: None,
                 scrap: 0,
                 bot: false,

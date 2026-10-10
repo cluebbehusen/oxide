@@ -140,9 +140,8 @@ fn direct_pairing_matches_sorting_every_candidate() {
     use crate::scenario::{BuildingSpec, PlayerSpec, Scenario, UnitSpec};
     use crate::stats::BuildingKind;
     use crate::stats::UnitKind;
-    let seat = |name: &str, faction| PlayerSpec {
+    let seat = |name: &str| PlayerSpec {
         name: name.into(),
-        faction,
         team: None,
         scrap: 0,
         bot: false,
@@ -170,10 +169,7 @@ fn direct_pairing_matches_sorting_every_candidate() {
                 _ => ".".repeat(31),
             })
             .collect(),
-        players: vec![
-            seat("West", crate::Faction::Ferrous),
-            seat("East", crate::Faction::Cupric),
-        ],
+        players: vec![seat("West"), seat("East")],
         units: army(0, 6).chain(army(1, 22)).collect(),
         // West hears East's army on radar before seeing it, so radar
         // contacts take the sorted pairing path.

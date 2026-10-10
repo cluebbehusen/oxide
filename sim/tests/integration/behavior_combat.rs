@@ -811,7 +811,7 @@ fn advance_does_not_fire_a_secondary_weapon() {
         12,
         vec![
             unit(0, UnitKind::Sentinel, 4, 4),
-            unit(1, UnitKind::Wisp, 6, 4),
+            unit(1, UnitKind::Talon, 6, 4),
         ],
     )
     .build()

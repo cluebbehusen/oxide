@@ -14,7 +14,6 @@ pub(crate) struct ProjectileReleases {
 pub(crate) struct LaunchPose {
     pub(crate) heading: Vec2,
     pub(crate) kind: UnitKind,
-    pub(crate) slot: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -29,7 +28,6 @@ impl ProjectileReleases {
         // The landing report is read after the arrival tick has completed.
         self.releases
             .retain(|(_, arrival), _| *arrival >= state.current_tick().saturating_sub(1));
-        let mut slots = HashMap::<Target, usize>::new();
         for event in events {
             if let Event::ShellLaunched {
                 shooter,
@@ -43,13 +41,11 @@ impl ProjectileReleases {
                     .releases
                     .entry((*shooter, state.current_tick() - 1 + flight))
                     .or_default();
-                let slot = slots.entry(*shooter).or_default();
                 let pose = unit_pose.map(|pose| {
                     let heading = chassis::compass::dir(pose.heading);
                     LaunchPose {
                         heading: vec2(heading.x.to_num::<f32>(), heading.y.to_num::<f32>()),
                         kind: pose.kind,
-                        slot: *slot,
                     }
                 });
                 releases.push(Flight {
@@ -57,7 +53,6 @@ impl ProjectileReleases {
                     ticks: *flight,
                     pose,
                 });
-                *slot += 1;
             }
         }
     }
@@ -65,8 +60,8 @@ impl ProjectileReleases {
     pub(crate) fn flight(&self, shells: &[Shell], index: usize) -> Option<Flight> {
         let shell = shells.get(index)?;
         let releases = self.releases.get(&(shell.shooter, shell.arrival))?;
-        // Map-edge clamping can give several bombs the same arrival tick.
-        // They retain launch order and are removed together.
+        // Several shells from one shooter can share an arrival tick. They
+        // retain launch order and are removed together.
         let occurrence = shells[..index]
             .iter()
             .filter(|earlier| earlier.shooter == shell.shooter && earlier.arrival == shell.arrival)

@@ -155,9 +155,9 @@ def muzzle(d, x, y, width=5):
     poly(d, [(x - 2, y), (x, y - 7), (x + 2, y)], (238, 215, 160))
 
 
-def bombard(faction, move=0, action=0):
+def bombard(variant, move=0, action=0):
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     recoil = {4: 9, 5: 4, 6: 1}.get(action, 0)
     for bounds in ((13, 46, 34, 112), (94, 46, 115, 112)):
         track(d, bounds, move, paint)
@@ -271,9 +271,9 @@ def aa_tube(d, x, y, length, recoil, width=9, report=False):
         muzzle(d, x, y + recoil, 4)
 
 
-def flakhound(faction, move=0, action=0):
+def flakhound(variant, move=0, action=0):
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     for bounds in ((11, 61, 34, 116), (94, 61, 117, 116)):
         track(d, bounds, move, paint)
     for x in (23, 105):
@@ -322,31 +322,6 @@ def flakhound(faction, move=0, action=0):
     return base
 
 
-def stinger(faction, move=0, action=0):
-    im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
-    for x, y, radius in ((29, 85, 10), (99, 85, 10), (64, 110, 8)):
-        strut(d, (64, 76 if y == 85 else 93), (x, y), 4)
-        wheel(d, x, y, radius, move, paint)
-    panel(d, [(64, 47), (87, 73), (79, 98), (49, 98), (41, 73)], DARK)
-    panel(d, [(64, 59), (78, 75), (73, 88), (55, 88), (50, 75)], paint)
-    box(d, (57, 86, 71, 97), DEEP, 2)
-    line(d, [(59, 89), (69, 89)], IRON, 2)
-    base = finish(im)
-    im, d = canvas()
-    recoil = (0, 0, 6, 3, 0)[action]
-    box(d, (46, 58, 82, 72), VOID, 3)
-    box(d, (49, 60, 79, 69), IRON, 2)
-    for x in (53, 75):
-        aa_tube(d, x, 23, 37, recoil, 6, action == 2)
-        circle(d, (x - 6, 56, x + 6, 69), VOID)
-        circle(d, (x - 3, 59, x + 3, 65), IRON)
-    line(d, [(53, 68), (60, 77), (68, 77), (75, 68)], EDGE, 2)
-    box(d, (60, 66, 68, 74), paint, 1)
-    base.alpha_composite(finish(im, False))
-    return base
-
-
 def radar_mount(d, x, y):
     circle(d, (x - 11, y - 11, x + 11, y + 11), VOID)
     circle(d, (x - 9, y - 9, x + 9, y + 9), IRON)
@@ -367,9 +342,9 @@ def scout_radar():
     return finish(im, rim=False)
 
 
-def kestrel(faction, move=0, action=0):
+def kestrel(variant, move=0, action=0):
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     panel(
         d,
         [
@@ -403,20 +378,6 @@ def kestrel(faction, move=0, action=0):
     return finish(im)
 
 
-def gnat(faction, move=0, action=0):
-    im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
-    for side in (-1, 1):
-        strut(d, (64 + side * 6, 67), (64 + side * 25, 96), 4)
-        engine(d, 64 + side * 28 - 8, 84, 16, 28, paint, move)
-    panel(d, [(57, 28), (71, 28), (75, 45), (72, 80), (56, 80), (53, 45)], DARK)
-    box(d, (59, 62, 69, 76), paint, 2)
-    line(d, [(64, 31), (64, 17)], IRON, 3)
-    line(d, [(61, 19), (67, 19)], EDGE)
-    radar_mount(d, 64, 44)
-    return finish(im)
-
-
 def bombard_spades(phase):
     im, d = canvas()
     fraction = phase / 4
@@ -430,27 +391,24 @@ def bombard_spades(phase):
 
 
 def source_frames():
-    for faction in gen.FACTIONS:
+    for variant in gen.PALETTES:
+        tag = gen.variant_tag(variant)
         for kind, count in [
             ("bombard", 6),
             ("flakhound", 9),
-            ("stinger", 4),
             ("kestrel", 0),
-            ("gnat", 0),
         ]:
             builder = {
                 "bombard": bombard,
                 "flakhound": flakhound,
-                "stinger": stinger,
                 "kestrel": kestrel,
-                "gnat": gnat,
             }[kind]
-            yield f"{kind}_{faction}", builder(faction)
+            yield f"{kind}{tag}", builder(variant)
             for phase in (1, 2):
                 suffix = "tread" if kind == "flakhound" else "move"
-                yield f"{kind}_{faction}_{suffix}{phase}", builder(faction, move=phase)
+                yield f"{kind}{tag}_{suffix}{phase}", builder(variant, move=phase)
             for phase in range(1, count + 1):
-                yield f"{kind}_{faction}_action{phase}", builder(faction, action=phase)
+                yield f"{kind}{tag}_action{phase}", builder(variant, action=phase)
     for phase in range(5):
         yield f"bombard_spades_{phase}", bombard_spades(phase)
     yield "scout_radar", scout_radar()
@@ -459,4 +417,4 @@ def source_frames():
 def install_specialists(registry, out):
     for key, image in source_frames():
         registry[key] = image
-        image.save(out / f"{key}.png")
+        gen.save_sprite(image, out, key)

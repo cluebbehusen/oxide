@@ -124,14 +124,12 @@
  ],
  "players": [
   {
-   "name": "Ferrous",
-   "faction": "ferrous",
+   "name": "North West",
    "scrap": 200,
    "bot": false
   },
   {
-   "name": "Cupric",
-   "faction": "cupric",
+   "name": "South East",
    "scrap": 200,
    "bot": true,
    "bot_config": {}
@@ -194,7 +192,7 @@
   },
   {
    "player": 1,
-   "kind": "gnat",
+   "kind": "kestrel",
    "x": 152,
    "y": 99
   }

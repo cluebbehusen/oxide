@@ -82,9 +82,9 @@ def foundation(d, bounds=(8, 8, 120, 120)):
         bolt(d, xx, yy)
 
 
-def foundry(faction, work=0):
+def foundry(variant, work=0):
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     # Short foundation feet and a broad rear beam anchor the assembly bed.
     plate(d, (8, 24, 120, 114), DEEP, 9)
     plate(d, (37, 7, 89, 37), DEEP, 5)
@@ -134,9 +134,9 @@ def foundry(faction, work=0):
     return finish(im)
 
 
-def fabricator(faction, work=0):
+def fabricator(variant, work=0):
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     # Offset tool tower and horizontal feed explain the asymmetric footprint.
     poly(
         d,
@@ -204,9 +204,9 @@ def fabricator(faction, work=0):
     return finish(im)
 
 
-def airworks(faction, work=0):
+def airworks(variant, work=0):
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     # Split hangar roof retracts sideways above a recessed launch channel.
     foundation(d, (9, 12, 119, 119))
     box(d, (34, 33, 94, 117), VOID, 3)
@@ -260,9 +260,9 @@ def airworks(faction, work=0):
     return finish(im)
 
 
-def crucible(faction, work=0):
+def crucible(variant, work=0):
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     # A pressure vessel in a square buttress, with a rear heat exchanger.
     foundation(d)
     plate(d, (18, 13, 110, 38), DARK, 5)
@@ -300,9 +300,9 @@ def crucible(faction, work=0):
     return finish(im)
 
 
-def repair_bay(faction, work=0):
+def repair_bay(variant, work=0):
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     # An open service apron between unequal tool cabinets, not another factory box.
     poly(
         d,
@@ -378,9 +378,9 @@ def repair_bay(faction, work=0):
     return finish(im)
 
 
-def array(faction, work=0, tier=0, part=None):
+def array(variant, work=0, tier=0, part=None):
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     foundation(d, (17, 19, 111, 110))
     plate(d, (23, 76, 105, 104), DARK, 4)
     box(d, (30, 83, 57, 96), paint, 2)

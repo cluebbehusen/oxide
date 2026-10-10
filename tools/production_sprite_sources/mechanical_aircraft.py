@@ -110,9 +110,9 @@ def sensor(d, x, y, paint):
     line(d, [(x - 3, y - 3), (x + 1, y - 3)], EDGE)
 
 
-def buzzard(faction, move=0, action=0):
+def buzzard(variant, move=0, action=0):
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     for x, y in ((25, 40), (103, 40), (25, 94), (103, 94)):
         strut(d, (64, 64 if y < 64 else 84), (x, y), 7)
         fan(d, x, y, 20, move or action, paint)
@@ -144,59 +144,9 @@ def buzzard(faction, move=0, action=0):
     return base
 
 
-def wisp(faction, move=0, action=0, part=None):
+def talon(variant, move=0, action=0):
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
-    for i, (x, y) in enumerate(((34, 38), (94, 38), (37, 89), (91, 89))):
-        strut(d, (64, 61 if y < 64 else 75), (x, y), 3)
-        fan(d, x, y, 12, move + i % 2, paint, False)
-    panel(
-        d, [(54, 46), (64, 38), (74, 46), (75, 85), (68, 92), (60, 92), (53, 85)], DARK
-    )
-    box(d, (58, 68, 70, 85), paint, 2)
-    box(d, (60, 72, 68, 81), DEEP, 1)
-    sensor(d, 64, 59, paint)
-    base = finish(im)
-    if part == "hull":
-        return base
-    im, d = canvas()
-    gun(d, 64, 34, 20, 5, action)
-    mount = finish(im, False)
-    if part == "mount":
-        return mount
-    base.alpha_composite(mount)
-    return base
-
-
-def darter(faction, move=0, action=0):
-    im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
-    for side in (-1, 1):
-        panel(
-            d,
-            [
-                (64 + side * 7, 39),
-                (64 + side * 48, 86),
-                (64 + side * 42, 93),
-                (64 + side * 12, 72),
-            ],
-            paint,
-        )
-        line(d, [(64 + side * 16, 57), (64 + side * 34, 80)], IRON, 2)
-        engine(d, 64 + side * 23 - 9, 74, 18, 35, paint, move)
-    panel(d, [(64, 12), (73, 37), (75, 92), (64, 112), (53, 92), (55, 37)], DARK)
-    panel(d, [(64, 26), (68, 45), (68, 88), (64, 98), (60, 88), (60, 45)], paint)
-    sensor(d, 64, 47, IRON)
-    base = finish(im)
-    im, d = canvas()
-    gun(d, 64, 14, 23, 5, action)
-    base.alpha_composite(finish(im, False))
-    return base
-
-
-def talon(faction, move=0, action=0):
-    im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     for side in (-1, 1):
         panel(
             d,
@@ -240,9 +190,9 @@ def talon(faction, move=0, action=0):
     return base
 
 
-def shrike(faction, move=0, action=0):
+def shrike(variant, move=0, action=0):
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     for side in (-1, 1):
         panel(
             d,
@@ -284,46 +234,9 @@ def shrike(faction, move=0, action=0):
     return base
 
 
-def sylph(faction, move=0, action=0):
+def skyhook(variant, move=0, action=0, part=None):
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
-    for side in (-1, 1):
-        panel(
-            d,
-            [
-                (64 + side * 9, 48),
-                (64 + side * 41, 27),
-                (64 + side * 37, 52),
-                (64 + side * 20, 81),
-                (64 + side * 8, 82),
-            ],
-            paint,
-        )
-        line(d, [(64 + side * 15, 57), (64 + side * 32, 42)], IRON, 2)
-        engine(d, 64 + side * 15 - 8, 74, 16, 38, paint, move)
-        panel(
-            d,
-            [
-                (64 + side * 5, 95),
-                (64 + side * 31, 108),
-                (64 + side * 34, 116),
-                (64 + side * 8, 108),
-            ],
-            DARK,
-        )
-    panel(d, [(64, 7), (71, 35), (72, 92), (64, 108), (56, 92), (57, 35)], DARK)
-    box(d, (61, 46, 67, 85), paint, 1)
-    sensor(d, 64, 38, IRON)
-    base = finish(im)
-    im, d = canvas()
-    gun(d, 64, 10, 19, 5, action)
-    base.alpha_composite(finish(im, False))
-    return base
-
-
-def skyhook(faction, move=0, action=0, part=None):
-    im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     for x in (25, 103):
         strut(d, (64, 43), (x, 34), 9)
         fan(d, x, 34, 22, move, paint)

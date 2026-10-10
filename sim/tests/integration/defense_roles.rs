@@ -182,7 +182,7 @@ fn a_spotted_bastion_answers_a_bombard_sieging_it_from_full_range() {
             &[(BuildingKind::Bastion, TilePos::new(20, 8))],
             &[(UnitKind::Bombard, TilePos::new(10, 9))],
             &[
-                (attacker, UnitKind::Wisp, TilePos::new(16, 9)),
+                (attacker, UnitKind::Talon, TilePos::new(16, 9)),
                 (defender, UnitKind::Harvester, TilePos::new(14, 9)),
             ],
         )
@@ -230,7 +230,7 @@ fn close_pressure_breaches_an_isolated_bastion_dead_zone() {
                 (UnitKind::Scuttler, TilePos::new(14, 11)),
                 (UnitKind::Scuttler, TilePos::new(14, 15)),
             ],
-            &[(attacker, UnitKind::Wisp, TilePos::new(17, 9))],
+            &[(attacker, UnitKind::Talon, TilePos::new(17, 9))],
         )
         .build()
         .unwrap();
@@ -475,11 +475,6 @@ fn cost_par_defenses_hold_their_target_domain() {
         (UnitKind::Buzzard, TilePos::new(13, 7)),
         (UnitKind::Buzzard, TilePos::new(13, 11)),
     ];
-    let darter_attack = [
-        (UnitKind::Darter, TilePos::new(13, 6)),
-        (UnitKind::Darter, TilePos::new(13, 9)),
-        (UnitKind::Darter, TilePos::new(13, 12)),
-    ];
     let bastion_anchors = [TilePos::new(20, 6), TilePos::new(20, 11)];
     let bastion_attack = [
         (UnitKind::Sentinel, TilePos::new(12, 5)),
@@ -501,11 +496,6 @@ fn cost_par_defenses_hold_their_target_domain() {
                 BuildingKind::FlakTurret,
                 flak_anchors.as_slice(),
                 buzzard_attack.as_slice(),
-            ),
-            (
-                BuildingKind::FlakTurret,
-                flak_anchors.as_slice(),
-                darter_attack.as_slice(),
             ),
             (
                 BuildingKind::Bastion,

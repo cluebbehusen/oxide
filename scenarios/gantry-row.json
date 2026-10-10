@@ -52,63 +52,55 @@
  ],
  "players": [
   {
-   "name": "West Bank North Ferrous",
-   "faction": "ferrous",
+   "name": "West Bank North",
    "team": 0,
    "scrap": 150,
    "bot": false
   },
   {
-   "name": "West Bank Mid North Cupric",
-   "faction": "cupric",
+   "name": "West Bank Mid North",
    "team": 0,
    "scrap": 150,
    "bot": true,
    "bot_config": {}
   },
   {
-   "name": "West Bank Mid South Ferrous",
-   "faction": "ferrous",
+   "name": "West Bank Mid South",
    "team": 0,
    "scrap": 150,
    "bot": true,
    "bot_config": {}
   },
   {
-   "name": "West Bank South Cupric",
-   "faction": "cupric",
+   "name": "West Bank South",
    "team": 0,
    "scrap": 150,
    "bot": true,
    "bot_config": {}
   },
   {
-   "name": "East Bank North Ferrous",
-   "faction": "ferrous",
+   "name": "East Bank North",
    "team": 1,
    "scrap": 150,
    "bot": true,
    "bot_config": {}
   },
   {
-   "name": "East Bank Mid North Cupric",
-   "faction": "cupric",
+   "name": "East Bank Mid North",
    "team": 1,
    "scrap": 150,
    "bot": true,
    "bot_config": {}
   },
   {
-   "name": "East Bank Mid South Ferrous",
-   "faction": "ferrous",
+   "name": "East Bank Mid South",
    "team": 1,
    "scrap": 150,
    "bot": true,
    "bot_config": {}
   },
   {
-   "name": "East Bank South Cupric",
-   "faction": "cupric",
+   "name": "East Bank South",
    "team": 1,
    "scrap": 150,
    "bot": true,

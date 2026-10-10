@@ -8,7 +8,7 @@ use chassis::fx::Fx;
 use chassis::grid::TilePos;
 use oxide_sim::observation::ObservationData;
 use oxide_sim::scenario::BotStance;
-use oxide_sim::stats::{Domain, Role as Kind};
+use oxide_sim::stats::Domain;
 use oxide_sim::{BuildingKind, UnitKind};
 use std::cmp::Reverse;
 
@@ -43,21 +43,21 @@ const DEFENSES: [BuildingKind; 3] = [
 ];
 
 /// The role a unit fills. Harvesters, raiders, support, scouts and transports
-/// fill none here. Every simulation role is listed, so a new one must be
-/// placed before the bot can field it.
+/// fill none here. Every unit kind is listed, so a new one must be placed
+/// before the bot can field it.
 pub(crate) fn role(kind: UnitKind) -> Option<Role> {
-    match kind.role() {
-        Kind::Sentinel | Kind::Warden | Kind::Breaker => Some(Role::Line),
-        Kind::Lancer | Kind::Bombard | Kind::Avalanche => Some(Role::Siege),
-        Kind::AntiAir | Kind::AirAir | Kind::Interceptor => Some(Role::AntiAir),
-        Kind::AirGround | Kind::Bomber => Some(Role::AirStrike),
-        Kind::Harvester
-        | Kind::Excavator
-        | Kind::Scuttler
-        | Kind::Sapper
-        | Kind::Tender
-        | Kind::Scout
-        | Kind::Skyhook => None,
+    match kind {
+        UnitKind::Sentinel | UnitKind::Warden | UnitKind::Breaker => Some(Role::Line),
+        UnitKind::Lancer | UnitKind::Bombard | UnitKind::Avalanche => Some(Role::Siege),
+        UnitKind::Flakhound | UnitKind::Talon | UnitKind::Shrike => Some(Role::AntiAir),
+        UnitKind::Buzzard | UnitKind::Condor => Some(Role::AirStrike),
+        UnitKind::Harvester
+        | UnitKind::Excavator
+        | UnitKind::Scuttler
+        | UnitKind::Sapper
+        | UnitKind::Tender
+        | UnitKind::Kestrel
+        | UnitKind::Skyhook => None,
     }
 }
 
@@ -340,10 +340,7 @@ fn firepower(kind: UnitKind) -> u64 {
         .iter()
         .filter(|weapon| weapon.targets.ground)
         .map(|weapon| {
-            u64::from(weapon.damage)
-                * u64::from(weapon.salvo.max(1))
-                * u64::from(oxide_sim::TICKS_PER_SECOND)
-                * 1_000
+            u64::from(weapon.damage) * u64::from(oxide_sim::TICKS_PER_SECOND) * 1_000
                 / u64::from(weapon.cooldown_ticks.max(1))
         })
         .sum();
@@ -509,7 +506,7 @@ impl Needs {
         producers
             .iter()
             .flat_map(|producer| producer.base_stats().produces.iter().copied())
-            .filter(|kind| self::role(*kind) == Some(role) && legal(observation, *kind))
+            .filter(|kind| self::role(*kind) == Some(role))
             .filter_map(|kind| {
                 let missing: Vec<BuildingKind> = kind
                     .stats()
@@ -564,9 +561,7 @@ impl Needs {
                     .iter()
                     .copied()
                     .filter(move |kind| {
-                        self::role(*kind) == Some(role)
-                            && legal(observation, *kind)
-                            && kind.stats().requires.is_empty()
+                        self::role(*kind) == Some(role) && kind.stats().requires.is_empty()
                     })
                     .map(move |kind| (rank(kind), building, kind))
             })
@@ -690,9 +685,7 @@ impl Needs {
                 .into_iter()
                 .filter(|building| {
                     building.base_stats().produces.iter().any(|kind| {
-                        self::role(*kind) == Some(role)
-                            && legal(observation, *kind)
-                            && kind.stats().requires.is_empty()
+                        self::role(*kind) == Some(role) && kind.stats().requires.is_empty()
                     })
                 })
                 .filter_map(|building| {
@@ -735,20 +728,13 @@ pub(crate) fn producible(
         .iter()
         .copied()
         .filter(move |kind| {
-            legal(observation, *kind)
-                && kind.stats().requires.iter().all(|required| {
-                    observation
-                        .my_buildings
-                        .iter()
-                        .any(|building| building.kind == *required && building.built)
-                })
+            kind.stats().requires.iter().all(|required| {
+                observation
+                    .my_buildings
+                    .iter()
+                    .any(|building| building.kind == *required && building.built)
+            })
         })
-}
-
-/// Whether the seat's faction fields `kind`.
-fn legal(observation: &ObservationData, kind: UnitKind) -> bool {
-    kind.faction()
-        .is_none_or(|faction| faction == observation.faction)
 }
 
 #[cfg(test)]

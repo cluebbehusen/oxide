@@ -72,7 +72,7 @@ fn no_route_crosses_a_full_ridge() {
         false,
         vec![
             unit(0, UnitKind::Scuttler, 8, 5),
-            unit(0, UnitKind::Wisp, 9, 7),
+            unit(0, UnitKind::Talon, 9, 7),
         ],
     )
     .build()
@@ -124,7 +124,7 @@ fn no_route_crosses_a_full_ridge() {
 
 #[test]
 fn air_reroutes_through_the_gap() {
-    let mut state = ridge(true, vec![unit(0, UnitKind::Wisp, 9, 8)])
+    let mut state = ridge(true, vec![unit(0, UnitKind::Talon, 9, 8)])
         .build()
         .unwrap();
     let flyer = state.units()[0].id;
@@ -154,7 +154,7 @@ fn air_reroutes_through_the_gap() {
 
 #[test]
 fn a_peak_goal_snaps_to_open_sky() {
-    let mut state = ridge(true, vec![unit(0, UnitKind::Wisp, 9, 5)])
+    let mut state = ridge(true, vec![unit(0, UnitKind::Talon, 9, 5)])
         .build()
         .unwrap();
     let flyer = state.units()[0].id;
@@ -252,25 +252,25 @@ fn artillery_arcs_break_on_the_ridge() {
 #[test]
 fn flak_cannot_burst_through_stone() {
     // Air-involved direct fire traces peaks even though rock would let
-    // it pass: the flakhound sees the wisp across the ridge, sits in
+    // it pass: the flakhound sees the talon across the ridge, sits in
     // range, and still holds fire.
     let mut state = ridge(
         false,
         vec![
             unit(0, UnitKind::Flakhound, 10, 5),
-            unit(1, UnitKind::Wisp, 14, 5),
+            unit(1, UnitKind::Talon, 14, 5),
         ],
     )
     .build()
     .unwrap();
-    let (flak, wisp) = (state.units()[0].id, state.units()[1].id);
-    let hp = state.unit(wisp).unwrap().hp;
+    let (flak, talon) = (state.units()[0].id, state.units()[1].id);
+    let hp = state.unit(talon).unwrap().hp;
     let mut events = state
         .tick(&[cmd(
             0,
             Command::Attack {
                 units: vec![flak],
-                target: Target::Unit(wisp).into(),
+                target: Target::Unit(talon).into(),
                 queue: false,
             },
         )])
@@ -280,7 +280,7 @@ fn flak_cannot_burst_through_stone() {
         !events.iter().any(|e| matches!(e, Event::AttackHit { .. })),
         "the burst never crossed the ridge"
     );
-    assert_eq!(state.unit(wisp).unwrap().hp, hp);
+    assert_eq!(state.unit(talon).unwrap().hp, hp);
 }
 
 #[test]
@@ -290,19 +290,19 @@ fn a_ridge_match_stays_bit_identical() {
             true,
             vec![
                 unit(0, UnitKind::Scuttler, 8, 3),
-                unit(0, UnitKind::Wisp, 9, 8),
+                unit(0, UnitKind::Talon, 9, 8),
                 unit(1, UnitKind::Scuttler, 16, 3),
-                unit(1, UnitKind::Darter, 15, 8),
+                unit(1, UnitKind::Buzzard, 15, 8),
             ],
         )
         .build()
         .unwrap();
-        let (w, d) = (state.units()[1].id, state.units()[3].id);
+        let (talon, buzzard) = (state.units()[1].id, state.units()[3].id);
         state.tick(&[
             cmd(
                 0,
                 Command::Run {
-                    units: vec![w],
+                    units: vec![talon],
                     goal: TilePos::new(18, 8),
                     queue: false,
                 },
@@ -310,7 +310,7 @@ fn a_ridge_match_stays_bit_identical() {
             cmd(
                 1,
                 Command::Run {
-                    units: vec![d],
+                    units: vec![buzzard],
                     goal: TilePos::new(5, 8),
                     queue: false,
                 },
@@ -329,7 +329,7 @@ fn a_patrol_leg_on_the_ridge_snaps_to_open_sky() {
     // A leg on unexplored ground keeps its clicked tile, and line_blocked
     // ignores endpoints by design — the route funnel itself must refuse
     // to hand a flyer the mountain.
-    let mut state = ridge(true, vec![unit(0, UnitKind::Wisp, 9, 5)])
+    let mut state = ridge(true, vec![unit(0, UnitKind::Talon, 9, 5)])
         .build()
         .unwrap();
     let flyer = state.units()[0].id;
@@ -425,7 +425,7 @@ fn an_air_patrol_through_the_ridge_keeps_flying_its_legs() {
     // route's snapped endpoint, compares against the original peak goal,
     // and repaths to the same tile forever. Lowering must store the
     // snapped goal, so the patrol rotates through both legs.
-    let mut state = ridge(true, vec![unit(0, UnitKind::Wisp, 6, 5)])
+    let mut state = ridge(true, vec![unit(0, UnitKind::Talon, 6, 5)])
         .build()
         .unwrap();
     let flyer = state.units()[0].id;

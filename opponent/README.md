@@ -300,14 +300,14 @@ and a defense may take its units only while they board.
 
 ## Clearances
 
-While ground reaches no enemy, the seat's free, healthy splash bombers, Condors
-and Moths, beyond the home reserve go ahead of its lifts, at the remembered
-enemy anti-air ground units and known built anti-air buildings, such as Flak
-Turrets, on ground the seat cannot walk to around the building a lift goes
-after, or the one the next lift would. A clearance forms when those bombers are
-worth the stance's minimum and together outweigh, by the attack margin, all the
-known anti-air reaching over that building or any of that anti-air, so they go
-in together rather than one at a time; it takes every one of them. They gather
+While ground reaches no enemy, the seat's free, healthy splash bombers, its
+Condors, beyond the home reserve go ahead of its lifts, at the remembered enemy
+anti-air ground units and known built anti-air buildings, such as Flak Turrets,
+on ground the seat cannot walk to around the building a lift goes after, or the
+one the next lift would. A clearance forms when those bombers are worth the
+stance's minimum and together outweigh, by the attack margin, all the known
+anti-air reaching over that building or any of that anti-air, so they go in
+together rather than one at a time; it takes every one of them. They gather
 beside home on the side facing their aim, go first at the anti-air whose known
 cover they outweigh most easily, sweep it and move on to the next, and once none
 is left sweep the building's surroundings, holding the defenders' attention
@@ -318,16 +318,16 @@ enemy.
 
 ## Strikes
 
-Free, healthy Buzzards and Darters, and Condors and Moths while ground reaches
-an enemy, beyond the home reserve, strike the most valuable known enemy building
-or hostile start for its distance, whether or not ground reaches it, when those
-that can hit ground are worth the stance's minimum and outweigh the known
-anti-air reaching over the target by the attack margin. They gather beside home
-on the side facing the target, fly at it around known anti-air, and fight;
-having taken it they go on to the next target they can, and otherwise fly home.
-They withdraw once the known anti-air reaching them outweighs them. A target a
-strike withdrew from, lost its aircraft to, or stood idle beside is skipped for
-a while. A defense may take a strike's aircraft while they gather or withdraw.
+Free, healthy Buzzards, and Condors while ground reaches an enemy, beyond the
+home reserve, strike the most valuable known enemy building or hostile start for
+its distance, whether or not ground reaches it, when those that can hit ground
+are worth the stance's minimum and outweigh the known anti-air reaching over the
+target by the attack margin. They gather beside home on the side facing the
+target, fly at it around known anti-air, and fight; having taken it they go on
+to the next target they can, and otherwise fly home. They withdraw once the
+known anti-air reaching them outweighs them. A target a strike withdrew from,
+lost its aircraft to, or stood idle beside is skipped for a while. A defense may
+take a strike's aircraft while they gather or withdraw.
 
 ## Raids
 
@@ -362,10 +362,10 @@ remembers when it last saw each. Each point unseen for a while draws its own
 scout, first the one whose time unseen, weighted by its value, is greatest:
 hostile starts weigh most, then sites nearer an enemy than home. A scout moves
 on to the next point no other scout holds when it sees its own. Scouts are free
-Kestrels or Gnats, or else Scuttlers on home ground that can walk there. For
-each stale point no scout could take, the seat trains one that could reach it:
-its air scout once it has an Airworks, a Scuttler before. It trains none while
-no mission could take another. An air scout flies around known anti-air when the
+Kestrels, or else Scuttlers on home ground that can walk there. For each stale
+point no scout could take, the seat trains one that could reach it: its air
+scout once it has an Airworks, a Scuttler before. It trains none while no
+mission could take another. An air scout flies around known anti-air when the
 straight line crosses it, and a point whose scout was lost on the way counts as
 seen, so the next scout waits until it is stale again.
 

@@ -1,4 +1,4 @@
-"""Approved production frames for Lancer, Bombard, Flakhound, and Stinger.
+"""Approved production frames for Lancer, Bombard, and Flakhound.
 
 The renderers retain the selected review designs and their corrected mechanical
 states, while the sequence builders preserve the established movement, attack,
@@ -17,7 +17,6 @@ from tools import gen_sprites as gen
 from tools.production_sprite_sources import (
     ground_artillery,
     ground_base,
-    ground_final,
     lancer_final,
 )
 
@@ -25,13 +24,12 @@ Palette = dict[str, tuple[int, int, int]]
 
 SIZE = 64
 SS = 4
-FERROUS = gen.FACTIONS["ferrous"]
-CUPRIC = gen.FACTIONS["cupric"]
+BASE = gen.PALETTES["base"]
 BLACK = (10, 10, 14)
 
-# Semantic RGBA digest of the promoted 528, 533, 538, and 540 production frames.
+# Semantic RGBA digest of the promoted 528, 533, and 538 production frames.
 APPROVED_SOURCE_RGBA_SHA256 = (
-    "e4f08820a4e8ac3c0b53ea0b64c07858e863976a37bfb895f018b168085b601b"
+    "108c69b598c1a1c5e4ab5d66059d0e4d0232481c28d695d8b71899853dd145b8"
 )
 
 
@@ -207,7 +205,7 @@ def _lancer_sprite(
     *, tread_phase: int = 0, charge: int = 0, recoil: int = 0, report: bool = False
 ) -> Image.Image:
     image, draw = _canvas()
-    palette = FERROUS
+    palette = BASE
     _tracks(draw, ((5, 25, 17, 61), (47, 25, 59, 61)), tread_phase, palette)
     draw.polygon(
         _points(((15, 31), (21, 22), (43, 22), (49, 31), (45, 58), (19, 58))),
@@ -269,7 +267,7 @@ def _bombard_sprite(
     report: bool = False,
 ) -> Image.Image:
     image, draw = _canvas()
-    palette = FERROUS
+    palette = BASE
     _tracks(draw, ((6, 24, 17, 56), (47, 24, 58, 56)), tread_phase, palette)
     draw.polygon(
         _points(((13, 28), (21, 18), (43, 18), (51, 28), (47, 57), (17, 57))),
@@ -331,9 +329,8 @@ def _aa_barrel(
     recoil: int,
     palette: Palette,
     report: bool,
-    narrow: bool = False,
 ) -> None:
-    width = 6 if narrow else 8
+    width = 8
     draw.rounded_rectangle(
         _box((x - width / 2, y + recoil, x + width / 2, 31 + recoil)),
         radius=_s(2),
@@ -343,9 +340,9 @@ def _aa_barrel(
         _box((x - width / 2 + 2, y + 3 + recoil, x + width / 2 - 2, 28 + recoil)),
         fill=_rgba(palette["dark"]),
     )
-    _bore(draw, x, y + 2 + recoil, radius=3 if narrow else 4)
+    _bore(draw, x, y + 2 + recoil, radius=4)
     if report:
-        _muzzle_flash(draw, x, max(0, y - 4), width=5 if narrow else 6)
+        _muzzle_flash(draw, x, max(0, y - 4), width=6)
 
 
 def _charge_lamps(
@@ -365,7 +362,7 @@ def _flakhound_sprite(
     recover: bool = False,
 ) -> Image.Image:
     image, draw = _canvas()
-    palette = FERROUS
+    palette = BASE
     _tracks(draw, ((5, 31, 17, 61), (47, 31, 59, 61)), tread_phase, palette)
     for center in ((12, 24), (52, 24)):
         _wheel(draw, center, tread_phase, palette, 6)
@@ -396,51 +393,6 @@ def _flakhound_sprite(
     draw.rectangle(_box((18, 38, 46, 43)), fill=_rgba(gen.IRON_DARK))
     _charge_lamps(draw, charge, palette)
     for x, y in ((18, 29), (46, 29), (20, 56), (44, 56)):
-        _bolt(draw, x, y)
-    return _finish(image)
-
-
-def _stinger_sprite(
-    *, move_phase: int = 0, ready: bool = False, recoil: int = 0, report: bool = False
-) -> Image.Image:
-    image, draw = _canvas()
-    palette = CUPRIC
-    for center in ((12, 43), (52, 43), (32, 57)):
-        _wheel(draw, center, move_phase, palette, 6 if center[1] == 43 else 5)
-    draw.line(_points(((20, 40), (12, 43))), fill=_rgba(gen.IRON_DARK), width=_s(4))
-    draw.line(_points(((44, 40), (52, 43))), fill=_rgba(gen.IRON_DARK), width=_s(4))
-    draw.line(_points(((32, 48), (32, 57))), fill=_rgba(gen.IRON_DARK), width=_s(4))
-    draw.polygon(
-        _points(((32, 19), (47, 39), (40, 52), (24, 52), (17, 39))),
-        fill=_rgba(gen.IRON_DARK),
-    )
-    draw.polygon(
-        _points(((32, 24), (42, 39), (37, 48), (27, 48), (22, 39))),
-        fill=_rgba(palette["base"]),
-    )
-    _plate(draw, (25, 36, 39, 49), palette["dark"], radius=3)
-    yoke_shift = -1 if ready else 0
-    for index, x in enumerate((26, 38)):
-        shifted_x = x + (yoke_shift if index == 0 else -yoke_shift)
-        _aa_barrel(
-            draw,
-            shifted_x,
-            y=7,
-            recoil=recoil,
-            palette=palette,
-            report=report,
-            narrow=True,
-        )
-        draw.ellipse(
-            _box((shifted_x - 4, 27 + recoil, shifted_x + 4, 35 + recoil)),
-            fill=_rgba(gen.IRON_DARK),
-        )
-        draw.ellipse(
-            _box((shifted_x - 2, 29 + recoil, shifted_x + 2, 33 + recoil)),
-            fill=_rgba(palette["light"]),
-        )
-    draw.rectangle(_box((23, 34, 41, 39)), fill=_rgba(gen.IRON_DARK))
-    for x, y in ((24, 44), (40, 44)):
         _bolt(draw, x, y)
     return _finish(image)
 
@@ -530,32 +482,11 @@ def flakhound_sequence() -> ground_base.GroundUnitSequence:
     )
 
 
-def stinger_sequence() -> ground_base.GroundUnitSequence:
-    images = (
-        _stinger_sprite(),
-        _stinger_sprite(move_phase=1),
-        _stinger_sprite(move_phase=2),
-        _stinger_sprite(),
-        _stinger_sprite(ready=True),
-        _stinger_sprite(ready=True, recoil=4, report=True),
-        _stinger_sprite(ready=True, recoil=2),
-        _stinger_sprite(),
-    )
-    return _with_images(
-        ground_final.stinger_sequence(),
-        stem="stinger_armored_trike",
-        title="Stinger / Armored Trike",
-        mechanism="three-wheel armored scout carriage with a paired AA yoke",
-        images=images,
-    )
-
-
 def source_frames() -> Iterator[tuple[str, Image.Image]]:
     for review_id, sequence in (
         (528, lancer_sequence()),
         (533, bombard_sequence()),
         (538, flakhound_sequence()),
-        (540, stinger_sequence()),
     ):
         for index, frame in enumerate(sequence.frames):
             yield f"{review_id}/{index}", frame.image

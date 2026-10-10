@@ -59,8 +59,6 @@ fn launch_materializes_each_opponents_exact_visible_config_and_seed() {
             "every opponent receives its exact draft and seat seed"
         );
     }
-    // Auto chips keep the seat's authored faction.
-    assert_eq!(players[2].faction, oxide_sim::Faction::Ferrous);
 }
 
 #[test]
@@ -137,7 +135,6 @@ fn launch_seed_scope_is_exact_and_reproducible() {
         let left = &first.scenario.players[seat];
         let right = &rerolled.scenario.players[seat];
         assert_eq!(left.name, right.name);
-        assert_eq!(left.faction, right.faction);
         assert_eq!(left.team, right.team);
         assert_eq!(left.scrap, right.scrap);
         assert_eq!(left.bot, right.bot);
@@ -189,42 +186,19 @@ fn a_zero_seat_map_refuses_to_launch_instead_of_panicking() {
 }
 
 #[test]
-fn a_faction_chip_retints_the_seat_and_collided_names_take_ordinals() {
+fn collided_names_take_ordinals() {
+    let mut scenario = Scenario::skirmish();
+    let repeated = scenario.players[0].name.clone();
+    scenario.players[1].name.clone_from(&repeated);
     let mut draft = NewMatchDraft::default();
-    let scenario = Scenario::load("../scenarios/gatework-array.json").expect("shipped map");
     draft.set_scenario(scenario, None);
-    // "North West Cupric" flips Ferrous — its retinted label
-    // collides with seat 0's "North West Ferrous".
-    draft.seats[1].faction_choice = 1;
-    let game = launch(&draft, 0x5000).expect("a legitimate faction choice never refuses to launch");
+    let game = launch(&draft, 0x5000).expect("a repeated authored name never refuses to launch");
     let players = &game.scenario.players;
-    assert_eq!(players[1].faction, oxide_sim::Faction::Ferrous);
+    assert_eq!(players[0].name, repeated, "the first seat keeps its name");
     assert_eq!(
-        players[1].name, "North West Ferrous 2",
+        players[1].name,
+        format!("{repeated} 2"),
         "the duplicate label took an ordinal"
-    );
-    let mut names: Vec<&str> = players.iter().map(|p| p.name.as_str()).collect();
-    names.sort_unstable();
-    names.dedup();
-    assert_eq!(names.len(), players.len(), "every banner name stays unique");
-}
-
-#[test]
-fn a_duel_chip_override_retints_only_its_seat() {
-    let mut draft = NewMatchDraft::default();
-    draft.set_scenario(Scenario::skirmish(), None);
-    draft.seats[0].faction_choice = 2; // the human goes Cupric
-    let game = launch(&draft, 0x6000).expect("launches");
-    let players = &game.scenario.players;
-    assert_eq!(players[0].faction, oxide_sim::Faction::Cupric);
-    assert_eq!(
-        players[1].faction,
-        oxide_sim::Faction::Cupric,
-        "Auto keeps the authored roster - the mirror the quick flow forbade"
-    );
-    assert_ne!(
-        players[0].name, players[1].name,
-        "ordinals keep names unique"
     );
 }
 
@@ -242,16 +216,8 @@ fn launch_writes_the_chosen_teams_into_the_scenario() {
     );
 
     // Re-dialed seats regroup: FFA drops the seat onto its own
-    // team, a moved seat joins its new one — factions untouched.
+    // team, a moved seat joins its new one.
     let mut draft = team_draft();
-    let authored: Vec<_> = draft
-        .scenario
-        .as_deref()
-        .unwrap()
-        .players
-        .iter()
-        .map(|p| p.faction)
-        .collect();
     draft.seats[0].team_choice = 0; // FFA
     draft.seats[3].team_choice = 1; // crosses to Team 1
     let game = launch(&draft, 0x8000).expect("launches");
@@ -259,8 +225,6 @@ fn launch_writes_the_chosen_teams_into_the_scenario() {
     assert_eq!(players[0].team, None, "the FFA seat drops its team");
     assert_eq!(players[3].team, Some(0), "the moved seat joined Team 1");
     assert_eq!(players[1].team, Some(0));
-    let launched: Vec<_> = players.iter().map(|p| p.faction).collect();
-    assert_eq!(launched, authored, "the team dial never retints a seat");
     // The sim's dense normalization sees the regrouping: the FFA
     // seat stands alone against everyone.
     let alone = game.state.player(oxide_sim::PlayerId(0)).team;

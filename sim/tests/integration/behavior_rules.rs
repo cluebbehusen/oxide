@@ -7,8 +7,7 @@ use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
 use oxide_sim::scenario::PlayerSpec;
 use oxide_sim::{
-    BuildingId, Command, Event, Faction, GameResult, Order, PlayerId, Scenario, Target, UnitId,
-    UnitKind,
+    BuildingId, Command, Event, GameResult, Order, PlayerId, Scenario, Target, UnitId, UnitKind,
 };
 
 use common::*;
@@ -81,7 +80,6 @@ fn ghost_memory_survives_unseen_demolition_until_revisited() {
     let mut players = arena(vec![]).players;
     players.push(PlayerSpec {
         name: "Third".into(),
-        faction: Faction::Ferrous,
         team: None,
         scrap: 0,
         bot: false,
@@ -305,7 +303,6 @@ fn eliminated_players_cannot_command_survivors() {
     let mut players = arena(vec![]).players;
     players.push(PlayerSpec {
         name: "Third".into(),
-        faction: Faction::Ferrous,
         team: None,
         scrap: 0,
         bot: false,

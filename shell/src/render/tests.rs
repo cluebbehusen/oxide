@@ -160,20 +160,6 @@ fn condor_uses_its_reviewed_two_tile_canvas_and_large_shadow() {
 }
 
 #[test]
-fn moth_uses_its_two_tile_canvas_and_bomber_shadow() {
-    let zoom = 64.0;
-    assert_eq!(super::unit_draw_scale(oxide_sim::UnitKind::Moth), 2.0);
-    let (shadow, offset, lift) = super::air_presentation(oxide_sim::UnitKind::Moth, zoom);
-    assert_eq!(shadow, vec2(99.2, 64.0));
-    assert_eq!(offset, vec2(7.04, 10.88));
-    assert_eq!(lift, 5.12);
-    assert!(
-        super::unit_selection_radius(oxide_sim::UnitKind::Moth, zoom, 4.0)
-            > super::unit_selection_radius(oxide_sim::UnitKind::Harvester, zoom, 4.0)
-    );
-}
-
-#[test]
 fn advanced_ground_units_use_two_tile_canvases() {
     let zoom = 64.0;
     for kind in [oxide_sim::UnitKind::Breaker, oxide_sim::UnitKind::Avalanche] {

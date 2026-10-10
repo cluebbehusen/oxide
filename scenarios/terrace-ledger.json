@@ -60,15 +60,13 @@
  ],
  "players": [
   {
-   "name": "Ferrous",
-   "faction": "ferrous",
+   "name": "North West",
    "team": null,
    "scrap": 150,
    "bot": false
   },
   {
-   "name": "Cupric",
-   "faction": "cupric",
+   "name": "South East",
    "team": null,
    "scrap": 150,
    "bot": true,

@@ -1,6 +1,5 @@
-"""Approved production frames for Gnat, Kestrel, and Airworks.
+"""Approved production frames for Kestrel and Airworks.
 
-Gnat 454 preserves the Forktail Probe's animated sensor and tail mechanism.
 Kestrel 456 keeps the Armored Kite airframe fixed while only its eye and
 status lights sequence. Airworks 457 keeps its empty bay sealed during
 ordinary production and reserves its opening doors for completion.
@@ -14,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
+
+from tools.gen_sprites import save_sprite, variant_tag
 
 Registry = dict[str, Image.Image]
 Color = tuple[int, int, int]
@@ -39,7 +40,7 @@ WORK_LIGHT = (242, 190, 94)
 
 @dataclass(frozen=True)
 class Palette:
-    """Faction paint used sparingly over the shared industrial chassis."""
+    """Accent paint used sparingly over the shared industrial chassis."""
 
     base: Color
     dark: Color
@@ -47,12 +48,12 @@ class Palette:
 
 
 PALETTES = {
-    "ferrous": Palette((176, 75, 52), (105, 43, 33), (217, 116, 86)),
-    "cupric": Palette((48, 132, 113), (29, 79, 68), (101, 181, 157)),
+    "base": Palette((176, 75, 52), (105, 43, 33), (217, 116, 86)),
+    "probe": Palette((48, 132, 113), (29, 79, 68), (101, 181, 157)),
 }
 
 APPROVED_SOURCE_RGBA_SHA256 = (
-    "20ce5a6e972a1ea140f178b1477e0b9d4461c2d95569adab8bb9be39c492b2cd"
+    "c17afc927744a694a8a9ff7c029e6cd98c08aeb52182191b4ad099d7c63ea4c9"
 )
 
 
@@ -219,29 +220,9 @@ def _building_deck(
         _bolt(draw, point)
 
 
-def render_gnat(faction: str, phase: int) -> Image.Image:
-    """Render approved Forktail Probe candidate 454."""
-    palette = PALETTES[faction]
-    image, draw = _canvas(UNIT_SIZE)
-    spread = (-1, 0, 1)[phase % 3]
-    _panel(draw, (25, 10, 39, 44), palette, fill=IRON_DARK, radius=5)
-    _sensor_lens(draw, (32, 18), 7, palette, phase)
-    _truss(draw, (28, 36), (17 - spread, 57), 4)
-    _truss(draw, (36, 36), (47 + spread, 57), 4)
-    _engine_pod(draw, (11 - spread, 42, 22 - spread, 58), palette, phase)
-    _engine_pod(draw, (42 + spread, 42, 53 + spread, 58), palette, phase + 1)
-    _line(draw, ((32, 10), (32, 1)), IRON_LIGHT, 2)
-    draw.polygon(
-        ((29, 10), (32, 4), (35, 10)),
-        fill=_rgba(palette.dark),
-        outline=_rgba(BLACK),
-    )
-    return _finish(image)
-
-
-def render_kestrel(faction: str, phase: int) -> Image.Image:
+def render_kestrel(variant: str, phase: int) -> Image.Image:
     """Render approved candidate 456 with a fixed airframe and sequenced lights."""
-    palette = PALETTES[faction]
+    palette = PALETTES[variant]
     image, draw = _canvas(UNIT_SIZE)
     _wing_panel(
         draw,
@@ -293,11 +274,11 @@ def _door_panel(
     )
 
 
-def render_airworks(faction: str, stage: int) -> Image.Image:
+def render_airworks(variant: str, stage: int) -> Image.Image:
     """Render approved Clampwell Airworks candidate 457."""
     if stage not in range(5):
         raise ValueError(f"unknown Airworks stage: {stage}")
-    palette = PALETTES[faction]
+    palette = PALETTES[variant]
     image, draw = _canvas(BUILDING_SIZE)
     _building_deck(draw, palette, cut_front=True)
     _panel(draw, (39, 17, 89, 38), palette, fill=IRON)
@@ -357,41 +338,40 @@ def render_airworks(faction: str, stage: int) -> Image.Image:
 def source_rgba_digest() -> str:
     """Hash every approved native frame in stable production-key order."""
     digest = hashlib.sha256()
-    for faction in PALETTES:
+    for variant in PALETTES:
         for phase in range(3):
-            for stem, renderer in (("gnat", render_gnat), ("kestrel", render_kestrel)):
-                digest.update(f"{stem}/{faction}/{phase}".encode())
-                digest.update(renderer(faction, phase).tobytes())
+            digest.update(f"kestrel/{variant}/{phase}".encode())
+            digest.update(render_kestrel(variant, phase).tobytes())
         for stage in range(5):
-            digest.update(f"airworks/{faction}/{stage}".encode())
-            digest.update(render_airworks(faction, stage).tobytes())
+            digest.update(f"airworks/{variant}/{stage}".encode())
+            digest.update(render_airworks(variant, stage).tobytes())
     return digest.hexdigest()
 
 
 def _put(registry: Registry, out: Path, key: str, image: Image.Image) -> None:
     native = image.convert("RGBA")
-    native.save(out / f"{key}.png")
+    save_sprite(native, out, key)
     registry[key] = native
 
 
 def install_airworks_scouts(registry: Registry, out: Path) -> None:
     """Install the approved native gameplay frames into the generator bank."""
     out.mkdir(parents=True, exist_ok=True)
-    for faction in PALETTES:
+    for variant in PALETTES:
+        tag = variant_tag(variant)
         unit_states = (("", 1), ("_move1", 0), ("_move2", 2))
         for suffix, phase in unit_states:
-            _put(registry, out, f"gnat_{faction}{suffix}", render_gnat(faction, phase))
             _put(
                 registry,
                 out,
-                f"kestrel_{faction}{suffix}",
-                render_kestrel(faction, phase),
+                f"kestrel{tag}{suffix}",
+                render_kestrel(variant, phase),
             )
         for stage in range(5):
             suffix = "" if stage == 0 else f"_work{stage}"
             _put(
                 registry,
                 out,
-                f"airworks_{faction}{suffix}",
-                render_airworks(faction, stage),
+                f"airworks{tag}{suffix}",
+                render_airworks(variant, stage),
             )

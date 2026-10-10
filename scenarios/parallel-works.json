@@ -57,14 +57,12 @@
  "players": [
   {
    "name": "Seat0",
-   "faction": "ferrous",
    "scrap": 150,
    "bot": false,
    "team": 0
   },
   {
    "name": "Seat1",
-   "faction": "cupric",
    "scrap": 150,
    "bot": true,
    "team": 1,
@@ -72,7 +70,6 @@
   },
   {
    "name": "Seat2",
-   "faction": "ferrous",
    "scrap": 150,
    "bot": true,
    "team": 0,
@@ -80,7 +77,6 @@
   },
   {
    "name": "Seat3",
-   "faction": "cupric",
    "scrap": 150,
    "bot": true,
    "team": 1,

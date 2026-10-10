@@ -42,8 +42,8 @@ const UNITS: u16 = 2 | 4096;
 const LIVE: u16 = 511 | 4096;
 const WORLD: u16 = LIVE | 512 | 1024;
 
-/// Production hotkey slots a selected factory exposes; no per-faction
-/// roster may train more kinds than this.
+/// Production hotkey slots a selected factory exposes; no factory may
+/// train more kinds than this.
 pub const TRAIN_SLOTS: u8 = 6;
 
 /// Categories and card order are shared by rendering and keyboard dispatch.

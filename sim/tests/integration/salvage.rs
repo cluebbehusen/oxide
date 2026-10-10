@@ -364,26 +364,26 @@ fn a_dead_building_splits_its_wreck_across_the_footprint() {
 
 #[test]
 fn a_flyer_downed_over_a_roof_leaves_nothing_strippable() {
-    // The wisp dies to the flakhound directly over the enemy foundry's
+    // The talon dies to the flakhound directly over the enemy foundry's
     // footprint; no wreck may land under the standing building.
     let mut state = arena(vec![
-        unit(0, UnitKind::Wisp, 4, 2),
+        unit(0, UnitKind::Talon, 4, 2),
         unit(1, UnitKind::Flakhound, 12, 5),
     ])
     .build()
     .unwrap();
-    let (wisp, flak) = (state.units()[0].id, state.units()[1].id);
+    let (talon, flak) = (state.units()[0].id, state.units()[1].id);
     let foundry_anchor = state
         .buildings()
         .iter()
         .find(|b| b.player == PlayerId(1))
         .unwrap()
         .anchor;
-    // Fly the wisp onto the foundry roof; the flakhound will swat it.
+    // Fly the talon onto the foundry roof; the flakhound will swat it.
     state.tick(&[cmd(
         0,
         Command::Run {
-            units: vec![wisp],
+            units: vec![talon],
             goal: foundry_anchor,
             queue: false,
         },
@@ -400,7 +400,7 @@ fn a_flyer_downed_over_a_roof_leaves_nothing_strippable() {
     run_until(&mut state, 600, |_, events| {
         events.iter().any(|e| {
             if let Event::UnitDied { unit: u, pos, .. } = e
-                && *u == wisp
+                && *u == talon
             {
                 grave = Some(TilePos::containing(*pos));
                 true
@@ -409,7 +409,7 @@ fn a_flyer_downed_over_a_roof_leaves_nothing_strippable() {
             }
         })
     });
-    let grave = grave.expect("the wisp died");
+    let grave = grave.expect("the talon died");
     let under_roof = state
         .buildings()
         .iter()
@@ -431,28 +431,28 @@ fn a_flyer_downed_over_rock_leaves_no_wreck_bait() {
     // Rock never opens up, so a deposit there would sit in vision and bot
     // salvage selection as value no harvester can ever stand on — orders
     // would stall against it until decay. The value is simply lost. Air
-    // spawn validation runs in the flyer's own domain, so the wisp starts
+    // spawn validation runs in the flyer's own domain, so the talon starts
     // parked on the rock directly.
     let mut state = arena(vec![
         unit(0, UnitKind::Flakhound, 4, 3),
-        unit(1, UnitKind::Wisp, 7, 4),
+        unit(1, UnitKind::Talon, 7, 4),
     ])
     .build()
     .unwrap();
-    let (flak, wisp) = (state.units()[0].id, state.units()[1].id);
+    let (flak, talon) = (state.units()[0].id, state.units()[1].id);
     let roost = TilePos::new(7, 4);
     state.tick(&[cmd(
         0,
         Command::Attack {
             units: vec![flak],
-            target: Target::Unit(wisp).into(),
+            target: Target::Unit(talon).into(),
             queue: false,
         },
     )]);
     run_until(&mut state, 600, |_, events| {
         events
             .iter()
-            .any(|e| matches!(e, Event::UnitDied { unit, .. } if *unit == wisp))
+            .any(|e| matches!(e, Event::UnitDied { unit, .. } if *unit == talon))
     });
     assert_eq!(
         state.map().wreck_at(roost),
@@ -463,24 +463,24 @@ fn a_flyer_downed_over_rock_leaves_no_wreck_bait() {
     // The control: the same kill over open ground deposits normally.
     let mut state = arena(vec![
         unit(0, UnitKind::Flakhound, 4, 3),
-        unit(1, UnitKind::Wisp, 9, 3),
+        unit(1, UnitKind::Talon, 9, 3),
     ])
     .build()
     .unwrap();
-    let (flak, wisp) = (state.units()[0].id, state.units()[1].id);
+    let (flak, talon) = (state.units()[0].id, state.units()[1].id);
     let sky = TilePos::new(9, 3);
     state.tick(&[cmd(
         0,
         Command::Attack {
             units: vec![flak],
-            target: Target::Unit(wisp).into(),
+            target: Target::Unit(talon).into(),
             queue: false,
         },
     )]);
     run_until(&mut state, 600, |_, events| {
         events
             .iter()
-            .any(|e| matches!(e, Event::UnitDied { unit, .. } if *unit == wisp))
+            .any(|e| matches!(e, Event::UnitDied { unit, .. } if *unit == talon))
     });
     assert!(
         state.map().wreck_at(sky) > 0,

@@ -266,14 +266,12 @@ fn load_scenario_names_the_path_when_it_cannot_be_read() {
 
 #[test]
 fn run_scenario_surfaces_a_build_failure_with_context() {
-    use oxide_sim::Faction;
     use oxide_sim::scenario::PlayerSpec;
     // Parses fine, but the extra seat has no Foundry anchor on the map, so
     // the build fails; the runner must wrap that, not swallow it.
     let mut scenario = Scenario::skirmish();
     scenario.players.push(PlayerSpec {
         name: "anchorless".into(),
-        faction: Faction::Ferrous,
         team: None,
         scrap: 0,
         bot: false,
@@ -297,7 +295,7 @@ fn an_unfought_match_reports_no_result() {
 #[test]
 fn a_decided_match_latches_its_result_and_keeps_ticking() {
     use oxide_sim::scenario::{PlayerSpec, UnitSpec};
-    use oxide_sim::{Faction, GameResult, UnitKind};
+    use oxide_sim::{GameResult, UnitKind};
 
     // A firing squad: seat 0's Sentinels sit inside aggro range of seat 1's
     // lone Foundry and grind it down with no orders at all; seat 1 has no
@@ -334,7 +332,6 @@ fn a_decided_match_latches_its_result_and_keeps_ticking() {
         players: vec![
             PlayerSpec {
                 name: "attacker".into(),
-                faction: Faction::Ferrous,
                 team: None,
                 scrap: 100,
                 bot: false,
@@ -342,7 +339,6 @@ fn a_decided_match_latches_its_result_and_keeps_ticking() {
             },
             PlayerSpec {
                 name: "victim".into(),
-                faction: Faction::Cupric,
                 team: None,
                 scrap: 100,
                 bot: false,

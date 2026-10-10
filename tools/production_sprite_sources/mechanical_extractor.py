@@ -24,16 +24,16 @@ from tools.production_sprite_sources.specialists_final import (
 )
 
 
-def render_extractor(faction: str, phase: int) -> Image.Image:
+def render_extractor(variant: str, phase: int) -> Image.Image:
     phase %= 4
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     plate(d, (7, 9, 121, 121), DEEP, 8)
     for x, y in ((16, 18), (112, 18), (16, 111), (112, 111)):
         plate(d, (x - 7, y - 6, x + 7, y + 7), DARK, 3)
         bolt(d, x, y)
     box(d, (29, 27, 101, 100), VOID, 5)
-    original._belt(d, (53, 72, 76, 106), phase, faction=faction, step=2)
+    original._belt(d, (53, 72, 76, 106), phase, variant=variant, step=2)
     for j in range(3):
         y = 77 + (j * 8 + phase * 2) % 24
         poly(d, [(58, y), (63, y - 2), (68, y + 2), (63, y + 5)], gen.SCRAP_DARK)
@@ -86,7 +86,7 @@ def render_extractor(faction: str, phase: int) -> Image.Image:
     box(d, (53, 82, 77, 92), VOID, 1)
     for x in (47, 82):
         bolt(d, x, 84)
-    original._hopper(d, (42, 103, 87, 119), faction)
+    original._hopper(d, (42, 103, 87, 119), variant)
     poly(d, [(51, 113), (59, 109), (64, 112), (73, 110), (79, 115)], gen.SCRAP_DARK)
     line(d, [(54, 112), (59, 111), (63, 113)], gen.SCRAP)
     for x in (24, 94):

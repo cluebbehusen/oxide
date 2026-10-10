@@ -113,7 +113,7 @@ fn replay_summary_text_carries_header_digests_and_legend() {
     assert!(text.contains("Skirmish Basin"), "missing header:\n{text}");
     assert!(
         text.contains(
-            "seat 1: Cupric  Cupric  team 1  bot (prime / aggressive, personality seed 8675309)"
+            "seat 1: South East  team 1  bot (prime / aggressive, personality seed 8675309)"
         ),
         "missing exact bot configuration:\n{text}"
     );

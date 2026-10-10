@@ -7,7 +7,7 @@
 
 use anyhow::{Context, Result};
 use oxide_sim::map::Terrain;
-use oxide_sim::{Faction, State, UnitKind};
+use oxide_sim::{PlayerId, State, UnitKind};
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Rect, Shader, Transform};
 
 /// Whole pixels per tile.
@@ -38,11 +38,14 @@ const FRAME: u32 = 0x3E_3E_48;
 const HP_BACK: u32 = 0x14_14_18;
 const HP_FRONT: u32 = 0xE8_E4_D8;
 
-fn faction_color(faction: Faction) -> u32 {
-    match faction {
-        Faction::Ferrous => 0xC4_57_3B,
-        Faction::Cupric => 0x3F_94_82,
-    }
+/// One distinct fill per seat, so every seat of a diagram reads apart.
+/// Seats past the palette reuse it.
+const SEAT_COLORS: [u32; 8] = [
+    0xC4_57_3B, 0x3F_94_82, 0x64_8C_E6, 0xC8_A0_3C, 0xA0_5A_C8, 0x78_B4_50, 0xD2_78_96, 0x5A_B4_D2,
+];
+
+fn seat_color(player: PlayerId) -> u32 {
+    SEAT_COLORS[usize::from(player.0) % SEAT_COLORS.len()]
 }
 
 fn darken(hex: u32) -> u32 {
@@ -166,7 +169,7 @@ pub fn render_state(state: &State) -> Pixmap {
     }
 
     for building in state.buildings() {
-        let color = faction_color(state.player(building.player).faction);
+        let color = seat_color(building.player);
         let (w, h) = building.kind.size();
         let (x, y) = (
             building.anchor.x as f32 * TILE_PX,
@@ -189,7 +192,7 @@ pub fn render_state(state: &State) -> Pixmap {
     }
 
     for unit in state.units() {
-        let color = faction_color(state.player(unit.player).faction);
+        let color = seat_color(unit.player);
         let cx = unit.pos.x.to_num::<f32>() * TILE_PX;
         let cy = unit.pos.y.to_num::<f32>() * TILE_PX;
         let r = unit.kind.stats().radius.to_num::<f32>() * TILE_PX;

@@ -1200,9 +1200,9 @@ fn sapper_attack(
 /// keeps a live route on its victim, steers there on a bounded arc, and
 /// releases only when the bay is cold, the victim is inside release range,
 /// and the victim sits in the forward cone (the geometry a straight pass
-/// produces and a tight orbit cannot). Each release lays `salvo` bombs
-/// along the flight line and rolls the bomber onto an egress leg past the
-/// target, so the loop back covers the reload.
+/// produces and a tight orbit cannot). Each release drops one bomb on the
+/// victim and rolls the bomber onto an egress leg past the target, so the
+/// loop back covers the reload.
 fn bomber_attack(
     state: &mut State,
     motion: &MotionSnapshot,
@@ -1291,26 +1291,19 @@ fn bomber_attack(
                 .map_or(center, crate::state::Building::center),
             Target::Unit(_) => center,
         };
-        // The stick lays out along the flight line, centered on the aim
-        // point; a single bomb is a one-entry stick.
-        let salvo = i32::from(weapon.salvo.max(1));
-        for k in 0..salvo {
-            let along = Fx::from_num(2 * k - (salvo - 1)) * chassis::fx::HALF;
-            let impact = center + hv * (along * crate::stats::BOMB_SALVO_SPACING);
-            let impact = state.map().clamp_to_envelope(impact);
-            let flight = launch_shell(state, launches, Target::Unit(id), me, pos, impact, weapon);
-            events.push(Event::ShellLaunched {
-                shooter: Target::Unit(id),
-                unit_pose: Some(UnitLaunchPose::from(
-                    state.unit(id).expect("shooter exists during combat"),
-                )),
-                target: Some(target),
-                player: me,
-                from: pos,
-                to: impact,
-                flight,
-            });
-        }
+        let impact = state.map().clamp_to_envelope(center);
+        let flight = launch_shell(state, launches, Target::Unit(id), me, pos, impact, weapon);
+        events.push(Event::ShellLaunched {
+            shooter: Target::Unit(id),
+            unit_pose: Some(UnitLaunchPose::from(
+                state.unit(id).expect("shooter exists during combat"),
+            )),
+            target: Some(target),
+            player: me,
+            from: pos,
+            to: impact,
+            flight,
+        });
         // Egress: fly through and past the release point. The leg is a
         // plain path goal, so steering, arrival, and repath all reuse
         // the ordinary machinery; when it completes (or goes stale) the

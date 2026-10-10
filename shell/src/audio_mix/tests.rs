@@ -53,7 +53,7 @@ fn overlapping_explosions_keep_nearest_and_distant_blasts_consume_no_voices() {
         SoundKind::Laser,
         SoundKind::ScuttlerFire,
         SoundKind::SentinelFire,
-        SoundKind::StingerFire,
+        SoundKind::TalonFire,
     ] {
         queued.push((kind, Some(Vec2::ZERO)));
     }
@@ -139,10 +139,10 @@ fn wide_mix_bounds_distinct_minor_voices_but_keeps_heavy_threats() {
             (SoundKind::Laser, Some(Vec2::ZERO)),
             (SoundKind::ScuttlerFire, Some(Vec2::ZERO)),
             (SoundKind::SentinelFire, Some(Vec2::ZERO)),
-            (SoundKind::StingerFire, Some(Vec2::ZERO)),
-            (SoundKind::DarterFire, Some(Vec2::ZERO)),
+            (SoundKind::WardenFire, Some(Vec2::ZERO)),
+            (SoundKind::LancerFire, Some(Vec2::ZERO)),
             (SoundKind::TalonFire, Some(Vec2::ZERO)),
-            (SoundKind::WispFire, Some(Vec2::ZERO)),
+            (SoundKind::FlakhoundFire, Some(Vec2::ZERO)),
             (SoundKind::UnitDeath, Some(Vec2::ZERO)),
             (SoundKind::BastionFire, Some(Vec2::ZERO)),
         ],
@@ -166,8 +166,8 @@ fn attack_alert_bypasses_position_zoom_and_voice_budget() {
         (SoundKind::Laser, Some(Vec2::ZERO)),
         (SoundKind::ScuttlerFire, Some(Vec2::ZERO)),
         (SoundKind::SentinelFire, Some(Vec2::ZERO)),
-        (SoundKind::StingerFire, Some(Vec2::ZERO)),
-        (SoundKind::DarterFire, Some(Vec2::ZERO)),
+        (SoundKind::WardenFire, Some(Vec2::ZERO)),
+        (SoundKind::LancerFire, Some(Vec2::ZERO)),
         (SoundKind::TalonFire, Some(Vec2::ZERO)),
     ]);
     let mixed = frame_mix(queued, Vec2::ZERO, vec2(40.0, 25.0), WIDE_ZOOM);
@@ -187,8 +187,8 @@ fn unpositioned_ui_survives_the_positional_voice_budget() {
         (SoundKind::Laser, Some(Vec2::ZERO)),
         (SoundKind::ScuttlerFire, Some(Vec2::ZERO)),
         (SoundKind::SentinelFire, Some(Vec2::ZERO)),
-        (SoundKind::StingerFire, Some(Vec2::ZERO)),
-        (SoundKind::DarterFire, Some(Vec2::ZERO)),
+        (SoundKind::WardenFire, Some(Vec2::ZERO)),
+        (SoundKind::LancerFire, Some(Vec2::ZERO)),
         (SoundKind::TalonFire, Some(Vec2::ZERO)),
     ]);
     let mixed = frame_mix(queued, Vec2::ZERO, vec2(40.0, 25.0), WIDE_ZOOM);
@@ -230,8 +230,8 @@ fn nearby_detail_outweighs_a_far_standard_report() {
             (SoundKind::Laser, Some(Vec2::ZERO)),
             (SoundKind::ScuttlerFire, Some(Vec2::ZERO)),
             (SoundKind::SentinelFire, Some(Vec2::ZERO)),
-            (SoundKind::StingerFire, Some(Vec2::ZERO)),
-            (SoundKind::DarterFire, Some(Vec2::ZERO)),
+            (SoundKind::TalonFire, Some(Vec2::ZERO)),
+            (SoundKind::WardenFire, Some(Vec2::ZERO)),
         ],
         Vec2::ZERO,
         vec2(40.0, 25.0),

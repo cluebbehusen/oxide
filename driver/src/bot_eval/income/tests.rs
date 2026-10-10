@@ -1,7 +1,7 @@
 use super::*;
 use oxide_sim::Scenario;
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, ScenarioMode};
-use oxide_sim::{Command, Faction, PlayerCommand, stats::HarvestStats};
+use oxide_sim::{Command, PlayerCommand, stats::HarvestStats};
 use std::path::Path;
 
 fn scenario(map: Vec<String>, buildings: Vec<BuildingSpec>) -> Scenario {
@@ -9,11 +9,10 @@ fn scenario(map: Vec<String>, buildings: Vec<BuildingSpec>) -> Scenario {
         mode: ScenarioMode::Match,
         name: "income".into(),
         map,
-        players: [Faction::Ferrous, Faction::Cupric]
+        players: ["West", "East"]
             .into_iter()
-            .map(|faction| PlayerSpec {
-                name: format!("{faction:?}"),
-                faction,
+            .map(|name| PlayerSpec {
+                name: name.into(),
                 team: None,
                 scrap: 0,
                 bot: false,

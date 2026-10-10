@@ -8,7 +8,7 @@ use oxide_kit::GameReplay;
 use oxide_kit::controller::{OpponentMap, SeatController, SeatTrace};
 use oxide_opponent::ResolvedProfile;
 use oxide_sim::scenario::{BotConfig, BotDifficulty, BotStance};
-use oxide_sim::{Event, Faction, GameResult, PlayerId, SIM_VERSION, Scenario};
+use oxide_sim::{Event, GameResult, PlayerId, SIM_VERSION, Scenario};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::{BufWriter, Write};
@@ -129,60 +129,6 @@ impl EvaluationGeometry {
     }
 }
 
-/// Two-seat faction assignment for a controlled evaluation cell.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EvaluationFactionCell {
-    /// Preserve the scenario's authored factions.
-    Authored,
-    /// Ferrous seat zero, Cupric seat one.
-    Fc,
-    /// Cupric seat zero, Ferrous seat one.
-    Cf,
-    /// Ferrous in both seats.
-    Ff,
-    /// Cupric in both seats.
-    Cc,
-}
-
-impl std::str::FromStr for EvaluationFactionCell {
-    type Err = String;
-
-    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
-        match value {
-            "authored" => Ok(Self::Authored),
-            "fc" => Ok(Self::Fc),
-            "cf" => Ok(Self::Cf),
-            "ff" => Ok(Self::Ff),
-            "cc" => Ok(Self::Cc),
-            _ => Err(format!(
-                "unknown evaluation faction cell {value:?}; expected authored, fc, cf, ff, or cc"
-            )),
-        }
-    }
-}
-
-impl EvaluationFactionCell {
-    fn apply(self, scenario: &mut Scenario) -> Result<()> {
-        let factions = match self {
-            Self::Authored => return Ok(()),
-            Self::Fc => [Faction::Ferrous, Faction::Cupric],
-            Self::Cf => [Faction::Cupric, Faction::Ferrous],
-            Self::Ff => [Faction::Ferrous, Faction::Ferrous],
-            Self::Cc => [Faction::Cupric, Faction::Cupric],
-        };
-        ensure!(
-            scenario.players.len() == 2,
-            "controlled faction cells require exactly two seats, got {}",
-            scenario.players.len()
-        );
-        for (seat, faction) in factions.into_iter().enumerate() {
-            scenario.retint_seat(seat, faction);
-        }
-        Ok(())
-    }
-}
-
 /// One exact evaluation leg, including command sources that are intentionally
 /// not serializable into an ordinary match setup.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -195,8 +141,6 @@ pub struct EvaluationPlan {
     pub controllers: Vec<Option<EvaluationController>>,
     /// Spatial transform applied to the source scenario.
     pub geometry: EvaluationGeometry,
-    /// Faction assignment applied after the geometry transform.
-    pub faction_cell: EvaluationFactionCell,
 }
 
 impl EvaluationPlan {
@@ -217,7 +161,6 @@ impl EvaluationPlan {
             scenario,
             controllers,
             geometry: EvaluationGeometry::Authored,
-            faction_cell: EvaluationFactionCell::Authored,
         }
     }
 
@@ -369,8 +312,6 @@ impl ProfileMatchup {
 pub struct SeatConfiguration {
     /// Player seat.
     pub seat: u8,
-    /// Faction roster bound to the physical seat.
-    pub faction: Faction,
     /// Team the seat plays for; seats sharing one are allies.
     pub team: u8,
     /// The seat's bot configuration, or `None` for an empty chair.
@@ -495,8 +436,6 @@ pub struct EvaluationRow {
     pub leg: EvaluationLeg,
     /// Map-end transform applied to the source scenario.
     pub geometry: EvaluationGeometry,
-    /// Faction assignment applied to the physical seats.
-    pub faction_cell: EvaluationFactionCell,
     /// Exact player-facing controller configuration by seat.
     pub seats: Vec<SeatConfiguration>,
     /// Whether the match decided before the ceiling.
@@ -665,10 +604,9 @@ fn evaluate_plan_artifact_impl(
     let controllers = serde_json::to_string(&plan.controllers)
         .context("serializing replay controller provenance")?;
     replay.meta.description = Some(format!(
-        "bot-eval candidate={candidate}; scenario={scenario_fingerprint}; evaluation={evaluation_fingerprint}; execution={execution_fingerprint}; tick_limit={tick_limit}; leg={}; geometry={:?}; faction_cell={:?}; controllers={controllers}",
+        "bot-eval candidate={candidate}; scenario={scenario_fingerprint}; evaluation={evaluation_fingerprint}; execution={execution_fingerprint}; tick_limit={tick_limit}; leg={}; geometry={:?}; controllers={controllers}",
         plan.leg.name(),
         plan.geometry,
-        plan.faction_cell,
     ));
     let mut evidence: Vec<SeatEvidence> =
         (0..scenario.players.len()).map(SeatEvidence::new).collect();
@@ -781,17 +719,16 @@ fn evaluate_plan_artifact_impl(
         stall_loop_limit,
         leg: plan.leg,
         geometry: plan.geometry,
-        faction_cell: plan.faction_cell,
-        seats: scenario
-            .players
+        seats: plan
+            .controllers
             .iter()
+            .zip(state.players())
             .enumerate()
-            .map(|(seat, player)| SeatConfiguration {
+            .map(|(seat, (controller, player))| SeatConfiguration {
                 seat: u8::try_from(seat).expect("seat indices fit in u8"),
-                faction: player.faction,
-                team: state.players()[seat].team,
-                config: plan.controllers[seat].map(EvaluationController::config),
-                profile: plan.controllers[seat].map(EvaluationController::profile),
+                team: player.team,
+                config: controller.map(EvaluationController::config),
+                profile: controller.map(EvaluationController::profile),
             })
             .collect(),
         termination: if stall_loop.is_some() {
@@ -826,7 +763,7 @@ fn record_evidence_event(evidence: &mut [SeatEvidence], event: &Event) -> Option
 ///
 /// A paired cell is defined only for two-player scenarios. The second leg
 /// exchanges the two complete controller configurations while preserving
-/// map geometry, factions, teams and starting rosters.
+/// map geometry, teams and starting rosters.
 pub fn configured_legs(
     source: &Scenario,
     difficulty: BotDifficulty,
@@ -890,14 +827,13 @@ pub fn configured_matchup_legs(
     ])
 }
 
-/// Builds a faction and geometry cell's legs from complete controller profiles.
+/// Builds a geometry cell's legs from complete controller profiles.
 /// Paired legs exchange the profiles while preserving the physical map and rosters.
 pub fn configured_matchup_plans(
     source: &Scenario,
     matchup: ProfileMatchup,
     personality_seed_base: u64,
     paired: bool,
-    faction_cell: EvaluationFactionCell,
     geometry: EvaluationGeometry,
 ) -> Result<Vec<EvaluationPlan>> {
     ensure!(
@@ -909,8 +845,7 @@ pub fn configured_matchup_plans(
         source.players[0].team.is_none() || source.players[0].team != source.players[1].team,
         "controlled evaluation axes require two opposing teams"
     );
-    let mut scenario = geometry.apply(source)?;
-    faction_cell.apply(&mut scenario)?;
+    let scenario = geometry.apply(source)?;
     configured_matchup_legs(&scenario, matchup, personality_seed_base, paired)?
         .into_iter()
         .map(|(leg, scenario)| {
@@ -920,7 +855,6 @@ pub fn configured_matchup_plans(
                 player.bot_config = None;
             }
             plan.geometry = geometry;
-            plan.faction_cell = faction_cell;
             Ok(plan)
         })
         .collect()
@@ -1270,10 +1204,9 @@ pub fn ensure_unique_execution_plans<'a>(
     for plan in plans {
         let identity = execution_identity_bytes(plan)?;
         let label = format!(
-            "scenario {:?} {:?}/{:?}/{}",
+            "scenario {:?} {:?}/{}",
             plan.scenario.name,
             plan.geometry,
-            plan.faction_cell,
             plan.leg.name()
         );
         if let Some(first) = seen.insert(identity, label.clone()) {

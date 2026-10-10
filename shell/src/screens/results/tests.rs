@@ -172,19 +172,22 @@ fn results_name_shows_the_scripted_controller() {
     let game = Game::new(scenario).expect("skirmish builds");
     assert_eq!(
         player_name_with_controller(&game, 1, 24, false),
-        "Cupric  PRIME / AGGRESSIVE AI"
+        "South East  PRIME / AGGRESSIVE AI"
     );
     assert_eq!(
         player_name_with_controller(&game, 1, 24, true),
-        "Cupric  PRIME/AGGRO"
+        "South East  PRIME/AGGRO"
     );
-    assert_eq!(player_name_with_controller(&game, 0, 24, false), "Ferrous");
+    assert_eq!(
+        player_name_with_controller(&game, 0, 24, false),
+        "North West"
+    );
 }
 
 #[test]
 fn long_names_and_the_longest_bot_profile_stay_inside_the_player_column() {
     let mut scenario = oxide_sim::Scenario::skirmish();
-    scenario.players[1].name = "Extremely Long Cupric Commander".to_string();
+    scenario.players[1].name = "Extremely Long Basalt Commander".to_string();
     scenario.players[1].bot_config = Some(oxide_sim::scenario::BotConfig::new(
         oxide_sim::scenario::BotDifficulty::Scrapheap,
         oxide_sim::scenario::BotStance::Aggressive,
@@ -431,7 +434,7 @@ fn verdict_copy_distinguishes_winning_from_surrendering() {
     victory.present_ticks(1);
     let (title, _, subtitle) = verdict(&victory);
     assert_eq!(title, "VICTORY");
-    assert!(subtitle.contains("FERROUS"));
+    assert!(subtitle.contains("NORTH WEST"));
 
     let mut surrendered = Game::new(oxide_sim::Scenario::skirmish()).expect("game");
     surrendered.issue(oxide_sim::Command::Surrender);

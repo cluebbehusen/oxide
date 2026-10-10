@@ -1,11 +1,10 @@
 use super::*;
 use crate::scenario::{PlayerSpec, ScenarioMode, UnitSpec};
-use crate::{Faction, Scenario, UnitKind};
+use crate::{Scenario, UnitKind};
 
-fn player(name: &str, faction: Faction, team: Option<u8>) -> PlayerSpec {
+fn player(name: &str, team: Option<u8>) -> PlayerSpec {
     PlayerSpec {
         name: name.into(),
-        faction,
         team,
         scrap: 0,
         bot: false,
@@ -27,9 +26,9 @@ fn allied_incident_state() -> State {
             "########################".into(),
         ],
         players: vec![
-            player("West", Faction::Ferrous, Some(0)),
-            player("Center", Faction::Cupric, Some(0)),
-            player("East", Faction::Ferrous, Some(1)),
+            player("West", Some(0)),
+            player("Center", Some(0)),
+            player("East", Some(1)),
         ],
         units: Vec::new(),
         buildings: Vec::new(),
@@ -85,16 +84,14 @@ fn screened_source(extra_hostile: bool) -> (State, TilePos) {
         ],
         players: vec![
             PlayerSpec {
-                name: "Ferrous".into(),
-                faction: Faction::Ferrous,
+                name: "West".into(),
                 team: None,
                 scrap: 0,
                 bot: false,
                 bot_config: None,
             },
             PlayerSpec {
-                name: "Cupric".into(),
-                faction: Faction::Cupric,
+                name: "East".into(),
                 team: None,
                 scrap: 0,
                 bot: false,

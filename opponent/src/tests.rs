@@ -3,7 +3,7 @@ use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
 use oxide_sim::scenario::{BotStance, BuildingSpec, PlayerSpec, ScenarioMode, UnitSpec};
 use oxide_sim::{
-    AttackTarget, BuildingId, Command, Event, Faction, Scenario, StallReason, UnitId, UnitKind,
+    AttackTarget, BuildingId, Command, Event, Scenario, StallReason, UnitId, UnitKind,
 };
 use std::sync::Arc;
 
@@ -70,9 +70,8 @@ fn seat_with(scenario: &Scenario, player: u8, config: BotConfig) -> Opponent {
 }
 
 fn arena(scrap: u32) -> Scenario {
-    let seat = |name: &str, faction| PlayerSpec {
+    let seat = |name: &str| PlayerSpec {
         name: name.into(),
-        faction,
         team: None,
         scrap,
         bot: true,
@@ -82,10 +81,7 @@ fn arena(scrap: u32) -> Scenario {
         mode: ScenarioMode::Match,
         name: "opponent arena".into(),
         map: ARENA.map(str::to_owned).to_vec(),
-        players: vec![
-            seat("west", Faction::Ferrous),
-            seat("east", Faction::Cupric),
-        ],
+        players: vec![seat("west"), seat("east")],
         units: vec![
             harvester(0, 7, 6),
             harvester(0, 6, 6),

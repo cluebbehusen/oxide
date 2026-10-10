@@ -22,31 +22,27 @@
  ],
  "players": [
   {
-   "name": "West Ferrous",
-   "faction": "ferrous",
+   "name": "North West",
    "team": 0,
    "scrap": 100,
    "bot": false
   },
   {
-   "name": "West Cupric",
-   "faction": "cupric",
+   "name": "South West",
    "team": 0,
    "scrap": 100,
    "bot": true,
    "bot_config": {}
   },
   {
-   "name": "East Ferrous",
-   "faction": "ferrous",
+   "name": "South East",
    "team": 1,
    "scrap": 100,
    "bot": true,
    "bot_config": {}
   },
   {
-   "name": "East Cupric",
-   "faction": "cupric",
+   "name": "North East",
    "team": 1,
    "scrap": 100,
    "bot": true,

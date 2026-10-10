@@ -97,7 +97,7 @@ pub(crate) fn unit_frame(kind: UnitKind, state: UnitAnimationState) -> UnitFrame
     if let Some(attack) = state.attack {
         return UnitFrame::Action(unit_attack_frame(kind, attack));
     }
-    if matches!(kind, UnitKind::Avalanche | UnitKind::Moth)
+    if kind == UnitKind::Avalanche
         && let Some(progress) = preparation_progress(&state.weapons)
     {
         return UnitFrame::Action(unit_preparation_frame(kind, progress));
@@ -329,17 +329,6 @@ fn preparation_progress(weapons: &[WeaponCycle]) -> Option<f32> {
 
 fn unit_preparation_frame(kind: UnitKind, progress: f32) -> usize {
     match kind {
-        UnitKind::Moth => {
-            if progress < 0.84 {
-                2
-            } else if progress < 0.90 {
-                3
-            } else if progress < 0.96 {
-                4
-            } else {
-                5
-            }
-        }
         UnitKind::Avalanche => {
             if progress < 0.78 {
                 2
@@ -362,21 +351,16 @@ fn unit_preparation_frame(kind: UnitKind, progress: f32) -> usize {
         UnitKind::Flakhound => cycle_index(progress, 5),
         UnitKind::Sentinel
         | UnitKind::Scuttler
-        | UnitKind::Stinger
         | UnitKind::Buzzard
-        | UnitKind::Darter
         | UnitKind::Talon
-        | UnitKind::Wisp
         | UnitKind::Warden
         | UnitKind::Shrike
-        | UnitKind::Sylph
         | UnitKind::Condor
         | UnitKind::Breaker => 0,
         UnitKind::Harvester
         | UnitKind::Tender
         | UnitKind::Excavator
         | UnitKind::Kestrel
-        | UnitKind::Gnat
         | UnitKind::Skyhook
         | UnitKind::Sapper => 0,
     }
@@ -396,22 +380,16 @@ fn unit_attack_frame(kind: UnitKind, attack: AttackPhase) -> usize {
             }
             UnitKind::Sentinel
             | UnitKind::Scuttler
-            | UnitKind::Stinger
             | UnitKind::Buzzard
-            | UnitKind::Darter
             | UnitKind::Talon
-            | UnitKind::Wisp
             | UnitKind::Warden
             | UnitKind::Shrike
-            | UnitKind::Sylph
             | UnitKind::Breaker
             | UnitKind::Avalanche => 1,
-            UnitKind::Moth => 0,
             UnitKind::Harvester
             | UnitKind::Tender
             | UnitKind::Excavator
             | UnitKind::Kestrel
-            | UnitKind::Gnat
             | UnitKind::Skyhook
             | UnitKind::Sapper => 0,
         },
@@ -421,22 +399,16 @@ fn unit_attack_frame(kind: UnitKind, attack: AttackPhase) -> usize {
             UnitKind::Flakhound => 7 + cycle_index(progress, 2),
             UnitKind::Sentinel
             | UnitKind::Scuttler
-            | UnitKind::Stinger
             | UnitKind::Buzzard
-            | UnitKind::Darter
             | UnitKind::Talon
-            | UnitKind::Wisp
             | UnitKind::Warden
             | UnitKind::Shrike
-            | UnitKind::Sylph
             | UnitKind::Condor
             | UnitKind::Breaker => 2 + cycle_index(progress, 2),
-            UnitKind::Moth => 1,
             UnitKind::Harvester
             | UnitKind::Tender
             | UnitKind::Excavator
             | UnitKind::Kestrel
-            | UnitKind::Gnat
             | UnitKind::Skyhook
             | UnitKind::Sapper => 0,
         },

@@ -1,6 +1,6 @@
 use super::*;
 use oxide_sim::scenario::{PlayerSpec, ScenarioMode, UnitSpec};
-use oxide_sim::{Faction, PlayerId, Scenario};
+use oxide_sim::{PlayerId, Scenario};
 
 /// West's view of a 20 by 9 field, starts at (2, 1) and (17, 1), with
 /// `units` as owner, kind and tile, and their ids in that order.
@@ -19,11 +19,10 @@ fn viewed(units: &[(u8, UnitKind, i32, i32)]) -> (ObservationData, Vec<UnitId>) 
         mode: ScenarioMode::Match,
         name: "defense".into(),
         map,
-        players: [Faction::Ferrous, Faction::Cupric]
+        players: ["West", "East"]
             .into_iter()
-            .map(|faction| PlayerSpec {
-                name: format!("{faction:?}"),
-                faction,
+            .map(|name| PlayerSpec {
+                name: name.into(),
                 team: None,
                 scrap: 0,
                 bot: false,

@@ -11,7 +11,7 @@ use crate::map::MapModel;
 use crate::memory::Memory;
 use chassis::grid::TilePos;
 use oxide_sim::observation::{ObservationData, UnitObs};
-use oxide_sim::stats::{Domain, Role};
+use oxide_sim::stats::Domain;
 use oxide_sim::{BuildingKind, Command, PlayerId, UnitKind};
 use std::cell::OnceCell;
 
@@ -146,13 +146,13 @@ impl Missions {
             .into_iter()
             .filter_map(|id| mine(observation, id))
             .filter(|unit| {
-                unit.kind.role() == Role::Scout
+                unit.kind == UnitKind::Kestrel
                     || (unit.kind == UnitKind::Scuttler && map.component(unit.tile) == home)
             })
             .collect();
         scouts.sort_by_key(|unit| {
             (
-                unit.kind.role() != Role::Scout,
+                unit.kind != UnitKind::Kestrel,
                 frame.rank(frame.home, doubled(unit.tile)),
                 unit.id,
             )

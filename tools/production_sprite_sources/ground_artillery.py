@@ -6,7 +6,7 @@ from PIL import Image, ImageDraw
 
 from tools.gen_sprites import (
     BONE,
-    FACTIONS,
+    PALETTES,
     IRON,
     IRON_DARK,
     IRON_LIGHT,
@@ -21,7 +21,7 @@ from tools.production_sprite_sources.ground_base import (
 
 SIZE = 64
 SS = 4
-FERROUS = FACTIONS["ferrous"]
+BASE = PALETTES["base"]
 
 
 def _rgba(color: tuple[int, int, int]) -> tuple[int, int, int, int]:
@@ -167,7 +167,7 @@ def _recoil_spade_sprite(
     )
     draw.polygon(
         _points(((21, 29), (26, 23), (38, 23), (43, 29), (39, 44), (25, 44))),
-        fill=_rgba(FERROUS["dark"]),
+        fill=_rgba(BASE["dark"]),
     )
     for points in (
         ((24, 39), (31, 42), (24, 59), (15, 60), (20, 45)),

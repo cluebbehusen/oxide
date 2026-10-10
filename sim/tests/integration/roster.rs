@@ -207,16 +207,17 @@ fn interceptors_rule_the_sky_and_ignore_the_ground() {
         false,
         vec![
             unit(0, UnitKind::Shrike, 8, 4),
-            // The Kestrel spots the distant gnat so the ordered attack is
-            // fog-legal; both scouts are unarmed and out of shrike aggro.
+            // The friendly Kestrel spots the distant enemy one so the
+            // ordered attack is fog-legal; both scouts are unarmed and out
+            // of shrike aggro.
             unit(0, UnitKind::Kestrel, 15, 2),
-            unit(1, UnitKind::Gnat, 17, 2),
+            unit(1, UnitKind::Kestrel, 17, 2),
             unit(1, UnitKind::Scuttler, 8, 6),
         ],
     )
     .build()
     .unwrap();
-    let (shrike, gnat, crawler) = (
+    let (shrike, scout, crawler) = (
         state.units()[0].id,
         state.units()[2].id,
         state.units()[3].id,
@@ -246,7 +247,7 @@ fn interceptors_rule_the_sky_and_ignore_the_ground() {
         0,
         Command::Attack {
             units: vec![shrike],
-            target: oxide_sim::Target::Unit(gnat).into(),
+            target: oxide_sim::Target::Unit(scout).into(),
             queue: false,
         },
     )]);
@@ -256,7 +257,7 @@ fn interceptors_rule_the_sky_and_ignore_the_ground() {
         if report
             .events
             .iter()
-            .any(|e| matches!(e, Event::UnitDied { unit, .. } if *unit == gnat))
+            .any(|e| matches!(e, Event::UnitDied { unit, .. } if *unit == scout))
         {
             fell = true;
             break;
@@ -264,8 +265,8 @@ fn interceptors_rule_the_sky_and_ignore_the_ground() {
     }
     assert!(
         fell,
-        "the scout has no answer: shrike {:?} gnat {:?}",
+        "the scout has no answer: shrike {:?} scout {:?}",
         state.unit(shrike),
-        state.unit(gnat)
+        state.unit(scout)
     );
 }

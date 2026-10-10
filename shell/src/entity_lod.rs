@@ -66,13 +66,11 @@ fn entity_sources(manifest: &HashMap<String, [f32; 4]>) -> BTreeSet<Source> {
             if !pose.starts_with("move") && !pose.starts_with("action") {
                 return true;
             }
-            let Some((stem, faction)) = body.rsplit_once('_') else {
-                return true;
-            };
+            let stem = body.strip_suffix("_accent").unwrap_or(body);
             // Layered units draw their hull and mount; only the complete idle
             // sprite is used, for portraits. Units without rig layers keep
             // their full poses.
-            !manifest.contains_key(&format!("rig_{stem}_hull_{faction}"))
+            !manifest.contains_key(&format!("rig_{stem}_hull"))
         })
         .map(|(_, row)| row.map(numeric::to_u32))
         .collect()
@@ -116,20 +114,19 @@ fn contact_sources(manifest: &HashMap<String, [f32; 4]>) -> BTreeSet<Source> {
         .filter(|(name, _)| {
             (oxide_sim::UnitKind::ALL.iter().any(|&kind| {
                 let stem = crate::assets::unit_stem(kind);
+                // Only tinted rows: a stem's untinted extras, such as cargo
+                // meters, carry no accent twin and take no contacts.
                 [
-                    format!("{stem}_ferrous"),
-                    format!("{stem}_cupric"),
-                    format!("rig_{stem}_hull_ferrous"),
-                    format!("rig_{stem}_hull_cupric"),
-                    format!("rig_{stem}_body_ferrous"),
-                    format!("rig_{stem}_body_cupric"),
+                    stem.to_owned(),
+                    format!("rig_{stem}_hull"),
+                    format!("rig_{stem}_body"),
                 ]
                 .iter()
                 .any(|prefix| {
-                    name.as_str() == prefix.as_str()
-                        || name
-                            .strip_prefix(prefix.as_str())
-                            .is_some_and(|suffix| suffix.starts_with('_'))
+                    name.strip_prefix(prefix.as_str()).is_some_and(|suffix| {
+                        (suffix.is_empty() || suffix.starts_with('_'))
+                            && manifest.contains_key(&format!("{prefix}_accent{suffix}"))
+                    })
                 })
             }) || name.starts_with("scrap_")
                 || *name == "wreck_pile"

@@ -11,8 +11,8 @@ pub(crate) fn fixture(kind: BuildingKind, tiers: &[u8], scrap: u32) -> Game {
           "........................................", "........................................",
           "........................................", "........................................",
           "........................................", "........................................"],
-        "players":[{"name":"You","faction":"ferrous","scrap":0,"bot":false},
-                   {"name":"Target","faction":"cupric","scrap":0,"bot":true}],
+        "players":[{"name":"You","scrap":0,"bot":false},
+                   {"name":"Target","scrap":0,"bot":true}],
         "units":[], "buildings":[]
     }"#).unwrap();
     scenario.players[0].scrap = scrap;

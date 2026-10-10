@@ -25,7 +25,7 @@ fn casualty(state: &mut State, kind: UnitKind, motion: Vec2Fx) -> UnitId {
 
 #[test]
 fn crash_damage_waits_for_contact_and_survives_state_round_trip() {
-    for kind in [UnitKind::Condor, UnitKind::Moth, UnitKind::Skyhook] {
+    for kind in [UnitKind::Condor, UnitKind::Skyhook] {
         let mut state = arena();
         let target = state.spawn_unit(PlayerId(1), UnitKind::Harvester, at(21, 16));
         let hp = state.unit(target).unwrap().hp;
@@ -128,7 +128,7 @@ fn pit_impacts_and_grounded_or_small_casualties_do_not_blast() {
     state.map = scenario.build().unwrap().map;
     let target = state.spawn_unit(PlayerId(1), UnitKind::Harvester, at(21, 16));
     casualty(&mut state, UnitKind::Condor, Vec2Fx::ZERO);
-    let parked = casualty(&mut state, UnitKind::Moth, Vec2Fx::ZERO);
+    let parked = casualty(&mut state, UnitKind::Skyhook, Vec2Fx::ZERO);
     state
         .units
         .iter_mut()

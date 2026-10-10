@@ -4,8 +4,6 @@ use crate::game::Game;
 fn selected(kind: UnitKind, foreign: bool) -> Panel {
     let mut scenario = oxide_sim::Scenario::skirmish();
     let player = u8::from(foreign);
-    scenario.players[player as usize].faction =
-        kind.faction().unwrap_or(oxide_sim::Faction::Ferrous);
     scenario.units = vec![oxide_sim::scenario::UnitSpec {
         player,
         kind,
@@ -47,14 +45,7 @@ fn every_unit_exposes_health_sight_and_its_weapon_reload() {
 }
 
 #[test]
-fn role_facts_preserve_salvos_and_demolition_damage() {
-    let moth = selected(UnitKind::Moth, false);
-    assert!(
-        moth.info
-            .rows
-            .iter()
-            .any(|r| r.label == "Salvo" && r.value == "6 bombs")
-    );
+fn role_facts_preserve_demolition_damage() {
     let sapper = selected(UnitKind::Sapper, false);
     assert!(
         sapper

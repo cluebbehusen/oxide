@@ -62,63 +62,55 @@
  ],
  "players": [
   {
-   "name": "West Bench North Ferrous",
-   "faction": "ferrous",
+   "name": "West Bench North",
    "team": 0,
    "scrap": 150,
    "bot": false
   },
   {
-   "name": "West Bench Mid North Cupric",
-   "faction": "cupric",
+   "name": "West Bench Mid North",
    "team": 0,
    "scrap": 150,
    "bot": true,
    "bot_config": {}
   },
   {
-   "name": "West Bench Mid South Ferrous",
-   "faction": "ferrous",
+   "name": "West Bench Mid South",
    "team": 0,
    "scrap": 150,
    "bot": true,
    "bot_config": {}
   },
   {
-   "name": "West Bench South Cupric",
-   "faction": "cupric",
+   "name": "West Bench South",
    "team": 0,
    "scrap": 150,
    "bot": true,
    "bot_config": {}
   },
   {
-   "name": "East Bench North Ferrous",
-   "faction": "ferrous",
+   "name": "East Bench North",
    "team": 1,
    "scrap": 150,
    "bot": true,
    "bot_config": {}
   },
   {
-   "name": "East Bench Mid North Cupric",
-   "faction": "cupric",
+   "name": "East Bench Mid North",
    "team": 1,
    "scrap": 150,
    "bot": true,
    "bot_config": {}
   },
   {
-   "name": "East Bench Mid South Ferrous",
-   "faction": "ferrous",
+   "name": "East Bench Mid South",
    "team": 1,
    "scrap": 150,
    "bot": true,
    "bot_config": {}
   },
   {
-   "name": "East Bench South Cupric",
-   "faction": "cupric",
+   "name": "East Bench South",
    "team": 1,
    "scrap": 150,
    "bot": true,

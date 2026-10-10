@@ -1,7 +1,7 @@
 use super::*;
 use crate::scenario::{PlayerSpec, ScenarioMode, UnitSpec};
 use crate::state::PathFollow;
-use crate::{Faction, Scenario, UnitKind};
+use crate::{Scenario, UnitKind};
 
 fn scene(kind: UnitKind) -> crate::State {
     scene_with(kind, &[])
@@ -20,17 +20,16 @@ fn scene_with(kind: UnitKind, rocks: &[(usize, usize)]) -> crate::State {
         mode: ScenarioMode::Match,
         name: "ground-motor".into(),
         map: rows,
-        players: [Faction::Ferrous, Faction::Cupric]
-            .into_iter()
-            .map(|faction| PlayerSpec {
+        players: vec![
+            PlayerSpec {
                 name: "seat".into(),
-                faction,
                 team: None,
                 scrap: 0,
                 bot: false,
                 bot_config: None,
-            })
-            .collect(),
+            };
+            2
+        ],
         units: vec![UnitSpec {
             player: 0,
             kind,

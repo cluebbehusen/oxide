@@ -35,7 +35,7 @@ static NEXT_HOME: AtomicU64 = AtomicU64::new(0);
 
 const MAP_WIDTH: i32 = 32;
 const MAP_HEIGHT: i32 = 22;
-const ALL_UNIT_KINDS: [UnitKind; 24] = UnitKind::ALL;
+const ALL_UNIT_KINDS: [UnitKind; 18] = UnitKind::ALL;
 
 struct NativeCapture {
     shell: Option<ShellGuard>,
@@ -264,7 +264,7 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
     let mut harness = NativeCapture::spawn()?;
 
     let overview = harness.load(&overview_scenario())?;
-    assert_eq!(overview.units.len(), 13);
+    assert_eq!(overview.units.len(), 10);
     harness.capture_stage("00-idle-overview", 1, 1)?;
 
     for kind in ALL_UNIT_KINDS {
@@ -761,19 +761,18 @@ fn captures_promoted_tender_and_condor_in_the_real_shell() -> Result<()> {
 fn captures_promoted_airworks_and_scouts_in_the_real_shell() -> Result<()> {
     let mut harness = NativeCapture::spawn()?;
 
-    for kind in [UnitKind::Gnat, UnitKind::Kestrel] {
-        let movement = harness.load(&promoted_scout_movement_scenario(kind))?;
-        let mover = unit_kind(&movement, 0, kind)?;
-        harness.command(
-            0,
-            Command::Run {
-                units: vec![mover],
-                goal: TilePos::new(21, 10),
-                queue: false,
-            },
-        )?;
-        harness.capture_stage(&format!("promoted-scout-movement/{}", kind.name()), 12, 1)?;
-    }
+    let scout = UnitKind::Kestrel;
+    let movement = harness.load(&movement_scenario(scout))?;
+    let mover = unit_kind(&movement, 0, scout)?;
+    harness.command(
+        0,
+        Command::Run {
+            units: vec![mover],
+            goal: TilePos::new(21, 10),
+            queue: false,
+        },
+    )?;
+    harness.capture_stage(&format!("promoted-scout-movement/{}", scout.name()), 12, 1)?;
 
     let view = harness.load(&airworks_launch_scenario())?;
     let airworks = building(&view, 0, BuildingKind::Airworks)?;
@@ -841,7 +840,6 @@ fn generated_animation_capture_scenarios_are_valid() -> Result<()> {
         airworks_launch_scenario(),
     ];
     scenarios.extend(ALL_UNIT_KINDS.map(movement_scenario));
-    scenarios.extend([UnitKind::Gnat, UnitKind::Kestrel].map(promoted_scout_movement_scenario));
     scenarios.push(landing_scenario());
     scenarios.extend(combat_kinds().map(unit_duel_scenario));
     scenarios.push(sentinel_sidearm_scenario());
@@ -1031,17 +1029,15 @@ fn scenario(name: &str, scrap: &[TilePos], units: &[Value], buildings: &[Value])
     json!({
         "name": name,
         "players": [
-            { "name": "Ferrous", "faction": "ferrous", "scrap": 5000, "bot": false },
+            { "name": "Player", "scrap": 5000, "bot": false },
             {
-                "name": "Cupric Target",
-                "faction": "cupric",
+                "name": "Target",
                 "scrap": 0,
                 "bot": true,
                 "bot_config": {}
             },
             {
-                "name": "Cupric Observer",
-                "faction": "cupric",
+                "name": "Observer",
                 "scrap": 0,
                 "bot": true,
                 "bot_config": {}
@@ -1071,11 +1067,8 @@ fn overview_scenario() -> Value {
         unit(0, UnitKind::Lancer, 15, 10),
         unit(0, UnitKind::Bombard, 16, 10),
         unit(0, UnitKind::Flakhound, 17, 10),
-        unit(0, UnitKind::Stinger, 18, 10),
         unit(0, UnitKind::Buzzard, 20, 10),
-        unit(0, UnitKind::Darter, 21, 10),
         unit(0, UnitKind::Talon, 22, 10),
-        unit(0, UnitKind::Wisp, 23, 10),
     ];
     let buildings = vec![
         structure(0, BuildingKind::Fabricator, 7, 5),
@@ -1109,16 +1102,6 @@ fn movement_scenario(kind: UnitKind) -> Value {
     )
 }
 
-fn promoted_scout_movement_scenario(kind: UnitKind) -> Value {
-    let mut value = movement_scenario(kind);
-    if kind == UnitKind::Gnat {
-        value["players"][0]["faction"] = json!("cupric");
-        value["players"][1]["faction"] = json!("ferrous");
-        value["players"][2]["faction"] = json!("ferrous");
-    }
-    value
-}
-
 fn landing_scenario() -> Value {
     movement_scenario(UnitKind::Condor)
 }
@@ -1132,21 +1115,20 @@ fn unit_duel_scenario(attacker: UnitKind) -> Value {
     };
     let distance = match attacker {
         UnitKind::Scuttler => 1,
-        UnitKind::Sentinel | UnitKind::Darter => 2,
-        UnitKind::Buzzard | UnitKind::Talon | UnitKind::Wisp => 3,
-        UnitKind::Flakhound | UnitKind::Stinger => 4,
+        UnitKind::Sentinel => 2,
+        UnitKind::Buzzard | UnitKind::Talon => 3,
+        UnitKind::Flakhound => 4,
         UnitKind::Lancer => 5,
         UnitKind::Bombard => 9,
         UnitKind::Warden => 2,
-        UnitKind::Shrike | UnitKind::Sylph => 3,
-        UnitKind::Condor | UnitKind::Moth => 2,
+        UnitKind::Shrike => 3,
+        UnitKind::Condor => 2,
         UnitKind::Breaker => 3,
         UnitKind::Avalanche => 8,
         UnitKind::Harvester
         | UnitKind::Tender
         | UnitKind::Excavator
         | UnitKind::Kestrel
-        | UnitKind::Gnat
         | UnitKind::Skyhook
         | UnitKind::Sapper => unreachable!("the combat roster excludes unarmed machines"),
     };
@@ -1154,7 +1136,7 @@ fn unit_duel_scenario(attacker: UnitKind) -> Value {
         unit(0, attacker, 15, 10),
         // A bomber spawns facing the map centre, down the diagonal from
         // here, and releases only into its forward cone.
-        if matches!(attacker, UnitKind::Condor | UnitKind::Moth) {
+        if attacker == UnitKind::Condor {
             unit(1, target, 15 + distance, 10 + distance)
         } else {
             unit(1, target, 15 + distance, 10)

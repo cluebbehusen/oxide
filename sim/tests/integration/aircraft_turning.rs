@@ -7,14 +7,7 @@ use chassis::grid::TilePos;
 use common::{cmd, open_arena, open_arena_with, unit};
 use oxide_sim::{Command, Event, Order, State, Target, UnitKind};
 
-const CRUISERS: [UnitKind; 6] = [
-    UnitKind::Talon,
-    UnitKind::Darter,
-    UnitKind::Shrike,
-    UnitKind::Sylph,
-    UnitKind::Kestrel,
-    UnitKind::Gnat,
-];
+const CRUISERS: [UnitKind; 3] = [UnitKind::Talon, UnitKind::Shrike, UnitKind::Kestrel];
 
 fn facing(state: State, heading: u8) -> State {
     let mut snapshot = serde_json::to_value(state).unwrap();
@@ -158,25 +151,15 @@ fn cruising_aircraft_recover_from_corners_and_route_around_peaks() {
 
 #[test]
 fn cruising_fighters_turn_to_targets_without_becoming_bombers() {
-    for kind in [
-        UnitKind::Talon,
-        UnitKind::Darter,
-        UnitKind::Shrike,
-        UnitKind::Sylph,
-    ] {
-        let victim = if kind == UnitKind::Darter {
-            UnitKind::Harvester
-        } else {
-            UnitKind::Skyhook
-        };
+    for kind in [UnitKind::Talon, UnitKind::Shrike] {
         let mut state = facing(
             open_arena(
                 80,
                 52,
                 vec![
                     unit(0, kind, 25, 26),
-                    unit(1, victim, 27, 26),
-                    unit(1, victim, 23, 26),
+                    unit(1, UnitKind::Skyhook, 27, 26),
+                    unit(1, UnitKind::Skyhook, 23, 26),
                 ],
             )
             .build()
@@ -271,23 +254,16 @@ fn cruise_turns_resume_identically_and_mirror_exactly() {
 
 #[test]
 fn advance_keeps_its_course_and_only_fires_forward() {
-    for kind in [
-        UnitKind::Talon,
-        UnitKind::Darter,
-        UnitKind::Shrike,
-        UnitKind::Sylph,
-    ] {
-        let victim = if kind == UnitKind::Darter {
-            UnitKind::Harvester
-        } else {
-            UnitKind::Skyhook
-        };
+    for kind in [UnitKind::Talon, UnitKind::Shrike] {
         for target_x in [23, 27] {
             let mut state = facing(
                 open_arena(
                     80,
                     52,
-                    vec![unit(0, kind, 25, 26), unit(1, victim, target_x, 26)],
+                    vec![
+                        unit(0, kind, 25, 26),
+                        unit(1, UnitKind::Skyhook, target_x, 26),
+                    ],
                 )
                 .build()
                 .unwrap(),
@@ -354,13 +330,7 @@ fn stop_interrupts_a_banked_patrol_and_holds_position() {
 
 #[test]
 fn rotorcraft_retain_independent_travel_and_bombers_remain_committed() {
-    for kind in [
-        UnitKind::Buzzard,
-        UnitKind::Wisp,
-        UnitKind::Skyhook,
-        UnitKind::Condor,
-        UnitKind::Moth,
-    ] {
+    for kind in [UnitKind::Buzzard, UnitKind::Skyhook, UnitKind::Condor] {
         let mut state = facing(
             open_arena(80, 52, vec![unit(0, kind, 20, 26)])
                 .build()

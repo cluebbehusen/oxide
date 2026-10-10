@@ -43,7 +43,6 @@ fn tiny_state() -> State {
         map,
         vec![Player {
             name: "p".into(),
-            faction: Faction::Ferrous,
             team: 0,
             scrap: 0,
             recovery: Recovery::Ready,
@@ -128,18 +127,15 @@ fn building_geometry() {
 fn the_progress_ceiling_keeps_the_construction_ramp_in_u32() {
     // Unit welds ramp over the full max_hp — same product, same
     // ceiling, same obligation for every machine on the roster.
-    const UNIT_KINDS: [UnitKind; 11] = [
+    const UNIT_KINDS: [UnitKind; 8] = [
         UnitKind::Harvester,
         UnitKind::Sentinel,
         UnitKind::Scuttler,
         UnitKind::Lancer,
         UnitKind::Bombard,
         UnitKind::Flakhound,
-        UnitKind::Stinger,
         UnitKind::Buzzard,
-        UnitKind::Darter,
         UnitKind::Talon,
-        UnitKind::Wisp,
     ];
     // Construction, repair, and salvage all price one tick of work as
     // `ramp * (meter + 1) / ramp_ticks` in u32. The ceiling is only

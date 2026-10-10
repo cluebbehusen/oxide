@@ -231,7 +231,8 @@ what it gates, and what changes at launch.
   with `BLESS=1 BLESS_SAME_VERSION=1 cargo test -p oxide-driver --locked`, and
   name the moved rows and the reason in the PR.
 - Fixtures driven only by `oxide-opponent` live in their own file and re-bless
-  with `BLESS=1` alone; the PR includes a ladder-smoke comparison.
+  with `BLESS=1` alone; report a ladder-smoke comparison against the base at
+  handoff.
 - Inspect changed PNGs. A green golden test cannot prove that art or layout is
   good.
 - A new `Command` variant must enter the fuzz generator's compiler-held tag

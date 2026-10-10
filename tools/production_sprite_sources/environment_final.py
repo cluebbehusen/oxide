@@ -24,6 +24,8 @@ Boulder = tuple[float, float, float, bool]
 
 TILE = 64
 SS = 4
+# Verdigris on unowned debris and blockers, beside the base palette's rust.
+PATINA = (39, 96, 79)
 
 FIELD_DEBRIS_KEYS = (
     "field_debris_severed_cable",
@@ -304,10 +306,10 @@ def _fan(
     )
     for blade in blades:
         points = tuple((cx + x, cy + y) for x, y in blade)
-        draw.polygon(_points(points), fill=_rgba(gen.FACTIONS["ferrous"]["dark"]))
+        draw.polygon(_points(points), fill=_rgba(gen.PALETTES["base"]["dark"]))
         draw.line(
             _points((points[0], points[1])),
-            fill=_rgba(gen.FACTIONS["ferrous"]["light"]),
+            fill=_rgba(gen.PALETTES["base"]["light"]),
             width=_s(1),
         )
     draw.ellipse(_box((cx - 4, cy - 4, cx + 4, cy + 4)), fill=_rgba(gen.IRON_LIGHT))
@@ -317,7 +319,7 @@ def _fan(
 def _legacy_debris(index: int) -> Image.Image:
     image = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
-    rust = gen.FACTIONS["ferrous"]["dark"]
+    rust = gen.PALETTES["base"]["dark"]
     if index == 0:
         draw.arc((4, 7, 27, 28), 170, 345, fill=_rgba(gen.IRON_LIGHT), width=2)
     elif index == 1:
@@ -333,8 +335,7 @@ def _legacy_debris(index: int) -> Image.Image:
 
 def _refined_debris(index: int) -> Image.Image:
     image, draw = _canvas(64, 64)
-    rust = gen.FACTIONS["ferrous"]["dark"]
-    patina = gen.FACTIONS["cupric"]["dark"]
+    rust = gen.PALETTES["base"]["dark"]
     if index == 0:
         _flat_shadow(draw, (7, 15, 57, 48), 36)
         draw.arc(
@@ -345,7 +346,7 @@ def _refined_debris(index: int) -> Image.Image:
         )
         for x, y, color in (
             (9, 33, gen.SCRAP),
-            (11, 36, patina),
+            (11, 36, PATINA),
             (53, 25, rust),
             (55, 28, gen.SCRAP_DARK),
         ):
@@ -382,7 +383,7 @@ def _refined_debris(index: int) -> Image.Image:
             )
             draw.line(
                 _points(((x - 4 + tilt, y - 5), (x + 3 + tilt, y - 5))),
-                fill=_rgba(rust if x != 32 else patina),
+                fill=_rgba(rust if x != 32 else PATINA),
                 width=_s(2),
             )
             draw.rectangle(
@@ -396,8 +397,7 @@ def _refined_debris(index: int) -> Image.Image:
 
 def _new_debris(index: int) -> Image.Image:
     image, draw = _canvas(64, 64)
-    rust = gen.FACTIONS["ferrous"]["dark"]
-    patina = gen.FACTIONS["cupric"]["dark"]
+    rust = gen.PALETTES["base"]["dark"]
     if index == 0:
         draw.rounded_rectangle(
             _box((7, 8, 57, 56)), radius=_s(5), fill=_rgba(gen.GROUND_DARK)
@@ -417,7 +417,7 @@ def _new_debris(index: int) -> Image.Image:
             ),
             fill=_rgba(gen.IRON),
         )
-        draw.line(_points(((18, 17), (46, 44))), fill=_rgba(patina), width=_s(3))
+        draw.line(_points(((18, 17), (46, 44))), fill=_rgba(PATINA), width=_s(3))
         for x, y in ((18, 17), (46, 17), (18, 45), (46, 45)):
             draw.ellipse(_box((x - 2, y - 2, x + 2, y + 2)), fill=_rgba(gen.BONE, 160))
     elif index == 3:
@@ -438,7 +438,7 @@ def _new_debris(index: int) -> Image.Image:
                 width=_s(1),
             )
         draw.arc(_box((9, 16, 53, 47)), 165, 350, fill=_rgba(rust), width=_s(3))
-        draw.arc(_box((12, 15, 56, 44)), 170, 345, fill=_rgba(patina), width=_s(2))
+        draw.arc(_box((12, 15, 56, 44)), 170, 345, fill=_rgba(PATINA), width=_s(2))
     elif index == 5:
         draw.rounded_rectangle(
             _box((8, 17, 55, 48)), radius=_s(7), fill=_rgba(gen.IRON_DARK)
@@ -453,7 +453,7 @@ def _new_debris(index: int) -> Image.Image:
                 width=_s(2),
             )
         draw.ellipse(_box((40, 25, 55, 40)), fill=_rgba(gen.IRON_DARK))
-        draw.ellipse(_box((44, 29, 51, 36)), fill=_rgba(patina))
+        draw.ellipse(_box((44, 29, 51, 36)), fill=_rgba(PATINA))
         draw.line(_points(((15, 24), (23, 18))), fill=_rgba(rust), width=_s(2))
     else:
         raise ValueError(f"unsupported finalized new debris {index}")
@@ -492,9 +492,8 @@ def _ground_blocker(original_index: int) -> Image.Image:
     height = footprint[1] * TILE
     image, draw = _canvas(width, height)
     x0, y0, x1, y1 = 7, 7, width - 8, height - 10
-    ferrous = gen.FACTIONS["ferrous"]
-    cupric = gen.FACTIONS["cupric"]
-    accent = ferrous["dark"] if original_index % 2 == 0 else cupric["dark"]
+    rust = gen.PALETTES["base"]["dark"]
+    accent = rust if original_index % 2 == 0 else PATINA
     if original_index in (0, 2, 5, 9, 13, 15):
         _raised_plinth(draw, (x0, y0, x1, y1), accent=accent)
     elif original_index in (1, 6):
@@ -508,7 +507,7 @@ def _ground_blocker(original_index: int) -> Image.Image:
             draw,
             (18, 16, width - 18, height - 24),
             fill=(43, 44, 53),
-            accent=cupric["dark"],
+            accent=PATINA,
         )
         _fan(draw, (cx, cy - 2), min(width, height) // 3, raised=True)
         for x, y in (
@@ -525,14 +524,12 @@ def _ground_blocker(original_index: int) -> Image.Image:
             draw,
             (16, 18, width - 16, height - 22),
             fill=gen.IRON,
-            accent=ferrous["dark"],
+            accent=rust,
         )
         draw.rounded_rectangle(
             _box((25, 20, 74, 46)), radius=_s(11), fill=_rgba(gen.IRON_DARK)
         )
-        draw.rounded_rectangle(
-            _box((29, 23, 70, 42)), radius=_s(8), fill=_rgba(ferrous["dark"])
-        )
+        draw.rounded_rectangle(_box((29, 23, 70, 42)), radius=_s(8), fill=_rgba(rust))
         for x in (79, 91, 103):
             draw.rectangle(_box((x, 22, x + 7, 45)), fill=_rgba(gen.IRON_LIGHT))
             draw.line(
@@ -542,9 +539,9 @@ def _ground_blocker(original_index: int) -> Image.Image:
             )
     elif original_index == 2:
         for offset, panel_accent in (
-            (17, ferrous["dark"]),
-            (75, cupric["dark"]),
-            (133, ferrous["dark"]),
+            (17, rust),
+            (75, PATINA),
+            (133, rust),
         ):
             _beveled_panel(
                 draw,
@@ -582,7 +579,7 @@ def _ground_blocker(original_index: int) -> Image.Image:
                 _box(
                     (gx - radius + 6, gy - radius + 6, gx + radius - 6, gy + radius - 6)
                 ),
-                fill=_rgba(ferrous["dark"]),
+                fill=_rgba(rust),
             )
             draw.ellipse(
                 _box((gx - 4, gy - 4, gx + 4, gy + 4)), fill=_rgba(gen.SCRAP_DARK)
@@ -597,7 +594,7 @@ def _ground_blocker(original_index: int) -> Image.Image:
         for x in range(36, width - 83, 16):
             draw.line(
                 _points(((x, 38), (x + 11, height - 45))),
-                fill=_rgba(ferrous["dark"]),
+                fill=_rgba(rust),
                 width=_s(4),
             )
         _fan(draw, (width - 48, cy), 25, raised=True)
@@ -606,7 +603,7 @@ def _ground_blocker(original_index: int) -> Image.Image:
             draw,
             (20, 22, width - 20, height - 30),
             fill=gen.IRON,
-            accent=ferrous["dark"],
+            accent=rust,
         )
         draw.rounded_rectangle(
             _box((31, 29, width - 77, height - 39)),
@@ -657,19 +654,19 @@ def _ground_blocker(original_index: int) -> Image.Image:
             )
             draw.ellipse(
                 _box((x - 6, cy - 6, x + 6, cy + 6)),
-                fill=_rgba(ferrous["dark"]),
+                fill=_rgba(rust),
             )
     elif original_index == 13:
         _beveled_panel(
             draw,
             (17, 18, width - 17, height - 27),
             fill=(45, 45, 53),
-            accent=cupric["dark"],
+            accent=PATINA,
         )
         _fan(draw, (cx, cy - 3), 31, raised=True)
         draw.line(
             _points(((18, height - 34), (width - 18, height - 34))),
-            fill=_rgba(ferrous["dark"]),
+            fill=_rgba(rust),
             width=_s(4),
         )
     elif original_index == 15:
@@ -677,7 +674,7 @@ def _ground_blocker(original_index: int) -> Image.Image:
             draw,
             (19, 18, width - 19, height - 27),
             fill=gen.IRON,
-            accent=ferrous["dark"],
+            accent=rust,
         )
         for x in (30, 64, 98):
             draw.rounded_rectangle(
@@ -687,7 +684,7 @@ def _ground_blocker(original_index: int) -> Image.Image:
             )
             draw.rectangle(
                 _box((x - 8, 31, x + 8, height - 43)),
-                fill=_rgba(ferrous["dark"] if x != 64 else cupric["dark"]),
+                fill=_rgba(rust if x != 64 else PATINA),
             )
             for y in range(35, height - 47, 9):
                 draw.line(

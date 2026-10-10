@@ -10,7 +10,6 @@
 //! Units also carry a movement domain: ground units path and collide on the
 //! terrain grid, air units fly above it.
 
-use crate::state::Faction;
 use chassis::fx::Fx;
 use serde::{Deserialize, Serialize};
 
@@ -30,20 +29,14 @@ chassis::listed_enum! {
         /// melts to anything that reaches it.
         Lancer,
         /// Heavy siege piece: arcing splash shells that reach beyond its own
-        /// eyes — someone else must hold sight on the target. Shared roster.
+        /// eyes — someone else must hold sight on the target.
         Bombard,
-        /// Ferrous anti-air crawler: tanky flak platform, blind to ground.
+        /// Anti-air crawler: tanky flak platform, blind to ground.
         Flakhound,
-        /// Cupric anti-air crawler: cheap, quick, and fragile.
-        Stinger,
-        /// Ferrous ground-attack flyer: slow, heavy strikes, no answer to air.
+        /// Ground-attack flyer: slow, heavy strikes, no answer to air.
         Buzzard,
-        /// Cupric ground-attack flyer: fast shallow strafes, no answer to air.
-        Darter,
-        /// Ferrous air-superiority flyer: sees far, hits only other flyers.
+        /// Air-superiority flyer: sees far, hits only other flyers.
         Talon,
-        /// Cupric air-superiority flyer: fragile, rapid, and cheap.
-        Wisp,
         /// Tier-two line brawler: an upgunned sentinel-class hull.
         Warden,
         /// Armored mobile welder: field sustain for long pushes. No harvest
@@ -52,33 +45,25 @@ chassis::listed_enum! {
         /// Tier-two super-harvester: digs faster, hauls triple, and builds
         /// at twice the pace.
         Excavator,
-        /// Ferrous scout flyer: fast, unarmed, far-sighted.
+        /// Scout flyer: fast, unarmed, far-sighted.
         Kestrel,
-        /// Cupric scout flyer: faster and frailer than the Kestrel.
-        Gnat,
-        /// Ferrous heavy interceptor: escorts and counters bombers.
+        /// Heavy interceptor: escorts and counters bombers.
         Shrike,
-        /// Cupric heavy interceptor: lighter and quicker than the Shrike.
-        Sylph,
-        /// Ferrous strategic bomber: one enormous bomb per pass, flown on a
+        /// Strategic bomber: one enormous bomb per pass, flown on a
         /// committed attack run — it cannot stop and strafe.
         Condor,
-        /// Cupric carpet bomber: a stick of six small bombs laid along its
-        /// flight line each pass.
-        Moth,
-        /// Tier-three assault walker: slow and heavily armored. Shared
-        /// roster.
+        /// Tier-three assault walker: slow and heavily armored.
         Breaker,
         /// Tier-three rocket battery: extreme-reach indirect saturation with
-        /// a blind ring at its feet. Shared roster.
+        /// a blind ring at its feet.
         Avalanche,
         /// Air transport: an unarmed lifter with a four-point sling rack.
         /// Cargo rides sealed — it fights nothing, sees nothing, and dies
-        /// with the airframe. Shared roster.
+        /// with the airframe.
         Skyhook,
         /// A walking demolition charge: presses to its ordered target and
         /// detonates — enormous against structures, modest splash against
-        /// machines, always fatal to itself. Shared roster.
+        /// machines, always fatal to itself.
         Sapper,
     }
 }
@@ -199,11 +184,6 @@ pub struct WeaponStats {
     /// Indirect fire arcs over terrain: the line-of-sight trace that lets
     /// rock block direct shots is skipped.
     pub indirect: bool,
-    /// Bombs released per trigger pull, laid in a line along the
-    /// shooter's heading through the aim point (spacing
-    /// [`BOMB_SALVO_SPACING`]). 1 for every conventional weapon; only
-    /// turn-limited bombers carry sticks.
-    pub salvo: u8,
     /// The shot is a real projectile: a Shell entity travels to a fixed
     /// fire-time aim point and resolves on arrival. Artillery may lead an
     /// existing path before launch, but the shell is never guided and a
@@ -494,81 +474,6 @@ pub struct ConstructionStats {
     pub requires: &'static [BuildingKind],
 }
 
-/// A production role: the slot a unit fills in a roster, independent of
-/// which faction's variant fills it. Shared kinds map to themselves; the
-/// varied slots resolve per faction through [`Role::unit_for`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Role {
-    /// The economy unit.
-    Harvester,
-    /// The line fighter.
-    Sentinel,
-    /// The raider.
-    Scuttler,
-    /// Direct-fire siege.
-    Lancer,
-    /// Indirect heavy siege.
-    Bombard,
-    /// The dedicated anti-air ground unit.
-    AntiAir,
-    /// The ground-attack flyer.
-    AirGround,
-    /// The air-superiority flyer.
-    AirAir,
-    /// Tier-two line brawler (shared).
-    Warden,
-    /// Mobile welder (shared).
-    Tender,
-    /// The attack-run bomber.
-    Bomber,
-    /// Tier-three assault walker (shared).
-    Breaker,
-    /// Tier-three rocket battery (shared).
-    Avalanche,
-    /// The air transport (shared).
-    Skyhook,
-    /// The walking demolition charge (shared).
-    Sapper,
-    /// Super-harvester (shared).
-    Excavator,
-    /// Unarmed far-sighted flyer — faction-varied.
-    Scout,
-    /// Heavy air-superiority flyer — faction-varied.
-    Interceptor,
-}
-
-impl Role {
-    /// The concrete kind filling this role for a faction.
-    pub const fn unit_for(self, faction: Faction) -> UnitKind {
-        match (self, faction) {
-            (Role::Harvester, _) => UnitKind::Harvester,
-            (Role::Sentinel, _) => UnitKind::Sentinel,
-            (Role::Scuttler, _) => UnitKind::Scuttler,
-            (Role::Lancer, _) => UnitKind::Lancer,
-            (Role::Bombard, _) => UnitKind::Bombard,
-            (Role::AntiAir, Faction::Ferrous) => UnitKind::Flakhound,
-            (Role::AntiAir, Faction::Cupric) => UnitKind::Stinger,
-            (Role::AirGround, Faction::Ferrous) => UnitKind::Buzzard,
-            (Role::AirGround, Faction::Cupric) => UnitKind::Darter,
-            (Role::AirAir, Faction::Ferrous) => UnitKind::Talon,
-            (Role::AirAir, Faction::Cupric) => UnitKind::Wisp,
-            (Role::Warden, _) => UnitKind::Warden,
-            (Role::Tender, _) => UnitKind::Tender,
-            (Role::Excavator, _) => UnitKind::Excavator,
-            (Role::Scout, Faction::Ferrous) => UnitKind::Kestrel,
-            (Role::Scout, Faction::Cupric) => UnitKind::Gnat,
-            (Role::Interceptor, Faction::Ferrous) => UnitKind::Shrike,
-            (Role::Interceptor, Faction::Cupric) => UnitKind::Sylph,
-            (Role::Bomber, Faction::Ferrous) => UnitKind::Condor,
-            (Role::Bomber, Faction::Cupric) => UnitKind::Moth,
-            (Role::Breaker, _) => UnitKind::Breaker,
-            (Role::Avalanche, _) => UnitKind::Avalanche,
-            (Role::Skyhook, _) => UnitKind::Skyhook,
-            (Role::Sapper, _) => UnitKind::Sapper,
-        }
-    }
-}
-
 /// Time between an airborne casualty and its ground impact.
 pub const AIRCRAFT_CRASH_TICKS: crate::Tick = 13;
 
@@ -627,38 +532,6 @@ impl UnitKind {
         matches!(stats.domain, Domain::Ground) && stats.turret_turn_rate > 0
     }
 
-    /// The faction whose roster carries this kind; `None` means shared.
-    /// Training a faction-bound kind from the other faction's seat is
-    /// rejected at command validation.
-    pub const fn faction(self) -> Option<Faction> {
-        match self {
-            UnitKind::Harvester
-            | UnitKind::Sentinel
-            | UnitKind::Scuttler
-            | UnitKind::Lancer
-            | UnitKind::Bombard => None,
-            UnitKind::Warden
-            | UnitKind::Tender
-            | UnitKind::Excavator
-            | UnitKind::Breaker
-            | UnitKind::Avalanche
-            | UnitKind::Skyhook
-            | UnitKind::Sapper => None,
-            UnitKind::Flakhound
-            | UnitKind::Buzzard
-            | UnitKind::Talon
-            | UnitKind::Kestrel
-            | UnitKind::Shrike
-            | UnitKind::Condor => Some(Faction::Ferrous),
-            UnitKind::Stinger
-            | UnitKind::Darter
-            | UnitKind::Wisp
-            | UnitKind::Gnat
-            | UnitKind::Sylph
-            | UnitKind::Moth => Some(Faction::Cupric),
-        }
-    }
-
     /// Lowercase display name.
     pub const fn name(self) -> &'static str {
         match self {
@@ -668,20 +541,14 @@ impl UnitKind {
             UnitKind::Lancer => "lancer",
             UnitKind::Bombard => "bombard",
             UnitKind::Flakhound => "flakhound",
-            UnitKind::Stinger => "stinger",
             UnitKind::Buzzard => "buzzard",
-            UnitKind::Darter => "darter",
             UnitKind::Talon => "talon",
-            UnitKind::Wisp => "wisp",
             UnitKind::Warden => "warden",
             UnitKind::Tender => "tender",
             UnitKind::Excavator => "excavator",
             UnitKind::Kestrel => "kestrel",
-            UnitKind::Gnat => "gnat",
             UnitKind::Shrike => "shrike",
-            UnitKind::Sylph => "sylph",
             UnitKind::Condor => "condor",
-            UnitKind::Moth => "moth",
             UnitKind::Breaker => "breaker",
             UnitKind::Avalanche => "avalanche",
             UnitKind::Skyhook => "skyhook",
@@ -706,15 +573,10 @@ impl UnitKind {
                 "Siege artillery with arcing explosive shells. Needs a spotter to use its full range."
             }
             UnitKind::Flakhound => "Armored anti-air platform. Cannot attack ground targets.",
-            UnitKind::Stinger => {
-                "Fast, lightly armored anti-air platform. Cannot attack ground targets."
-            }
             UnitKind::Buzzard => "Heavy ground-attack aircraft. Cannot attack other aircraft.",
-            UnitKind::Darter => "Fast ground-attack aircraft. Cannot attack other aircraft.",
             UnitKind::Talon => {
                 "Air-superiority fighter with long sight range. Attacks aircraft only."
             }
-            UnitKind::Wisp => "Cheap, fragile interceptor. Attacks aircraft only.",
             UnitKind::Warden => {
                 "Armored frontline unit with a stronger main gun than the Sentinel."
             }
@@ -725,14 +587,9 @@ impl UnitKind {
                 "Heavy harvester with faster mining, more cargo space, and faster construction."
             }
             UnitKind::Kestrel => "Unarmed scout aircraft with long sight range.",
-            UnitKind::Gnat => "Fast, fragile scout aircraft. Unarmed.",
             UnitKind::Shrike => "Heavy interceptor for fighting enemy aircraft.",
-            UnitKind::Sylph => "Fast interceptor for fighting enemy aircraft.",
             UnitKind::Condor => {
                 "Heavy bomber. Drops one large bomb per attack run and turns for another pass."
-            }
-            UnitKind::Moth => {
-                "Carpet bomber. Drops six bombs along its flight path on each attack run."
             }
             UnitKind::Breaker => "Heavy assault walker. Delivers powerful close-range blasts.",
             UnitKind::Avalanche => {
@@ -744,30 +601,6 @@ impl UnitKind {
             UnitKind::Sapper => {
                 "Disposable demolition unit. Detonates against its target, dealing heavy damage to structures."
             }
-        }
-    }
-
-    /// The role this kind fills in its roster.
-    pub const fn role(self) -> Role {
-        match self {
-            UnitKind::Harvester => Role::Harvester,
-            UnitKind::Sentinel => Role::Sentinel,
-            UnitKind::Scuttler => Role::Scuttler,
-            UnitKind::Lancer => Role::Lancer,
-            UnitKind::Bombard => Role::Bombard,
-            UnitKind::Flakhound | UnitKind::Stinger => Role::AntiAir,
-            UnitKind::Buzzard | UnitKind::Darter => Role::AirGround,
-            UnitKind::Talon | UnitKind::Wisp => Role::AirAir,
-            UnitKind::Warden => Role::Warden,
-            UnitKind::Tender => Role::Tender,
-            UnitKind::Excavator => Role::Excavator,
-            UnitKind::Kestrel | UnitKind::Gnat => Role::Scout,
-            UnitKind::Shrike | UnitKind::Sylph => Role::Interceptor,
-            UnitKind::Condor | UnitKind::Moth => Role::Bomber,
-            UnitKind::Breaker => Role::Breaker,
-            UnitKind::Avalanche => Role::Avalanche,
-            UnitKind::Skyhook => Role::Skyhook,
-            UnitKind::Sapper => Role::Sapper,
         }
     }
 }
@@ -825,7 +658,6 @@ const SENTINEL: UnitStats = UnitStats {
             targets: DomainMask::GROUND,
             splash: None,
             indirect: false,
-            salvo: 1,
             projectile: None,
         },
         // A weak anti-air weapon so a pure air army cannot ignore the core
@@ -838,7 +670,6 @@ const SENTINEL: UnitStats = UnitStats {
             targets: DomainMask::AIR,
             splash: None,
             indirect: false,
-            salvo: 1,
             projectile: None,
         },
     ],
@@ -875,7 +706,6 @@ const SCUTTLER: UnitStats = UnitStats {
         targets: DomainMask::GROUND,
         splash: None,
         indirect: false,
-        salvo: 1,
         projectile: None,
     }],
     aggro_range: Fx::lit("5"),
@@ -913,7 +743,6 @@ const LANCER: UnitStats = UnitStats {
         targets: DomainMask::GROUND,
         splash: None,
         indirect: false,
-        salvo: 1,
         projectile: None,
     }],
     aggro_range: Fx::lit("5"),
@@ -949,7 +778,6 @@ const BOMBARD: UnitStats = UnitStats {
         targets: DomainMask::GROUND,
         splash: Some(Fx::lit("1.4")),
         indirect: true,
-        salvo: 1,
         projectile: Some(ProjectileStats {
             payload: ProjectileKind::Shell,
             speed: Fx::lit("0.30"),
@@ -992,7 +820,6 @@ const FLAKHOUND: UnitStats = UnitStats {
         targets: DomainMask::AIR,
         splash: Some(Fx::lit("1.2")),
         indirect: false,
-        salvo: 1,
         projectile: None,
     }],
     aggro_range: Fx::lit("5"),
@@ -1012,49 +839,11 @@ const FLAKHOUND: UnitStats = UnitStats {
     crash: None,
 };
 
-const STINGER: UnitStats = UnitStats {
-    contact_reach: None,
-    max_hp: 45,
-    speed: Fx::lit("0.14"), // 2.8 tiles/s
-    radius: Fx::lit("0.28"),
-    cost: 45,
-    train_ticks: 100, // 5 s
-    domain: Domain::Ground,
-    weapons: &[WeaponStats {
-        damage: 5,
-        range: Fx::lit("4.5"),
-        minimum_range: Fx::ZERO,
-        cooldown_ticks: 20,
-        targets: DomainMask::AIR,
-        splash: Some(Fx::lit("1")),
-        indirect: false,
-        salvo: 1,
-        projectile: None,
-    }],
-    aggro_range: Fx::lit("5"),
-    harvest: None,
-    vision: 7,
-    requires: &[],
-    welder: false,
-    build_rate: 1,
-    demolition: None,
-    transport_size: 1,
-    transport_capacity: 0,
-    turn_rate: 0,
-    cruise_turn_rate: 0,
-    turret_turn_rate: 0,
-    hull_turn_rate: None,
-    brace: None,
-    crash: None,
-};
-
 const BUZZARD: UnitStats = UnitStats {
     contact_reach: None,
     max_hp: 110,
     speed: Fx::lit("0.10"), // 2.0 tiles/s
     radius: Fx::lit("0.4"),
-    // At this price the durable flyer trades efficiency for staying power
-    // against a common Sentinel line; the cheaper Darter clears faster.
     cost: 120,
     train_ticks: 180, // 9 s
     domain: Domain::Air,
@@ -1066,7 +855,6 @@ const BUZZARD: UnitStats = UnitStats {
         targets: DomainMask::GROUND,
         splash: None,
         indirect: false,
-        salvo: 1,
         projectile: None,
     }],
     aggro_range: Fx::lit("5"),
@@ -1081,43 +869,6 @@ const BUZZARD: UnitStats = UnitStats {
     turn_rate: 0,
     cruise_turn_rate: 0,
     turret_turn_rate: 6,
-    hull_turn_rate: None,
-    brace: None,
-    crash: None,
-};
-
-const DARTER: UnitStats = UnitStats {
-    contact_reach: None,
-    max_hp: 55,
-    speed: Fx::lit("0.17"), // 3.4 tiles/s
-    radius: Fx::lit("0.3"),
-    // Its exceptional speed carries a premium over other light aircraft.
-    cost: 100,
-    train_ticks: 150, // 7.5 s
-    domain: Domain::Air,
-    weapons: &[WeaponStats {
-        damage: 8,
-        range: Fx::lit("2.5"),
-        minimum_range: Fx::ZERO,
-        cooldown_ticks: 15,
-        targets: DomainMask::GROUND,
-        splash: None,
-        indirect: false,
-        salvo: 1,
-        projectile: None,
-    }],
-    aggro_range: Fx::lit("5"),
-    harvest: None,
-    vision: 7,
-    requires: &[],
-    welder: false,
-    build_rate: 1,
-    demolition: None,
-    transport_size: 0,
-    transport_capacity: 0,
-    turn_rate: 0,
-    cruise_turn_rate: 10,
-    turret_turn_rate: 0,
     hull_turn_rate: None,
     brace: None,
     crash: None,
@@ -1139,7 +890,6 @@ const TALON: UnitStats = UnitStats {
         targets: DomainMask::AIR,
         splash: None,
         indirect: false,
-        salvo: 1,
         projectile: None,
     }],
     aggro_range: Fx::lit("5"),
@@ -1153,42 +903,6 @@ const TALON: UnitStats = UnitStats {
     transport_capacity: 0,
     turn_rate: 0,
     cruise_turn_rate: 8,
-    turret_turn_rate: 0,
-    hull_turn_rate: None,
-    brace: None,
-    crash: None,
-};
-
-const WISP: UnitStats = UnitStats {
-    contact_reach: None,
-    max_hp: 50,
-    speed: Fx::lit("0.19"), // 3.8 tiles/s
-    radius: Fx::lit("0.28"),
-    cost: 70,
-    train_ticks: 120, // 6 s
-    domain: Domain::Air,
-    weapons: &[WeaponStats {
-        damage: 8,
-        range: Fx::lit("3"),
-        minimum_range: Fx::ZERO,
-        cooldown_ticks: 18,
-        targets: DomainMask::AIR,
-        splash: None,
-        indirect: false,
-        salvo: 1,
-        projectile: None,
-    }],
-    aggro_range: Fx::lit("5"),
-    harvest: None,
-    vision: 8,
-    requires: &[],
-    welder: false,
-    build_rate: 1,
-    demolition: None,
-    transport_size: 0,
-    transport_capacity: 0,
-    turn_rate: 0,
-    cruise_turn_rate: 0,
     turret_turn_rate: 0,
     hull_turn_rate: None,
     brace: None,
@@ -1213,7 +927,6 @@ const WARDEN: UnitStats = UnitStats {
         targets: DomainMask::GROUND,
         splash: None,
         indirect: false,
-        salvo: 1,
         projectile: None,
     }],
     aggro_range: Fx::lit("5"),
@@ -1316,32 +1029,6 @@ const KESTREL: UnitStats = UnitStats {
     crash: None,
 };
 
-const GNAT: UnitStats = UnitStats {
-    contact_reach: None,
-    max_hp: 45,
-    speed: Fx::lit("0.22"),
-    radius: Fx::lit("0.26"),
-    cost: 50,
-    train_ticks: 100,
-    domain: Domain::Air,
-    weapons: &[],
-    aggro_range: Fx::ZERO,
-    harvest: None,
-    vision: 10,
-    requires: &[],
-    welder: false,
-    build_rate: 1,
-    demolition: None,
-    transport_size: 0,
-    transport_capacity: 0,
-    turn_rate: 0,
-    cruise_turn_rate: 12,
-    turret_turn_rate: 0,
-    hull_turn_rate: None,
-    brace: None,
-    crash: None,
-};
-
 const SHRIKE: UnitStats = UnitStats {
     contact_reach: None,
     max_hp: 160,
@@ -1358,7 +1045,6 @@ const SHRIKE: UnitStats = UnitStats {
         targets: DomainMask::AIR,
         splash: None,
         indirect: false,
-        salvo: 1,
         projectile: None,
     }],
     aggro_range: Fx::lit("6"),
@@ -1372,42 +1058,6 @@ const SHRIKE: UnitStats = UnitStats {
     transport_capacity: 0,
     turn_rate: 0,
     cruise_turn_rate: 6,
-    turret_turn_rate: 0,
-    hull_turn_rate: None,
-    brace: None,
-    crash: None,
-};
-
-const SYLPH: UnitStats = UnitStats {
-    contact_reach: None,
-    max_hp: 100,
-    speed: Fx::lit("0.21"),
-    radius: Fx::lit("0.3"),
-    cost: 200,
-    train_ticks: 240,
-    domain: Domain::Air,
-    weapons: &[WeaponStats {
-        damage: 16,
-        range: Fx::lit("3.5"),
-        minimum_range: Fx::ZERO,
-        cooldown_ticks: 20,
-        targets: DomainMask::AIR,
-        splash: None,
-        indirect: false,
-        salvo: 1,
-        projectile: None,
-    }],
-    aggro_range: Fx::lit("6"),
-    harvest: None,
-    vision: 8,
-    requires: &[],
-    welder: false,
-    build_rate: 1,
-    demolition: None,
-    transport_size: 0,
-    transport_capacity: 0,
-    turn_rate: 0,
-    cruise_turn_rate: 10,
     turret_turn_rate: 0,
     hull_turn_rate: None,
     brace: None,
@@ -1430,7 +1080,6 @@ const CONDOR: UnitStats = UnitStats {
         targets: DomainMask::GROUND,
         splash: Some(Fx::lit("2.2")),
         indirect: true,
-        salvo: 1,
         projectile: Some(ProjectileStats {
             payload: ProjectileKind::Bomb,
             speed: Fx::lit("0.30"),
@@ -1457,49 +1106,6 @@ const CONDOR: UnitStats = UnitStats {
     }),
 };
 
-const MOTH: UnitStats = UnitStats {
-    contact_reach: None,
-    max_hp: 140,
-    speed: Fx::lit("0.15"),
-    radius: Fx::lit("0.4"),
-    cost: 550,
-    train_ticks: 700,
-    domain: Domain::Air,
-    weapons: &[WeaponStats {
-        damage: 25,
-        range: Fx::lit("2.5"),
-        minimum_range: Fx::ZERO,
-        cooldown_ticks: 130,
-        targets: DomainMask::GROUND,
-        splash: Some(Fx::lit("1.2")),
-        indirect: true,
-        salvo: 6, // the stick, laid along the flight line
-        projectile: Some(ProjectileStats {
-            payload: ProjectileKind::Bomb,
-            speed: Fx::lit("0.30"),
-        }),
-    }],
-    aggro_range: Fx::lit("5"),
-    harvest: None,
-    vision: 6,
-    requires: &[BuildingKind::Crucible],
-    welder: false,
-    build_rate: 1,
-    demolition: None,
-    transport_size: 0,
-    transport_capacity: 0,
-    turn_rate: 3, // tighter loops than the Condor, weaker punch
-    cruise_turn_rate: 0,
-    turret_turn_rate: 0,
-    hull_turn_rate: None,
-    brace: None,
-    crash: Some(CrashProfile {
-        damage: 40,
-        radius: Fx::lit("2"),
-        aligns_to_motion: false,
-    }),
-};
-
 const BREAKER: UnitStats = UnitStats {
     contact_reach: None,
     // A costly late-game answer to clustered tier-one armor. One shell
@@ -1519,7 +1125,6 @@ const BREAKER: UnitStats = UnitStats {
         targets: DomainMask::GROUND,
         splash: Some(Fx::lit("1.5")),
         indirect: false,
-        salvo: 1,
         projectile: None,
     }],
     aggro_range: Fx::lit("6"),
@@ -1558,7 +1163,6 @@ const AVALANCHE: UnitStats = UnitStats {
         targets: DomainMask::GROUND,
         splash: Some(Fx::lit("1.6")),
         indirect: true,
-        salvo: 1,
         projectile: Some(ProjectileStats {
             payload: ProjectileKind::Missile,
             speed: Fx::lit("0.30"),
@@ -1676,7 +1280,6 @@ const TURRET: BuildingStats = BuildingStats {
         targets: DomainMask::GROUND,
         splash: None,
         indirect: false,
-        salvo: 1,
         projectile: None,
     }],
     construction: Some(ConstructionStats {
@@ -1689,13 +1292,11 @@ const TURRET: BuildingStats = BuildingStats {
 const FABRICATOR: BuildingStats = BuildingStats {
     max_hp: 500,
     vision: 6,
-    // Both factions' variants are listed; the train gate deals each seat
-    // only its own. Order groups the roles for the HUD's slot labels.
+    // Order groups the roles for the HUD's slot labels.
     produces: &[
         UnitKind::Lancer,
         UnitKind::Bombard,
         UnitKind::Flakhound,
-        UnitKind::Stinger,
         UnitKind::Warden,
         UnitKind::Tender,
         UnitKind::Sapper,
@@ -1720,7 +1321,6 @@ const FLAK_TURRET: BuildingStats = BuildingStats {
         targets: DomainMask::AIR,
         splash: Some(Fx::lit("1.2")),
         indirect: false,
-        salvo: 1,
         projectile: None,
     }],
     construction: Some(ConstructionStats {
@@ -1746,7 +1346,6 @@ const BASTION: BuildingStats = BuildingStats {
         targets: DomainMask::GROUND,
         splash: Some(Fx::lit("1.3")),
         indirect: true,
-        salvo: 1,
         projectile: Some(ProjectileStats {
             payload: ProjectileKind::Shell,
             speed: Fx::lit("0.30"),
@@ -1802,19 +1401,12 @@ const REPAIR_BAY: BuildingStats = BuildingStats {
 const AIRWORKS: BuildingStats = BuildingStats {
     max_hp: 500,
     vision: 6,
-    // Both factions' wings are listed; the train gate deals each seat
-    // only its own.
     produces: &[
         UnitKind::Buzzard,
-        UnitKind::Darter,
         UnitKind::Talon,
-        UnitKind::Wisp,
         UnitKind::Kestrel,
-        UnitKind::Gnat,
         UnitKind::Shrike,
-        UnitKind::Sylph,
         UnitKind::Condor,
-        UnitKind::Moth,
         UnitKind::Skyhook,
     ],
     weapons: &[],
@@ -1898,7 +1490,6 @@ const HEAVY_TURRET: BuildingStats = BuildingStats {
         targets: DomainMask::GROUND,
         splash: None,
         indirect: false,
-        salvo: 1,
         projectile: None,
     }],
     construction: Some(ConstructionStats {
@@ -1920,7 +1511,6 @@ const BULWARK: BuildingStats = BuildingStats {
         targets: DomainMask::GROUND,
         splash: None,
         indirect: false,
-        salvo: 1,
         projectile: None,
     }],
     construction: Some(ConstructionStats {
@@ -1942,7 +1532,6 @@ const BURST_FLAK: BuildingStats = BuildingStats {
         targets: DomainMask::AIR,
         splash: Some(Fx::lit("1.5")),
         indirect: false,
-        salvo: 1,
         projectile: None,
     }],
     construction: Some(ConstructionStats {
@@ -1988,20 +1577,14 @@ impl UnitKind {
             UnitKind::Lancer => &LANCER,
             UnitKind::Bombard => &BOMBARD,
             UnitKind::Flakhound => &FLAKHOUND,
-            UnitKind::Stinger => &STINGER,
             UnitKind::Buzzard => &BUZZARD,
-            UnitKind::Darter => &DARTER,
             UnitKind::Talon => &TALON,
-            UnitKind::Wisp => &WISP,
             UnitKind::Warden => &WARDEN,
             UnitKind::Tender => &TENDER,
             UnitKind::Excavator => &EXCAVATOR,
             UnitKind::Kestrel => &KESTREL,
-            UnitKind::Gnat => &GNAT,
             UnitKind::Shrike => &SHRIKE,
-            UnitKind::Sylph => &SYLPH,
             UnitKind::Condor => &CONDOR,
-            UnitKind::Moth => &MOTH,
             UnitKind::Breaker => &BREAKER,
             UnitKind::Avalanche => &AVALANCHE,
             UnitKind::Skyhook => &SKYHOOK,
@@ -2174,9 +1757,6 @@ pub const FOUNDRY_RECOVERY_RESERVE: u32 = SENTINEL.cost + HARVESTER.cost;
 /// releases, narrow enough that a bomber circling its target must
 /// straighten out first.
 pub const BOMBER_CONE_DOT: Fx = Fx::lit("0.92");
-
-/// Distance between consecutive bombs of a stick along the flight line.
-pub const BOMB_SALVO_SPACING: Fx = Fx::lit("0.8");
 
 /// The furthest ahead, in ticks, a projectile weapon leads a moving target.
 pub const MAX_LEAD_TICKS: u64 = 96;

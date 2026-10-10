@@ -64,7 +64,7 @@ Validation covers, among other things:
 - sorted entity ids and monotonic next-id counters;
 - hp, cooldown, progress, queue, coordinate, and tick envelopes;
 - harvest-capacity bounds on scrap held by walking and transported units;
-- valid owners, faction production, entity references, and shell fields;
+- valid owners, producible queues, entity references, and shell fields;
 - coherent construction, salvage, recovery, ghost, radar, and memory state;
 - canonical ordering for every collection whose order is observable.
 
@@ -122,8 +122,8 @@ tick counter still advances so external timelines remain aligned. Per-tick
 acceleration structures, including the unit spatial index, are local scratch.
 They are rebuilt at their use points and never serialized or hashed.
 
-Destroyed airborne Condors, Moths, and Skyhooks leave a pending crash. The
-record retains owner, kind, heading, launch and contact positions, and start and
+Destroyed airborne Condors and Skyhooks leave a pending crash. The record
+retains owner, kind, heading, launch and contact positions, and start and
 arrival ticks. Contact is fixed at death using the last actual airborne
 displacement, capped at flight speed and reduced by the crash's deceleration.
 Crash duration and blast profiles live in `sim/src/stats.rs`; trajectory and
@@ -270,23 +270,22 @@ instead. Building artwork and its approximate contact outline keep their
 authored facing, so asymmetric contact can differ under a map half-turn.
 Placement, travel, and ranged reach use the rectangular footprint.
 
-Talon, Darter, Shrike, Sylph, Kestrel, and Gnat cruise heading-first but can
-hover at rest. Their travel and fixed-gun traverse rates are independent of
-bomber flight; per-kind rates live in `UnitKind::cruise_turn_rate` in
-`sim/src/stats.rs`. Near waypoints they slow to tighten the arc; intermediate
-waypoints can be rounded only when the onward segment is clear. An obstructed
-step holds position and keeps its route while the nose turns, and replans from
-the actual position only once the nose faces the waypoint and is still blocked.
-Arrivals, Stop, and in-range attacks hover rather than orbit or land. Fixed guns
-traverse with the body before firing ordinary hitscan shots; Advance only fires
-when already aligned and does not turn away from its route to aim. These
-aircraft spawn facing the map center, matching mirrored initial turn costs.
-Buzzard, Wisp, and Skyhook travel independently of heading, with no cruise turn
-radius.
+Talon, Shrike, and Kestrel cruise heading-first but can hover at rest. Their
+travel and fixed-gun traverse rates are independent of bomber flight; per-kind
+rates live in `UnitKind::cruise_turn_rate` in `sim/src/stats.rs`. Near waypoints
+they slow to tighten the arc; intermediate waypoints can be rounded only when
+the onward segment is clear. An obstructed step holds position and keeps its
+route while the nose turns, and replans from the actual position only once the
+nose faces the waypoint and is still blocked. Arrivals, Stop, and in-range
+attacks hover rather than orbit or land. Fixed guns traverse with the body
+before firing ordinary hitscan shots; Advance only fires when already aligned
+and does not turn away from its route to aim. These aircraft spawn facing the
+map center, matching mirrored initial turn costs. Buzzard and Skyhook travel
+independently of heading, with no cruise turn radius.
 
-Condor and Moth use committed heading-first flight: only the heading steers, at
-most `turn_rate` compass steps per tick, so every waypoint is accepted inside
-the kind's turn-acceptance ring rather than at an exact center. Every turn is a
+The Condor uses committed heading-first flight: only the heading steers, at most
+`turn_rate` compass steps per tick, so every waypoint is accepted inside the
+kind's turn-acceptance ring rather than at an exact center. Every turn is a
 committed arc of one fixed radius, and the simulation reasons about that arc
 against the map's flight envelope in fixed point. Steering takes the shorter
 rotation only when the arc it sweeps stays inside the world and ends in a state

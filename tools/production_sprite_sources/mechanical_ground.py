@@ -68,9 +68,9 @@ def vent(d, x, y, width=16):
         line(d, [(x + 3, yy), (x + width - 3, yy)], IRON)
 
 
-def hull(kind, faction, move=0):
+def hull(kind, variant, move=0):
     image, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     if kind == "sentinel":
         for bounds in ((15, 40, 36, 116), (92, 40, 113, 116)):
             track(d, bounds, move, paint)
@@ -161,9 +161,9 @@ def hull(kind, faction, move=0):
     return finish(image)
 
 
-def mount(kind, faction, action=0):
+def mount(kind, variant, action=0):
     image, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     if kind == "sentinel":
         recoil = (0, 0, 7, 4, 1)[action]
         poly(d, [(47, 48), (55, 41), (73, 41), (81, 48), (78, 79), (50, 79)], VOID)
@@ -224,15 +224,15 @@ def mount(kind, faction, action=0):
     return finish(image, rim=False)
 
 
-def render(kind, faction, move=0, action=0):
-    image = hull(kind, faction, move)
-    image.alpha_composite(mount(kind, faction, action))
+def render(kind, variant, move=0, action=0):
+    image = hull(kind, variant, move)
+    image.alpha_composite(mount(kind, variant, action))
     return image
 
 
-def render_breaker(faction, move=0, action=0):
+def render_breaker(variant, move=0, action=0):
     image, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     # Continuous running gear carries a fixed, braced gun cradle.
     for bounds in ((20, 29, 41, 112), (87, 29, 108, 112)):
         track(d, bounds, move, paint)

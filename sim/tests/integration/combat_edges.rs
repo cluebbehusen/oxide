@@ -20,10 +20,10 @@ fn a_ground_chaser_stalls_when_no_standing_room_reaches_a_flyer_deep_in_rock() {
     // Chebyshev-5 from every edge, so every tile a ground unit could stand
     // on lies outside both the stand-in scan and the weapon's reach (the
     // nearest footing is 6.0 tiles out, past the Flakhound's 5). A
-    // Flakhound ordered onto a Wisp parked there can find neither range nor
+    // Flakhound ordered onto a Talon parked there can find neither range nor
     // footing — its order must stall rather than path into the wall or spin
     // forever. The chaser sits in sight of the flyer (vision 7) but out of
-    // its aggro/range (5), and the Wisp descends straight down its own
+    // its aggro/range (5), and the Talon descends straight down its own
     // column, never within 5 tiles of the chaser — so no mid-flight
     // auto-acquire drags the fight open early.
     let scenario = Scenario {
@@ -51,25 +51,25 @@ fn a_ground_chaser_stalls_when_no_standing_room_reaches_a_flyer_deep_in_rock() {
         players: players(200),
         units: vec![
             unit(0, UnitKind::Flakhound, 4, 8),
-            unit(1, UnitKind::Wisp, 10, 1),
+            unit(1, UnitKind::Talon, 10, 1),
         ],
         buildings: Vec::new(),
         meta: None,
     };
     let mut state = scenario.build().unwrap();
-    let (flak, wisp) = (state.units()[0].id, state.units()[1].id);
+    let (flak, talon) = (state.units()[0].id, state.units()[1].id);
 
-    // Fly the wisp into the heart of the rock and let it settle.
+    // Fly the talon into the heart of the rock and let it settle.
     state.tick(&[cmd(
         1,
         Command::Run {
-            units: vec![wisp],
+            units: vec![talon],
             goal: TilePos::new(10, 8),
             queue: false,
         },
     )]);
     run_until(&mut state, 200, |s, _| {
-        s.unit(wisp).unwrap().tile() == TilePos::new(10, 8)
+        s.unit(talon).unwrap().tile() == TilePos::new(10, 8)
     });
     assert_eq!(
         state.unit(flak).unwrap().order,
@@ -83,7 +83,7 @@ fn a_ground_chaser_stalls_when_no_standing_room_reaches_a_flyer_deep_in_rock() {
         0,
         Command::Attack {
             units: vec![flak],
-            target: Target::Unit(wisp).into(),
+            target: Target::Unit(talon).into(),
             queue: false,
         },
     )]);
@@ -104,8 +104,8 @@ fn a_ground_chaser_stalls_when_no_standing_room_reaches_a_flyer_deep_in_rock() {
         "a stalled program drops to idle"
     );
     assert_eq!(
-        state.unit(wisp).unwrap().hp,
-        UnitKind::Wisp.stats().max_hp,
+        state.unit(talon).unwrap().hp,
+        UnitKind::Talon.stats().max_hp,
         "the flyer sits untouched behind the rock"
     );
 }
@@ -150,15 +150,15 @@ fn a_fogged_flyer_footing_never_leaks_through_the_stall_reason() {
         players: players(200),
         units: vec![
             unit(0, UnitKind::Flakhound, 4, 2),
-            unit(1, UnitKind::Wisp, 10, 2),
+            unit(1, UnitKind::Talon, 10, 2),
         ],
         buildings: Vec::new(),
         meta: None,
     };
     let mut state = scenario.build().unwrap();
-    let (flak, wisp) = (state.units()[0].id, state.units()[1].id);
+    let (flak, talon) = (state.units()[0].id, state.units()[1].id);
     assert!(
-        state.can_see(PlayerId(0), state.unit(wisp).unwrap().tile()),
+        state.can_see(PlayerId(0), state.unit(talon).unwrap().tile()),
         "the chase is ordered against a visible flyer"
     );
 
@@ -169,14 +169,14 @@ fn a_fogged_flyer_footing_never_leaks_through_the_stall_reason() {
             0,
             Command::Attack {
                 units: vec![flak],
-                target: Target::Unit(wisp).into(),
+                target: Target::Unit(talon).into(),
                 queue: false,
             },
         ),
         cmd(
             1,
             Command::Run {
-                units: vec![wisp],
+                units: vec![talon],
                 goal: TilePos::new(14, 11),
                 queue: false,
             },
@@ -185,7 +185,7 @@ fn a_fogged_flyer_footing_never_leaks_through_the_stall_reason() {
 
     for _ in 0..600 {
         let report = state.tick(&[]);
-        if !state.can_see(PlayerId(0), state.unit(wisp).unwrap().tile()) {
+        if !state.can_see(PlayerId(0), state.unit(talon).unwrap().tile()) {
             state.tick(&[]);
             assert_eq!(state.unit(flak).unwrap().order, Order::Idle);
             assert!(
@@ -203,17 +203,17 @@ fn a_fogged_flyer_footing_never_leaks_through_the_stall_reason() {
 #[test]
 fn a_sidearm_downs_a_flyer_without_pulling_the_main_gun_off_its_order() {
     // A Sentinel ordered onto a ground Scuttler keeps that target while its
-    // air sidearm independently works a Darter hovering in reach. The
+    // air sidearm independently works a Buzzard hovering in reach. The
     // opportunist shot must never re-steer the chassis: the ordered target
-    // stays the scuttler even as the darter takes fire.
+    // stays the scuttler even as the buzzard takes fire.
     let mut state = arena(vec![
         unit(0, UnitKind::Sentinel, 3, 6),
         unit(1, UnitKind::Scuttler, 5, 6),
-        unit(1, UnitKind::Darter, 5, 6),
+        unit(1, UnitKind::Buzzard, 5, 6),
     ])
     .build()
     .unwrap();
-    let (sentinel, scuttler, darter) = (
+    let (sentinel, scuttler, buzzard) = (
         state.units()[0].id,
         state.units()[1].id,
         state.units()[2].id,
@@ -229,7 +229,7 @@ fn a_sidearm_downs_a_flyer_without_pulling_the_main_gun_off_its_order() {
 
     // Watch a window in which the scuttler is still alive (it dies near
     // tick 60): every tick the chassis must still be aimed at it, and the
-    // sky poke must land on the darter at least once.
+    // sky poke must land on the buzzard at least once.
     let mut air_hits = 0;
     for _ in 0..40 {
         let report = state.tick(&[]);
@@ -240,7 +240,7 @@ fn a_sidearm_downs_a_flyer_without_pulling_the_main_gun_off_its_order() {
                 ..
             } = e
                 && *attacker == sentinel
-                && *t == darter
+                && *t == buzzard
             {
                 air_hits += 1;
             }
@@ -258,14 +258,14 @@ fn a_sidearm_downs_a_flyer_without_pulling_the_main_gun_off_its_order() {
         "the air sidearm fought its own war against the flyer"
     );
     assert!(
-        state.unit(darter).unwrap().hp < UnitKind::Darter.stats().max_hp,
-        "the darter took sidearm fire"
+        state.unit(buzzard).unwrap().hp < UnitKind::Buzzard.stats().max_hp,
+        "the buzzard took sidearm fire"
     );
 }
 
 #[test]
 fn a_sidearm_holds_fire_when_nothing_it_covers_is_in_range() {
-    // The inverse: a Sentinel dueling a ground Scuttler with a Wisp sitting
+    // The inverse: a Sentinel dueling a ground Scuttler with a Talon sitting
     // six tiles off — seen (vision 7) but outside the air sidearm's three
     // tiles and outside aggro, so it never approaches. The sidearm must
     // stay silent; opportunist fire is range-gated, not a free swing at
@@ -273,11 +273,11 @@ fn a_sidearm_holds_fire_when_nothing_it_covers_is_in_range() {
     let mut state = arena(vec![
         unit(0, UnitKind::Sentinel, 3, 6),
         unit(1, UnitKind::Scuttler, 5, 6),
-        unit(1, UnitKind::Wisp, 9, 6),
+        unit(1, UnitKind::Talon, 9, 6),
     ])
     .build()
     .unwrap();
-    let (sentinel, scuttler, wisp) = (
+    let (sentinel, scuttler, talon) = (
         state.units()[0].id,
         state.units()[1].id,
         state.units()[2].id,
@@ -302,7 +302,7 @@ fn a_sidearm_holds_fire_when_nothing_it_covers_is_in_range() {
             } = e
                 && *attacker == sentinel
             {
-                if *t == wisp {
+                if *t == talon {
                     air_hits += 1;
                 } else if *t == scuttler {
                     ground_hits += 1;
@@ -319,9 +319,9 @@ fn a_sidearm_holds_fire_when_nothing_it_covers_is_in_range() {
         "an out-of-range flyer draws no sidearm fire, seen or not"
     );
     assert_eq!(
-        state.unit(wisp).unwrap().hp,
-        UnitKind::Wisp.stats().max_hp,
-        "the wisp is untouched"
+        state.unit(talon).unwrap().hp,
+        UnitKind::Talon.stats().max_hp,
+        "the talon is untouched"
     );
 }
 
@@ -696,24 +696,24 @@ fn a_ground_chaser_flanks_to_a_firing_position_it_can_actually_shoot_from() {
         players: players(200),
         units: vec![
             unit(0, UnitKind::Flakhound, 1, 6),
-            unit(1, UnitKind::Wisp, 7, 1),
+            unit(1, UnitKind::Talon, 7, 1),
         ],
         buildings: Vec::new(),
         meta: None,
     };
     let mut state = scenario.build().unwrap();
-    let (flak, wisp) = (state.units()[0].id, state.units()[1].id);
+    let (flak, talon) = (state.units()[0].id, state.units()[1].id);
 
     state.tick(&[cmd(
         1,
         Command::Run {
-            units: vec![wisp],
+            units: vec![talon],
             goal: TilePos::new(7, 6),
             queue: false,
         },
     )]);
     run_until(&mut state, 200, |s, _| {
-        s.unit(wisp).unwrap().tile() == TilePos::new(7, 6)
+        s.unit(talon).unwrap().tile() == TilePos::new(7, 6)
     });
     assert_eq!(state.unit(flak).unwrap().order, Order::Idle);
 
@@ -721,13 +721,13 @@ fn a_ground_chaser_flanks_to_a_firing_position_it_can_actually_shoot_from() {
         0,
         Command::Attack {
             units: vec![flak],
-            target: Target::Unit(wisp).into(),
+            target: Target::Unit(talon).into(),
             queue: false,
         },
     )]);
     run_until(&mut state, 600, |_, events| {
         events
             .iter()
-            .any(|e| matches!(e, Event::UnitDied { unit, .. } if *unit == wisp))
+            .any(|e| matches!(e, Event::UnitDied { unit, .. } if *unit == talon))
     });
 }

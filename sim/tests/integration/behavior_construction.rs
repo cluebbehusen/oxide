@@ -1690,10 +1690,10 @@ fn an_allied_machine_makes_way_like_your_own() {
         &serde_json::json!({
             "name": "Team Yard",
             "players": [
-                {"name": "West", "faction": "ferrous", "team": 1, "scrap": 300, "bot": false},
-                {"name": "East", "faction": "cupric", "team": 1, "scrap": 0, "bot": true,
+                {"name": "West", "team": 1, "scrap": 300, "bot": false},
+                {"name": "East", "team": 1, "scrap": 0, "bot": true,
                  "bot_config": {}},
-                {"name": "Foe", "faction": "cupric", "scrap": 0, "bot": true,
+                {"name": "Foe", "scrap": 0, "bot": true,
                  "bot_config": {}}
             ],
             "map": [
@@ -1816,8 +1816,8 @@ fn a_walled_in_machine_takes_the_instant_deal() {
         &serde_json::json!({
             "name": "Pocket Yard",
             "players": [
-                {"name": "West", "faction": "ferrous", "scrap": 300, "bot": false},
-                {"name": "East", "faction": "cupric", "scrap": 0, "bot": false}
+                {"name": "West", "scrap": 300, "bot": false},
+                {"name": "East", "scrap": 0, "bot": false}
             ],
             "map": [
                 "############",

@@ -328,8 +328,6 @@ pub enum RejectReason {
     NotEnoughScrap,
     /// The production queue is at capacity.
     QueueFull,
-    /// The unit kind belongs to the other faction's roster.
-    WrongFaction,
     /// The issuer has not completed the tech buildings this kind
     /// requires — the tree gates humans and bots identically.
     MissingPrerequisite,

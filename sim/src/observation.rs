@@ -16,7 +16,7 @@
 //! serialized byte of a fog-honest observation.
 
 use crate::ids::{BuildingId, PlayerId, Target, UnitId};
-use crate::state::{Faction, Order, State};
+use crate::state::{Order, State};
 use crate::stats::{BuildingKind, Domain, UnitKind};
 use chassis::Tick;
 use chassis::grid::TilePos;
@@ -218,9 +218,6 @@ pub struct ObservationData {
     /// Team-local contacts usable by ordinary attack commands.
     #[serde(default)]
     pub contact_tracks: Vec<crate::vision::ContactTrack>,
-    /// The seat's faction — which variants of the varied roles it may
-    /// train.
-    pub faction: Faction,
     /// Number of own shells in flight.
     pub my_shells: usize,
     /// Impact tiles of hostile shells this seat can currently justify
@@ -578,7 +575,6 @@ impl ObservationData {
                 .collect(),
             blips: Vec::new(),
             contact_tracks: Vec::new(),
-            faction: state.player(me).faction,
             my_shells: 0,
             incoming_shells: Vec::new(),
         }

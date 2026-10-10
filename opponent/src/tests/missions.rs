@@ -77,7 +77,7 @@ fn an_air_raid_draws_only_units_that_hit_air_to_guard_the_foundry() {
             (UnitKind::Lancer, 6, 8),
             (UnitKind::Sentinel, 10, 1),
         ],
-        &[(UnitKind::Darter, 9, 5)],
+        &[(UnitKind::Buzzard, 9, 5)],
     );
     let state = scenario.build().unwrap();
     let commands = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
@@ -101,7 +101,7 @@ fn a_mixed_raid_draws_defenders_for_each_domain_it_comes_from() {
             (UnitKind::Lancer, 5, 9),
             (UnitKind::Sentinel, 10, 1),
         ],
-        &[(UnitKind::Sentinel, 9, 5), (UnitKind::Darter, 9, 6)],
+        &[(UnitKind::Sentinel, 9, 5), (UnitKind::Buzzard, 9, 6)],
     );
     let state = scenario.build().unwrap();
     let commands = seat(&scenario, 0).act(&state, &mut OwnEvents::default());

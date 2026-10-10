@@ -11,8 +11,8 @@ use chassis::grid::TilePos;
 use chassis::replay::Replay;
 use oxide_sim::scenario::{PlayerSpec, ScenarioMode, UnitSpec};
 use oxide_sim::{
-    BuildingKind, Command, Event, Faction, Order, PlayerCommand, PlayerId, SIM_VERSION, Scenario,
-    State, Target, UnitKind,
+    BuildingKind, Command, Event, Order, PlayerCommand, PlayerId, SIM_VERSION, Scenario, State,
+    Target, UnitKind,
 };
 
 /// A long open range: bombard work needs distance.
@@ -739,7 +739,6 @@ fn team_range(kind: UnitKind, with_spotter: bool) -> Scenario {
         players: vec![
             PlayerSpec {
                 name: "Battery".into(),
-                faction: Faction::Ferrous,
                 team: Some(0),
                 scrap: 0,
                 bot: false,
@@ -747,7 +746,6 @@ fn team_range(kind: UnitKind, with_spotter: bool) -> Scenario {
             },
             PlayerSpec {
                 name: "Target".into(),
-                faction: Faction::Cupric,
                 team: Some(1),
                 scrap: 0,
                 bot: false,
@@ -755,7 +753,6 @@ fn team_range(kind: UnitKind, with_spotter: bool) -> Scenario {
             },
             PlayerSpec {
                 name: "Spotter".into(),
-                faction: Faction::Ferrous,
                 team: Some(0),
                 scrap: 0,
                 bot: false,

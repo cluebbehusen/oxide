@@ -7,7 +7,6 @@
 
 use crate::game::{FlakYokeDelay, ShotStyle, SoundKind};
 use macroquad::prelude::{Vec2, vec2};
-use oxide_sim::stats::Role;
 use oxide_sim::{BuildingKind, UnitKind};
 
 /// The usual sprite size against a unit's tile.
@@ -148,7 +147,7 @@ impl DefenseReport {
 
 /// Whether a unit sees buried charges, as the simulation's scouts do.
 pub(crate) fn scout(kind: UnitKind) -> bool {
-    kind.role() == Role::Scout
+    kind == UnitKind::Kestrel
 }
 
 /// Whether a unit of `kind` launches `payload` from one of its weapons.
@@ -263,19 +262,6 @@ pub(crate) fn unit(kind: UnitKind) -> UnitLook {
             marker: M::AntiAir,
             ..plain
         },
-        UnitKind::Stinger => UnitLook {
-            gait: Gait::Treads,
-            weapon: Some(weapon(
-                SoundKind::StingerFire,
-                ShotStyle::FlakBurst {
-                    yoke_delay: FlakYokeDelay::None,
-                    rounds_per_yoke: 1,
-                },
-                35.0 / 128.0 * DEFAULT_SCALE,
-            )),
-            marker: M::AntiAir,
-            ..plain
-        },
         UnitKind::Buzzard => UnitLook {
             gait: light_rotor(kind),
             rig: true,
@@ -286,28 +272,9 @@ pub(crate) fn unit(kind: UnitKind) -> UnitLook {
             )),
             ..plain
         },
-        UnitKind::Darter => UnitLook {
-            weapon: Some(weapon(
-                SoundKind::DarterFire,
-                ShotStyle::ForgeSpot,
-                AIR_MUZZLE,
-            )),
-            ..plain
-        },
         UnitKind::Talon => UnitLook {
             weapon: Some(weapon(
                 SoundKind::TalonFire,
-                ShotStyle::ForgeSpot,
-                AIR_MUZZLE,
-            )),
-            marker: M::AntiAir,
-            ..plain
-        },
-        UnitKind::Wisp => UnitLook {
-            gait: light_rotor(kind),
-            rig: true,
-            weapon: Some(weapon(
-                SoundKind::WispFire,
                 ShotStyle::ForgeSpot,
                 AIR_MUZZLE,
             )),
@@ -341,7 +308,7 @@ pub(crate) fn unit(kind: UnitKind) -> UnitLook {
             marker: M::Worker,
             ..plain
         },
-        UnitKind::Kestrel | UnitKind::Gnat => UnitLook {
+        UnitKind::Kestrel => UnitLook {
             marker: M::Scout,
             ..plain
         },
@@ -356,33 +323,12 @@ pub(crate) fn unit(kind: UnitKind) -> UnitLook {
             marker: M::AntiAir,
             ..plain
         },
-        UnitKind::Sylph => UnitLook {
-            scale: 1.2,
-            weapon: Some(weapon(
-                SoundKind::WispFire,
-                ShotStyle::ForgeSpot,
-                AIR_MUZZLE,
-            )),
-            marker: M::AntiAir,
-            ..plain
-        },
         UnitKind::Condor => UnitLook {
             scale: LARGE_SCALE,
             airframe: Some(Airframe {
                 shadow: vec2(1.75, 1.1875),
                 shadow_offset: vec2(0.125, 0.1875),
                 lift: 0.0625,
-            }),
-            weapon: Some(launcher(SoundKind::BombRelease)),
-            marker: M::Siege,
-            ..plain
-        },
-        UnitKind::Moth => UnitLook {
-            scale: LARGE_SCALE,
-            airframe: Some(Airframe {
-                shadow: vec2(1.55, 1.0),
-                shadow_offset: vec2(0.11, 0.17),
-                lift: 0.08,
             }),
             weapon: Some(launcher(SoundKind::BombRelease)),
             marker: M::Siege,

@@ -8,49 +8,8 @@ use common::{arena, cmd, run_until, unit};
 use oxide_sim::scenario::ScenarioMode;
 
 use chassis::grid::TilePos;
-use oxide_sim::stats::{BuildingKind, Domain, Role};
-use oxide_sim::{Command, Event, Faction, Order, PlayerId, Scenario, Target, UnitKind};
-
-#[test]
-fn roles_resolve_consistently_per_faction() {
-    let roles = [
-        Role::Harvester,
-        Role::Sentinel,
-        Role::Scuttler,
-        Role::Lancer,
-        Role::Bombard,
-        Role::AntiAir,
-        Role::AirGround,
-        Role::AirAir,
-        Role::Warden,
-        Role::Tender,
-        Role::Excavator,
-        Role::Scout,
-        Role::Interceptor,
-        Role::Bomber,
-        Role::Breaker,
-        Role::Avalanche,
-        Role::Skyhook,
-        Role::Sapper,
-    ];
-    for kind in UnitKind::ALL {
-        assert!(
-            roles.contains(&kind.role()),
-            "the role audit forgot {kind:?}'s {:?} slot",
-            kind.role()
-        );
-    }
-    for role in roles {
-        for faction in [Faction::Ferrous, Faction::Cupric] {
-            let kind = role.unit_for(faction);
-            assert_eq!(kind.role(), role, "{kind:?} must map back to its role");
-            assert!(
-                kind.faction().is_none() || kind.faction() == Some(faction),
-                "{kind:?} dealt to the wrong faction"
-            );
-        }
-    }
-}
+use oxide_sim::stats::{BuildingKind, Domain};
+use oxide_sim::{Command, Event, Order, PlayerId, Scenario, Target, UnitKind};
 
 #[test]
 fn stat_tables_satisfy_the_runtime_math_preconditions() {
@@ -76,7 +35,6 @@ fn stat_tables_satisfy_the_runtime_math_preconditions() {
                 weapon.targets.ground || weapon.targets.air,
                 "{owner} weapon {slot} cannot hit any domain"
             );
-            assert!(weapon.salvo > 0, "{owner} weapon {slot} fires no rounds");
             if let Some(radius) = weapon.splash {
                 assert!(
                     radius > chassis::fx::Fx::ZERO,
@@ -242,11 +200,11 @@ fn collision_pairs_only_within_a_domain() {
     let mut state = arena(vec![
         unit(0, UnitKind::Sentinel, 4, 2),
         unit(0, UnitKind::Buzzard, 9, 2),
-        unit(0, UnitKind::Wisp, 9, 3),
+        unit(0, UnitKind::Talon, 9, 3),
     ])
     .build()
     .unwrap();
-    let (sentinel, buzzard, wisp) = (
+    let (sentinel, buzzard, talon) = (
         state.units()[0].id,
         state.units()[1].id,
         state.units()[2].id,
@@ -255,7 +213,7 @@ fn collision_pairs_only_within_a_domain() {
     state.tick(&[cmd(
         0,
         Command::Run {
-            units: vec![buzzard, wisp],
+            units: vec![buzzard, talon],
             goal: TilePos::new(4, 2),
             queue: false,
         },
@@ -266,7 +224,7 @@ fn collision_pairs_only_within_a_domain() {
     let (sp, bp, wp) = (
         state.unit(sentinel).unwrap().pos,
         state.unit(buzzard).unwrap().pos,
-        state.unit(wisp).unwrap().pos,
+        state.unit(talon).unwrap().pos,
     );
     let ground_air = sp.dist(bp).min(sp.dist(wp));
     let air_air = bp.dist(wp);
@@ -283,16 +241,16 @@ fn collision_pairs_only_within_a_domain() {
 #[test]
 fn weapon_masks_gate_acquisition_both_ways() {
     // A Flakhound parked beside an enemy harvester has nothing to say to
-    // it; a Wisp drifting into aggro dies to the same gun. The Wisp
+    // it; a Talon drifting into aggro dies to the same gun. The Talon
     // (air-to-air only) never answers a ground platform.
     let mut state = arena(vec![
         unit(0, UnitKind::Flakhound, 5, 5),
         unit(1, UnitKind::Harvester, 6, 5),
-        unit(1, UnitKind::Wisp, 12, 7),
+        unit(1, UnitKind::Talon, 12, 7),
     ])
     .build()
     .unwrap();
-    let (flak, harv, wisp) = (
+    let (flak, harv, talon) = (
         state.units()[0].id,
         state.units()[1].id,
         state.units()[2].id,
@@ -307,11 +265,11 @@ fn weapon_masks_gate_acquisition_both_ways() {
     );
     assert_eq!(state.unit(harv).unwrap().hp, 60);
 
-    // Send the wisp overhead: flak acquires and deletes it unanswered.
+    // Send the talon overhead: flak acquires and deletes it unanswered.
     state.tick(&[cmd(
         1,
         Command::Run {
-            units: vec![wisp],
+            units: vec![talon],
             goal: TilePos::new(5, 5),
             queue: false,
         },
@@ -319,7 +277,7 @@ fn weapon_masks_gate_acquisition_both_ways() {
     run_until(&mut state, 400, |_, events| {
         events
             .iter()
-            .any(|e| matches!(e, Event::UnitDied { unit, .. } if *unit == wisp))
+            .any(|e| matches!(e, Event::UnitDied { unit, .. } if *unit == talon))
     });
     let flak = state.unit(flak).unwrap();
     assert_eq!(flak.hp, 120, "an air-to-air wing cannot scratch the ground");
@@ -328,16 +286,16 @@ fn weapon_masks_gate_acquisition_both_ways() {
 #[test]
 fn ground_only_weapons_cannot_answer_air() {
     let mut state = arena(vec![
-        unit(0, UnitKind::Darter, 4, 2),
+        unit(0, UnitKind::Buzzard, 4, 2),
         unit(1, UnitKind::Scuttler, 6, 2),
     ])
     .build()
     .unwrap();
-    let (darter, scuttler) = (state.units()[0].id, state.units()[1].id);
+    let (buzzard, scuttler) = (state.units()[0].id, state.units()[1].id);
     state.tick(&[cmd(
         0,
         Command::Attack {
-            units: vec![darter],
+            units: vec![buzzard],
             target: Target::Unit(scuttler).into(),
             queue: false,
         },
@@ -348,8 +306,8 @@ fn ground_only_weapons_cannot_answer_air() {
             .any(|e| matches!(e, Event::UnitDied { unit, .. } if *unit == scuttler))
     });
     assert_eq!(
-        state.unit(darter).unwrap().hp,
-        UnitKind::Darter.stats().max_hp,
+        state.unit(buzzard).unwrap().hp,
+        UnitKind::Buzzard.stats().max_hp,
         "the scuttler has no gun that reaches the sky"
     );
 }
@@ -605,12 +563,12 @@ fn attack_orders_on_uncoverable_targets_walk_instead() {
 fn hovering_machines_do_not_block_foundations() {
     let mut state = arena(vec![
         unit(0, UnitKind::Harvester, 4, 5),
-        unit(0, UnitKind::Darter, 5, 5),
+        unit(0, UnitKind::Buzzard, 5, 5),
     ])
     .build()
     .unwrap();
     let builder = state.units()[0].id;
-    assert_eq!(UnitKind::Darter.stats().domain, Domain::Air);
+    assert_eq!(UnitKind::Buzzard.stats().domain, Domain::Air);
     state.tick(&[cmd(
         0,
         Command::Build {
@@ -631,87 +589,21 @@ fn hovering_machines_do_not_block_foundations() {
 }
 
 #[test]
-fn training_is_gated_to_the_seats_faction() {
-    let mut scenario = arena(vec![unit(0, UnitKind::Harvester, 4, 2)]);
-    scenario.players[0].scrap = 600; // fabricator + one of each test kind
-    let mut state = scenario.build().unwrap();
-    let builder = state.units()[0].id;
-    state.tick(&[cmd(
-        0,
-        Command::Build {
-            units: vec![builder],
-            kind: BuildingKind::Fabricator,
-            anchor: TilePos::new(5, 1),
-            queue: false,
-            defer: false,
-        },
-    )]);
-    run_until(&mut state, 500, |_, events| {
-        events
-            .iter()
-            .any(|e| matches!(e, Event::BuildingCompleted { .. }))
-    });
-    let fab = state
-        .buildings()
-        .iter()
-        .find(|b| b.kind == BuildingKind::Fabricator)
-        .unwrap()
-        .id;
-
-    // Ferrous may not train the Cupric anti-air variant...
-    let report = state.tick(&[cmd(
-        0,
-        Command::Train {
-            building: fab,
-            kind: UnitKind::Stinger,
-        },
-    )]);
-    assert!(
-        report.events.iter().any(|e| matches!(
-            e,
-            Event::CommandRejected {
-                reason: oxide_sim::command::RejectReason::WrongFaction,
-                ..
-            }
-        )),
-        "cross-faction training must bounce"
-    );
-
-    // ...but its own variant and the shared Bombard queue fine.
-    for kind in [UnitKind::Flakhound, UnitKind::Bombard] {
-        let report = state.tick(&[cmd(
-            0,
-            Command::Train {
-                building: fab,
-                kind,
-            },
-        )]);
-        assert!(
-            !report
-                .events
-                .iter()
-                .any(|e| matches!(e, Event::CommandRejected { .. })),
-            "{kind:?} belongs to (or is shared with) Ferrous"
-        );
-    }
-}
-
-#[test]
 fn the_sidearm_fights_its_own_war_alongside_the_main_gun() {
     // A sentinel working a ground target keeps its skyward poke busy
-    // against a hovering darter — two weapons, two wars, two independent
+    // against a hovering buzzard — two weapons, two wars, two independent
     // cooldowns. The ground target is a harvester: at 60 hp a sentinel
-    // duel plus darter fire ends before both cooldowns can prove a
+    // duel plus buzzard fire ends before both cooldowns can prove a
     // second cycle, and this test is about the weapons matrix, not
     // survivability.
     let mut state = arena(vec![
         unit(0, UnitKind::Sentinel, 4, 2),
         unit(1, UnitKind::Harvester, 6, 2),
-        unit(1, UnitKind::Darter, 5, 2),
+        unit(1, UnitKind::Buzzard, 5, 2),
     ])
     .build()
     .unwrap();
-    let (mine, foe, darter) = (
+    let (mine, foe, buzzard) = (
         state.units()[0].id,
         state.units()[1].id,
         state.units()[2].id,
@@ -735,7 +627,7 @@ fn the_sidearm_fights_its_own_war_alongside_the_main_gun() {
             {
                 match target {
                     Some(Target::Unit(uid)) if *uid == foe => ground_hits += 1,
-                    Some(Target::Unit(uid)) if *uid == darter => air_hits += 1,
+                    Some(Target::Unit(uid)) if *uid == buzzard => air_hits += 1,
                     _ => {}
                 }
             }
@@ -916,45 +808,45 @@ fn splash_hits_the_unseen_but_reveals_nothing() {
 
 #[test]
 fn ground_anti_air_reaches_a_flyer_parked_over_rock() {
-    // The wisp hovers over the rock block; the flakhound cannot stand
+    // The talon hovers over the rock block; the flakhound cannot stand
     // there — it must take the nearest standable tile and shoot from
     // range instead of stalling forever while the flyer sits immune.
     // Geometry matters: the flakhound sits in sight of the rock
-    // (vision 7) but out of range and aggro (5), and the wisp's whole
+    // (vision 7) but out of range and aggro (5), and the talon's whole
     // descent stays outside aggro too — so no mid-flight auto-acquire
-    // drags the chaser into range before the wisp parks. The kill then
+    // drags the chaser into range before the talon parks. The kill then
     // requires an approach toward a tile no ground unit can stand on.
     let mut state = arena(vec![
         unit(0, UnitKind::Flakhound, 13, 2),
-        unit(1, UnitKind::Wisp, 7, 1),
+        unit(1, UnitKind::Talon, 7, 1),
     ])
     .build()
     .unwrap();
-    let (flak, wisp) = (state.units()[0].id, state.units()[1].id);
-    // Park the wisp on the rock at (6,3)-(7,4).
+    let (flak, talon) = (state.units()[0].id, state.units()[1].id);
+    // Park the talon on the rock at (6,3)-(7,4).
     state.tick(&[cmd(
         1,
         Command::Run {
-            units: vec![wisp],
+            units: vec![talon],
             goal: TilePos::new(7, 4),
             queue: false,
         },
     )]);
     run_until(&mut state, 200, |s, _| {
-        s.unit(wisp).unwrap().tile() == TilePos::new(7, 4)
+        s.unit(talon).unwrap().tile() == TilePos::new(7, 4)
     });
     state.tick(&[cmd(
         0,
         Command::Attack {
             units: vec![flak],
-            target: Target::Unit(wisp).into(),
+            target: Target::Unit(talon).into(),
             queue: false,
         },
     )]);
     run_until(&mut state, 600, |_, events| {
         events
             .iter()
-            .any(|e| matches!(e, Event::UnitDied { unit, .. } if *unit == wisp))
+            .any(|e| matches!(e, Event::UnitDied { unit, .. } if *unit == talon))
     });
 }
 
@@ -963,7 +855,7 @@ fn air_units_may_start_on_ground_no_walker_could() {
     // Spawn validation runs in the unit's own movement domain: a flyer may
     // open the match hovering over rock, exactly where play could take it
     // one tick later; walkers still need open ground.
-    let state = arena(vec![unit(1, UnitKind::Wisp, 7, 4)]).build().unwrap();
+    let state = arena(vec![unit(1, UnitKind::Talon, 7, 4)]).build().unwrap();
     assert_eq!(state.units()[0].tile(), TilePos::new(7, 4));
     assert!(
         arena(vec![unit(0, UnitKind::Scuttler, 7, 4)])

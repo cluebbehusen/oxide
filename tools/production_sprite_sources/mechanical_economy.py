@@ -46,16 +46,16 @@ def finish(image):
     return metal._finish(image, 128)
 
 
-def foundation(draw, faction):
-    metal._foundation(draw, 128, faction)
+def foundation(draw, variant):
+    metal._foundation(draw, 128, variant)
     for x in (16, 96):
         plate(draw, (x, 22, x + 16, 91))
-        box(draw, (x + 4, 34, x + 12, 51), gen.FACTIONS[faction]["dark"])
+        box(draw, (x + 4, 34, x + 12, 51), gen.PALETTES[variant]["dark"])
 
 
-def crusher(image, draw, faction, phase):
+def crusher(image, draw, variant, phase):
     cycle = (phase - 1) % RECLAIMER_WORK_FRAMES if phase else None
-    accent = gen.FACTIONS[faction]["dark"]
+    accent = gen.PALETTES[variant]["dark"]
     # Hopper -> opposed corrugated jaws -> open outlet.
     polygon(draw, ((33, 20), (95, 20), (86, 49), (42, 49)), DARK)
     polygon(draw, ((38, 24), (90, 24), (82, 43), (46, 43)), VOID)
@@ -90,17 +90,17 @@ def crusher(image, draw, faction, phase):
         box(draw, (59, 63, 69, 67), gen.SCRAP_DARK, 1)
 
 
-def render_reclaimer(faction, phase):
+def render_reclaimer(variant, phase):
     image, draw = metal._new_sprite(128)
-    foundation(draw, faction)
-    crusher(image, draw, faction, phase)
+    foundation(draw, variant)
+    crusher(image, draw, variant, phase)
     cycle = (phase - 1) % RECLAIMER_WORK_FRAMES if phase else 0
-    metal._belt(draw, (50, 82, 78, 103), cycle, faction=faction, step=2)
+    metal._belt(draw, (50, 82, 78, 103), cycle, variant=variant, step=2)
     if phase and cycle >= 6:
         y = 83 + (cycle - 6) * 3
         polygon(draw, ((59, y), (64, y - 1), (69, y + 2), (62, y + 3)), gen.SCRAP_DARK)
         line(draw, ((60, y), (64, y)), gen.SCRAP)
-    metal._hopper(draw, (42, 100, 86, 117), faction)
+    metal._hopper(draw, (42, 100, 86, 117), variant)
     polygon(
         draw, ((53, 109), (63, 106), (75, 110), (73, 113), (52, 113)), gen.SCRAP_DARK
     )
@@ -108,13 +108,13 @@ def render_reclaimer(faction, phase):
     return finish(image)
 
 
-def render_refinery(faction, phase):
+def render_refinery(variant, phase):
     image, draw = metal._new_sprite(128)
-    foundation(draw, faction)
-    accent = gen.FACTIONS[faction]["dark"]
+    foundation(draw, variant)
+    accent = gen.PALETTES[variant]["dark"]
     plate(draw, (14, 22, 35, 103), accent)
     plate(draw, (93, 67, 115, 103), accent)
-    crusher(image, draw, faction, phase)
+    crusher(image, draw, variant, phase)
     # The same crusher feeds a heated finishing press and an ingot tray.
     plate(draw, (32, 80, 96, 109), accent)
     box(draw, (39, 85, 89, 105), DEEP, 2)
@@ -123,13 +123,13 @@ def render_refinery(faction, phase):
     cycle = (phase - 1) % RECLAIMER_WORK_FRAMES if phase else 0
     press = (0, 0, 0, 0, 1, 2, 3, 4, 4, 3, 2, 1)[cycle]
     plate(draw, (44, 96 - press, 84, 104 - press), IRON, 1)
-    metal._hopper(draw, (43, 105, 85, 119), faction)
+    metal._hopper(draw, (43, 105, 85, 119), variant)
     for x in (52, 65):
         box(draw, (x, 111, x + 10, 115), gen.SCRAP_DARK, 1)
         line(draw, ((x + 1, 111), (x + 8, 111)), gen.SCRAP, 1)
     # One side-mounted exhaust identifies the added thermal stage.
     plate(draw, (94, 5, 115, 82), accent)
-    box(draw, (96, 9, 113, 34), gen.FACTIONS[faction]["dark"], 2)
+    box(draw, (96, 9, 113, 34), gen.PALETTES[variant]["dark"], 2)
     box(draw, (99, 12, 110, 29), VOID, 1)
     line(draw, ((99, 10), (110, 10)), LIGHT, 1)
     for y in (51, 58, 65):
@@ -158,9 +158,9 @@ def rocket(draw, nose, tail):
     polygon(draw, ((67, tail - 6), (69, tail), (65, tail - 1)), DARK)
 
 
-def render_avalanche(faction, phase=0, action=0):
+def render_avalanche(variant, phase=0, action=0):
     image, draw = metal._new_sprite(128)
-    accent = gen.FACTIONS[faction]["dark"]
+    accent = gen.PALETTES[variant]["dark"]
     track(draw, 23, phase)
     track(draw, 89, phase)
     polygon(draw, ((40, 39), (88, 39), (96, 56), (91, 102), (37, 102), (32, 56)), VOID)

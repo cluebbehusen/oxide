@@ -179,7 +179,7 @@ fn a_staged_sites_chip_cancels_it_by_kind_and_anchor_whoever_takes_its_id() {
     assert!(matches!(
         panel.queue[0].icon,
         CardIcon::Order {
-            subject: OrderSubject::Building(Turret, _),
+            subject: OrderSubject::Building(Turret),
             ..
         }
     ));

@@ -12,8 +12,8 @@ use chassis::grid::TilePos;
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, ScenarioMode, UnitSpec};
 use oxide_sim::stats::FOUNDRY_RECOVERY_RESERVE;
 use oxide_sim::{
-    BuildingId, BuildingKind, Command, Event, Faction, PlayerCommand, PlayerId, Scenario, State,
-    Target, UnitId, UnitKind,
+    BuildingId, BuildingKind, Command, Event, PlayerCommand, PlayerId, Scenario, State, Target,
+    UnitId, UnitKind,
 };
 
 /// Bay footprint anchored at (4,4): its rect spans world [4,6]x[4,6], so
@@ -28,7 +28,7 @@ const RING: TilePos = TilePos { x: 7, y: 4 };
 /// bills while the raider works.
 const FAR: TilePos = TilePos { x: 14, y: 4 };
 
-fn arena(units: Vec<UnitSpec>, factions: [Faction; 2], scrap: u32, bay: bool) -> Scenario {
+fn arena(units: Vec<UnitSpec>, scrap: u32, bay: bool) -> Scenario {
     let buildings = if bay {
         vec![BuildingSpec {
             player: 0,
@@ -59,7 +59,6 @@ fn arena(units: Vec<UnitSpec>, factions: [Faction; 2], scrap: u32, bay: bool) ->
         players: vec![
             PlayerSpec {
                 name: "Owner".into(),
-                faction: factions[0],
                 team: None,
                 scrap,
                 bot: false,
@@ -67,7 +66,6 @@ fn arena(units: Vec<UnitSpec>, factions: [Faction; 2], scrap: u32, bay: bool) ->
             },
             PlayerSpec {
                 name: "Raider".into(),
-                faction: factions[1],
                 team: None,
                 scrap: 200,
                 bot: false,
@@ -181,12 +179,7 @@ fn forge_buildings(
 }
 
 fn structure_arena(scrap: u32, mut buildings: Vec<BuildingSpec>) -> State {
-    let mut scenario = arena(
-        vec![unit(0, UnitKind::Harvester, 2, 7)],
-        [Faction::Ferrous, Faction::Cupric],
-        scrap,
-        true,
-    );
+    let mut scenario = arena(vec![unit(0, UnitKind::Harvester, 2, 7)], scrap, true);
     scenario.buildings.append(&mut buildings);
     scenario.build().unwrap()
 }
@@ -194,7 +187,6 @@ fn structure_arena(scrap: u32, mut buildings: Vec<BuildingSpec>) -> State {
 fn wounded_salvage_patient(harvester: TilePos) -> (State, UnitId, BuildingId, u32) {
     let mut scenario = arena(
         vec![unit(0, UnitKind::Harvester, harvester.x, harvester.y)],
-        [Faction::Ferrous, Faction::Cupric],
         50,
         true,
     );
@@ -236,7 +228,6 @@ fn wounded_ring_patient(kind: UnitKind, hp: u32, scrap: u32, overlap: bool) -> S
             // alone must not count as the recovery screen.
             unit(0, UnitKind::Sentinel, 10, 9),
         ],
-        [Faction::Ferrous, Faction::Cupric],
         scrap,
         true,
     );
@@ -259,9 +250,7 @@ fn the_aura_heals_the_ring_to_whole_and_bills_the_welders_exact_price() {
         unit(0, UnitKind::Harvester, FAR.x, FAR.y), // patient
         unit(1, UnitKind::Scuttler, 17, 10),        // raider
     ];
-    let mut state = arena(units, [Faction::Ferrous, Faction::Cupric], 500, true)
-        .build()
-        .unwrap();
+    let mut state = arena(units, 500, true).build().unwrap();
     let (patient, raider) = (state.units()[0].id, state.units()[1].id);
     let hurt = wound(&mut state, patient, raider, 30);
     let bank = state.player(PlayerId(0)).scrap;
@@ -314,7 +303,6 @@ fn overlapping_bays_stack_the_heal_and_telescope_the_bill_once() {
             unit(0, UnitKind::Harvester, FAR.x, FAR.y),
             unit(1, UnitKind::Scuttler, 17, 10),
         ],
-        [Faction::Ferrous, Faction::Cupric],
         500,
         true,
     );
@@ -379,9 +367,7 @@ fn a_broke_owner_gets_no_healing() {
         unit(0, UnitKind::Harvester, FAR.x, FAR.y),
         unit(1, UnitKind::Scuttler, 17, 10),
     ];
-    let mut state = arena(units, [Faction::Ferrous, Faction::Cupric], 0, true)
-        .build()
-        .unwrap();
+    let mut state = arena(units, 0, true).build().unwrap();
     let (patient, raider) = (state.units()[0].id, state.units()[1].id);
     // The scuttler's 3-damage bites land the harvester on 18 hp, where
     // the next step's ceiling-diff is a whole scrap — no free fractional
@@ -411,7 +397,6 @@ fn the_aura_cannot_spend_the_emergency_recovery_reserve() {
     // the automatic repair must leave that coin and the patient alone.
     let scenario = arena(
         vec![unit(0, UnitKind::Flakhound, RING.x, RING.y)],
-        [Faction::Ferrous, Faction::Cupric],
         FOUNDRY_RECOVERY_RESERVE - 1,
         true,
     );
@@ -491,9 +476,7 @@ fn partial_scrap_heals_the_earliest_id_first_then_starves() {
         // so the raider never picks the chase back up.
         unit(1, UnitKind::Scuttler, 18, 10),
     ];
-    let mut state = arena(units, [Faction::Ferrous, Faction::Cupric], 5, true)
-        .build()
-        .unwrap();
+    let mut state = arena(units, 5, true).build().unwrap();
     let (a, b, raider) = (
         state.units()[0].id,
         state.units()[1].id,
@@ -533,9 +516,7 @@ fn the_ring_ends_where_the_radius_says() {
         unit(0, UnitKind::Harvester, FAR.x, FAR.y),
         unit(1, UnitKind::Scuttler, 17, 10),
     ];
-    let mut state = arena(units, [Faction::Ferrous, Faction::Cupric], 500, true)
-        .build()
-        .unwrap();
+    let mut state = arena(units, 500, true).build().unwrap();
     let (patient, raider) = (state.units()[0].id, state.units()[1].id);
     let hurt = wound(&mut state, patient, raider, 20);
     // 4.5 tiles off the bay's east face: outside the 4.0 ring, starved.
@@ -563,15 +544,13 @@ fn the_ring_ends_where_the_radius_says() {
 
 #[test]
 fn the_aura_serves_the_sky_too() {
-    // The wisp parks over the bay itself — ground occupancy means
+    // The talon parks over the bay itself — ground occupancy means
     // nothing to a flyer, and the ring reads pure distance.
     let units = vec![
-        unit(0, UnitKind::Wisp, FAR.x, FAR.y),
-        unit(1, UnitKind::Stinger, 17, 10),
+        unit(0, UnitKind::Talon, FAR.x, FAR.y),
+        unit(1, UnitKind::Flakhound, 17, 10),
     ];
-    let mut state = arena(units, [Faction::Cupric, Faction::Cupric], 500, true)
-        .build()
-        .unwrap();
+    let mut state = arena(units, 500, true).build().unwrap();
     let (patient, raider) = (state.units()[0].id, state.units()[1].id);
     let hurt = wound(&mut state, patient, raider, 25);
     state.tick(&[walk(
@@ -588,9 +567,7 @@ fn the_ring_welds_own_machines_only() {
         unit(0, UnitKind::Scuttler, 17, 10),        // seat 0's wounder
         unit(1, UnitKind::Harvester, FAR.x, FAR.y), // seat 1's wounded
     ];
-    let mut state = arena(units, [Faction::Ferrous, Faction::Cupric], 500, true)
-        .build()
-        .unwrap();
+    let mut state = arena(units, 500, true).build().unwrap();
     let (wounder, foreign) = (state.units()[0].id, state.units()[1].id);
     // Gnaw seat 1's harvester with seat 0's scuttler, then send both
     // ways: the scuttler home, the foreign patient into the ring.
@@ -628,9 +605,7 @@ fn an_unbuilt_bay_is_inert() {
         unit(0, UnitKind::Harvester, 2, 6),         // founder
         unit(1, UnitKind::Scuttler, 17, 10),
     ];
-    let mut state = arena(units, [Faction::Ferrous, Faction::Cupric], 500, false)
-        .build()
-        .unwrap();
+    let mut state = arena(units, 500, false).build().unwrap();
     let (patient, founder, raider) = (
         state.units()[0].id,
         state.units()[1].id,
@@ -1032,7 +1007,6 @@ fn lethal_fire_wins_a_structure_repair_pulse_and_forfeits_its_coin() {
             unit(0, UnitKind::Harvester, 2, 7),
             unit(1, UnitKind::Sentinel, 11, 4),
         ],
-        [Faction::Ferrous, Faction::Cupric],
         50,
         true,
     );
@@ -1089,9 +1063,7 @@ fn fire_wins_the_tick_and_the_dead_forfeit_the_aura() {
         unit(1, UnitKind::Scuttler, 17, 10),
         unit(1, UnitKind::Scuttler, 15, 10),
     ];
-    let mut state = arena(units, [Faction::Ferrous, Faction::Cupric], 500, true)
-        .build()
-        .unwrap();
+    let mut state = arena(units, 500, true).build().unwrap();
     let (patient, r1, r2) = (
         state.units()[0].id,
         state.units()[1].id,
