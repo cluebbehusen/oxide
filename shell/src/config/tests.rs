@@ -221,4 +221,11 @@ fn the_driver_quiet_config_has_the_current_shape() {
         serde_json::from_str(include_str!("../../../driver/src/quiet_config.json")).unwrap();
     assert_eq!(config.version, CONFIG_VERSION);
     assert_eq!(config.volumes.master, 0.0);
+    // An empty or partial map binds nothing, so every scripted key press
+    // would be silently ignored.
+    assert!(
+        config.bindings == BindingMap::classic(),
+        "quiet_config.json must carry the default bindings:\n{}",
+        serde_json::to_string(&BindingMap::classic()).unwrap()
+    );
 }
