@@ -44,7 +44,7 @@ fn save_restores_pending_input_and_exact_future_without_any_recording_history() 
     // Missing historical commands cannot affect the saved continuation.
     original.recorder.commands.clear();
     let mut restored = load(&path.0).unwrap();
-    assert!(restored.presentation.paused);
+    assert!(restored.clock.paused);
     assert_eq!(restored.state.hash(), original.state.hash());
     assert_eq!(restored.recorder.start_tick(), start);
     assert!(restored.recorder.commands.is_empty());

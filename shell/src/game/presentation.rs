@@ -1,7 +1,7 @@
 //! Presentation shared by live play and replay playback. World state is borrowed.
 use super::{
-    Effect, PingKind, SoundKind, TICK_DT, Toast, angle_delta, fx, projectiles,
-    rotor_hull_turn_rate, world_vec,
+    Effect, PingKind, SoundKind, Toast, angle_delta, fx, projectiles, rotor_hull_turn_rate,
+    world_vec,
 };
 use super::{EffectKind, Selection};
 use crate::camera::Camera;
@@ -12,10 +12,6 @@ use oxide_sim::{
 };
 use std::collections::HashMap;
 
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "pausing, the overlay, the concession banner and spectating are independent"
-)]
 pub struct Presentation {
     /// The seat local input controls.
     pub human: PlayerId,
@@ -23,10 +19,6 @@ pub struct Presentation {
     pub camera: Camera,
     /// Current selection.
     pub selection: Selection,
-    /// Wall clock stopped?
-    pub paused: bool,
-    /// Wall-clock multiplier.
-    pub speed: f64,
     /// Debug overlay on?
     pub overlay: bool,
     /// Positions at the previous tick, for render interpolation.
@@ -103,7 +95,9 @@ pub struct Presentation {
     /// viewer. `overlay` is the developer's F1 view (grid, ids, camera
     /// internals) and implies this.
     pub spectate: bool,
-    pub(super) accum: f32,
+    /// Where between the last executed tick and the next the picture is
+    /// drawn, set by the clock that paces it.
+    tick_fraction: f32,
 }
 
 /// Salvage the viewer knows lies on a tile.
@@ -162,6 +156,8 @@ pub(crate) struct Scene<'a> {
     pub scenario: &'a Scenario,
     pub pending: &'a [PlayerCommand],
     pub presentation: &'a Presentation,
+    /// The clock pacing this world: paused, speed, and render alpha.
+    pub clock: &'a super::Clock,
     pub seat_styles: crate::seat_style::SeatStyles,
 }
 impl<'a> Scene<'a> {
@@ -170,12 +166,14 @@ impl<'a> Scene<'a> {
         scenario: &'a Scenario,
         pending: &'a [PlayerCommand],
         presentation: &'a Presentation,
+        clock: &'a super::Clock,
     ) -> Self {
         Self {
             state,
             scenario,
             pending,
             presentation,
+            clock,
             seat_styles: crate::seat_style::SeatStyles::new(
                 state,
                 presentation.human,
@@ -259,8 +257,6 @@ impl Presentation {
             human,
             camera,
             selection: Selection::default(),
-            paused: false,
-            speed: 1.0,
             overlay: false,
             prev_pos: HashMap::new(),
             prev_heading: HashMap::new(),
@@ -292,7 +288,7 @@ impl Presentation {
             projection: std::cell::RefCell::default(),
             conceded_banner: false,
             spectate: false,
-            accum: 0.0,
+            tick_fraction: 0.0,
         }
     }
     /// Whether rendering should ignore fog: the debug overlay or a
@@ -310,23 +306,13 @@ impl Presentation {
     /// tick and the next, 0..1, frozen while paused. Drives anything that
     /// must move on sim time rather than wall time.
     pub fn tick_fraction(&self) -> f32 {
-        (self.accum / TICK_DT).clamp(0.0, 1.0)
+        self.tick_fraction
     }
 
-    /// Mirrors an externally owned replay clock into this render vehicle.
-    /// Playback advances through its own engine, so this changes only the
-    /// interpolation and authored-animation fraction, never simulation time.
-    pub(crate) fn sync_external_tick_fraction(&mut self, fraction: f32) {
-        self.accum = fraction.clamp(0.0, 1.0) * TICK_DT;
-    }
-
-    /// Interpolation factor for rendering between ticks.
-    pub fn render_alpha(&self) -> f32 {
-        if self.paused {
-            1.0
-        } else {
-            (self.accum / TICK_DT).clamp(0.0, 1.0)
-        }
+    /// Sets where between ticks the picture is drawn. Only the clock that
+    /// paces this session's world calls it; drawing never moves time.
+    pub(crate) fn set_tick_fraction(&mut self, fraction: f32) {
+        self.tick_fraction = fraction.clamp(0.0, 1.0);
     }
 
     /// Drops an order-acknowledgment ping at a world point.
@@ -616,15 +602,6 @@ impl Presentation {
             .iter()
             .map(|unit| (unit.id.0, world_vec(unit.pos)))
             .collect();
-    }
-
-    /// Advances presentation from ordinary frame time while the match runs.
-    /// Driven presentation steps use [`Self::update_fx`] directly because
-    /// they represent sim time even when the wall clock is paused.
-    pub fn update_wall_clock_fx(&mut self, state: &State, dt: f32) {
-        if !self.paused {
-            self.update_fx(state, dt);
-        }
     }
 
     pub(crate) fn draw_hull_heading(&self, state: &State, id: UnitId, alpha: f32) -> f32 {

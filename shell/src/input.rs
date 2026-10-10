@@ -218,7 +218,6 @@ pub struct InputState {
     /// screens itself, so the frame loop takes this one-shot request.
     pub(crate) menu_requested: bool,
     /// The active binding profile.
-    pub(crate) bindings: BindingMap,
     /// Chord state: modifier truth and held actions.
     pub(crate) resolver: ActionResolver,
 }
@@ -447,7 +446,6 @@ impl InputState {
             lifted_pair: Vec::new(),
             menu_requested: false,
             bookmarks: [None; 4],
-            bindings: crate::config::Config::load().bindings,
             resolver: ActionResolver::default(),
         }
     }
@@ -455,12 +453,12 @@ impl InputState {
     /// Feeds a key edge through the binding map.
     fn key_edge(
         &mut self,
+        bindings: &BindingMap,
         key: Key,
         down: bool,
         context: crate::action::Context,
     ) -> Option<ActionEvent> {
-        self.resolver
-            .key_edge_in(&self.bindings, key, down, context)
+        self.resolver.key_edge_in(bindings, key, down, context)
     }
 
     pub(crate) fn context(&self, game: &Game) -> crate::action::Context {
@@ -1088,7 +1086,12 @@ pub fn desired_cursor(game: &Game, input: &InputState) -> macroquad::miniquad::C
 }
 
 /// Applies a frame's events — hardware and injected alike — to the game.
-pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]) {
+pub fn apply_events(
+    game: &mut Game,
+    input: &mut InputState,
+    bindings: &BindingMap,
+    events: &[RawEvent],
+) {
     for event in events {
         match *event {
             RawEvent::MouseDown { .. } | RawEvent::MouseMove { .. } => {
@@ -1173,14 +1176,12 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     }
                 }
             }
-            RawEvent::Wheel { delta } => {
-                let delta = if input.camera_prefs.zoom_inverted {
-                    -delta
-                } else {
-                    delta
-                };
-                game.presentation.camera.zoom_at(input.mouse, delta);
-            }
+            RawEvent::Wheel { delta } => crate::camera::controls::wheel_zoom(
+                &mut game.presentation.camera,
+                input.mouse,
+                delta,
+                input.camera_prefs,
+            ),
             RawEvent::MouseDown {
                 button: MouseButton::Left,
                 x,
@@ -1188,7 +1189,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
             } => {
                 input.mouse = vec2(x, y);
                 if ribbon_row_press(game, input, vec2(x, y), Pointer::Mouse)
-                    || armed_click(game, input, vec2(x, y), Pointer::Mouse)
+                    || armed_click(game, input, bindings, vec2(x, y), Pointer::Mouse)
                 {
                     continue;
                 }
@@ -1196,7 +1197,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 // its click performs — the same action its hotkey routes.
                 let layout = game.presentation.layout.get();
                 if let Some(hit) = crate::layout::card_under(&layout, vec2(x, y), None) {
-                    press_card(game, input, hit);
+                    press_card(game, input, bindings, hit);
                     continue;
                 }
                 // The idle badge cycles workers on click.
@@ -1208,12 +1209,12 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 }
                 let alert = layout.alert_badge;
                 if alert.w > 0.0 && alert.contains(vec2(x, y)) {
-                    dispatch_action(game, input, Action::JumpToLastAlert);
+                    dispatch_action(game, input, bindings, Action::JumpToLastAlert);
                     continue;
                 }
                 if let Some(slot) = crate::layout::group_slot_under(&layout, vec2(x, y), None) {
                     let assign = input.resolver.ctrl_held();
-                    press_group_slot(game, input, slot, assign);
+                    press_group_slot(game, input, bindings, slot, assign);
                     continue;
                 }
                 if layout.menu_button.w > 0.0 && layout.menu_button.contains(vec2(x, y)) {
@@ -1221,7 +1222,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     continue;
                 }
                 if layout.pause_status.w > 0.0 && layout.pause_status.contains(vec2(x, y)) {
-                    dispatch_action(game, input, Action::TogglePause);
+                    dispatch_action(game, input, bindings, Action::TogglePause);
                     continue;
                 }
                 // The minimap owns clicks landing on it: jump the camera,
@@ -1290,7 +1291,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 if let Some(world) = crate::render::minimap_world_at(&game.view(), vec2(x, y)) {
                     let tile = ground_tile(&game.state, world);
                     if input.patrol_route.is_some() {
-                        add_patrol_waypoint(game, input, world);
+                        add_patrol_waypoint(game, input, bindings, world);
                     } else {
                         let units = game.presentation.selection.units.clone();
                         // The same commandability gate the world path
@@ -1311,7 +1312,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 } else if !click_on_hud(game, vec2(x, y)) {
                     let world = game.presentation.camera.to_world(vec2(x, y));
                     if input.patrol_route.is_some() {
-                        add_patrol_waypoint(game, input, world);
+                        add_patrol_waypoint(game, input, bindings, world);
                     } else {
                         context_order(game, vec2(x, y), queue);
                     }
@@ -1336,13 +1337,13 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
             }
             RawEvent::KeyDown { key } => {
                 if let Some(ActionEvent::Pressed(action)) =
-                    input.key_edge(key, true, input.context(game))
+                    input.key_edge(bindings, key, true, input.context(game))
                 {
-                    dispatch_action(game, input, action);
+                    dispatch_action(game, input, bindings, action);
                 }
             }
             RawEvent::KeyUp { key } => {
-                let _ = input.key_edge(key, false, input.context(game));
+                let _ = input.key_edge(bindings, key, false, input.context(game));
             }
             RawEvent::TouchDown { id, x, y } => touch::down(game, input, id, vec2(x, y)),
             RawEvent::TouchMove { id, x, y } => touch::moved(game, input, id, vec2(x, y)),
@@ -1351,7 +1352,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 // save-name flow); gameplay deliberately has no text
                 // consumer — letters reach the world as semantic keys.
             }
-            RawEvent::TouchUp { id, x, y } => touch::up(game, input, id, vec2(x, y)),
+            RawEvent::TouchUp { id, x, y } => touch::up(game, input, bindings, id, vec2(x, y)),
         }
         if input.construction_open()
             && !matches!(
@@ -1407,14 +1408,15 @@ pub(super) fn ribbon_row_press(
 pub(super) fn press_group_slot(
     game: &mut Game,
     input: &mut InputState,
+    bindings: &BindingMap,
     slot: crate::layout::GroupSlot,
     assign: bool,
 ) {
     use crate::layout::GroupSlot;
     match (slot, assign) {
-        (GroupSlot::Recall(n), false) => dispatch_action(game, input, Action::Slot(n)),
+        (GroupSlot::Recall(n), false) => dispatch_action(game, input, bindings, Action::Slot(n)),
         (GroupSlot::Assign(n), _) | (GroupSlot::Recall(n) | GroupSlot::Empty(n), true) => {
-            dispatch_action(game, input, Action::AssignGroup(n));
+            dispatch_action(game, input, bindings, Action::AssignGroup(n));
         }
         (GroupSlot::Empty(_), false) => {}
     }
@@ -1425,7 +1427,13 @@ pub(super) fn press_group_slot(
 /// denied, or a minimap camera jump). Mouse and touch route here
 /// identically: a fingertip that armed a Build card completes the build
 /// with its next tap.
-fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2, pointer: Pointer) -> bool {
+fn armed_click(
+    game: &mut Game,
+    input: &mut InputState,
+    bindings: &BindingMap,
+    p: Vec2,
+    pointer: Pointer,
+) -> bool {
     if click_on_hud(game, p) && crate::render::minimap_world_at(&game.view(), p).is_none() {
         return false;
     }
@@ -1482,7 +1490,7 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2, pointer: Pointe
         }
         return true;
     }
-    armed_verb_click(game, input, p)
+    armed_verb_click(game, input, bindings, p)
 }
 
 /// The anchor that centers `kind`'s footprint on a finger at `world`,
@@ -1642,7 +1650,12 @@ fn place_at(
 
 /// The armed left-click verbs after placement: salvage, weld, run, and
 /// hunt.
-fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
+fn armed_verb_click(
+    game: &mut Game,
+    input: &mut InputState,
+    bindings: &BindingMap,
+    p: Vec2,
+) -> bool {
     if input.armed(ClickVerb::Salvage) {
         // As in placement: the minimap jumps the camera, a misclick keeps
         // the mode armed, and Shift chains teardowns behind the crew's
@@ -1794,7 +1807,7 @@ fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
         let world = crate::render::minimap_world_at(&game.view(), p)
             .or_else(|| (!click_on_hud(game, p)).then(|| game.presentation.camera.to_world(p)));
         if let Some(world) = world {
-            add_patrol_waypoint(game, input, world);
+            add_patrol_waypoint(game, input, bindings, world);
         }
         return true;
     }
@@ -1803,8 +1816,13 @@ fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
 
 /// Adds a waypoint at `world` to the patrol route being collected, or
 /// says the route is full.
-fn add_patrol_waypoint(game: &mut Game, input: &mut InputState, world: Vec2) {
-    let key = input.bindings.label(Action::Patrol);
+fn add_patrol_waypoint(
+    game: &mut Game,
+    input: &mut InputState,
+    bindings: &BindingMap,
+    world: Vec2,
+) {
+    let key = bindings.label(Action::Patrol);
     let Some(route) = &mut input.patrol_route else {
         return;
     };
@@ -1837,8 +1855,13 @@ fn patrol_full_toast(key: &str, touch_only: bool) -> String {
     }
 }
 
-pub(crate) fn activate_action_card(game: &mut Game, input: &mut InputState, action: Action) {
-    let Some(panel) = crate::panel::build_for_input(&game.view(), input) else {
+pub(crate) fn activate_action_card(
+    game: &mut Game,
+    input: &mut InputState,
+    bindings: &BindingMap,
+    action: Action,
+) {
+    let Some(panel) = crate::panel::build_for_input(&game.view(), bindings, input) else {
         return;
     };
     if let Some(card) = panel
@@ -1847,7 +1870,7 @@ pub(crate) fn activate_action_card(game: &mut Game, input: &mut InputState, acti
         .find(|card| card.action.semantic() == Some(action))
     {
         if card.enabled {
-            activate_card(game, input, card.action);
+            activate_card(game, input, bindings, card.action);
         } else if let Some(why) = &card.why {
             game.presentation.toast(why.clone());
         }
@@ -1858,12 +1881,17 @@ pub(crate) fn activate_action_card(game: &mut Game, input: &mut InputState, acti
 
 /// One panel card pressed — by mouse or fingertip, the same act its
 /// hotkey performs.
-fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::CardAction) {
+fn activate_card(
+    game: &mut Game,
+    input: &mut InputState,
+    bindings: &BindingMap,
+    action: crate::panel::CardAction,
+) {
     match action {
         crate::panel::CardAction::Dispatch(Action::TrainSlot(slot)) => {
             orders::train(game, slot as usize);
         }
-        crate::panel::CardAction::Dispatch(a) => dispatch_action(game, input, a),
+        crate::panel::CardAction::Dispatch(a) => dispatch_action(game, input, bindings, a),
         crate::panel::CardAction::ArmBuild(kind) => {
             input.build_menu = true;
             input.disarm_click_verbs();
@@ -1949,9 +1977,14 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
 
 /// A pointer press on a drawn card: an enabled card acts, and a
 /// disabled one explains itself the way its hotkey does.
-fn press_card(game: &mut Game, input: &mut InputState, hit: crate::layout::CardHit) {
+fn press_card(
+    game: &mut Game,
+    input: &mut InputState,
+    bindings: &BindingMap,
+    hit: crate::layout::CardHit,
+) {
     if hit.action != crate::panel::CardAction::Refused {
-        activate_card(game, input, hit.action);
+        activate_card(game, input, bindings, hit.action);
         return;
     }
     let why = game
@@ -1968,19 +2001,7 @@ fn press_card(game: &mut Game, input: &mut InputState, hit: crate::layout::CardH
 
 /// Continuous per-frame input (held-key and edge panning).
 pub fn update_held(game: &mut Game, input: &InputState, dt: f32) {
-    let mut dir = vec2(0.0, 0.0);
-    if input.resolver.is_held(Action::PanUp) {
-        dir.y -= 1.0;
-    }
-    if input.resolver.is_held(Action::PanDown) {
-        dir.y += 1.0;
-    }
-    if input.resolver.is_held(Action::PanLeft) {
-        dir.x -= 1.0;
-    }
-    if input.resolver.is_held(Action::PanRight) {
-        dir.x += 1.0;
-    }
+    let mut dir = crate::camera::controls::held_pan(&input.resolver);
     if input.camera_prefs.edge_pan && dir == vec2(0.0, 0.0) {
         // Edge panning is opt-in because it fights windowed-mode mousing;
         // keyboard panning wins when both apply.
@@ -1997,13 +2018,7 @@ pub fn update_held(game: &mut Game, input: &InputState, dt: f32) {
             dir.y += 1.0;
         }
     }
-    if dir != vec2(0.0, 0.0) {
-        let world_per_sec =
-            PAN_PX_PER_SEC * input.camera_prefs.pan_speed / game.presentation.camera.zoom;
-        game.presentation
-            .camera
-            .pan(dir.normalize() * world_per_sec * dt);
-    }
+    crate::camera::controls::pan_toward(&mut game.presentation.camera, dir, input.camera_prefs, dt);
 }
 
 /// How the native layer scales a wheel reading.

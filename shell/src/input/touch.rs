@@ -386,7 +386,13 @@ pub(super) fn moved(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
 }
 
 /// A finger lifted.
-pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
+pub(super) fn up(
+    game: &mut Game,
+    input: &mut InputState,
+    bindings: &crate::action::BindingMap,
+    id: u64,
+    p: Vec2,
+) {
     let Some(pos) = input.touches.iter().position(|(tid, _)| *tid == id) else {
         // The real lift of a finger already reported lifted.
         input.lifted_pair.retain(|lifted| lifted.id != id);
@@ -445,7 +451,7 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
                 // follow, so the stroke closes here and Shift
                 // decides the mode, as on MouseUp.
                 if super::ribbon_row_press(game, input, p, super::Pointer::Touch)
-                    || armed_click(game, input, p, super::Pointer::Touch)
+                    || armed_click(game, input, bindings, p, super::Pointer::Touch)
                 {
                     input.last_tap = None;
                     return;
@@ -468,7 +474,7 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
                 let badge = layout.idle_badge;
                 if let Some(card) = card {
                     if lift_presses(input, &lifted, card) {
-                        press_card(game, input, card.hit);
+                        press_card(game, input, bindings, card.hit);
                     }
                 } else if badge.w > 0.0 && crate::layout::touch_pad(badge, input.ui).contains(p) {
                     // The idle badge cycles workers by
@@ -481,11 +487,11 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
                 }) {
                     // A slot acts only if the finger lifts on the same
                     // slot it landed on, as it stood then.
-                    super::press_group_slot(game, input, slot, false);
+                    super::press_group_slot(game, input, bindings, slot, false);
                 } else if layout.alert_badge.w > 0.0
                     && crate::layout::touch_pad(layout.alert_badge, input.ui).contains(p)
                 {
-                    dispatch_action(game, input, Action::JumpToLastAlert);
+                    dispatch_action(game, input, bindings, Action::JumpToLastAlert);
                 } else if layout.menu_button.w > 0.0
                     && crate::layout::touch_pad(layout.menu_button, input.ui).contains(p)
                 {
@@ -496,7 +502,7 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
                 } else if layout.pause_status.w > 0.0
                     && crate::layout::touch_pad(layout.pause_status, input.ui).contains(p)
                 {
-                    dispatch_action(game, input, Action::TogglePause);
+                    dispatch_action(game, input, bindings, Action::TogglePause);
                 } else if click_on_hud(game, p) {
                     // Bare chrome: the tap is swallowed.
                 } else {
@@ -541,7 +547,7 @@ fn world_tap(game: &mut Game, input: &mut InputState, p: Vec2, double: bool) {
 /// past the window fires the context gesture ONCE — on an entity it
 /// inspects (tap-select), on ground it issues the context order for
 /// the current selection, exactly like a right-click.
-pub fn update_touch(game: &mut Game, input: &mut InputState) {
+pub fn update_touch(game: &mut Game, input: &mut InputState, bindings: &crate::action::BindingMap) {
     // A pair emits no events while it rests either, so its box claim
     // rides the same clock.
     if let Some(pair) = &mut input.pair
@@ -556,7 +562,7 @@ pub fn update_touch(game: &mut Game, input: &mut InputState) {
     if let Some((finger, slot)) = group_hold(input) {
         if (input.now - finger.down_at) * 1000.0 >= f64::from(input.touch_prefs.long_press_ms) {
             input.touches[0].1.spent = true;
-            super::press_group_slot(game, input, slot, true);
+            super::press_group_slot(game, input, bindings, slot, true);
         }
         return;
     }

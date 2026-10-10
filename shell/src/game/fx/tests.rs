@@ -581,7 +581,7 @@ fn scheduled_crash_uses_sim_time_and_restores_after_a_seek() {
     wire["aircraft_crashes"] = serde_json::json!([crash]);
     let state = serde_json::from_value(wire).unwrap();
     game.replace_state_after_jump(&state);
-    game.presentation.paused = true;
+    game.clock.paused = true;
     let age = game.presentation.fx[0].age_at(game.state.current_tick(), 0.0);
     assert!((age - 4.0 * crate::game::TICK_DT).abs() < 1.0e-6);
     game.update_fx(30.0);

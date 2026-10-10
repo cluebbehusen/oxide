@@ -242,8 +242,13 @@ impl PauseScreen {
 
     /// Shows `notice` as the subtitle until the next activation.
     pub fn with_notice(mut self, notice: impl Into<String>) -> Self {
-        self.notice = Some(notice.into());
+        self.show_notice(notice);
         self
+    }
+
+    /// Shows `notice` as the subtitle until the next activation.
+    pub fn show_notice(&mut self, notice: impl Into<String>) {
+        self.notice = Some(notice.into());
     }
 
     /// Longest save name the field accepts — what the shelf row can

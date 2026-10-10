@@ -178,7 +178,7 @@ fn duel() -> Scenario {
 }
 
 fn resting(game: &Game) -> bool {
-    (game.presentation.accum - TICK_DT).abs() < 1e-6
+    (game.clock.accum - TICK_DT).abs() < 1e-6
 }
 
 #[test]
@@ -234,10 +234,10 @@ fn the_host_frame_paces_ticks_and_rests_at_the_lead_cap() {
         "the batch went to the client"
     );
 
-    host.presentation.paused = true;
+    host.clock.paused = true;
     host.host_frame(&mut session, TICK_DT * 4.0, now);
     assert_eq!(host.state.current_tick(), 1, "a paused host seals nothing");
-    host.presentation.paused = false;
+    host.clock.paused = false;
 
     for _ in 0..10 {
         host.host_frame(&mut session, TICK_DT * 10.0, now);
@@ -248,7 +248,7 @@ fn the_host_frame_paces_ticks_and_rests_at_the_lead_cap() {
         "the silent client holds the host at the lead cap"
     );
     assert!(resting(&host), "no debt builds while blocked");
-    assert_eq!(host.presentation.render_alpha(), 1.0);
+    assert_eq!(host.clock.render_alpha(), 1.0);
 }
 
 #[test]

@@ -32,8 +32,13 @@ thread_local! {
     static MENU_BINDINGS: std::cell::RefCell<crate::action::BindingMap> = std::cell::RefCell::new(crate::action::BindingMap::classic());
 }
 
-pub(crate) fn set_bindings(bindings: crate::action::BindingMap) {
-    MENU_BINDINGS.with(|current| *current.borrow_mut() = bindings);
+/// Points menu hints at `bindings`, copying them only when they changed.
+pub(crate) fn set_bindings(bindings: &crate::action::BindingMap) {
+    MENU_BINDINGS.with(|current| {
+        if *current.borrow() != *bindings {
+            current.borrow_mut().clone_from(bindings);
+        }
+    });
 }
 
 pub(crate) fn binding_hint(template: &str) -> String {

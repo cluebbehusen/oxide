@@ -90,8 +90,10 @@ pub struct Selection {
 }
 
 /// A transient visual effect (never sim-relevant).
+mod clock;
 mod fx;
 mod presentation;
+pub(crate) use clock::Clock;
 pub(crate) use presentation::{Presentation, Salvage, Scene};
 pub(crate) mod checkpoint;
 pub(crate) mod network;
@@ -153,6 +155,8 @@ pub struct Game {
     /// Staged orders not yet handed to the session host.
     outbox: Vec<Command>,
     pub(crate) presentation: Presentation,
+    /// Whether this match's time runs, how fast, and its tick debt.
+    pub(crate) clock: Clock,
 }
 
 pub(crate) fn world_vec(pos: chassis::fx::Vec2Fx) -> Vec2 {
@@ -186,6 +190,7 @@ impl Game {
             &self.scenario,
             &self.pending,
             &self.presentation,
+            &self.clock,
         )
     }
     pub fn selection_commandable(&self) -> bool {
@@ -200,8 +205,13 @@ impl Game {
     pub(crate) fn update_fx(&mut self, dt: f32) {
         self.presentation.update_fx(&self.state, dt);
     }
+    /// Ages effects by frame time while the match's clock runs; driven
+    /// presentation steps call [`Self::update_fx`] directly because they
+    /// stand for sim time even while the wall clock is paused.
     pub(crate) fn update_wall_clock_fx(&mut self, dt: f32) {
-        self.presentation.update_wall_clock_fx(&self.state, dt);
+        if !self.clock.paused {
+            self.update_fx(dt);
+        }
     }
     pub(crate) fn drop_presentation(&mut self) {
         self.presentation.drop_presentation(&self.state);
@@ -274,6 +284,7 @@ impl Game {
             net: None,
             outbox: Vec::new(),
             presentation,
+            clock: Clock::default(),
         })
     }
 
@@ -606,11 +617,11 @@ impl Game {
     /// tick. Native profiling supplies the bound so a multi-tick frame cannot
     /// overshoot its requested sample window; ordinary play passes `None`.
     pub fn advance_wall_clock(&mut self, dt: f32, stop_tick: Option<u64>) -> bool {
-        if self.presentation.paused {
+        if self.clock.paused {
             return false;
         }
         let stopped = |game: &Self| stop_tick.is_some_and(|tick| game.state.current_tick() >= tick);
-        self.pace(dt * numeric::to_f32(self.presentation.speed), |game| {
+        self.pace(dt * numeric::to_f32(self.clock.speed), |game| {
             if stopped(game) {
                 return false;
             }
@@ -618,10 +629,10 @@ impl Game {
             true
         });
         if stopped(self) {
-            self.presentation.accum = 0.0;
+            self.settle_clock(0.0);
             return true;
         }
-        if self.presentation.accum < TICK_DT {
+        if self.clock.accum < TICK_DT {
             self.prepare_bot_decision();
         }
         false
@@ -631,17 +642,24 @@ impl Game {
     /// frame's cap. A declined tick or the cap drops the remaining debt
     /// rather than spiraling, leaving the render fraction at one full tick.
     fn pace(&mut self, dt: f32, mut tick: impl FnMut(&mut Self) -> bool) {
-        self.presentation.accum += dt;
+        self.clock.accum += dt;
         let mut ran = 0;
-        while self.presentation.accum >= TICK_DT && ran < MAX_TICKS_PER_FRAME {
-            self.presentation.accum -= TICK_DT;
+        while self.clock.accum >= TICK_DT && ran < MAX_TICKS_PER_FRAME {
+            self.settle_clock(self.clock.accum - TICK_DT);
             if !tick(self) {
-                self.presentation.accum += TICK_DT;
+                self.clock.accum += TICK_DT;
                 break;
             }
             ran += 1;
         }
-        self.presentation.accum = self.presentation.accum.min(TICK_DT);
+        self.settle_clock(self.clock.accum.min(TICK_DT));
+    }
+
+    /// Sets the clock's tick debt and draws the picture at that point.
+    fn settle_clock(&mut self, accum: f32) {
+        self.clock.accum = accum;
+        self.presentation
+            .set_tick_fraction(self.clock.tick_fraction());
     }
 
     fn prepare_bot_decision(&mut self) {
@@ -660,7 +678,7 @@ impl Game {
         self.suppress_presentation = false;
         // No interpolation across a bulk advance, and presentation queued
         // before it does not survive the jump.
-        self.presentation.accum = 0.0;
+        self.settle_clock(0.0);
         self.drop_presentation();
         self.presentation.remember_previous_tick(&self.state);
         self.presentation.facing.clear();
@@ -680,7 +698,7 @@ impl Game {
             self.update_fx(TICK_DT);
             events.extend(self.do_tick().events);
         }
-        self.presentation.accum = 0.0;
+        self.settle_clock(0.0);
         events
     }
 
@@ -716,8 +734,8 @@ impl Game {
     pub fn status_view(&self) -> oxide_protocol::StatusView {
         oxide_protocol::StatusView {
             tick: self.state.current_tick(),
-            paused: self.presentation.paused,
-            speed: self.presentation.speed,
+            paused: self.clock.paused,
+            speed: self.clock.speed,
             scenario: self.scenario.name.clone(),
             sim_version: SIM_VERSION,
             result: self.state.result(),
@@ -773,13 +791,13 @@ impl oxide_protocol::DebugSession for Game {
     }
 
     fn set_paused(&mut self, paused: bool) -> Result<(), String> {
-        self.presentation.paused = paused;
+        self.clock.paused = paused;
         Ok(())
     }
 
     fn set_speed(&mut self, multiplier: f64) -> Result<(), String> {
         oxide_protocol::check_speed(multiplier)?;
-        self.presentation.speed = multiplier;
+        self.clock.speed = multiplier;
         Ok(())
     }
 }

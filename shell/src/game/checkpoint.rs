@@ -252,7 +252,6 @@ impl RestoredGame {
         let mut presentation = Presentation::new(&core.state, human, crate::render::viewport());
         presentation.reset_after_jump(&core.state);
         presentation.boundary_fog = boundary_fog;
-        presentation.paused = true;
         presentation.conceded_banner = concede_stats.is_some();
         let end_stats = core
             .state
@@ -270,6 +269,11 @@ impl RestoredGame {
             concede_stats,
             demo,
             presentation,
+            // A restored match opens paused.
+            clock: super::Clock {
+                paused: true,
+                ..super::Clock::default()
+            },
             autosave_done: false,
             suppress_presentation: false,
             net: None,

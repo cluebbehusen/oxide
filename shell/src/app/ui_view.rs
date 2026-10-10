@@ -1,7 +1,7 @@
 //! The automation surface: what the window shows, as the debug protocol
 //! reports it.
 
-use super::{App, Screen};
+use super::{App, Screen, ScreenKind};
 use crate::menu::Menu;
 use crate::render;
 use crate::screens::results::ResultsScreen;
@@ -11,43 +11,15 @@ use oxide_protocol::UiView;
 /// A top-bar control's rect for the automation surface: reported only
 /// during live play, and only while the bar draws it.
 pub(super) fn live_rect(screen: &Screen, rect: Rect) -> Option<[f32; 4]> {
-    (matches!(screen, Screen::Playing) && rect.w > 0.0).then_some([rect.x, rect.y, rect.w, rect.h])
-}
-
-/// The debug protocol's stable name for what the player is looking at,
-/// which also keys the coaching clock.
-pub(super) fn screen_mode(screen: &Screen) -> &'static str {
-    match screen {
-        Screen::Home(_) => "home",
-        Screen::Settings { screen: sc, .. } => sc.mode_name(),
-        Screen::Codex { screen: codex, .. } => codex.mode_name(),
-        Screen::Wizard(w) => w.mode_name(),
-        Screen::Playing => "playing",
-        Screen::Playback(_) => "playback",
-        Screen::FinalMap(_) => "final_map",
-        Screen::Results(_) => "results",
-        Screen::Replays(_) => "replays",
-        Screen::Lobby { .. } => "lobby",
-        Screen::Busy(busy) => busy.mode(),
-        Screen::Pause(ps) => {
-            if ps.saving_failed() {
-                "save_failed"
-            } else if ps.naming() {
-                "save_name"
-            } else if ps.confirming() {
-                "confirm_pause"
-            } else {
-                "pause_menu"
-            }
-        }
-    }
+    (screen.kind() == ScreenKind::Playing && rect.w > 0.0)
+        .then_some([rect.x, rect.y, rect.w, rect.h])
 }
 
 pub(super) fn capture_ui(screen: &Screen, app: &App) -> UiView {
     let (mode_name, menu): (&str, Option<&Menu>) = match screen {
-        Screen::Home(home) => (screen_mode(screen), Some(&home.menu)),
-        Screen::Settings { screen: sc, .. } => (screen_mode(screen), Some(&sc.menu)),
-        Screen::Codex { screen: codex, .. } => (screen_mode(screen), Some(&codex.menu)),
+        Screen::Home(home) => (screen.mode(), Some(&home.menu)),
+        Screen::Settings { screen: sc, .. } => (screen.mode(), Some(&sc.menu)),
+        Screen::Codex { screen: codex, .. } => (screen.mode(), Some(&codex.menu)),
         Screen::Wizard(w) => {
             // The wizard's custom screens (grid, setup) report the same
             // protocol surface the row menus do.
@@ -56,7 +28,7 @@ pub(super) fn capture_ui(screen: &Screen, app: &App) -> UiView {
             // range reports the grid window the player sees.
             let visible = w.ui_visible_range(&app.draft, render::viewport(), render::ui_scale());
             return UiView {
-                mode: screen_mode(screen).to_string(),
+                mode: screen.mode().to_string(),
                 title: Some(title),
                 selected: Some(selected),
                 items,
@@ -69,10 +41,10 @@ pub(super) fn capture_ui(screen: &Screen, app: &App) -> UiView {
                 group_column: None,
             };
         }
-        Screen::Playing | Screen::Playback(_) | Screen::FinalMap(_) => (screen_mode(screen), None),
+        Screen::Playing | Screen::Playback { .. } | Screen::FinalMap(_) => (screen.mode(), None),
         Screen::Results(results) => {
             return UiView {
-                mode: screen_mode(screen).to_string(),
+                mode: screen.mode().to_string(),
                 title: Some("MATCH RESULT".to_string()),
                 selected: Some(results.selected()),
                 items: ResultsScreen::items(),
@@ -85,10 +57,10 @@ pub(super) fn capture_ui(screen: &Screen, app: &App) -> UiView {
                 group_column: None,
             };
         }
-        Screen::Replays(shelf) => (screen_mode(screen), Some(&shelf.menu)),
-        Screen::Lobby { screen: lobby, .. } => (screen_mode(screen), Some(&lobby.menu)),
-        Screen::Busy(busy) => (screen_mode(screen), Some(&busy.menu)),
-        Screen::Pause(ps) => (screen_mode(screen), Some(&ps.menu)),
+        Screen::Replays(shelf) => (screen.mode(), Some(&shelf.menu)),
+        Screen::Lobby { screen: lobby, .. } => (screen.mode(), Some(&lobby.menu)),
+        Screen::Busy(busy) => (screen.mode(), Some(&busy.menu)),
+        Screen::Pause(ps) => (screen.mode(), Some(&ps.menu)),
     };
     UiView {
         mode: mode_name.to_string(),
@@ -100,7 +72,7 @@ pub(super) fn capture_ui(screen: &Screen, app: &App) -> UiView {
         menu_button: live_rect(screen, app.game.presentation.layout.get().menu_button),
         pause_status: live_rect(screen, app.game.presentation.layout.get().pause_status),
         group_column: live_rect(screen, app.game.presentation.layout.get().group_column),
-        panel_regions: matches!(screen, Screen::Playing).then(|| {
+        panel_regions: (screen.kind() == ScreenKind::Playing).then(|| {
             app.game
                 .presentation
                 .layout
@@ -108,7 +80,7 @@ pub(super) fn capture_ui(screen: &Screen, app: &App) -> UiView {
                 .panel_regions
                 .map(|r| [r.x, r.y, r.w, r.h])
         }),
-        chrome: matches!(screen, Screen::Playing).then(|| {
+        chrome: (screen.kind() == ScreenKind::Playing).then(|| {
             let l = app.game.presentation.layout.get();
             let m = l.minimap;
             // JSON has no Infinity: an absent panel reports the window

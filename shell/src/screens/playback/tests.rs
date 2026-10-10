@@ -65,20 +65,31 @@ fn long_session(ticks: u64) -> PlaybackSession {
 }
 
 fn key(session: &mut PlaybackSession, key: Key) -> bool {
+    key_with(session, &crate::action::BindingMap::classic(), key)
+}
+
+fn key_with(session: &mut PlaybackSession, bindings: &crate::action::BindingMap, key: Key) -> bool {
     let mut mouse = vec2(0.0, 0.0);
     let leave = session.update(
+        bindings,
         &[RawEvent::KeyDown { key }, RawEvent::KeyUp { key }],
         0.0,
         vec2(1280.0, 800.0),
-        false,
-        1.0,
+        crate::config::CameraPrefs::default(),
         &mut mouse,
     );
     // Seeks are budgeted across frames; drain any pending one so
     // asserts see the settled position.
     let mut frames = 0;
     while session.seeking.is_some() {
-        session.update(&[], 0.0, vec2(1280.0, 800.0), false, 1.0, &mut mouse);
+        session.update(
+            &crate::action::BindingMap::classic(),
+            &[],
+            0.0,
+            vec2(1280.0, 800.0),
+            crate::config::CameraPrefs::default(),
+            &mut mouse,
+        );
         frames += 1;
         assert!(frames < 1_000, "a pending seek must finish");
     }
@@ -113,12 +124,16 @@ fn transport_input_defers_replay_work_until_the_frame_advance() {
     let viewport = vec2(1280.0, 800.0);
     let mut mouse = Vec2::ZERO;
     assert!(!pb.apply_input(
+        &crate::action::BindingMap::classic(),
         &[RawEvent::KeyDown { key: Key::End }],
         1.0,
         viewport,
-        false,
-        1.0,
-        &mut mouse,
+        crate::config::CameraPrefs {
+            zoom_inverted: false,
+            pan_speed: 1.0,
+            ..crate::config::CameraPrefs::default()
+        },
+        &mut mouse
     ));
     assert_eq!(pb.engine.position(), 0);
     assert_eq!(pb.seeking, Some(60));
@@ -127,16 +142,31 @@ fn transport_input_defers_replay_work_until_the_frame_advance() {
     assert_eq!(pb.engine.state.current_tick(), 60);
 
     assert!(!pb.apply_input(
+        &crate::action::BindingMap::classic(),
         &[RawEvent::KeyDown { key: Key::Home }],
         0.0,
         viewport,
-        false,
-        1.0,
-        &mut mouse,
+        crate::config::CameraPrefs {
+            zoom_inverted: false,
+            pan_speed: 1.0,
+            ..crate::config::CameraPrefs::default()
+        },
+        &mut mouse
     ));
     pb.advance_frame(FrameTime::measure(0.0), viewport);
     assert_eq!(pb.engine.position(), 0);
-    assert!(!pb.apply_input(&[], 0.1, viewport, false, 1.0, &mut mouse));
+    assert!(!pb.apply_input(
+        &crate::action::BindingMap::classic(),
+        &[],
+        0.1,
+        viewport,
+        crate::config::CameraPrefs {
+            zoom_inverted: false,
+            pan_speed: 1.0,
+            ..crate::config::CameraPrefs::default()
+        },
+        &mut mouse
+    ));
     assert_eq!(pb.engine.position(), 0);
     pb.advance_frame(FrameTime::measure(0.1), viewport);
     assert_eq!(pb.engine.position(), 2);
@@ -164,9 +194,9 @@ fn a_suspension_length_frame_ages_effects_by_at_most_a_quarter_second() {
 #[test]
 fn the_transport_answers_its_keys() {
     let mut pb = session();
-    assert!(!pb.paused);
+    assert!(!pb.clock.paused);
     key(&mut pb, Key::Space);
-    assert!(pb.paused, "space pauses");
+    assert!(pb.clock.paused, "space pauses");
     for (key_code, speed) in [
         (Key::Num1, 0.5),
         (Key::Num2, 1.0),
@@ -179,7 +209,7 @@ fn the_transport_answers_its_keys() {
     ] {
         key(&mut pb, key_code);
         assert!(
-            (pb.speed - speed).abs() < f32::EPSILON,
+            (pb.clock.speed - speed).abs() < f64::EPSILON,
             "{key_code:?} selects {speed}x"
         );
     }
@@ -194,7 +224,18 @@ fn the_transport_answers_its_keys() {
 
 fn feed(pb: &mut PlaybackSession, events: &[RawEvent]) -> bool {
     let mut mouse = vec2(0.0, 0.0);
-    pb.apply_input(events, 0.0, vec2(1280.0, 800.0), false, 1.0, &mut mouse)
+    pb.apply_input(
+        &crate::action::BindingMap::classic(),
+        events,
+        0.0,
+        vec2(1280.0, 800.0),
+        crate::config::CameraPrefs {
+            zoom_inverted: false,
+            pan_speed: 1.0,
+            ..crate::config::CameraPrefs::default()
+        },
+        &mut mouse,
+    )
 }
 
 fn tap(id: u64, p: Vec2) -> [RawEvent; 2] {
@@ -224,9 +265,9 @@ fn the_corner_buttons_leave_and_toggle_by_click_and_by_tap() {
     let [back, play] = transport_buttons(render::ui_scale()).map(|(rect, _)| rect.center());
     let mut pb = session();
     assert!(!feed(&mut pb, &tap(1, play)));
-    assert!(pb.paused, "a tap pauses");
+    assert!(pb.clock.paused, "a tap pauses");
     assert!(!feed(&mut pb, &click(play)));
-    assert!(!pb.paused, "a click resumes");
+    assert!(!pb.clock.paused, "a click resumes");
     assert!(feed(&mut pb, &tap(2, back)), "a tap on Back leaves");
     let mut pb = session();
     assert!(feed(&mut pb, &click(back)), "so does a click");
@@ -335,6 +376,7 @@ fn a_scrub_press_seeks_to_the_bar_fraction_and_a_drag_retargets() {
     let bar = scrub_rect(&pb.view(), viewport);
     let mut mouse = vec2(0.0, 0.0);
     pb.update(
+        &crate::action::BindingMap::classic(),
         &[RawEvent::MouseDown {
             button: MouseButton::Left,
             x: bar.x + bar.w * 0.75,
@@ -342,15 +384,10 @@ fn a_scrub_press_seeks_to_the_bar_fraction_and_a_drag_retargets() {
         }],
         0.0,
         viewport,
-        false,
-        1.0,
+        crate::config::CameraPrefs::default(),
         &mut mouse,
     );
-    assert_eq!(
-        pb.drag,
-        Some(PlaybackDrag::Timeline),
-        "the press grabs the timeline"
-    );
+    assert!(pb.scrubbing, "the press grabs the timeline");
     // A 60-tick record fits one frame's budget, so the seek has
     // already landed; the position is the proof.
     let landed = pb.engine.position();
@@ -360,15 +397,16 @@ fn a_scrub_press_seeks_to_the_bar_fraction_and_a_drag_retargets() {
     );
     // Dragging retargets before release.
     pb.update(
+        &crate::action::BindingMap::classic(),
         &[RawEvent::MouseMove { x: bar.x, y: bar.y }],
         0.0,
         viewport,
-        false,
-        1.0,
+        crate::config::CameraPrefs::default(),
         &mut mouse,
     );
     assert_eq!(pb.engine.position(), 0, "the drag walked the target home");
     pb.update(
+        &crate::action::BindingMap::classic(),
         &[RawEvent::MouseUp {
             button: MouseButton::Left,
             x: bar.x,
@@ -376,11 +414,10 @@ fn a_scrub_press_seeks_to_the_bar_fraction_and_a_drag_retargets() {
         }],
         0.0,
         viewport,
-        false,
-        1.0,
+        crate::config::CameraPrefs::default(),
         &mut mouse,
     );
-    assert_eq!(pb.drag, None, "release lets go");
+    assert!(!pb.scrubbing, "release lets go");
 }
 
 #[test]
@@ -460,7 +497,14 @@ fn paused_time_does_not_advance_the_reproduction() {
     let before = pb.engine.position();
     let fx_before = pb.presentation.fx_time();
     let mut mouse = vec2(0.0, 0.0);
-    pb.update(&[], 1.0, vec2(1280.0, 800.0), false, 1.0, &mut mouse);
+    pb.update(
+        &crate::action::BindingMap::classic(),
+        &[],
+        1.0,
+        vec2(1280.0, 800.0),
+        crate::config::CameraPrefs::default(),
+        &mut mouse,
+    );
     assert_eq!(pb.engine.position(), before, "a paused viewer holds still");
     assert_eq!(
         pb.presentation.fx_time(),
@@ -476,23 +520,23 @@ fn replay_fraction_drives_interpolation_and_authored_cycles() {
     let start = pb.engine.position();
 
     pb.update(
+        &crate::action::BindingMap::classic(),
         &[],
         game::TICK_DT * 0.25,
         vec2(1280.0, 800.0),
-        false,
-        1.0,
+        crate::config::CameraPrefs::default(),
         &mut mouse,
     );
     assert_eq!(pb.engine.position(), start);
     assert!((pb.presentation.tick_fraction() - 0.25).abs() < 1e-6);
-    assert!((pb.presentation.render_alpha() - 0.25).abs() < 1e-6);
+    assert!((pb.clock.render_alpha() - 0.25).abs() < 1e-6);
 
     pb.update(
+        &crate::action::BindingMap::classic(),
         &[],
         game::TICK_DT,
         vec2(1280.0, 800.0),
-        false,
-        1.0,
+        crate::config::CameraPrefs::default(),
         &mut mouse,
     );
     assert_eq!(pb.engine.position(), start + 1);
@@ -507,11 +551,11 @@ fn driven_steps_discard_partial_wall_clock_debt() {
         let mut pb = session();
         let mut mouse = vec2(0.0, 0.0);
         pb.update(
+            &crate::action::BindingMap::classic(),
             &[],
             game::TICK_DT * 0.75,
             vec2(1280.0, 800.0),
-            false,
-            1.0,
+            crate::config::CameraPrefs::default(),
             &mut mouse,
         );
         assert!((pb.presentation.tick_fraction() - 0.75).abs() < 1e-6);
@@ -523,17 +567,17 @@ fn driven_steps_discard_partial_wall_clock_debt() {
         }
 
         assert_eq!(
-            pb.accum, 0.0,
+            pb.clock.accum, 0.0,
             "a driven step must reset the viewer clock like a live session"
         );
         assert_eq!(pb.presentation.tick_fraction(), 0.0);
         let after_step = pb.engine.position();
         pb.update(
+            &crate::action::BindingMap::classic(),
             &[],
             game::TICK_DT * 0.3,
             vec2(1280.0, 800.0),
-            false,
-            1.0,
+            crate::config::CameraPrefs::default(),
             &mut mouse,
         );
         assert_eq!(
@@ -577,11 +621,11 @@ fn long_seeks_are_budgeted_and_a_new_transport_command_replaces_them() {
     let mut mouse = Vec2::ZERO;
 
     pb.update(
+        &crate::action::BindingMap::classic(),
         &[RawEvent::KeyDown { key: Key::End }],
         0.0,
         viewport,
-        false,
-        1.0,
+        crate::config::CameraPrefs::default(),
         &mut mouse,
     );
     assert_eq!(
@@ -592,33 +636,43 @@ fn long_seeks_are_budgeted_and_a_new_transport_command_replaces_them() {
     assert_eq!(pb.seeking, Some(5_000));
 
     pb.update(
+        &crate::action::BindingMap::classic(),
         &[RawEvent::KeyDown { key: Key::PageUp }],
         0.0,
         viewport,
-        false,
-        1.0,
+        crate::config::CameraPrefs::default(),
         &mut mouse,
     );
     assert_eq!(pb.engine.position(), 1_500);
     assert_eq!(pb.seeking, None, "the replacement target settled");
 
     pb.seeking = Some(5_000);
-    pb.accum = game::TICK_DT * 0.75;
+    pb.clock.accum = game::TICK_DT * 0.75;
     let advanced = DebugSession::advance(&mut pb, 10);
     assert_eq!(advanced.ticks, 10);
     assert_eq!(pb.engine.position(), 1_510);
     assert_eq!(pb.seeking, None, "driven input cancels stale UI seeks");
-    assert_eq!(pb.accum, 0.0, "driven input drops wall-clock debt");
+    assert_eq!(pb.clock.accum, 0.0, "driven input drops wall-clock debt");
 }
 
 #[test]
 fn playback_hitches_run_only_one_frames_tick_budget() {
     let mut pb = long_session(5_000);
-    pb.speed = 64.0;
+    pb.clock.speed = 64.0;
     let mut mouse = Vec2::ZERO;
-    pb.update(&[], 1.0, vec2(1280.0, 800.0), false, 1.0, &mut mouse);
+    pb.update(
+        &crate::action::BindingMap::classic(),
+        &[],
+        1.0,
+        vec2(1280.0, 800.0),
+        crate::config::CameraPrefs::default(),
+        &mut mouse,
+    );
     assert_eq!(pb.engine.position(), 24);
-    assert!(pb.accum < game::TICK_DT, "excess frame debt is dropped");
+    assert!(
+        pb.clock.accum < game::TICK_DT,
+        "excess frame debt is dropped"
+    );
 }
 
 #[test]
@@ -643,48 +697,49 @@ fn statistics_are_created_lazily_and_retained_while_hidden() {
 fn playback_uses_rebound_camera_and_transport_keys_without_advancing_the_record() {
     use crate::action::Chord;
     let mut pb = session();
-    pb.paused = true;
+    pb.clock.paused = true;
     pb.presentation.camera.zoom_at(vec2(640.0, 400.0), 4.0);
     pb.presentation.camera.update(1.0);
-    assert!(pb.bindings.rebind(Action::PanRight, Chord::bare(Key::L)));
-    assert!(pb.bindings.rebind(Action::ReplayStats, Chord::bare(Key::O)));
+    let mut bindings = crate::action::BindingMap::classic();
+    assert!(bindings.rebind(Action::PanRight, Chord::bare(Key::L)));
+    assert!(bindings.rebind(Action::ReplayStats, Chord::bare(Key::O)));
     let mut mouse = vec2(640.0, 400.0);
     let tick = pb.engine.position();
     let before = pb.presentation.camera.center.x;
     pb.update(
+        &bindings,
         &[
             RawEvent::KeyDown { key: Key::L },
             RawEvent::KeyDown { key: Key::Right },
         ],
         0.1,
         vec2(1280.0, 800.0),
-        false,
-        1.0,
+        crate::config::CameraPrefs::default(),
         &mut mouse,
     );
     let halfway = pb.presentation.camera.center.x;
     pb.update(
+        &bindings,
         &[RawEvent::KeyUp { key: Key::L }],
         0.1,
         vec2(1280.0, 800.0),
-        false,
-        1.0,
+        crate::config::CameraPrefs::default(),
         &mut mouse,
     );
     let after = pb.presentation.camera.center.x;
     assert!(before < halfway && halfway < after);
     pb.update(
+        &bindings,
         &[RawEvent::KeyUp { key: Key::Right }],
         0.1,
         vec2(1280.0, 800.0),
-        false,
-        1.0,
+        crate::config::CameraPrefs::default(),
         &mut mouse,
     );
     assert_eq!(pb.presentation.camera.center.x, after);
     assert_eq!(pb.engine.position(), tick);
-    key(&mut pb, Key::Tab);
+    key_with(&mut pb, &bindings, Key::Tab);
     assert!(!pb.show_stats);
-    key(&mut pb, Key::O);
+    key_with(&mut pb, &bindings, Key::O);
     assert!(pb.show_stats);
 }
