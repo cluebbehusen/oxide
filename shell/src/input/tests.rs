@@ -4125,6 +4125,9 @@ fn only_the_mouse_edge_pans() {
     input.last_pointer = Pointer::Mouse;
     update_held(&mut game, &input, 0.5);
     assert_ne!(game.presentation.camera.center, before);
+}
+
+#[test]
 fn a_modifier_stays_held_until_both_of_its_keys_come_up() {
     let poll = |pressed, released, down| KeyPoll {
         pressed,
