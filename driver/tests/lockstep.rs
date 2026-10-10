@@ -113,7 +113,7 @@ impl Machine {
         Self {
             seat,
             state: scenario.build().unwrap(),
-            replay: GameReplay::new(SIM_VERSION, scenario.clone()),
+            replay: GameReplay::new(SIM_VERSION, "test", scenario.clone()),
             player: seat_controllers(&alone).unwrap().remove(0),
             acted: None,
             hashes: Vec::new(),
@@ -547,23 +547,29 @@ fn a_match_starts_and_stays_in_sync_over_tcp() {
         .iter()
         .map(|_| {
             let connection = wait(|| listener.try_accept().unwrap());
-            let JoinMessage::Hello { protocol, commit } =
-                JoinMessage::decode(&recv(&connection)).unwrap()
+            let JoinMessage::Hello {
+                protocol,
+                sim,
+                commit,
+            } = JoinMessage::decode(&recv(&connection)).unwrap()
             else {
                 panic!("a client opens with Hello");
             };
-            assert!(same_build(protocol, &commit, COMMIT));
+            assert!(same_build(protocol, sim, &commit, COMMIT));
             connection.send(&LobbyMessage::hello(COMMIT).encode());
             connection
         })
         .collect();
     for connection in &clients {
-        let LobbyMessage::Hello { protocol, commit } =
-            LobbyMessage::decode(&recv(connection)).unwrap()
+        let LobbyMessage::Hello {
+            protocol,
+            sim,
+            commit,
+        } = LobbyMessage::decode(&recv(connection)).unwrap()
         else {
             panic!("the host answers with Hello");
         };
-        assert!(same_build(protocol, &commit, COMMIT));
+        assert!(same_build(protocol, sim, &commit, COMMIT));
     }
 
     let mut host = Machine::new(&scenario, HOST);

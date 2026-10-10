@@ -163,13 +163,12 @@ cargo run --release -p oxide-driver -- bot-ladder driver/evaluation/ladder/ladde
 Each comparison pits a higher rung against a lower one on duel maps, in pairs
 with the rungs swapped between the seats, both seats sharing one personality
 seed. A comparison passes when the higher rung wins at least its gate of decided
-legs over at least the manifest's number of decided pairs: each rung against the
-one two below it at 65%, and Prime against Scrapheap at 80%, over 40 decided
-pairs. `ladder.json` covers the nine duel maps, every stance and four runs,
-about 650 legs; run it for a lever's final numbers. `ladder-smoke.json` is the
-quick check at handoff and while a difficulty lever is in progress.
-`bot-ladder-report <rows.jsonl>...` re-reads published rows, and `--replay-dir`
-saves a replay of every leg with their compact rows in `legs.jsonl`.
+legs over at least the manifest's number of decided pairs; the manifest sets
+both. `ladder.json` covers every duel map and stance over several runs; run it
+for a lever's final numbers. `ladder-smoke.json` is the quick check at handoff
+and while a difficulty lever is in progress. `bot-ladder-report <rows.jsonl>...`
+re-reads published rows, and `bot-ladder --replay-dir` saves a replay of every
+leg with their compact rows in `legs.jsonl`.
 
 ## Failure detectors
 

@@ -126,7 +126,7 @@ fn harvest_per_minute(state: &State, player: PlayerId) -> u32 {
         .filter(|building| {
             building.player == player
                 && building.kind == BuildingKind::Foundry
-                && building.built
+                && building.built()
                 && building.hp > 0
         })
         .collect();
@@ -175,7 +175,7 @@ fn passive_per_minute(state: &State, player: PlayerId) -> u32 {
     state
         .buildings()
         .iter()
-        .filter(|building| building.player == player && building.built && building.hp > 0)
+        .filter(|building| building.player == player && building.built() && building.hp > 0)
         .map(|building| match building.kind {
             BuildingKind::Reclaimer if building.tier == 0 => {
                 TICKS_PER_MINUTE / u32::try_from(RECLAIMER_PERIOD).expect("periods fit in u32")

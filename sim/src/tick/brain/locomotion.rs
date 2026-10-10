@@ -28,12 +28,11 @@ pub(super) fn idle(
     acquired: Option<Option<Target>>,
 ) {
     // A guard back at its post cools down before it looks for the next
-    // fight; the leash clears when the cooldown drains — and the guard
-    // is instantly STATIONED again (it verifiably stood the whole
-    // cooldown), so the dancer finds no untethered window to bait.
-    // Idle with a spent tether and no cooldown means the homecoming
-    // just finished (walk's arrival advanced the queue) — arm the
-    // post stand.
+    // fight; the leash clears when the cooldown drains, and the guard is
+    // immediately stationed again (it stood the whole cooldown), so an
+    // enemy dancing at the aggro edge finds no untethered window to bait.
+    // Idle with a spent tether and no cooldown means the homecoming just
+    // finished (walk's arrival advanced the queue), so arm the post stand.
     if let Some(leash) = state.unit(id).expect("caller checked").leash {
         let unit = state.unit_mut(id).expect("caller checked");
         match leash.cooldown {
@@ -60,11 +59,10 @@ pub(super) fn idle(
         };
         unit.path = None;
         unit.settled = 0;
-        // Only a stationed guard's fight tethers — a unit cycling
-        // through idle mid-battle hunts unleashed, like it always
-        // did. No blood yet either way: the warm window starts
-        // empty, so a bait that never comes in reach is dropped at
-        // the radius line exactly.
+        // Only a stationed guard's fight tethers; a unit cycling through
+        // idle mid-battle hunts unleashed. Patience starts empty either
+        // way, so bait that never comes in reach is dropped at the radius
+        // line.
         if stationed {
             unit.leash = Some(crate::state::Leash {
                 anchor,
@@ -80,7 +78,8 @@ pub(super) fn idle(
         // directly rather than assigned so `settled` survives: a parked
         // aircraft is a stationed guard whose fights tether to its pad.
         let stats = unit.kind.stats();
-        let wants_ground = stats.turn_rate > 0 && !unit.landed && auto_land_probe_due(unit.settled);
+        let wants_ground =
+            stats.turn_rate > 0 && !unit.landed() && auto_land_probe_due(unit.settled);
         if wants_ground {
             let (tile, pos, heading) = (unit.tile(), unit.pos, unit.heading);
             if let Some(goal) = landing::nearest_landable(
@@ -119,7 +118,7 @@ pub(super) fn land(
 ) {
     let unit = state.unit(id).expect("caller checked");
     let stats = unit.kind.stats();
-    if stats.turn_rate == 0 || unit.landed {
+    if stats.turn_rate == 0 || unit.landed() {
         state.unit_mut(id).expect("caller checked").advance_queue();
         return;
     }
@@ -185,7 +184,7 @@ pub(super) fn land(
         // The airframe rests where it met the tile: no snap to the center,
         // so the touchdown reads as the end of the run rather than a hop.
         let unit = state.unit_mut(id).expect("caller checked");
-        unit.landed = true;
+        unit.touch_down();
         unit.path = None;
         unit.advance_queue();
         return;
@@ -573,7 +572,7 @@ fn touching_settled_arrival(
                     && other.hp > 0
                     && other.domain() == unit.domain()
                     && other.path.is_none()
-                    && other.drive_speed == chassis::fx::Fx::ZERO
+                    && other.drive_speed() == chassis::fx::Fx::ZERO
                     && other.order == Order::Idle
                     && other.pos.dist_sq(goal_center) <= near_sq
                     && unit.pos.dist(other.pos)
@@ -603,12 +602,11 @@ pub(super) fn approach_rect(
     if keep {
         return true;
     }
-    // Candidate doorsteps, nearest first (stable sort, so ties stay in
-    // ring order). The nearest few are then rotated by unit id so a crowd
-    // heading for the same rectangle fans out across doorsteps instead of
-    // magnetizing onto one tile and jamming — the exact configuration that
-    // froze bot economies. Only the near face rotates: a lone unit never
-    // detours to the building's far side.
+    // Candidate doorsteps, ordered by the approach-relative key (nearest
+    // first). The nearest four are then rotated by the unit's owner-local
+    // rank so a crowd heading for the same rectangle fans out across
+    // doorsteps instead of jamming onto one tile. Only the near face
+    // rotates: a lone unit never detours to the building's far side.
     let domain = kind.stats().domain;
     let mut candidates: Vec<TilePos> = rect_adjacent_tiles(anchor, size)
         .filter(|&t| state.passable_for(domain, t))

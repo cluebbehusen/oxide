@@ -6,8 +6,7 @@ use oxide_sim::stats::{
     BuildingKind, CHARGE_ARRAY_DETECT_RADIUS, CHARGE_BASE_ARRAY_DETECT_RADIUS, CHARGE_BLAST_RADIUS,
     CHARGE_DAMAGE, CHARGE_SCOUT_DETECT_RADIUS, CHARGE_TRIGGER_RADIUS, CRUCIBLE_SMELT_RADIUS,
     Domain, FOUNDRY_DRIP_START_TICK, RADAR_DETECT_RADIUS, REPAIR_BAY_PERIOD, REPAIR_BAY_RADIUS,
-    REPAIR_BAY_STEP, SAPPER_BLAST_RADIUS, SAPPER_SPLASH_DAMAGE, SAPPER_STRUCTURE_DAMAGE, UnitKind,
-    WeaponStats,
+    REPAIR_BAY_STEP, WeaponStats,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,12 +130,12 @@ pub(crate) fn selection_info(game: &Scene<'_>, panel: &Panel) -> SelectionInfo {
             return info;
         };
         let stats = b.stats();
-        if b.player == game.presentation.human && b.built {
+        if b.player == game.presentation.human && b.built() {
             info.upgrade = super::upgrade::comparison(b.kind, b.tier);
         }
         info.health = Some((b.hp, stats.max_hp));
         info.ownership(game, b.player);
-        if !b.built {
+        if !b.built() {
             info.status.push(
                 if b.tier > 0 {
                     "Upgrading"
@@ -169,7 +168,7 @@ pub(crate) fn selection_info(game: &Scene<'_>, panel: &Panel) -> SelectionInfo {
                 );
             } else if matches!(b.kind, BuildingKind::Foundry | BuildingKind::Reclaimer) {
                 let income = building_income(game, b);
-                if b.built && b.kind == BuildingKind::Foundry && income == 0 {
+                if b.built() && b.kind == BuildingKind::Foundry && income == 0 {
                     let remaining = FOUNDRY_DRIP_START_TICK
                         .saturating_sub(game.state.current_tick())
                         .div_ceil(u64::from(oxide_sim::TICKS_PER_SECOND));
@@ -243,7 +242,15 @@ pub(crate) fn selection_info(game: &Scene<'_>, panel: &Panel) -> SelectionInfo {
                     None,
                 );
             }
-            _ => {}
+            BuildingKind::Foundry
+            | BuildingKind::Turret
+            | BuildingKind::Fabricator
+            | BuildingKind::FlakTurret
+            | BuildingKind::Bastion
+            | BuildingKind::Reclaimer
+            | BuildingKind::Extractor
+            | BuildingKind::Airworks
+            | BuildingKind::Barricade => {}
         }
         info.weapons(stats.weapons);
     } else if game.presentation.selection.units.len() == 1 {
@@ -253,7 +260,7 @@ pub(crate) fn selection_info(game: &Scene<'_>, panel: &Panel) -> SelectionInfo {
         let stats = u.kind.stats();
         info.health = Some((u.hp, stats.max_hp));
         info.ownership(game, u.player);
-        if u.landed {
+        if u.landed() {
             info.status.push("Landed".into());
         }
         info.row(
@@ -269,7 +276,7 @@ pub(crate) fn selection_info(game: &Scene<'_>, panel: &Panel) -> SelectionInfo {
             format!("{} tiles", stats.vision),
             Some(Cap(CapabilityIcon::Vision)),
         );
-        if matches!(u.kind, UnitKind::Kestrel | UnitKind::Gnat) {
+        if crate::look::scout(u.kind) {
             info.row(
                 "Mine detection",
                 format!("{CHARGE_SCOUT_DETECT_RADIUS} tiles"),
@@ -289,7 +296,7 @@ pub(crate) fn selection_info(game: &Scene<'_>, panel: &Panel) -> SelectionInfo {
             info.row(
                 "Scrap load",
                 if u.player == game.presentation.human {
-                    format!("{}/{}", u.carrying, harvest.capacity)
+                    format!("{}/{}", u.carrying(), harvest.capacity)
                 } else {
                     format!("{} capacity", harvest.capacity)
                 },
@@ -304,20 +311,20 @@ pub(crate) fn selection_info(game: &Scene<'_>, panel: &Panel) -> SelectionInfo {
                 None,
             );
         }
-        if stats.demolition {
+        if let Some(demolition) = stats.demolition {
             info.row(
                 "Structure hit",
-                format!("{SAPPER_STRUCTURE_DAMAGE} damage"),
+                format!("{} damage", demolition.structure_damage),
                 Some(Cap(CapabilityIcon::Weapon)),
             );
             info.row(
                 "Ground blast",
-                format!("{SAPPER_SPLASH_DAMAGE} damage"),
+                format!("{} damage", demolition.splash_damage),
                 None,
             );
             info.row(
                 "Blast radius",
-                format!("{:.1} tiles", SAPPER_BLAST_RADIUS.to_num::<f32>()),
+                format!("{:.1} tiles", demolition.blast_radius.to_num::<f32>()),
                 None,
             );
         }

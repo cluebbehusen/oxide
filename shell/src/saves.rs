@@ -7,8 +7,7 @@ use oxide_sim::SIM_VERSION;
 use std::path::PathBuf;
 
 /// What a record on disk is, read from its metadata `kind` tag with a
-/// filename-prefix fallback for pre-0.13 files (which carried the rule
-/// in their names).
+/// filename-prefix fallback for records that carry no tag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordKind {
     /// A live session written on quit; Continue's material.
@@ -21,27 +20,17 @@ pub enum RecordKind {
 
 impl RecordKind {
     /// Whether the shelf's verb for this record is Load. Autosaves and
-    /// saves are LIVE sessions: watching one fog-free mid-match would
+    /// saves are live sessions: watching one fog-free mid-match would
     /// scout the enemy, so they resume instead.
     pub fn resumable(self) -> bool {
         matches!(self, RecordKind::Autosave | RecordKind::Save)
     }
 }
 
-pub(crate) fn record_kind(
-    meta: &chassis::replay::ReplayMeta,
-    path: &std::path::Path,
-) -> RecordKind {
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or_default();
+pub(crate) fn record_kind(meta: &chassis::replay::ReplayMeta) -> RecordKind {
     match meta.kind.as_deref() {
         Some("autosave") => RecordKind::Autosave,
         Some("save") => RecordKind::Save,
-        Some("match") => RecordKind::Match,
-        _ if stem.starts_with("autosave-") => RecordKind::Autosave,
-        _ if stem.starts_with("save-") => RecordKind::Save,
         _ => RecordKind::Match,
     }
 }
@@ -92,8 +81,8 @@ fn civil_date(secs: u64) -> String {
 }
 
 /// Shortens a long file stem for the browser row. Counts chars, not
-/// bytes — replay files are user-named, and a byte slice once panicked
-/// mid-multibyte-character and took the whole shelf down with it.
+/// bytes: replay files are user-named, and slicing bytes could split a
+/// multibyte character and panic.
 fn elide(stem: &str) -> String {
     if stem.chars().count() > 26 {
         let head: String = stem.chars().take(23).collect();
@@ -142,10 +131,10 @@ fn scan_cancellable(
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("replay");
-        let kind = record_kind(&replay.meta, &path);
+        let kind = record_kind(&replay.meta);
         // A record's own saved_at outranks mtime: a copied or synced
-        // file reports the copy date, and only the metadata tells the
-        // truth about when the save was made.
+        // file reports the copy date, and only the metadata records when
+        // the save was made.
         let modified = std::fs::metadata(&path)
             .and_then(|metadata| metadata.modified())
             .unwrap_or(std::time::UNIX_EPOCH);
@@ -179,15 +168,7 @@ fn scan_cancellable(
                 RecordKind::Save => "a saved game",
                 _ => "a live session",
             };
-            let action = if replay.legacy {
-                (
-                    "reconstructs and loads paused",
-                    "reconstruct and load paused",
-                )
-            } else {
-                ("loads paused", "load paused")
-            };
-            (what.to_string(), Some(action))
+            (what.to_string(), Some(("loads paused", "load paused")))
         } else {
             (
                 format!("{} seats | sim v{}", replay.seats, replay.meta.sim_version),

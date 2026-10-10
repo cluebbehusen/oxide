@@ -18,7 +18,7 @@ fn turn_limited_weapons_align_before_firing_and_resume_identically() {
         UnitKind::Bombard,
     ] {
         let target_x = if kind == UnitKind::Avalanche { 13 } else { 9 };
-        let rate = kind.ground_turn_rate().max(kind.turret_turn_rate());
+        let rate = kind.ground_turn_rate().max(kind.stats().turret_turn_rate);
         let mut scenario = open_arena_with(
             26,
             18,
@@ -97,12 +97,6 @@ fn turn_limited_weapons_align_before_firing_and_resume_identically() {
                     let restored: oxide_sim::State =
                         serde_json::from_value(document.clone()).unwrap();
                     assert_eq!(restored.hash(), state.hash());
-                    let mut forged = document.clone();
-                    forged["shells"][0]["kind"] = serde_json::json!("bomb");
-                    let error = serde_json::from_value::<oxide_sim::State>(forged)
-                        .unwrap_err()
-                        .to_string();
-                    assert!(error.contains("projectile kind inconsistent with its shooter"));
                     let mut orphaned = document;
                     orphaned["units"]
                         .as_array_mut()
@@ -120,7 +114,13 @@ fn turn_limited_weapons_align_before_firing_and_resume_identically() {
             assert_eq!(unit.cooldowns[0], 0, "turning must not consume the shot");
         }
         let deployment = if kind == UnitKind::Bombard {
-            u32::from(oxide_sim::stats::BOMBARD_BRACE_TICKS)
+            u32::from(
+                oxide_sim::UnitKind::Bombard
+                    .stats()
+                    .brace
+                    .expect("the bombard braces")
+                    .deploy_ticks,
+            )
         } else {
             0
         };
@@ -172,12 +172,12 @@ fn bombard_retracts_before_retargeting_or_moving_and_resumes_mid_deployment() {
         let report = state.tick(&commands);
         assert!(!fired(&report.events));
         assert_eq!(state.unit(id).unwrap().heading, 0);
-        assert_eq!(state.unit(id).unwrap().brace_ticks, tick + 1);
+        assert_eq!(state.unit(id).unwrap().braces(), tick + 1);
     }
     let document = serde_json::to_value(&state).unwrap();
     let mut resumed: oxide_sim::State = serde_json::from_value(document.clone()).unwrap();
     let mut forged = document;
-    forged["units"][0]["brace_ticks"] = serde_json::json!(13);
+    forged["units"][0]["motor"] = serde_json::json!({"motor": "braced", "ticks": 13});
     assert!(
         serde_json::from_value::<oxide_sim::State>(forged)
             .unwrap_err()
@@ -210,7 +210,7 @@ fn bombard_retracts_before_retargeting_or_moving_and_resumes_mid_deployment() {
             );
         } else {
             assert_ne!(u.heading, 0);
-            assert_eq!(u.brace_ticks, 0);
+            assert_eq!(u.braces(), 0);
         }
     }
     for tick in 0..12 {
@@ -234,7 +234,7 @@ fn bombard_retracts_before_retargeting_or_moving_and_resumes_mid_deployment() {
                 "spades must leave the ground before translation"
             );
         } else {
-            assert_eq!(u.brace_ticks, 0);
+            assert_eq!(u.braces(), 0);
             assert!(u.pos.x > planted.x);
         }
     }
@@ -242,11 +242,18 @@ fn bombard_retracts_before_retargeting_or_moving_and_resumes_mid_deployment() {
         let before = state.unit(id).unwrap().heading;
         let report = state.tick(&[]);
         let u = state.unit(id).unwrap();
-        if u.brace_ticks > 0 {
+        if u.braces() > 0 {
             assert_eq!(u.heading, before);
         }
         if fired(&report.events) {
-            assert_eq!(u.brace_ticks, oxide_sim::stats::BOMBARD_BRACE_TICKS);
+            assert_eq!(
+                u.braces(),
+                oxide_sim::UnitKind::Bombard
+                    .stats()
+                    .brace
+                    .expect("the bombard braces")
+                    .deploy_ticks
+            );
             return;
         }
     }
@@ -282,7 +289,7 @@ fn bombard_cannot_fire_unbraced_advance_potshots() {
                 .iter()
                 .any(|e| matches!(e, Event::ShellLaunched { .. }))
         );
-        assert_eq!(state.unit(id).unwrap().brace_ticks, 0);
+        assert_eq!(state.unit(id).unwrap().braces(), 0);
     }
     assert!(state.unit(id).unwrap().pos.y > start.y);
 }
@@ -519,7 +526,6 @@ fn avalanche_backs_out_of_its_dead_zone_before_firing() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "avalanche-dead-zone".into(),
-        seed: 43,
         map: vec![
             "########################".into(),
             "#1.....................#".into(),
@@ -1074,7 +1080,6 @@ fn rock_is_cover_until_the_attacker_repositions() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "cover".into(),
-        seed: 42,
         map: vec![
             "############".into(),
             "#1.........#".into(),
@@ -1175,10 +1180,9 @@ fn buildings_are_not_cover_only_terrain_is() {
 
 #[test]
 fn a_turret_fires_past_the_building_flush_against_it() {
-    // The playtest complaint: a 1x1 flush against a Turret used to shadow
-    // over a quarter of its arc, and the turret path has no repositioning
-    // fallback — it just went quiet. Terrain-only cover: the turret fires
-    // straight through its neighbor.
+    // A 1x1 building flush against a Turret must not shadow its arc: the
+    // turret has no repositioning fallback and would go quiet. Cover is
+    // terrain-only, so the turret fires straight through its neighbor.
     let scenario = Scenario {
         players: players(200),
         buildings: vec![
@@ -1199,8 +1203,7 @@ fn a_turret_fires_past_the_building_flush_against_it() {
     };
     let mut state = scenario.build().unwrap();
     let victim = state.units()[0].id;
-    // 60 hp / 12 damage every 25 ticks — dead within ~110 ticks. Before
-    // terrain-only cover the turret never fired at all.
+    // 60 hp / 12 damage every 25 ticks: dead within ~110 ticks.
     run_until(&mut state, 200, |s, _| s.unit(victim).is_none());
 }
 
@@ -1245,7 +1248,7 @@ fn an_unbuilt_site_is_no_sandbag() {
         .iter()
         .find(|b| b.kind == BuildingKind::Array)
         .expect("the site must have been placed");
-    assert!(!site.built, "the blocker must be an unbuilt foundation");
+    assert!(!site.built(), "the blocker must be an unbuilt foundation");
     let events = state
         .tick(&[cmd(
             0,
@@ -1283,9 +1286,9 @@ fn idle_sentinel_auto_acquires_intruder() {
 #[test]
 fn lancer_fires_from_beyond_bombard_sight_and_retaliation_answers() {
     // The lancer opens fire from 5.4 tiles — outside the bombard's own
-    // sight (5), inside rail range (5.5). The bombard is the one chassis that
-    // survives a rail hit AND can answer ground (the 0.10 rail one-shots
-    // the 60-hp sentinel, so the line unit can no longer star here).
+    // sight (5), inside rail range (5.5). The bombard survives a rail hit
+    // and can answer ground (the rail one-shots the 60-hp sentinel, so the
+    // line unit cannot play this role).
     // The first hit turns the victim on its attacker; the rail wins the
     // duel it opened, but the answer — one arcing shell already in
     // flight — lands after its shooter is dead. Shells outlive shooters.
@@ -1346,12 +1349,11 @@ fn lancer_fires_from_beyond_bombard_sight_and_retaliation_answers() {
 fn a_flank_pick_is_lethal_and_the_march_still_arrives() {
     // An open lane: the lancer sits 5.4 tiles off the march route —
     // outside the marchers' aggro, inside its own range — and picks one
-    // off as the column passes. Under the 0.10 numbers the rail
-    // one-shots the 60-hp sentinel: the pick is an assassination, no
-    // answer is possible from a corpse, and the sniper walks away
-    // clean. What the ambush must NOT do is stop the army — the
-    // rearguard still arrives. (The retaliation contract itself is
-    // covered by the bombard tests; fight-then-win-then-resume by
+    // off as the column passes. The rail one-shots the 60-hp sentinel, so
+    // no answer is possible from a corpse and the sniper walks away clean.
+    // What the ambush must not do is stop the army: the rearguard still
+    // arrives. (The retaliation contract itself is covered by the bombard
+    // tests; fight-then-win-then-resume by
     // hunt_engages_on_the_way_then_resumes.)
     let scenario = Scenario {
         players: players(200),
@@ -1500,7 +1502,7 @@ fn turret_holds_ground_and_dies_to_lancer_siege() {
         .unwrap()
         .id;
     run_until(&mut state, 600, |s, _| {
-        s.building(turret).is_some_and(|b| b.built)
+        s.building(turret).is_some_and(oxide_sim::Building::built)
     });
     // Builder clears the field so the duel is clean.
     state.tick(&[cmd(
@@ -1511,8 +1513,8 @@ fn turret_holds_ground_and_dies_to_lancer_siege() {
             queue: false,
         },
     )]);
-    // Fog: the rat can't target what it hasn't seen — hunt in
-    // and let fire-at-will find the turret.
+    // Fog: the scuttler can't target what it hasn't seen, so hunt in and
+    // let fire-at-will find the turret.
     state.tick(&[cmd(
         1,
         Command::Hunt {
@@ -1533,7 +1535,6 @@ fn turret_holds_ground_and_dies_to_lancer_siege() {
     // Now the siege, in a fresh world: a lancer at range 5.5 > turret 5.0
     // grinds it down without ever taking return fire.
     let scenario = Scenario {
-        seed: 43,
         players: players(200),
         ..open_arena(
             20,
@@ -1563,7 +1564,7 @@ fn turret_holds_ground_and_dies_to_lancer_siege() {
         .unwrap()
         .id;
     run_until(&mut state, 600, |s, _| {
-        s.building(turret).is_some_and(|b| b.built)
+        s.building(turret).is_some_and(oxide_sim::Building::built)
     });
     state.tick(&[
         cmd(
@@ -1615,7 +1616,9 @@ fn turret_fires_at_its_stated_cadence() {
         },
     )]);
     run_until(&mut state, 700, |s, _| {
-        s.buildings().iter().any(|b| b.anchor == anchor && b.built)
+        s.buildings()
+            .iter()
+            .any(|b| b.anchor == anchor && b.built())
     });
     // Builder clears out; the sentinel wanders in obliviously.
     state.tick(&[
@@ -1673,7 +1676,6 @@ fn bastion_has_artillery_reach_and_a_real_close_pressure_dead_zone() {
     );
 
     let scenario = Scenario {
-        seed: 44,
         players: players(200),
         buildings: vec![BuildingSpec {
             player: 0,
@@ -1725,7 +1727,6 @@ fn bastion_has_artillery_reach_and_a_real_close_pressure_dead_zone() {
 #[test]
 fn bastion_opens_fire_beyond_its_dead_zone() {
     let scenario = Scenario {
-        seed: 45,
         players: players(200),
         buildings: vec![BuildingSpec {
             player: 0,
@@ -1766,9 +1767,8 @@ fn bastion_opens_fire_beyond_its_dead_zone() {
 #[test]
 fn mirrored_duels_end_in_mutual_annihilation() {
     // The observable core of simultaneous resolution: two identical
-    // sentinels ordered at each other die on the same tick. Before 0.6,
-    // inline damage let the lower id win every mirror duel with hp to
-    // spare — the same edge that decided every mirror match.
+    // sentinels ordered at each other die on the same tick. Inline damage
+    // would let the earlier decider win every mirror duel with hp to spare.
     let mut state = arena(vec![
         unit(0, UnitKind::Sentinel, 4, 6),
         unit(1, UnitKind::Sentinel, 11, 6),
@@ -1803,13 +1803,10 @@ fn mirrored_duels_end_in_mutual_annihilation() {
     );
 }
 
-// A retired sibling of the test below — "two simultaneous beyond-aggro
-// attackers, one executed, the victim answers the earliest survivor" —
-// died with the 0.10 rail bless: two rail hits (120) now kill every
-// chassis that can answer ground, so the two-survivable-shooter volley
-// cannot be staged in the real game. The earliest-survivor property
-// itself is structural (the busy-guard makes the first processed answer
-// stick) and stays exercised by the corpse-skip and interrupt tests.
+// The earliest-survivor property (a victim of several beyond-aggro
+// attackers answers the earliest one that survives) is structural: the
+// busy-guard makes the first processed answer stick. The corpse-skip and
+// interrupt tests exercise it.
 
 #[test]
 fn retaliation_interrupts_an_attack_on_a_corpse() {
@@ -1817,8 +1814,8 @@ fn retaliation_interrupts_an_attack_on_a_corpse() {
     // step; the scuttler dies in the same volley that an out-of-aggro
     // lancer lands on the victim. The victim's attack order points at a
     // corpse — it must interrupt and answer the survivor, not stand mute
-    // through the lancer's next cooldown. The victim is a bombard: the
-    // one chassis that survives the rail hit and answers ground.
+    // through the lancer's next cooldown. The victim is a bombard, which
+    // survives the rail hit and answers ground.
     let mut state = arena(vec![
         unit(1, UnitKind::Scuttler, 5, 6), // id 0: bait, dies this tick
         unit(1, UnitKind::Lancer, 9, 4),   // id 1: the real threat

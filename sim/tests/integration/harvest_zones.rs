@@ -87,7 +87,9 @@ fn a_worker_displaced_to_the_far_edge_of_its_doorstep_closes_the_gap() {
             queue: false,
         },
     )]);
-    run_until(&mut state, 200, |s, _| s.unit(worker).unwrap().carrying > 0);
+    run_until(&mut state, 200, |s, _| {
+        s.unit(worker).unwrap().carrying() > 0
+    });
     assert!(state.unit(worker).unwrap().in_work_reach(node, (1, 1)));
 }
 
@@ -112,10 +114,12 @@ fn harvesting_waits_for_physical_reach_from_each_approach() {
                     queue: false,
                 },
             )]);
-            run_until(&mut state, 600, |s, _| s.unit(worker).unwrap().carrying > 0);
+            run_until(&mut state, 600, |s, _| {
+                s.unit(worker).unwrap().carrying() > 0
+            });
             let worker = state.unit(worker).unwrap();
             assert!(
-                worker.carrying > 0,
+                worker.carrying() > 0,
                 "{kind:?} never reached scrap from {start:?}"
             );
             let dx = (worker.pos.x - chassis::fx::Fx::from_num(10)).min(chassis::fx::Fx::ZERO)
@@ -172,10 +176,14 @@ fn unloading_waits_for_physical_reach_on_each_foundry_side() {
                     .any(|e| matches!(e, Event::CommandRejected { .. }))
             );
             run_until(&mut state, 600, |s, _| {
-                s.unit(worker).unwrap().carrying == 0
+                s.unit(worker).unwrap().carrying() == 0
             });
             let worker = state.unit(worker).unwrap();
-            assert_eq!(worker.carrying, 0, "{kind:?} never unloaded from {start:?}");
+            assert_eq!(
+                worker.carrying(),
+                0,
+                "{kind:?} never unloaded from {start:?}"
+            );
             let foundry = state
                 .buildings()
                 .iter()
@@ -231,7 +239,7 @@ fn set_cargo(mut state: State, worker: oxide_sim::UnitId, carrying: u32) -> Stat
         .position(|unit| unit.id == worker)
         .expect("worker exists");
     let mut doc = serde_json::to_value(&state).unwrap();
-    doc["units"][slot]["carrying"] = json!(carrying);
+    doc["units"][slot]["worker"]["carrying"] = json!(carrying);
     state = serde_json::from_value(doc).unwrap();
     state
 }
@@ -260,7 +268,7 @@ fn the_fixed_anchor_reaches_the_widest_deposit_but_cannot_chain_past_it() {
         vec![
             unit(0, UnitKind::Harvester, 4, 5),
             // The zone only considers visible or remembered salvage.
-            // A harmless air scout establishes honest knowledge of both
+            // A harmless air scout establishes fog-honest knowledge of both
             // boundary probes without changing their routes.
             unit(0, UnitKind::Talon, 12, 2),
         ],
@@ -278,7 +286,7 @@ fn the_fixed_anchor_reaches_the_widest_deposit_but_cannot_chain_past_it() {
     )]);
     run_until(&mut state, 2_000, |state, _| {
         let unit = state.unit(worker).unwrap();
-        unit.order == Order::Idle && unit.carrying == 0
+        unit.order == Order::Idle && unit.carrying() == 0
     });
 
     assert_eq!(state.map().scrap_at(anchor), 0);
@@ -329,7 +337,7 @@ fn a_dry_node_adopts_a_neighboring_wreck_inside_the_same_contract() {
         panic!("the local cleanup should still be the active work contract")
     };
     assert_eq!(node, wreck);
-    assert_eq!(work_anchor, Some(anchor));
+    assert_eq!(work_anchor, anchor);
     assert!(!retiring);
 }
 
@@ -397,14 +405,14 @@ fn a_delivery_returns_to_the_same_zone_while_salvage_remains() {
         state.unit(worker).unwrap().order,
         Order::Harvest {
             node,
-            anchor: Some(anchor),
+            anchor,
             retiring: false,
         } if node == source && anchor == source
     ));
-    assert_eq!(state.unit(worker).unwrap().carrying, 0);
+    assert_eq!(state.unit(worker).unwrap().carrying(), 0);
 
     run_until(&mut state, 500, |state, _| {
-        state.unit(worker).unwrap().carrying > 0
+        state.unit(worker).unwrap().carrying() > 0
     });
     assert!(
         state.map().scrap_at(source) < 2,
@@ -448,7 +456,11 @@ fn retirement_deposits_then_advances_one_queued_order_at_the_foundry() {
         |state, _| matches!(state.unit(worker).unwrap().order, Order::Run { goal: g } if g.tile() == goal),
     );
     let unit = state.unit(worker).unwrap();
-    assert_eq!(unit.carrying, 0, "the queued leg starts only after deposit");
+    assert_eq!(
+        unit.carrying(),
+        0,
+        "the queued leg starts only after deposit"
+    );
     assert!(
         unit.queue.is_empty(),
         "the queued leg was popped exactly once"
@@ -501,12 +513,12 @@ fn shared_sight_retires_an_autonomous_retarget_but_not_before_it_is_known() {
         },
     )]);
     run_until(&mut state, 300, |state, _| {
-        state.unit(worker).unwrap().carrying > 1
+        state.unit(worker).unwrap().carrying() > 1
             && matches!(
                 state.unit(worker).unwrap().order,
                 Order::Harvest {
                     node,
-                    anchor: Some(work_anchor),
+                    anchor: work_anchor,
                     retiring: false,
                 } if node == fallback && work_anchor == anchor
             )
@@ -588,7 +600,7 @@ fn a_hidden_artillery_hit_diverts_autonomous_work_without_revealing_the_gun() {
             state.unit(worker).unwrap().order,
             Order::Harvest {
                 node,
-                anchor: Some(work_anchor),
+                anchor: work_anchor,
                 retiring: false,
             } if node == exposed && work_anchor == anchor
         ) && state.unit(worker).unwrap().path.is_none()
@@ -613,7 +625,7 @@ fn a_hidden_artillery_hit_diverts_autonomous_work_without_revealing_the_gun() {
     let mut doc = serde_json::to_value(&state).unwrap();
     doc["shells"] = json!([]);
     doc["units"][bombard_slot]["cooldowns"][0] = json!(0);
-    doc["units"][worker_slot]["carrying"] = json!(0);
+    doc["units"][worker_slot]["worker"]["carrying"] = json!(0);
     doc["units"][worker_slot]["progress"] = json!(0);
     state = serde_json::from_value(doc).unwrap();
     let before = state.unit(worker).unwrap().hp;
@@ -649,7 +661,7 @@ fn a_hidden_artillery_hit_diverts_autonomous_work_without_revealing_the_gun() {
         state.unit(worker).unwrap().order,
         Order::Harvest {
             node,
-            anchor: Some(work_anchor),
+            anchor: work_anchor,
             retiring: false,
         } if node == safe && work_anchor == anchor
     ));
@@ -808,6 +820,43 @@ fn a_hidden_gun_is_remembered_even_when_its_old_launch_tile_is_seen() {
 }
 
 #[test]
+fn a_hidden_hit_on_any_harvesting_worker_is_remembered() {
+    let mut state = state_with_salvage(
+        32,
+        &[],
+        &[],
+        vec![
+            unit(0, UnitKind::Excavator, 12, 5),
+            unit(1, UnitKind::Bombard, 21, 5),
+            unit(1, UnitKind::Harvester, 16, 5),
+        ],
+        vec![],
+    );
+    let (worker, bombard) = (state.units()[0].id, state.units()[1].id);
+    let before = state.unit(worker).unwrap().hp;
+    state.tick(&[cmd(
+        1,
+        Command::Attack {
+            units: vec![bombard],
+            target: Target::Unit(worker).into(),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 200, |state, _| {
+        state.unit(worker).unwrap().hp < before
+    });
+    assert!(state.unit(worker).unwrap().hp > 0, "the hit was not a loss");
+    assert!(!state.can_see(PlayerId(0), state.unit(bombard).unwrap().tile()));
+    let doc = serde_json::to_value(&state).unwrap();
+    assert!(
+        doc["vision"][0]["salvage_incidents"]
+            .as_array()
+            .is_some_and(|incidents| !incidents.is_empty()),
+        "an Excavator's wound warns its team like a Harvester's"
+    );
+}
+
+#[test]
 fn an_own_loss_retires_a_worker_home_before_it_surfaces_idle() {
     let anchor = TilePos::new(13, 5);
     let exposed = TilePos::new(15, 5);
@@ -932,7 +981,7 @@ fn a_far_radar_contact_does_not_retire_an_unrelated_zone() {
         state.tick(&[]);
     }
     assert!(
-        state.unit(worker).unwrap().carrying > 0
+        state.unit(worker).unwrap().carrying() > 0
             && matches!(
                 state.unit(worker).unwrap().order,
                 Order::Harvest {
@@ -981,7 +1030,7 @@ fn an_explicit_anchor_remains_authoritative_inside_a_local_radar_contact() {
             state.unit(worker).unwrap().order,
             Order::Harvest {
                 node,
-                anchor: Some(work_anchor),
+                anchor: work_anchor,
                 retiring: false,
             } if node == source && work_anchor == source
         ),
@@ -1271,7 +1320,7 @@ fn a_remembered_armed_structure_blocks_an_autonomous_retarget_after_sight_is_los
             state.unit(worker).unwrap().order,
             Order::Harvest {
                 node,
-                anchor: Some(work_anchor),
+                anchor: work_anchor,
                 retiring: true,
             } if node == anchor && work_anchor == anchor
         )
@@ -1313,7 +1362,7 @@ fn an_autonomous_retarget_routes_around_known_danger() {
             state.unit(worker).unwrap().order,
             Order::Harvest {
                 node,
-                anchor: Some(work_anchor),
+                anchor: work_anchor,
                 retiring: false,
             } if node == fallback && work_anchor == anchor
         ) && state.unit(worker).unwrap().path.is_some()
@@ -1369,23 +1418,6 @@ fn never_seen_live_salvage_is_not_a_command_oracle() {
 }
 
 #[test]
-fn legacy_harvest_orders_default_the_anchor_to_their_current_node() {
-    let order: Order = serde_json::from_value(json!({
-        "order": "harvest",
-        "node": {"x": 7, "y": 5}
-    }))
-    .unwrap();
-    assert_eq!(
-        order,
-        Order::Harvest {
-            node: TilePos::new(7, 5),
-            anchor: None,
-            retiring: false,
-        }
-    );
-}
-
-#[test]
 fn stacked_heaps_hand_two_workers_distinct_work_tiles() {
     // Two heaps one above the other, two workers arriving from the same
     // side: the second must not steer for the tile the first already
@@ -1431,7 +1463,7 @@ fn stacked_heaps_hand_two_workers_distinct_work_tiles() {
     for tick in 1..=160u32 {
         state.tick(&[]);
         for (slot, id) in [a, b].into_iter().enumerate() {
-            if first_scrap[slot].is_none() && state.unit(id).unwrap().carrying > 0 {
+            if first_scrap[slot].is_none() && state.unit(id).unwrap().carrying() > 0 {
                 first_scrap[slot] = Some(tick);
             }
         }
@@ -1526,7 +1558,7 @@ fn a_claimed_work_tile_still_serves_when_the_free_ones_are_sealed() {
         }
         chained = true;
         assert!(!retiring, "the chained worker gave the source up");
-        if worker.carrying > 1 {
+        if worker.carrying() > 1 {
             extracted = true;
             break;
         }
@@ -1564,7 +1596,9 @@ fn wreck_workers_leave_the_pile_and_work_from_beside_it() {
                     queue: false,
                 },
             )]);
-            run_until(&mut state, 300, |s, _| s.unit(worker).unwrap().carrying > 0);
+            run_until(&mut state, 300, |s, _| {
+                s.unit(worker).unwrap().carrying() > 0
+            });
             let unit = state.unit(worker).unwrap();
             assert_ne!(unit.tile(), node, "{kind:?} stood inside the wreck");
             assert!(unit.in_work_reach(node, (1, 1)));

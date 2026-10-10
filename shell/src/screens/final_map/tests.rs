@@ -1,4 +1,5 @@
 use super::*;
+use oxide_protocol::MouseButton;
 use oxide_sim::Scenario;
 
 #[test]
@@ -9,18 +10,18 @@ fn final_map_accepts_only_camera_navigation_and_escape() {
     let mut mouse = Vec2::ZERO;
     let before = game.presentation.camera.center;
     assert!(!screen.update(
+        &crate::action::BindingMap::classic(),
         &[RawEvent::KeyDown { key: Key::Right }],
         0.25,
-        viewport,
         crate::config::CameraPrefs::default(),
         &mut mouse,
         &mut game,
     ));
     assert!(game.presentation.camera.center.x > before.x);
     assert!(screen.update(
+        &crate::action::BindingMap::classic(),
         &[RawEvent::KeyDown { key: Key::Escape }],
         0.0,
-        viewport,
         crate::config::CameraPrefs::default(),
         &mut mouse,
         &mut game,
@@ -52,7 +53,14 @@ fn the_back_button_returns_to_the_report_by_click_and_by_tap() {
         },
     ];
     let mut screen = FinalMapScreen::open();
-    assert!(screen.update(&tap, 0.0, viewport, prefs, &mut mouse, &mut game));
+    assert!(screen.update(
+        &crate::action::BindingMap::classic(),
+        &tap,
+        0.0,
+        prefs,
+        &mut mouse,
+        &mut game
+    ));
     let click = [
         RawEvent::MouseDown {
             button: MouseButton::Left,
@@ -66,7 +74,14 @@ fn the_back_button_returns_to_the_report_by_click_and_by_tap() {
         },
     ];
     let mut screen = FinalMapScreen::open();
-    assert!(screen.update(&click, 0.0, viewport, prefs, &mut mouse, &mut game));
+    assert!(screen.update(
+        &crate::action::BindingMap::classic(),
+        &click,
+        0.0,
+        prefs,
+        &mut mouse,
+        &mut game
+    ));
 }
 
 #[test]
@@ -94,9 +109,9 @@ fn touch_camera_gestures_never_tick_the_sim() {
         },
     ];
     assert!(!screen.update(
+        &crate::action::BindingMap::classic(),
         &drag,
         0.0,
-        viewport,
         crate::config::CameraPrefs::default(),
         &mut mouse,
         &mut game,
@@ -126,18 +141,17 @@ fn minimap_drag_and_key_release_have_explicit_camera_lifetimes() {
     game.presentation.camera.pan(Vec2::ZERO);
 
     screen.update(
+        &crate::action::BindingMap::classic(),
         &[RawEvent::MouseDown {
             button: MouseButton::Left,
             x: press.x,
             y: press.y,
         }],
         0.0,
-        viewport,
         crate::config::CameraPrefs::default(),
         &mut mouse,
         &mut game,
     );
-    assert!(screen.minimap_drag);
     assert!((game.presentation.camera.center - expected).length() < 0.1);
 
     let dragged = vec2(rect.x + rect.w + 100.0, rect.y + rect.h + 100.0);
@@ -151,12 +165,12 @@ fn minimap_drag_and_key_release_have_explicit_camera_lifetimes() {
     game.presentation.camera.center = after_press;
     game.presentation.camera.pan(Vec2::ZERO);
     screen.update(
+        &crate::action::BindingMap::classic(),
         &[RawEvent::MouseMove {
             x: dragged.x,
             y: dragged.y,
         }],
         0.0,
-        viewport,
         crate::config::CameraPrefs::default(),
         &mut mouse,
         &mut game,
@@ -168,6 +182,7 @@ fn minimap_drag_and_key_release_have_explicit_camera_lifetimes() {
         "a held minimap drag must steer away from its press target"
     );
     screen.update(
+        &crate::action::BindingMap::classic(),
         &[
             RawEvent::MouseUp {
                 button: MouseButton::Left,
@@ -180,24 +195,22 @@ fn minimap_drag_and_key_release_have_explicit_camera_lifetimes() {
             },
         ],
         0.0,
-        viewport,
         crate::config::CameraPrefs::default(),
         &mut mouse,
         &mut game,
     );
-    assert!(!screen.minimap_drag);
     assert_eq!(
         game.presentation.camera.center, after_drag,
         "released drags stop steering"
     );
 
     screen.update(
+        &crate::action::BindingMap::classic(),
         &[
             RawEvent::KeyDown { key: Key::Left },
             RawEvent::KeyUp { key: Key::Left },
         ],
         0.25,
-        viewport,
         crate::config::CameraPrefs::default(),
         &mut mouse,
         &mut game,
@@ -214,29 +227,26 @@ fn final_map_keeps_the_secondary_camera_hold_after_releasing_a_rebound_primary()
         Game::with_viewport(oxide_sim::Scenario::skirmish(), vec2(640.0, 400.0)).unwrap();
     game.presentation.camera.center = vec2(18.0, 10.0);
     let mut screen = FinalMapScreen::open();
-    assert!(
-        screen
-            .bindings
-            .rebind(Action::PanRight, Chord::bare(Key::L))
-    );
+    let mut bindings = crate::action::BindingMap::classic();
+    assert!(bindings.rebind(Action::PanRight, Chord::bare(Key::L)));
     let mut mouse = Vec2::ZERO;
     let prefs = crate::config::CameraPrefs::default();
     screen.update(
+        &bindings,
         &[
             RawEvent::KeyDown { key: Key::L },
             RawEvent::KeyDown { key: Key::Right },
         ],
         0.1,
-        vec2(640.0, 400.0),
         prefs,
         &mut mouse,
         &mut game,
     );
     let halfway = game.presentation.camera.center.x;
     screen.update(
+        &bindings,
         &[RawEvent::KeyUp { key: Key::L }],
         0.1,
-        vec2(640.0, 400.0),
         prefs,
         &mut mouse,
         &mut game,
@@ -244,9 +254,9 @@ fn final_map_keeps_the_secondary_camera_hold_after_releasing_a_rebound_primary()
     let after = game.presentation.camera.center.x;
     assert!(after > halfway);
     screen.update(
+        &bindings,
         &[RawEvent::KeyUp { key: Key::Right }],
         0.1,
-        vec2(640.0, 400.0),
         prefs,
         &mut mouse,
         &mut game,

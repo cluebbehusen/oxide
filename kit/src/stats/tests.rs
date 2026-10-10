@@ -14,7 +14,6 @@ fn record_activity(ticks: u64) -> GameReplay {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "statistics activity".into(),
-        seed: 42,
         map: map
             .into_iter()
             .map(|row| row.into_iter().collect())
@@ -96,7 +95,7 @@ fn record_activity(ticks: u64) -> GameReplay {
         command,
     })
     .collect();
-    let mut replay = GameReplay::new(oxide_sim::SIM_VERSION, scenario);
+    let mut replay = GameReplay::new(oxide_sim::SIM_VERSION, "test", scenario);
     let mut events = Vec::new();
     for tick in 0..ticks {
         let commands = if tick == 0 { opening.as_slice() } else { &[] };
@@ -155,7 +154,13 @@ fn track_replay(replay: &GameReplay) -> MatchStats {
 fn a_claimed_billion_ticks_is_an_error_not_a_hang() {
     let mut scenario = Scenario::skirmish();
     crate::bench::all_bots(&mut scenario);
-    let outcome = runner::run_scenario(&scenario, 60, true, true).unwrap();
+    let outcome = runner::run_scenario(
+        &scenario,
+        60,
+        true,
+        Some(&crate::recovery::BuildIdentity::default()),
+    )
+    .unwrap();
     let mut replay = outcome.replay.unwrap();
     replay.meta.ticks = Some(1_000_000_000);
     assert!(compute(&replay, 100).is_err());
@@ -167,7 +172,13 @@ fn the_final_state_is_always_sampled() {
     crate::bench::all_bots(&mut scenario);
     // 100 ticks with stride 41: without the closing sample the last
     // column would sit at tick 82 and closing numbers would be stale.
-    let outcome = runner::run_scenario(&scenario, 100, true, true).unwrap();
+    let outcome = runner::run_scenario(
+        &scenario,
+        100,
+        true,
+        Some(&crate::recovery::BuildIdentity::default()),
+    )
+    .unwrap();
     let stats = compute(&outcome.replay.unwrap(), 41).unwrap();
     assert_eq!(stats.sample_ticks.last(), Some(&100));
     assert_eq!(stats.final_tick, 100);
@@ -271,6 +282,7 @@ fn deliberate_salvage_is_not_counted_as_a_building_loss() {
             Event::BuildingDestroyed {
                 building: BuildingId(7),
                 player: PlayerId(0),
+                tier: 0,
                 pos: Vec2Fx::ZERO,
             },
             Event::BuildingSalvaged {

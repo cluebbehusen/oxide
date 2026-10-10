@@ -51,7 +51,7 @@ fn command_phase_inspection_is_pure_and_stops_before_the_tick() {
             .iter()
             .find(|b| b.kind == kind && b.anchor == anchor)
             .expect("projected site is inspectable");
-        assert!(!site.built);
+        assert!(!site.built());
         assert!(site.queue.is_empty());
         assert!(state.buildings().iter().all(|b| b.id != site.id));
     });
@@ -180,6 +180,93 @@ fn footprint_incident_tiles_are_half_turn_equivariant() {
 }
 
 #[test]
+fn a_building_upgraded_on_the_tick_it_falls_reports_the_new_tier() {
+    use crate::scenario::{BuildingSpec, UnitSpec};
+    use crate::{BuildingKind, Command, Order, PlayerCommand, PlayerId, Target, UnitKind};
+
+    let kind = BuildingKind::ALL
+        .into_iter()
+        .find(|kind| {
+            kind.upgrade_from(0)
+                .is_some_and(|up| up.requires == [BuildingKind::Fabricator])
+        })
+        .expect("some building upgrades once a Fabricator stands");
+    let mut scenario = calibration_open_cupric();
+    scenario.units = vec![UnitSpec {
+        player: 0,
+        kind: UnitKind::Sentinel,
+        x: 18,
+        y: 16,
+    }];
+    let anchor = TilePos::new(21, 15);
+    scenario.buildings = vec![
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Fabricator,
+            x: 25,
+            y: 13,
+        },
+        BuildingSpec {
+            player: 1,
+            kind,
+            x: anchor.x,
+            y: anchor.y,
+        },
+        BuildingSpec {
+            player: 1,
+            kind: BuildingKind::Fabricator,
+            x: 29,
+            y: 13,
+        },
+    ];
+    let mut state = scenario.build().expect("the duel builds");
+    let victim = state
+        .buildings
+        .iter()
+        .find(|building| building.player == PlayerId(1) && building.anchor == anchor)
+        .expect("the victim exists")
+        .id;
+    state.building_mut(victim).expect("victim").hp = 1;
+    state.players[1].scrap = kind.upgrade_from(0).expect("upgradable").cost;
+    let shooter = state.units[0].id;
+    let direction = state
+        .building(victim)
+        .unwrap()
+        .closest_point_to(state.units[0].pos)
+        - state.units[0].pos;
+    let unit = state.unit_mut(shooter).unwrap();
+    unit.turret_heading = Some(chassis::compass::heading_of(direction));
+    unit.order = Order::Attack {
+        pursue: false,
+        target: Target::Building(victim).into(),
+        resume: None,
+    };
+
+    // Upgrade on exactly the tick the shot would land.
+    let falls = |report: &crate::TickReport| {
+        report.events.iter().any(|event| {
+            matches!(event, crate::Event::BuildingDestroyed { building, .. } if *building == victim)
+        })
+    };
+    while !falls(&state.clone().tick(&[])) {
+        state.tick(&[]);
+        assert!(state.current_tick() < 100, "the shot lands");
+    }
+    let report = state.tick(&[PlayerCommand {
+        player: PlayerId(1),
+        command: Command::UpgradeBuilding { building: victim },
+    }]);
+    assert!(
+        report.events.iter().any(|event| matches!(
+            event,
+            crate::Event::BuildingDestroyed { building, tier: 1, .. } if *building == victim
+        )),
+        "the same-tick upgrade counts: {:?}",
+        report.events
+    );
+}
+
+#[test]
 fn mirrored_lethal_hits_record_mirrored_footprint_incidents() {
     use crate::scenario::{BuildingSpec, UnitSpec};
     use crate::{BuildingKind, Order, PlayerId, Target, UnitKind};
@@ -305,7 +392,6 @@ fn calibration_open_cupric() -> crate::Scenario {
     crate::Scenario {
         mode: ScenarioMode::Match,
         name: "Calibration Open - Cupric".into(),
-        seed: 1_616_101,
         map: [
             "################################################",
             "#..............................................#",
@@ -480,7 +566,11 @@ fn assert_calibration_open_symmetry(
         assert_eq!(right.player, crate::PlayerId(1), "{stage}: right owner");
         assert_eq!(left.kind, right.kind, "{stage}: unit kind {left_id}");
         assert_eq!(left.hp, right.hp, "{stage}: unit hp {left_id}");
-        assert_eq!(left.carrying, right.carrying, "{stage}: cargo {left_id}");
+        assert_eq!(
+            left.carrying(),
+            right.carrying(),
+            "{stage}: cargo {left_id}"
+        );
         assert_eq!(left.progress, right.progress, "{stage}: progress {left_id}");
         let mirrored_pos = Vec2Fx::new(
             Fx::from_num(state.map.width()) - left.pos.x,
@@ -503,7 +593,7 @@ fn assert_calibration_open_symmetry(
             ) => {
                 assert_eq!(mirror_tile(state, left_node), right_node, "{stage}: node");
                 assert_eq!(
-                    left_anchor.map(|tile| mirror_tile(state, tile)),
+                    mirror_tile(state, left_anchor),
                     right_anchor,
                     "{stage}: anchor"
                 );
@@ -569,14 +659,11 @@ fn assert_calibration_open_symmetry(
         let (left, right) = (0, 1);
         let left = &state.buildings[left];
         let right = &state.buildings[right];
-        let (width, height) = left.kind.base_stats().size;
+        let (width, height) = left.kind.size();
         assert_eq!(left.kind, right.kind, "{stage}: building kind");
         assert_eq!(left.hp, right.hp, "{stage}: building hp");
         assert_eq!(left.queue, right.queue, "{stage}: production queue");
-        assert_eq!(
-            left.progress, right.progress,
-            "{stage}: production progress"
-        );
+        assert_eq!(left.phase, right.phase, "{stage}: production progress");
         assert_eq!(
             TilePos::new(
                 state.map.width() - width - left.anchor.x,
@@ -632,7 +719,7 @@ fn run_calibration_open_tick(
     assert_calibration_open_symmetry(&stage("production"), state, unit_pairs);
     charges::cancel_discovered(state, &mut events);
     production::decay_abandoned_sites(state);
-    let pending = brain::run(state, &mut index, &mut events);
+    let (pending, salvaged) = brain::run(state, &mut index, &mut events);
     assert_calibration_open_symmetry(&stage("brains"), state, unit_pairs);
     brain::logistics::resolve(state, pending, &mut events);
     assert_calibration_open_symmetry(&stage("logistics"), state, unit_pairs);
@@ -645,7 +732,7 @@ fn run_calibration_open_tick(
     aircraft_crashes::remember_motion(state, &air_positions);
     aircraft_crashes::land(state, &mut events);
     charges::detonate_under_units(state, &mut events);
-    cleanup(state, &mut events);
+    cleanup(state, &salvaged, &mut events);
     if state.tick.is_multiple_of(crate::stats::WRECK_DECAY_TICKS) {
         state.map.decay_wrecks();
     }
@@ -746,7 +833,7 @@ fn mirrored_haulers_replan_together_when_construction_closes_their_routes() {
             .find(|building| building.player == player && building.kind == BuildingKind::Foundry)
             .expect("each side has a foundry");
         assert!(
-            tile_adjacent_to_rect(goal, foundry.anchor, foundry.stats().size),
+            tile_adjacent_to_rect(goal, foundry.anchor, foundry.kind.size()),
             "{goal:?} must be a doorstep around {:?}",
             foundry.anchor
         );
@@ -768,10 +855,10 @@ fn mirrored_haulers_replan_together_when_construction_closes_their_routes() {
         ),
     ] {
         let unit = state.unit_mut(id).expect("the hauler exists");
-        unit.carrying = 10;
+        unit.worker_mut().carrying = 10;
         unit.order = Order::Harvest {
             node,
-            anchor: Some(anchor),
+            anchor,
             retiring: false,
         };
         unit.path = Some(PathFollow {
@@ -932,12 +1019,12 @@ fn centered_builders_leave_new_footprints_through_legal_doorsteps() {
     assert!(tile_adjacent_to_rect(
         left_path.goal,
         left_anchor,
-        BuildingKind::ScuttleCharge.base_stats().size,
+        BuildingKind::ScuttleCharge.size(),
     ));
     assert!(tile_adjacent_to_rect(
         right_path.goal,
         right_anchor,
-        BuildingKind::ScuttleCharge.base_stats().size,
+        BuildingKind::ScuttleCharge.size(),
     ));
     for path in [left_path, right_path] {
         assert!(path.final_point.is_some());
@@ -1144,4 +1231,122 @@ fn mirrored_groups_sent_beyond_sight_take_mirrored_slots_on_exposure() {
             .all(|&id| goal(&state, id).is_none()),
         "both groups arrived"
     );
+}
+
+/// An open map whose half-turn maps each seat's Foundry onto the other's.
+fn mirrored_field(width: i32, height: i32) -> Vec<String> {
+    (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| match (x, y) {
+                    (1, 1) => '1',
+                    _ if (x, y) == (width - 3, height - 3) => '2',
+                    _ if x == 0 || y == 0 || x == width - 1 || y == height - 1 => '#',
+                    _ => '.',
+                })
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn mirrored_avalanches_back_out_to_mirrored_stands() {
+    use crate::scenario::UnitSpec;
+    use crate::{Command, PlayerId, Target, UnitKind};
+
+    let mut scenario = calibration_open_cupric();
+    scenario.map = mirrored_field(24, 12);
+    // Rock on the straight line back leaves two equally near stands.
+    for (x, y) in [(3, 5), (20, 6)] {
+        scenario.map[y].replace_range(x..=x, "#");
+    }
+    scenario.buildings.clear();
+    scenario.units = [
+        (0, UnitKind::Avalanche, 6, 5),
+        (1, UnitKind::Harvester, 7, 5),
+        (1, UnitKind::Avalanche, 17, 6),
+        (0, UnitKind::Harvester, 16, 6),
+    ]
+    .map(|(player, kind, x, y)| UnitSpec { player, kind, x, y })
+    .into();
+    let mut state = scenario.build().expect("the mirrored scenario builds");
+    let ids: Vec<_> = state.units().iter().map(|unit| unit.id).collect();
+    let attack = |player: u8, unit: usize, victim: usize| PlayerCommand {
+        player: PlayerId(player),
+        command: Command::Attack {
+            units: vec![ids[unit]],
+            target: Target::Unit(ids[victim]).into(),
+            queue: false,
+        },
+    };
+    state.tick(&[attack(0, 0, 1), attack(1, 2, 3)]);
+    let stand = |unit: usize| {
+        state
+            .unit(ids[unit])
+            .and_then(|unit| unit.path.as_ref())
+            .expect("the Avalanche routes out of its dead zone")
+            .goal
+    };
+    let west = stand(0);
+    assert!(
+        west.center().dist(TilePos::new(7, 5).center())
+            >= crate::stats::UnitKind::Avalanche.stats().weapons[0].minimum_range
+    );
+    assert_eq!(stand(2), mirror_tile(&state, west));
+}
+
+#[test]
+fn mirrored_sappers_press_mirrored_doorsteps() {
+    use crate::scenario::{BuildingSpec, UnitSpec};
+    use crate::{BuildingKind, Command, PlayerId, Target, UnitKind};
+
+    let mut scenario = calibration_open_cupric();
+    scenario.map = mirrored_field(24, 12);
+    // Rock on the nearest doorstep leaves two equally near ones.
+    for (x, y) in [(8, 5), (15, 6)] {
+        scenario.map[y].replace_range(x..=x, "#");
+    }
+    scenario.units = [(0, 5, 5), (1, 18, 6)]
+        .map(|(player, x, y)| UnitSpec {
+            player,
+            kind: UnitKind::Sapper,
+            x,
+            y,
+        })
+        .into();
+    scenario.buildings = [(1, 9, 5), (0, 14, 6)]
+        .map(|(player, x, y)| BuildingSpec {
+            player,
+            kind: BuildingKind::Barricade,
+            x,
+            y,
+        })
+        .into();
+    let mut state = scenario.build().expect("the mirrored scenario builds");
+    let sappers: Vec<_> = state.units().iter().map(|unit| unit.id).collect();
+    let walls: Vec<_> = state
+        .buildings()
+        .iter()
+        .filter(|building| building.kind == BuildingKind::Barricade)
+        .map(|building| building.id)
+        .collect();
+    let attack = |player: u8| PlayerCommand {
+        player: PlayerId(player),
+        command: Command::Attack {
+            units: vec![sappers[usize::from(player)]],
+            target: Target::Building(walls[usize::from(player)]).into(),
+            queue: false,
+        },
+    };
+    let doorstep = |state: &State, player: usize| {
+        state
+            .unit(sappers[player])
+            .and_then(|unit| unit.path.as_ref())
+            .expect("the Sapper routes to a doorstep")
+            .goal
+    };
+    state.tick(&[attack(0), attack(1)]);
+    let west = doorstep(&state, 0);
+    assert!(tile_adjacent_to_rect(west, TilePos::new(9, 5), (1, 1)));
+    assert_eq!(doorstep(&state, 1), mirror_tile(&state, west));
 }

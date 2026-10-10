@@ -6,10 +6,6 @@ use serde::{Deserialize, Serialize};
 /// A walking order's destination: the clicked tile, the spread slot the unit
 /// takes around it, and the nearest reachable tile when that cannot be
 /// reached.
-///
-/// Serializes as `{x, y}` while `aim` is [`Aim::Tile`] and `endpoint` is
-/// `None`. That keeps an order whose clicked tile is its reachable target
-/// byte-identical to the plain tile it replaced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Goal {
     /// Column of the clicked tile.

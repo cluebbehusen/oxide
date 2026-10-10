@@ -67,18 +67,14 @@ impl Missions {
             let armed = observation
                 .enemy_units
                 .iter()
-                .filter(|unit| unit.player == owner && !unit.kind.stats().weapons.is_empty());
+                .filter(|unit| unit.player == owner && unit.kind.stats().can_fight());
             let cost = |kind: oxide_sim::UnitKind| i64::from(kind.stats().cost);
             let presence: i64 = armed.clone().map(|unit| cost(unit.kind)).sum();
             let pressure: i64 = armed
                 .filter(|unit| {
                     observation.my_buildings.iter().any(|building| {
-                        gap(
-                            building.anchor,
-                            building.kind.base_stats().size,
-                            unit.tile,
-                            (1, 1),
-                        ) <= PRESSURE_GAP
+                        gap(building.anchor, building.kind.size(), unit.tile, (1, 1))
+                            <= PRESSURE_GAP
                     })
                 })
                 .map(|unit| cost(unit.kind))

@@ -22,7 +22,6 @@ fn world(map: &[&str], units: &[(UnitKind, i32, i32)]) -> State {
     Scenario {
         mode: ScenarioMode::Sandbox,
         name: "goals".into(),
-        seed: 5,
         map: map.iter().map(|row| (*row).to_owned()).collect(),
         players: vec![PlayerSpec {
             name: "p0".into(),
@@ -53,8 +52,8 @@ fn tiles(state: &State) -> impl Iterator<Item = TilePos> {
     (0..h).flat_map(move |y| (0..w).map(move |x| TilePos::new(x, y)))
 }
 
-/// The tiles a group of `count` took before goals kept the clicked tile:
-/// the snapped center, then the first `count` spread slots around it.
+/// The reference tiles for a group of `count`: the snapped center, then
+/// the first `count` spread slots around it.
 fn snap_and_spread(
     state: &State,
     clicked: TilePos,
@@ -66,6 +65,21 @@ fn snap_and_spread(
     Some(spread_goals_by(center, count, reverse, |t| {
         state.passable_for(domain, t)
     }))
+}
+
+#[test]
+fn rings_follow_the_spread_scan_order() {
+    for r in 0i32..6 {
+        let mut expected = Vec::new();
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx.abs().max(dy.abs()) == r {
+                    expected.push((dx, dy));
+                }
+            }
+        }
+        assert_eq!(ring(r).collect::<Vec<_>>(), expected, "ring {r}");
+    }
 }
 
 #[test]
@@ -226,4 +240,33 @@ fn exposure_leaves_units_without_pending_goals_untouched() {
     let before = state.clone();
     expose(&mut state);
     assert_eq!(state, before);
+}
+
+#[test]
+fn mirrored_air_routes_snap_peak_goals_to_mirrored_sky() {
+    const PEAKS: [&str; 9] = [
+        ".............",
+        ".............",
+        ".............",
+        "...^^^.^^^...",
+        "...^^^.^^^...",
+        "...^^^.^^^...",
+        ".............",
+        ".............",
+        ".............",
+    ];
+    let state = world(&PEAKS, &[]);
+    let mirror =
+        |t: TilePos| TilePos::new(state.map.width() - 1 - t.x, state.map.height() - 1 - t.y);
+    let snapped = |from: TilePos, to: TilePos| {
+        *super::super::route_for(&state, UnitKind::Kestrel, from, to)
+            .expect("open sky surrounds each peak")
+            .last()
+            .expect("a route ends at its goal")
+    };
+    let (from, peak) = (TilePos::new(0, 4), TilePos::new(4, 4));
+    let west = snapped(from, peak);
+    let east = snapped(mirror(from), mirror(peak));
+    assert!(state.passable_for(Domain::Air, west));
+    assert_eq!(east, mirror(west));
 }

@@ -1,7 +1,6 @@
-//! Match statistics from a replay: the record IS the match, so any
-//! number worth showing afterward is a re-execution away. Sampled
-//! series (scrap, army value, unit counts) plus loss totals — the
-//! Result screen's data, and a driver subcommand for anyone else.
+//! Match statistics: sampled series (scrap, army value, unit counts) plus
+//! totals, computed by re-executing a replay (`compute`) or incrementally
+//! during a live match (`LiveMatchStats`).
 
 use crate::GameReplay;
 use anyhow::Result;
@@ -19,8 +18,7 @@ pub struct PlayerStats {
     pub scrap: Vec<u32>,
     /// Standing army value (sum of living units' costs) per sample.
     pub army_value: Vec<u32>,
-    /// Living units by kind name at each sample point — the
-    /// composition timeline a viewer can band-chart. `BTreeMap` keys keep
+    /// Living units by kind name at each sample point. `BTreeMap` keys keep
     /// the serialization deterministic.
     #[serde(deserialize_with = "deserialize_kinds")]
     pub kinds: Vec<BTreeMap<&'static str, u16>>,
@@ -34,8 +32,8 @@ pub struct PlayerStats {
     pub units_lost: u32,
     /// Buildings lost across the whole match.
     pub buildings_lost: u32,
-    /// Buildings deliberately taken apart by their own crew — never
-    /// counted among losses.
+    /// Buildings deliberately taken apart by their own crew; never counted
+    /// among losses.
     pub buildings_salvaged: u32,
 }
 
@@ -273,8 +271,8 @@ fn thin_samples(stats: &mut MatchStats, every: u64) {
     }
 }
 
-/// Re-executes a replay, sampling every `every` ticks. Deterministic:
-/// the same replay yields the same report, bit for bit.
+/// Re-executes a replay, sampling every `every` ticks. The same replay
+/// yields the same report.
 pub fn compute(replay: &GameReplay, every: u64) -> Result<MatchStats> {
     // Untrusted input: an out-of-order or cross-version record would
     // otherwise produce a plausible, wrong report instead of an error.

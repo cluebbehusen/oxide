@@ -1,4 +1,4 @@
-//! Phase 2: Foundry production queues.
+//! Production queues, recurring income, and abandoned-site decay.
 //!
 //! One queue per building, front item in progress. A finished ground unit
 //! spawns on a passable ring tile in the footprint's map-relative outward
@@ -10,7 +10,7 @@
 use super::{rect_adjacent_tiles, spawn_doorstep_key};
 use crate::event::Event;
 use crate::ids::{PlayerId, UnitId};
-use crate::state::{Order, State};
+use crate::state::{BuildingPhase, Order, Recovery, State};
 use crate::stats::{BuildingKind, Domain};
 use chassis::grid::TilePos;
 
@@ -25,25 +25,23 @@ pub(super) fn capture_recovery_entitlements(state: &mut State) {
         .map(|(index, _)| PlayerId::from_index(index))
         .collect();
     for player in players {
-        if !super::harvester_recovery_needed(state, player) || !state.player(player).recovery_ready
+        if !super::harvester_recovery_needed(state, player)
+            || state.player(player).recovery != Recovery::Ready
         {
             continue;
         }
         let target = state.recovery_package_target(player);
         let allowance = target.saturating_sub(state.player(player).scrap);
-        let seat = state.player_mut(player);
-        seat.recovery_target =
-            u16::try_from(target).expect("a recovery package fits the u16 ledger");
-        seat.recovery_allowance =
-            u16::try_from(allowance).expect("an allowance never exceeds its target");
-        seat.recovery_ready = false;
+        state.player_mut(player).recovery = Recovery::Active {
+            target: u16::try_from(target).expect("a recovery package fits the u16 ledger"),
+            allowance: u16::try_from(allowance).expect("an allowance never exceeds its target"),
+        };
     }
 }
 
 pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
-    // Reclaimers trickle first: every built one grinds ambient debris
-    // into a scrap each period. Order is building-id order (commutative
-    // anyway — the credits are per-player sums).
+    // Every built Reclaimer credits one scrap per period. Credits are
+    // per-player sums, so order does not matter.
     for (period, tier) in [
         (crate::stats::RECLAIMER_PERIOD, 0u8),
         (crate::stats::REFINERY_PERIOD, 1u8),
@@ -55,7 +53,7 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
             .buildings
             .iter()
             .filter(|b| {
-                b.built
+                b.built()
                     && b.hp > 0
                     && b.kind == crate::stats::BuildingKind::Reclaimer
                     && b.tier == tier
@@ -70,8 +68,8 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
 
     let completed_ticks = state.tick.saturating_add(1);
     // A restored Extractor pays a fixed remote yield. A completed own
-    // Foundry close to its footprint develops the claim and raises that
-    // yield; support is binary rather than one bonus per Foundry.
+    // Foundry close to its footprint raises that yield; support is binary
+    // rather than one bonus per Foundry.
     if completed_ticks.is_multiple_of(crate::stats::EXTRACTOR_REMOTE_YIELD.1) {
         let credits: Vec<(PlayerId, u32)> = state
             .buildings
@@ -91,11 +89,9 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
         }
     }
 
-    // The transparent income floor: every standing Foundry smelts a slow
-    // trickle per works rather than per player, so expansion bases earn
-    // their keep — while the rate keeps income alone from ever paying
-    // for one. A living seat always has a way back into the game, even
-    // with every node exhausted and camped.
+    // The income floor: every completed Foundry credits a slow trickle, so
+    // a living seat always has some income even with every node exhausted
+    // or camped.
     if completed_ticks >= crate::stats::FOUNDRY_DRIP_START_TICK
         && completed_ticks.is_multiple_of(crate::stats::FOUNDRY_DRIP_PERIOD)
     {
@@ -112,7 +108,7 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
                     .filter(|building| {
                         building.player == player
                             && building.hp > 0
-                            && building.built
+                            && building.built()
                             && building.kind == crate::stats::BuildingKind::Foundry
                     })
                     .count();
@@ -139,15 +135,15 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
         .map(|(index, _)| PlayerId::from_index(index))
         .collect();
     for player in &players {
-        if !super::harvester_recovery_needed(state, *player) || state.player(*player).recovery_ready
-        {
+        if !super::harvester_recovery_needed(state, *player) {
             continue;
         }
         let seat = state.player_mut(*player);
-        let headroom = u32::from(seat.recovery_target).saturating_sub(seat.scrap);
-        seat.recovery_allowance = seat
-            .recovery_allowance
-            .min(u16::try_from(headroom).expect("headroom never exceeds the u16 target"));
+        if let Recovery::Active { target, allowance } = &mut seat.recovery {
+            let headroom = u32::from(*target).saturating_sub(seat.scrap);
+            *allowance = (*allowance)
+                .min(u16::try_from(headroom).expect("headroom never exceeds the u16 target"));
+        }
     }
 
     if state
@@ -159,11 +155,14 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
                 continue;
             }
             let seat = state.player_mut(player);
-            if seat.recovery_allowance == 0 || seat.scrap >= u32::from(seat.recovery_target) {
+            let Recovery::Active { target, allowance } = &mut seat.recovery else {
+                continue;
+            };
+            if *allowance == 0 || seat.scrap >= u32::from(*target) {
                 continue;
             }
             seat.scrap = seat.scrap.saturating_add(1);
-            seat.recovery_allowance -= 1;
+            *allowance -= 1;
         }
     }
 
@@ -172,22 +171,22 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
         let Some(b) = state.building_mut(id) else {
             continue;
         };
-        if !b.built {
+        let BuildingPhase::Built { training } = &mut b.phase else {
             continue; // a site's progress belongs to its builder
-        }
+        };
         let Some(&kind) = b.queue.front() else {
-            b.progress = 0;
+            *training = 0;
             continue;
         };
-        b.progress = (b.progress + 1).min(kind.stats().train_ticks);
-        if b.progress < kind.stats().train_ticks {
+        *training = (*training + 1).min(kind.stats().train_ticks);
+        if *training < kind.stats().train_ticks {
             continue;
         }
         // Ready — aircraft occupy the open Airworks roof bay itself. Ground
         // production still needs a passable doorstep outside the footprint.
         let (anchor, size, player, rally, producer, center) = (
             b.anchor,
-            b.stats().size,
+            b.kind.size(),
             b.player,
             b.rally,
             b.kind,
@@ -219,7 +218,7 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
         }
         let b = state.building_mut(id).expect("still standing");
         b.queue.pop_front();
-        b.progress = 0;
+        b.phase = BuildingPhase::Built { training: 0 };
     }
 }
 
@@ -229,14 +228,13 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
 /// rally tile until its owner's team has explored it, and an unreachable
 /// rally ends as close as it can get.
 ///
-/// A rally is clamped onto the map first: a rally the command envelope
-/// once admitted off the map could never be explored.
+/// A rally is clamped onto the map first, since an off-map tile could never
+/// be explored.
 ///
-/// "Node" is judged by the owner's *remembered* scrap, not the live map —
-/// it refreshes while the ground is visible and freezes when sight is
-/// lost, so a rally can neither probe unexplored tiles nor know a distant
-/// node ran dry. Stale beliefs resolve honestly: the newborn walks out
-/// and discovers.
+/// "Node" is judged by the owner's remembered scrap and wreck, not the live
+/// map: memory refreshes while the ground is visible and freezes when sight
+/// is lost, so a rally can neither probe unexplored tiles nor know a
+/// distant node ran dry. The newborn walks out and discovers the truth.
 fn rally_order(state: &State, newborn: UnitId, rally: TilePos) -> Order {
     let unit = state.unit(newborn).expect("just spawned");
     let (owner, stats) = (unit.player, unit.kind.stats());
@@ -250,7 +248,7 @@ fn rally_order(state: &State, newborn: UnitId, rally: TilePos) -> Order {
     {
         return Order::Harvest {
             node: rally,
-            anchor: Some(rally),
+            anchor: rally,
             retiring: false,
         };
     }
@@ -263,19 +261,18 @@ fn rally_order(state: &State, newborn: UnitId, rally: TilePos) -> Order {
     }
 }
 
-/// Phase 3.5: abandoned construction sites rust away.
+/// Abandoned construction sites decay.
 ///
 /// A site with no live own harvest-capable machine committed to build it or
 /// standing beside its footprint loses one hp per
 /// [`crate::stats::SITE_DECAY_PERIOD`] ticks. A queued Build order is a
 /// commitment too: sites waiting behind earlier work are not abandoned.
-/// Tiered works are committed self-upgrades rather than abandoned sites and
-/// never enter this decay pass.
-/// Survival counts Foundry sites exactly like standing Foundries, so an
-/// untended scaffold must eventually die rather than keep a beaten seat
-/// technically alive — and decay burns the cancel refund exactly like
-/// enemy fire does. A site that reaches zero resolves through cleanup
-/// with the ordinary destroyed-building rules the same tick.
+/// Upgrading buildings (tier above zero) never decay. Survival counts
+/// Foundry sites like standing Foundries, so an untended scaffold must
+/// eventually die rather than keep a beaten seat alive; decay also burns
+/// the cancel refund like enemy fire does. A site that reaches zero
+/// resolves through cleanup with the ordinary destroyed-building rules the
+/// same tick.
 pub(super) fn decay_abandoned_sites(state: &mut State) {
     if !state
         .tick
@@ -287,9 +284,7 @@ pub(super) fn decay_abandoned_sites(state: &mut State) {
     let decays: Vec<crate::ids::BuildingId> = state
         .buildings
         .iter()
-        .filter(|building| {
-            !building.built && !building.provisional && building.hp > 0 && building.tier == 0
-        })
+        .filter(|building| matches!(building.phase, BuildingPhase::Site { .. }) && building.hp > 0)
         .filter(|building| {
             !state.units.iter().any(|unit| {
                 unit.player == building.player
@@ -302,7 +297,7 @@ pub(super) fn decay_abandoned_sites(state: &mut State) {
                         || super::tile_adjacent_to_rect(
                             unit.tile(),
                             building.anchor,
-                            building.stats().size,
+                            building.kind.size(),
                         ))
             })
         })

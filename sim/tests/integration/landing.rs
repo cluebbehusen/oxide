@@ -22,7 +22,6 @@ fn hostile_arena(units: Vec<UnitSpec>, buildings: Vec<BuildingSpec>) -> Scenario
     Scenario {
         mode: ScenarioMode::Match,
         name: "landing-arena".into(),
-        seed: 11,
         // Both Foundries hug the west wall, well clear of the pads around
         // (16, 8) and of the run-in lines a go-around near them flies.
         map: vec![
@@ -132,7 +131,7 @@ fn fly_and_watch(
             "heading jumped {delta} steps in one tick (rate {rate}) at tick {}",
             state.current_tick()
         );
-        if unit.landed {
+        if unit.landed() {
             if flight.landed_at.is_none() {
                 flight.landed_at = Some(state.current_tick());
             }
@@ -220,7 +219,7 @@ fn takeoff_resumes_flight_from_the_parked_heading() {
         },
     )]);
     let unit = state.unit(condor).unwrap();
-    assert!(!unit.landed, "the move order lifts the airframe off");
+    assert!(!unit.landed(), "the move order lifts the airframe off");
     let delta = i16::from(unit.heading.wrapping_sub(parked_heading).cast_signed()).abs();
     assert!(delta <= 2, "takeoff turned {delta} steps in its first tick");
     let mut pinned = 0;
@@ -231,7 +230,7 @@ fn takeoff_resumes_flight_from_the_parked_heading() {
         if unit.pos.x == HALF || unit.pos.x == Fx::from_num(23) + HALF {
             pinned += 1;
         }
-        if unit.landed {
+        if unit.landed() {
             landed = true;
             break;
         }
@@ -333,7 +332,10 @@ fn flak_ignores_a_parked_condor() {
             queue: false,
         },
     )]);
-    assert!(!state.unit(condor).unwrap().landed, "the move lifts it off");
+    assert!(
+        !state.unit(condor).unwrap().landed(),
+        "the move lifts it off"
+    );
     state.tick(&[attack()]);
     assert!(
         matches!(
@@ -377,7 +379,7 @@ fn a_parked_condor_scrambles_at_an_enemy_in_reach() {
     for _ in 0..600 {
         state.tick(&[]);
         let unit = state.unit(condor).unwrap();
-        if !unit.landed && matches!(unit.order, Order::Attack { .. }) {
+        if !unit.landed() && matches!(unit.order, Order::Attack { .. }) {
             scrambled = true;
             break;
         }
@@ -401,7 +403,7 @@ fn an_idle_condor_lands_itself_after_orbiting() {
     for _ in 0..u32::from(AUTO_LAND_IDLE_TICKS) - 5 {
         state.tick(&[]);
         assert!(
-            !state.unit(condor).unwrap().landed,
+            !state.unit(condor).unwrap().landed(),
             "landed before the idle orbit ran out"
         );
         assert_eq!(state.unit(condor).unwrap().order, Order::Idle);
@@ -494,7 +496,7 @@ fn a_site_claimed_under_a_parked_condor_lifts_it_off() {
     let mut lifted = false;
     for _ in 0..3 {
         state.tick(&[]);
-        if !state.unit(condor).unwrap().landed {
+        if !state.unit(condor).unwrap().landed() {
             lifted = true;
             break;
         }
@@ -633,7 +635,7 @@ fn a_charge_under_the_pad_fires_on_touchdown() {
             .iter()
             .any(|e| matches!(e, Event::ChargeDetonated { .. }));
         let unit = state.unit(condor).unwrap();
-        if unit.landed || detonated {
+        if unit.landed() || detonated {
             assert!(detonated, "the charge lay quiet under a body on its tile");
             assert!(
                 unit.hp < UnitKind::Condor.stats().max_hp,
@@ -674,11 +676,11 @@ fn a_landing_survives_a_save_and_load_mid_approach_and_parked() {
             restored.hash(),
             "the reloaded approach diverged"
         );
-        if state.unit(condor).unwrap().landed {
+        if state.unit(condor).unwrap().landed() {
             break;
         }
     }
-    assert!(state.unit(condor).unwrap().landed, "never landed");
+    assert!(state.unit(condor).unwrap().landed(), "never landed");
     let mut restored = round_trip(&state);
     state.tick(&[cmd(
         0,
@@ -705,7 +707,7 @@ fn a_landing_survives_a_save_and_load_mid_approach_and_parked() {
             "the reloaded takeoff diverged"
         );
     }
-    assert!(!state.unit(condor).unwrap().landed);
+    assert!(!state.unit(condor).unwrap().landed());
 }
 
 #[test]
@@ -786,7 +788,7 @@ fn a_parked_condor_can_be_welded_until_it_takes_off() {
     for _ in 0..400 {
         state.tick(&[]);
         let unit = state.unit(condor).unwrap();
-        assert!(unit.landed, "the patient left the ground during the weld");
+        assert!(unit.landed(), "the patient left the ground during the weld");
         if unit.hp > hp_parked {
             welded = true;
             break;
@@ -805,7 +807,7 @@ fn a_parked_condor_can_be_welded_until_it_takes_off() {
     for _ in 0..5 {
         state.tick(&[]);
     }
-    assert!(!state.unit(condor).unwrap().landed);
+    assert!(!state.unit(condor).unwrap().landed());
     assert_ne!(
         state.unit(welder).unwrap().order,
         Order::RepairUnit { unit: condor },
@@ -1003,7 +1005,7 @@ fn an_unseen_enemy_never_pulls_a_landing_into_an_attack() {
             attacked = true;
             break;
         }
-        if unit.landed {
+        if unit.landed() {
             break;
         }
     }
@@ -1060,13 +1062,13 @@ fn two_condors_landing_inward_on_adjacent_tiles_keep_their_distance() {
         state.tick(&[]);
         if [east, west]
             .iter()
-            .all(|id| state.unit(*id).is_some_and(|u| u.landed))
+            .all(|id| state.unit(*id).is_some_and(oxide_sim::Unit::landed))
         {
             break;
         }
     }
     let (a, b) = (state.unit(east).unwrap(), state.unit(west).unwrap());
-    assert!(a.landed && b.landed, "both airframes park");
+    assert!(a.landed() && b.landed(), "both airframes park");
     let clearance = UnitKind::Condor.stats().radius * 2;
     assert!(
         a.pos.dist(b.pos) >= clearance,

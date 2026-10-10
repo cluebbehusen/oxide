@@ -54,10 +54,11 @@ fn every_message_survives_a_round_trip() {
 }
 
 #[test]
-fn a_hello_matches_only_the_same_protocol_and_commit() {
-    assert!(same_build(PROTOCOL_VERSION, "abc", "abc"));
-    assert!(!same_build(PROTOCOL_VERSION + 1, "abc", "abc"));
-    assert!(!same_build(PROTOCOL_VERSION, "abd", "abc"));
+fn a_hello_matches_only_the_same_protocol_sim_and_commit() {
+    assert!(same_build(PROTOCOL_VERSION, SIM_VERSION, "abc", "abc"));
+    assert!(!same_build(PROTOCOL_VERSION + 1, SIM_VERSION, "abc", "abc"));
+    assert!(!same_build(PROTOCOL_VERSION, SIM_VERSION + 1, "abc", "abc"));
+    assert!(!same_build(PROTOCOL_VERSION, SIM_VERSION, "abd", "abc"));
 }
 
 #[test]
@@ -98,7 +99,9 @@ fn wire_shape_is_stable() {
         HostMessage::Desync { tick: 40 }.encode(),
         r#"{"type":"desync","tick":40}"#
     );
-    let hello = format!(r#"{{"type":"hello","protocol":{PROTOCOL_VERSION},"commit":"abc"}}"#);
+    let hello = format!(
+        r#"{{"type":"hello","protocol":{PROTOCOL_VERSION},"sim":{SIM_VERSION},"commit":"abc"}}"#
+    );
     assert_eq!(JoinMessage::hello("abc").encode(), hello);
     assert_eq!(LobbyMessage::hello("abc").encode(), hello);
     assert_eq!(
@@ -121,6 +124,8 @@ fn malformed_lines_are_rejected() {
         r#"{"type":"acknowledge","tick":1}"#,
         r#"{"type":"ack"}"#,
         r#"{"type":"heartbeat"}{"type":"heartbeat"}"#,
+        r#"{"type":"command","command":{"type":"stop","units":[7],"extra":true}}"#,
+        r#"{"type":"command","command":{"type":"harvest","units":[7],"node":{"x":1,"y":2,"z":3}}}"#,
         "not json",
     ] {
         assert!(ClientMessage::decode(line).is_err(), "{line}");

@@ -12,14 +12,13 @@ fn directory() -> PathBuf {
 }
 
 fn plans(dir: &Path) -> Vec<(EvaluationPlan, Option<PathBuf>)> {
-    [73, 74]
+    [8100, 8200]
         .into_iter()
-        .flat_map(|seed| {
+        .flat_map(|personality_seed| {
             configured_matchup_plans(
                 &Scenario::skirmish(),
-                seed,
                 ProfileMatchup::uniform(BotDifficulty::Standard, BotStance::Balanced),
-                8100,
+                personality_seed,
                 true,
                 EvaluationFactionCell::Authored,
                 EvaluationGeometry::Authored,

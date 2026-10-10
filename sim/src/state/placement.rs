@@ -36,7 +36,7 @@ impl State {
         if kind.base_stats().construction.is_none() {
             return Some(PlaceRefusal::NotConstructible);
         }
-        let (w, h) = kind.base_stats().size;
+        let (w, h) = kind.size();
         // Sight answers before the authored-frame rules. Otherwise the
         // distinct FrameRequired / FrameBlocked reasons turn placement
         // into a probe for derelict frames hidden in unexplored ground.
@@ -48,14 +48,14 @@ impl State {
             }
         }
         if kind == BuildingKind::Extractor {
-            // The machine exists only where the old rush left its frame.
+            // An Extractor rebuilds only on a map-authored derelict frame.
             if !self.map.is_extractor_frame(anchor) {
                 return Some(PlaceRefusal::FrameRequired);
             }
         } else {
             // Nothing else may pave over a frame: the ground under a
             // derelict Extractor stays contestable forever.
-            let (w, h) = kind.base_stats().size;
+            let (w, h) = kind.size();
             for dy in 0..h {
                 for dx in 0..w {
                     if self.map.tile_in_extractor_frame(anchor.offset(dx, dy)) {
@@ -133,7 +133,7 @@ impl State {
                 self.buildings.iter().any(|building| {
                     building.player == player
                         && building.hp > 0
-                        && building.built
+                        && building.built()
                         && building.kind == *required
                 })
             })
@@ -236,7 +236,7 @@ impl State {
             return Some(PlaceRefusal::Prerequisite);
         }
         let vision = self.vision(player);
-        let (w, h) = kind.base_stats().size;
+        let (w, h) = kind.size();
         let known_frame = kind == BuildingKind::Extractor
             && self.map.is_extractor_frame(anchor)
             && (0..h).any(|dy| (0..w).any(|dx| vision.explored(anchor.offset(dx, dy))));
@@ -253,14 +253,14 @@ impl State {
             }
         }
         if kind == BuildingKind::Extractor {
-            // The machine exists only where the old rush left its frame.
+            // An Extractor rebuilds only on a map-authored derelict frame.
             if !self.map.is_extractor_frame(anchor) {
                 return Some(PlaceRefusal::FrameRequired);
             }
         } else {
             // Nothing else may pave over a frame: the ground under a
             // derelict Extractor stays contestable forever.
-            let (w, h) = kind.base_stats().size;
+            let (w, h) = kind.size();
             for dy in 0..h {
                 for dx in 0..w {
                     if self.map.tile_in_extractor_frame(anchor.offset(dx, dy)) {
@@ -296,11 +296,11 @@ impl State {
                 let ghosted = vision
                     .ghosts()
                     .iter()
-                    .any(|g| covers(g.anchor, g.kind.base_stats().size, t));
+                    .any(|g| covers(g.anchor, g.kind.size(), t));
                 let allied_building = self.buildings.iter().any(|b| {
                     self.players[b.player.0 as usize].team == my_team
                         && !released.contains(&b.id)
-                        && covers(b.anchor, b.stats().size, t)
+                        && covers(b.anchor, b.kind.size(), t)
                 });
                 if ghosted || allied_building {
                     return Some(PlaceRefusal::Building);
@@ -317,14 +317,14 @@ impl State {
                 && std::iter::once(&u.order).chain(u.queue.iter()).any(|o| {
                     matches!(o, Order::Found { kind: k, anchor: a }
                     if (0..h).any(|dy| (0..w).any(|dx| {
-                        covers(*a, k.base_stats().size, anchor.offset(dx, dy))
+                        covers(*a, k.size(), anchor.offset(dx, dy))
                     })))
                 })
         });
         if claimed {
             return Some(PlaceRefusal::Building);
         }
-        // Hostile machines deny only ground the issuer can SEE them
+        // Hostile machines deny only ground the issuer can see them
         // holding — exactly the strict rule, restricted to visible
         // footprint tiles.
         let hostile_in_sight = self.units.iter().any(|u| {

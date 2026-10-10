@@ -1,8 +1,8 @@
 //! Entity identifiers.
 //!
 //! Ids are dense, monotonically assigned, and never reused within a run.
-//! Entity vectors stay sorted by id, which makes id order *the* canonical
-//! iteration order for every system — determinism rule 5.
+//! Entity vectors stay sorted by id, which makes id order the canonical
+//! storage and iteration order.
 
 use serde::{Deserialize, Serialize};
 
@@ -72,6 +72,7 @@ pub struct ContactId(pub u32);
 
 /// A building footprint known through friendly observation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RememberedBuilding {
     /// Last observed owner.
     pub owner: PlayerId,
@@ -83,7 +84,12 @@ pub struct RememberedBuilding {
 
 /// Player knowledge identifying an attack objective, independently of a victim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "id", rename_all = "snake_case")]
+#[serde(
+    tag = "kind",
+    content = "id",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum AttackTarget {
     /// A currently visible hostile unit, resolved to its contact at dispatch.
     Unit(UnitId),

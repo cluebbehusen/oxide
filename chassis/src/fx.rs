@@ -1,10 +1,8 @@
 //! Fixed-point math for simulation code.
 //!
-//! Sim crates deny float arithmetic outright; this module is what they use
-//! instead. [`Fx`] is signed Q32.32 — enough integer range for any sane map
-//! and enough fraction for smooth sub-tile movement, with all operations
-//! bit-exact across platforms. Square root is implemented on top of integer
-//! `isqrt`, so it is deterministic too (`libm` never gets involved).
+//! Sim crates deny float arithmetic; they use this module instead. [`Fx`] is
+//! signed Q32.32 and every operation is bit-exact across platforms. Square
+//! root is built on integer `isqrt`, so it is deterministic too.
 
 use fixed::types::I32F32;
 use serde::{Deserialize, Serialize};
@@ -50,8 +48,8 @@ impl Vec2Fx {
         Self { x, y }
     }
 
-    /// Squared length. Prefer this over [`Self::length`] for comparisons —
-    /// it avoids the square root entirely.
+    /// Squared length. Prefer this over [`Self::length`] for comparisons; it
+    /// avoids the square root.
     pub fn length_sq(self) -> Fx {
         self.x * self.x + self.y * self.y
     }
@@ -75,8 +73,7 @@ impl Vec2Fx {
     /// exactly (no overshoot, no orbiting).
     ///
     /// Off-axis steps may fall short of `max_step` by a few ulps because the
-    /// direction ratio truncates; deterministic, and irrelevant at game
-    /// scale.
+    /// direction ratio truncates.
     #[must_use]
     pub fn move_toward(self, target: Self, max_step: Fx) -> Self {
         let delta = target - self;

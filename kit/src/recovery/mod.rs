@@ -44,6 +44,15 @@ impl Default for BuildIdentity {
 }
 
 impl BuildIdentity {
+    /// The commit, marked `-dirty` when the build had local changes.
+    pub fn label(&self) -> String {
+        if self.dirty == "true" {
+            format!("{}-dirty", self.revision)
+        } else {
+            self.revision.clone()
+        }
+    }
+
     /// Identity captured by the host executable's build script.
     pub fn new(version: &str, revision: &str, dirty: &str) -> Self {
         Self {
@@ -63,8 +72,8 @@ pub enum RecordingKind {
     /// A live match's completed command history.
     #[default]
     LiveMatch,
-    /// A watched replay, recorded by earlier builds for playback diagnostics.
-    /// Still read so those records can be exported and retired.
+    /// A watched-replay recording for playback diagnostics. Only tests write
+    /// these; they are read so existing records can be exported and retired.
     Playback,
 }
 

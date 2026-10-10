@@ -9,7 +9,7 @@ fn seats(description: Option<String>) -> Vec<SeatPlayer> {
     for player in &mut scenario.players {
         player.bot = false;
     }
-    let mut replay: GameReplay = Replay::new(SIM_VERSION, scenario);
+    let mut replay: GameReplay = Replay::new(SIM_VERSION, "test", scenario);
     replay.meta.ticks = Some(12);
     replay.meta.description = description;
     ledger(Path::new("unit.json"), &replay)

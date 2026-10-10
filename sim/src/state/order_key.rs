@@ -11,12 +11,12 @@ use serde::{Deserialize, Serialize};
 ///
 /// A key survives the rewrites the simulation makes to an order while it
 /// runs: a walk keeps its clicked tile when its goal takes a slot or an
-/// endpoint, when an hunt stops to fight on the way, or when an
+/// endpoint, when a hunt stops to fight on the way, or when an
 /// airframe lands in its place, and a harvest keeps its clicked source as
 /// it moves between nodes. A few rewrites do change the key: a landing
 /// that turns into a fight, and a planned site that becomes a build once
-/// its ground is verified. One command can also leave different keys: a
-/// pacifist walks where the rest of its group attacks.
+/// its ground is verified. One command can also leave different keys: an
+/// unarmed unit walks where the rest of its group attacks.
 ///
 /// Some keys can change while a cancellation is in flight. A fight a unit
 /// picked for itself may hold a raw unit or building, whose key flips
@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 /// as sight comes and goes, and an automatic landing's key changes when its
 /// pad is planned again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "order", rename_all = "snake_case")]
+#[serde(tag = "order", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OrderKey {
     /// A Run, Hunt, or Advance to this clicked tile, the march an
     /// engagement resumes, or the walk a landing took over.
@@ -113,10 +113,8 @@ impl Order {
                 from: Some(tile), ..
             } => OrderKey::Walk { tile },
             Order::Land { goal, from: None } => OrderKey::Land { pad: goal },
-            Order::Unload { at } => OrderKey::Unload { tile: at.tile() },
-            Order::Harvest { node, anchor, .. } => OrderKey::Harvest {
-                anchor: anchor.unwrap_or(node),
-            },
+            Order::Unload { at, .. } => OrderKey::Unload { tile: at.tile() },
+            Order::Harvest { anchor, .. } => OrderKey::Harvest { anchor },
             Order::ReturnCargo { .. } => OrderKey::ReturnCargo,
             Order::Build { site } => OrderKey::Build { site },
             Order::Found { kind, anchor } => OrderKey::Found { kind, anchor },

@@ -75,11 +75,11 @@ impl BoundaryFog {
         for building in state
             .buildings()
             .iter()
-            .filter(|b| b.built && state.player(b.player).team == team)
+            .filter(|b| b.built() && state.player(b.player).team == team)
         {
             self.stamp(
                 building.anchor,
-                building.stats().size,
+                building.kind.size(),
                 building.stats().vision,
             );
         }

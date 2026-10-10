@@ -7,7 +7,7 @@
 use chassis::grid::TilePos;
 use oxide_opponent::MissionStatus;
 use oxide_sim::stats::Domain;
-use oxide_sim::{Building, BuildingKind, Event, PlayerId, State, UnitId, UnitKind};
+use oxide_sim::{Building, BuildingKind, BuildingPhase, Event, PlayerId, State, UnitId, UnitKind};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -24,7 +24,7 @@ pub const REPEATED_ORDER_STALLS: usize = 5;
 pub const MAX_FAILURE_EXAMPLES: usize = 8;
 
 /// Stall reason the repeated-order detector ignores: a harvest line holding
-/// out of danger re-reports it every 100 ticks by design.
+/// out of danger re-reports it periodically by design.
 pub const EXEMPT_STALL_REASON: &str = "danger_hold";
 
 /// Ticks an armed unit must stay put, out of every enemy's reach, before it
@@ -106,7 +106,7 @@ pub struct SeatFailures {
     /// [`IDLE_ARMY_FLOOR`], had each rested at home out of every enemy's reach
     /// for [`IDLE_TICKS`]. The subject is the idle value and the detail the
     /// idle and whole army values; the episode ends once that no longer
-    /// holds. Absent from rows recorded before the detector existed.
+    /// holds. `None` for unwatched seats and rows that omit it.
     #[serde(default)]
     pub idle_army: Option<FailureTally>,
 }
@@ -375,7 +375,7 @@ impl FailureDetectors {
             let completed: Vec<BuildingKind> = state
                 .buildings()
                 .iter()
-                .filter(|building| building.player == player && building.built)
+                .filter(|building| building.player == player && building.built())
                 .map(|building| building.kind)
                 .collect();
             let bank = state
@@ -390,8 +390,8 @@ impl FailureDetectors {
                 .iter()
                 .filter(|building| building.player == player && building.hp > 0)
             {
-                if !building.built && !building.provisional && building.tier == 0 {
-                    let watch = observe(&mut detector.sites, building, now, building.progress);
+                if let BuildingPhase::Site { progress } = building.phase {
+                    let watch = observe(&mut detector.sites, building, now, progress);
                     if !watch.flagged && now - watch.since >= FAILURE_WINDOW_TICKS {
                         watch.flagged = true;
                         detector.failures.abandoned_sites.record(
@@ -400,7 +400,7 @@ impl FailureDetectors {
                             building.kind.name(),
                         );
                     }
-                } else if building.built && !building.stats().produces.is_empty() {
+                } else if building.built() && !building.stats().produces.is_empty() {
                     producers += 1;
                     let idle = building.queue.is_empty();
                     all_idle &= idle;
@@ -611,7 +611,7 @@ fn check_idle_army(detector: &mut SeatDetector, state: &State, player: PlayerId,
 
 /// Chebyshev tiles from `tile` to `building`'s footprint, 0 inside it.
 pub(super) fn gap(tile: TilePos, building: &Building) -> i32 {
-    let (width, height) = building.stats().size;
+    let (width, height) = building.kind.size();
     let far = building.anchor.offset(width - 1, height - 1);
     let dx = (building.anchor.x - tile.x).max(tile.x - far.x).max(0);
     let dy = (building.anchor.y - tile.y).max(tile.y - far.y).max(0);

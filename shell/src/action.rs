@@ -42,6 +42,10 @@ const UNITS: u16 = 2 | 4096;
 const LIVE: u16 = 511 | 4096;
 const WORLD: u16 = LIVE | 512 | 1024;
 
+/// Production hotkey slots a selected factory exposes; no per-faction
+/// roster may train more kinds than this.
+pub const TRAIN_SLOTS: u8 = 6;
+
 /// Categories and card order are shared by rendering and keyboard dispatch.
 pub const BUILD_CATEGORIES: [(&str, &[BuildingKind]); 4] = [
     (
@@ -226,7 +230,7 @@ impl Action {
     pub fn sane(self) -> bool {
         match self {
             Self::Slot(n) | Self::AssignGroup(n) => (1..=5).contains(&n),
-            Self::TrainSlot(n) => n < 6,
+            Self::TrainSlot(n) => n < TRAIN_SLOTS,
             Self::SetBookmark(n) | Self::RecallBookmark(n) | Self::BuildCategory(n) => n < 4,
             Self::ReplaySpeed(n) => n < 8,
             Self::Build(kind) => BUILD_CATEGORIES
@@ -269,176 +273,9 @@ pub struct Binding {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BindingMap {
     bindings: Vec<Binding>,
-    #[serde(default)]
     secondary: Vec<Binding>,
-    #[serde(default)]
-    revision: u8,
 }
 impl BindingMap {
-    pub fn legacy() -> Self {
-        let digits = [
-            Key::Num1,
-            Key::Num2,
-            Key::Num3,
-            Key::Num4,
-            Key::Num5,
-            Key::Num6,
-            Key::Num7,
-            Key::Num8,
-            Key::Num9,
-        ];
-        let mut bindings = vec![
-            Binding {
-                chord: Chord::bare(Key::Left),
-                action: Action::PanLeft,
-            },
-            Binding {
-                chord: Chord::bare(Key::Right),
-                action: Action::PanRight,
-            },
-            Binding {
-                chord: Chord::bare(Key::Up),
-                action: Action::PanUp,
-            },
-            Binding {
-                chord: Chord::bare(Key::Down),
-                action: Action::PanDown,
-            },
-            Binding {
-                chord: Chord::bare(Key::X),
-                action: Action::StopOrScrap,
-            },
-            Binding {
-                chord: Chord::bare(Key::H),
-                action: Action::TrainSlot(0),
-            },
-            Binding {
-                chord: Chord::bare(Key::S),
-                action: Action::TrainSlot(1),
-            },
-            Binding {
-                chord: Chord::bare(Key::P),
-                action: Action::TogglePause,
-            },
-            Binding {
-                chord: Chord::bare(Key::B),
-                action: Action::ToggleBuildPalette,
-            },
-            Binding {
-                chord: Chord::bare(Key::R),
-                action: Action::Patrol,
-            },
-            Binding {
-                chord: Chord::bare(Key::F1),
-                action: Action::ToggleOverlay,
-            },
-            Binding {
-                chord: Chord::bare(Key::Escape),
-                action: Action::Back,
-            },
-            Binding {
-                chord: Chord::bare(Key::Space),
-                action: Action::HomeCamera,
-            },
-            Binding {
-                chord: Chord::bare(Key::Enter),
-                action: Action::Confirm,
-            },
-            Binding {
-                chord: Chord::bare(Key::N),
-                action: Action::CycleIdleWorker,
-            },
-            Binding {
-                chord: Chord::bare(Key::A),
-                action: Action::JumpToLastAlert,
-            },
-            Binding {
-                chord: Chord::bare(Key::V),
-                action: Action::Salvage,
-            },
-            Binding {
-                chord: Chord::bare(Key::M),
-                action: Action::Run,
-            },
-            Binding {
-                chord: Chord::bare(Key::F),
-                action: Action::Hunt,
-            },
-            Binding {
-                chord: Chord::bare(Key::W),
-                action: Action::RepairUnit,
-            },
-        ];
-        for (i, key) in [Key::F5, Key::F6, Key::F7, Key::F8].into_iter().enumerate() {
-            bindings.push(Binding {
-                chord: Chord::ctrl(key),
-                action: Action::SetBookmark(i.fit::<u8>()),
-            });
-            bindings.push(Binding {
-                chord: Chord::bare(key),
-                action: Action::RecallBookmark(i.fit::<u8>()),
-            });
-        }
-        for (i, key) in digits.into_iter().enumerate() {
-            let n = (i + 1).fit::<u8>();
-            bindings.push(Binding {
-                chord: Chord::bare(key),
-                action: Action::Slot(n),
-            });
-            if (n as usize) <= CONTROL_GROUPS {
-                bindings.push(Binding {
-                    chord: Chord::ctrl(key),
-                    action: Action::AssignGroup(n),
-                });
-            }
-        }
-        Self {
-            bindings,
-            revision: 0,
-            secondary: Vec::new(),
-        }
-    }
-
-    /// The left-handed profile: every verb mirrored onto the right
-    /// hand (mouse in the left), pans staying on the arrows. Same
-    /// grammar, other hemisphere.
-    pub fn legacy_left_handed() -> Self {
-        let mut map = Self::legacy();
-        for (action, key) in [
-            (Action::TrainSlot(0), Key::K),
-            (Action::TrainSlot(1), Key::L),
-            (Action::StopOrScrap, Key::M),
-            (Action::ToggleBuildPalette, Key::N),
-            (Action::Patrol, Key::O),
-            (Action::CycleIdleWorker, Key::U),
-            (Action::JumpToLastAlert, Key::I),
-            (Action::TogglePause, Key::P),
-            // Every gameplay verb crosses over — Salvage shipped after
-            // this preset and once stayed marooned on classic's V.
-            (Action::Salvage, Key::J),
-            // Classic's M belongs to StopOrScrap over here; Run takes
-            // the freed right-index H (TrainSlot 1 moved to K).
-            (Action::Run, Key::H),
-            // The explicit fighting march sits beside Run.
-            (Action::Hunt, Key::G),
-            // Weld crosses to the right hand's remaining top-row key.
-            (Action::RepairUnit, Key::Y),
-        ] {
-            // Order matters: unbind the target key's old meaning first
-            // so the rebind never reports a conflict.
-            if let Some(holder) = map
-                .bindings
-                .iter()
-                .find(|b| b.chord == Chord::bare(key) && b.action != action)
-                .map(|b| b.action)
-            {
-                map.unbind(holder);
-            }
-            map.rebind(action, Chord::bare(key));
-        }
-        map
-    }
-
     pub fn classic() -> Self {
         use Action::{
             AssignGroup, Back, Build, BuildCategory, ClearRally, Confirm, CycleIdleWorker,
@@ -452,7 +289,6 @@ impl BindingMap {
         let mut map = Self {
             bindings: Vec::new(),
             secondary: Vec::new(),
-            revision: 3,
         };
         let defaults = [
             (PanUp, Key::W),
@@ -612,11 +448,9 @@ impl BindingMap {
             .or_else(|| rows().find(|b| !b.chord.ctrl && !b.chord.shift))
             .map(|b| b.action)
     }
-    #[cfg(test)]
-    pub fn resolve(&self, key: Key, ctrl: bool, shift: bool) -> Option<Action> {
-        self.resolve_where(key, ctrl, shift, |_| true)
-    }
-    /// Existing menus consume canonical navigation events after this binding boundary.
+    /// Translates key events through the menu-context bindings into the
+    /// canonical navigation keys menus read. Modifier edges are consumed;
+    /// non-key events pass through.
     pub fn menu_events(
         &self,
         events: &[oxide_protocol::RawEvent],
@@ -698,10 +532,6 @@ impl BindingMap {
     pub fn bindings(&self) -> &[Binding] {
         &self.bindings
     }
-    pub fn unbind(&mut self, action: Action) {
-        self.bindings.retain(|b| b.action != action);
-        self.secondary.retain(|b| b.action != action);
-    }
     pub fn unbind_slot(&mut self, action: Action, slot: usize) {
         let rows = if slot == 0 {
             &mut self.bindings
@@ -754,7 +584,6 @@ impl BindingMap {
         let mut seen = Self {
             bindings: Vec::new(),
             secondary: Vec::new(),
-            revision: 3,
         };
         for (slot, rows) in [(0, &self.bindings), (1, &self.secondary)] {
             for b in rows {
@@ -767,74 +596,6 @@ impl BindingMap {
             }
         }
         true
-    }
-    /// Upgrade old defaults while keeping deliberate remaps and unbound actions.
-    pub fn migrate(&mut self, unbound: &[Action]) {
-        if self.revision >= 3 {
-            return;
-        }
-        if self.revision == 2 {
-            for (mut previous, old_key) in
-                [(Self::classic(), Key::O), (Self::left_handed(), Key::Q)]
-            {
-                previous.rebind(Action::ReturnCargo, Chord::bare(old_key));
-                previous.revision = 2;
-                if *self == previous && !unbound.contains(&Action::ReturnCargo) {
-                    let key = if old_key == Key::O { Key::U } else { Key::E };
-                    self.rebind(Action::ReturnCargo, Chord::bare(key));
-                    break;
-                }
-            }
-            self.revision = 3;
-            return;
-        }
-        if self.revision == 1 {
-            if !unbound.contains(&Action::ReturnCargo)
-                && self.chord_for(Action::ReturnCargo).is_none()
-            {
-                for chord in self
-                    .chord_for(Action::Unload)
-                    .into_iter()
-                    .chain([Chord::bare(Key::U), Chord::bare(Key::E)])
-                {
-                    if self.rebind(Action::ReturnCargo, chord) {
-                        break;
-                    }
-                }
-            }
-            self.revision = 3;
-            return;
-        }
-        let legacy = Self::legacy();
-        let left = Self::legacy_left_handed();
-        let base = if *self == left { &left } else { &legacy };
-        let defaults = if *self == left {
-            Self::left_handed()
-        } else {
-            Self::classic()
-        };
-        let custom: Vec<_> = self
-            .bindings
-            .iter()
-            .filter(|b| b.action.sane() && base.chord_for(b.action) != Some(b.chord))
-            .copied()
-            .collect();
-        let mut migrated = Self {
-            bindings: Vec::new(),
-            secondary: Vec::new(),
-            revision: 3,
-        };
-        for b in custom {
-            let _ = migrated.rebind(b.action, b.chord);
-        }
-        for (slot, rows) in [(0, &defaults.bindings), (1, &defaults.secondary)] {
-            for b in rows {
-                if !unbound.contains(&b.action) && migrated.chord_at(b.action, slot).is_none() {
-                    let _ = migrated.rebind_slot(b.action, slot, b.chord);
-                }
-            }
-        }
-        *self = migrated;
     }
     pub fn chord_label(chord: Chord) -> String {
         let key = match chord.key {
@@ -882,10 +643,6 @@ impl ActionResolver {
         context: Context,
     ) -> Option<ActionEvent> {
         self.edge(map, key, down, |a| a.available(context))
-    }
-    #[cfg(test)]
-    pub fn key_edge(&mut self, map: &BindingMap, key: Key, down: bool) -> Option<ActionEvent> {
-        self.edge(map, key, down, |_| true)
     }
     fn edge(
         &mut self,

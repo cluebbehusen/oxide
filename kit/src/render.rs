@@ -1,10 +1,9 @@
-//! Software rendering of sim state — the golden-image workhorse.
+//! Software rendering of sim state for previews and golden images.
 //!
 //! tiny-skia rasterizes on the CPU with fixed inputs, so the same state
-//! produces the same PNG bytes on every machine: golden tests compare
-//! byte-for-byte, no GPU, no window, no tolerance tuning. The style is a
-//! deliberately plain diagram (flat tiles, circles, hp bars) — the shell owns
-//! looking good; this owns being comparable.
+//! produces the same PNG bytes on every machine and golden tests compare
+//! byte-for-byte with no GPU or window. The style is a plain diagram (flat
+//! tiles, circles, hp bars); the shell owns presentation.
 
 use anyhow::{Context, Result};
 use oxide_sim::map::Terrain;
@@ -110,7 +109,6 @@ pub fn render_state(state: &State) -> Pixmap {
                 fill_rect(&mut pixmap, x, y, TILE_PX, TILE_PX, PIT);
                 fill_rect(&mut pixmap, x, y, TILE_PX, 1.0, PIT_RIM);
             }
-            // Rubble: a faint lightening so the goldens register it.
             // Wreck salvage: a small dim-amber square, unmistakably not a
             // node (nodes render bigger and brighter below).
             (Terrain::Ground, 0) if tile.wreck > 0 => {
@@ -124,6 +122,7 @@ pub fn render_state(state: &State) -> Pixmap {
                     SCRAP_LOW,
                 );
             }
+            // Rubble: a faint lightening so the goldens register it.
             (Terrain::Ground, 0) if tile.cosmetic == 1 => {
                 fill_rect(&mut pixmap, x, y, TILE_PX, TILE_PX, 0x2C_2C_34);
             }
@@ -168,7 +167,7 @@ pub fn render_state(state: &State) -> Pixmap {
 
     for building in state.buildings() {
         let color = faction_color(state.player(building.player).faction);
-        let (w, h) = building.stats().size;
+        let (w, h) = building.kind.size();
         let (x, y) = (
             building.anchor.x as f32 * TILE_PX,
             building.anchor.y as f32 * TILE_PX,
@@ -176,7 +175,7 @@ pub fn render_state(state: &State) -> Pixmap {
         let (pw, ph) = (w as f32 * TILE_PX, h as f32 * TILE_PX);
         fill_rect(&mut pixmap, x, y, pw, ph, darken(color));
         // Unfinished sites show only their dark frame — scaffolding.
-        if building.built {
+        if building.built() {
             fill_rect(&mut pixmap, x + 2.0, y + 2.0, pw - 4.0, ph - 4.0, color);
         }
         draw_hp_bar(
@@ -196,7 +195,7 @@ pub fn render_state(state: &State) -> Pixmap {
         let r = unit.kind.stats().radius.to_num::<f32>() * TILE_PX;
         fill_circle(&mut pixmap, cx, cy, r + 1.0, darken(color));
         fill_circle(&mut pixmap, cx, cy, r, color);
-        if unit.kind == UnitKind::Harvester && unit.carrying > 0 {
+        if unit.kind == UnitKind::Harvester && unit.carrying() > 0 {
             fill_circle(&mut pixmap, cx, cy, r * 0.4, SCRAP_FULL);
         }
         let max_hp = unit.kind.stats().max_hp;

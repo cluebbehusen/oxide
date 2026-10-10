@@ -32,7 +32,7 @@ pub(crate) struct TouchPoint {
     pub at: Vec2,
     /// Wall clock at touch-down (the injected `now`).
     pub down_at: f64,
-    /// Where it landed.
+    /// What it landed on, which decides what it may drive.
     pub born: TouchBorn,
     /// Whether it ever left the slop circle — a moved finger is a
     /// drag, never a tap or a long-press.
@@ -356,10 +356,9 @@ pub(super) fn moved(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
             game.presentation.camera.center -= delta / game.presentation.camera.zoom;
             game.presentation.camera.pan(Vec2::ZERO); // re-clamp
         }
-        // Two fingers: a spread that has CUMULATIVELY moved
-        // past the threshold is a pinch (zoom at the
-        // midpoint) — per-event deltas would miss a slow
-        // pinch entirely and mis-commit it as a box select.
+        // Two fingers: a spread that has cumulatively moved past the
+        // threshold is a pinch (zoom at the midpoint). Per-event deltas
+        // would miss a slow pinch and commit it as a box select.
         2 => {
             let new_dist = (input.touches[0].1.at - input.touches[1].1.at).length();
             if let Some(pair) = &mut input.pair
@@ -387,7 +386,13 @@ pub(super) fn moved(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
 }
 
 /// A finger lifted.
-pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
+pub(super) fn up(
+    game: &mut Game,
+    input: &mut InputState,
+    bindings: &crate::action::BindingMap,
+    id: u64,
+    p: Vec2,
+) {
     let Some(pos) = input.touches.iter().position(|(tid, _)| *tid == id) else {
         // The real lift of a finger already reported lifted.
         input.lifted_pair.retain(|lifted| lifted.id != id);
@@ -439,41 +444,37 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
                     (input.now - t) * 1000.0 < f64::from(input.touch_prefs.double_tap_ms)
                         && (at - p).length() < click_slop(input.ui) * 2.0
                 });
-                // Armed modes first, exactly like the
-                // mouse: the tap that follows an armed
-                // Build or Salvage card completes the
-                // command instead of selecting under it.
-                // A tap is an atomic click — no drag can
-                // follow, so the stroke closes here and
-                // Shift decides the mode, like MouseUp.
+                // Armed modes first, as with the mouse: the tap
+                // that follows an armed Build or Salvage card
+                // completes the command instead of selecting under
+                // it. A tap is an atomic click with no drag to
+                // follow, so the stroke closes here and Shift
+                // decides the mode, as on MouseUp.
                 if super::ribbon_row_press(game, input, p, super::Pointer::Touch)
-                    || armed_click(game, input, p, super::Pointer::Touch)
+                    || armed_click(game, input, bindings, p, super::Pointer::Touch)
                 {
                     input.last_tap = None;
                     return;
                 }
-                // The minimap owns its taps (jump the
-                // camera), and HUD chrome swallows the
-                // rest — same ownership order as clicks,
-                // or a tap behind the panel would select
-                // (and a minimap tap would grab) whatever
-                // world ground happens to sit under the
-                // chrome pixel.
+                // The minimap owns its taps (jump the camera),
+                // and HUD chrome swallows the rest, in the same
+                // ownership order as clicks, so a tap on chrome
+                // never selects the world ground under it.
                 if let Some(world) = crate::render::minimap_world_at(&game.view(), p) {
                     game.presentation.camera.center = world;
                     game.presentation.camera.pan(Vec2::ZERO); // re-clamp
                     return;
                 }
-                // Chrome next, through the touch pad: a
-                // fingertip needs 44 logical px even where
-                // the drawn card is smaller. A finger that
+                // Chrome next, through the touch pad, so a
+                // fingertip gets the minimum touch target even
+                // where the drawn card is smaller. A finger that
                 // landed on another card activates nothing.
                 let layout = game.presentation.layout.get();
                 let card = pressed_card(game, p, input.ui);
                 let badge = layout.idle_badge;
                 if let Some(card) = card {
                     if lift_presses(input, &lifted, card) {
-                        press_card(game, input, card.hit);
+                        press_card(game, input, bindings, card.hit);
                     }
                 } else if badge.w > 0.0 && crate::layout::touch_pad(badge, input.ui).contains(p) {
                     // The idle badge cycles workers by
@@ -486,11 +487,11 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
                 }) {
                     // A slot acts only if the finger lifts on the same
                     // slot it landed on, as it stood then.
-                    super::press_group_slot(game, input, slot, false);
+                    super::press_group_slot(game, input, bindings, slot, false);
                 } else if layout.alert_badge.w > 0.0
                     && crate::layout::touch_pad(layout.alert_badge, input.ui).contains(p)
                 {
-                    dispatch_action(game, input, Action::JumpToLastAlert);
+                    dispatch_action(game, input, bindings, Action::JumpToLastAlert);
                 } else if layout.menu_button.w > 0.0
                     && crate::layout::touch_pad(layout.menu_button, input.ui).contains(p)
                 {
@@ -501,7 +502,7 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
                 } else if layout.pause_status.w > 0.0
                     && crate::layout::touch_pad(layout.pause_status, input.ui).contains(p)
                 {
-                    dispatch_action(game, input, Action::TogglePause);
+                    dispatch_action(game, input, bindings, Action::TogglePause);
                 } else if click_on_hud(game, p) {
                     // Bare chrome: the tap is swallowed.
                 } else {
@@ -546,7 +547,7 @@ fn world_tap(game: &mut Game, input: &mut InputState, p: Vec2, double: bool) {
 /// past the window fires the context gesture ONCE — on an entity it
 /// inspects (tap-select), on ground it issues the context order for
 /// the current selection, exactly like a right-click.
-pub fn update_touch(game: &mut Game, input: &mut InputState) {
+pub fn update_touch(game: &mut Game, input: &mut InputState, bindings: &crate::action::BindingMap) {
     // A pair emits no events while it rests either, so its box claim
     // rides the same clock.
     if let Some(pair) = &mut input.pair
@@ -561,7 +562,7 @@ pub fn update_touch(game: &mut Game, input: &mut InputState) {
     if let Some((finger, slot)) = group_hold(input) {
         if (input.now - finger.down_at) * 1000.0 >= f64::from(input.touch_prefs.long_press_ms) {
             input.touches[0].1.spent = true;
-            super::press_group_slot(game, input, slot, true);
+            super::press_group_slot(game, input, bindings, slot, true);
         }
         return;
     }

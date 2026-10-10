@@ -5,9 +5,8 @@
 //! the whole state for focused tests, while [`ObservationData::fog_honest`]
 //! filters through the player's own vision:
 //! visible enemies live, remembered buildings as ghosts, remembered scrap
-//! amounts, and anonymous team-shared salvage warnings, nothing else. The two
-//! produce the *same shape* — a policy cannot tell which world it lives in,
-//! only how much of it it sees.
+//! amounts, and anonymous team-shared salvage warnings, nothing else. Both
+//! produce the same shape; they differ only in how much they reveal.
 //!
 //! Fog-honesty is enforced by explicit filtering, not trust:
 //! `Vision` alone is not a safe boundary (the `State` behind it exposes
@@ -25,19 +24,7 @@ use serde::{Deserialize, Serialize};
 
 /// Schema version for serialized observation snapshots. Increment it when
 /// fields or their meaning change so tools can reject incompatible data.
-/// Version 9 added current visibility. Version 10 exposes whether an own unit's
-/// current program is voluntary paid repair work. Version 11 exposes the
-/// team's anonymous, bounded salvage-danger incidents. Version 12 exposes
-/// whether an airframe is parked on the ground. Version 13 exposes an own
-/// Harvester's current work node without revealing allied or enemy orders.
-/// Version 14 exposes which own units have queued or looping programs. Version
-/// 15 exposes exact owner-visible progress for the front of each training
-/// queue. Version 16 exposes exact own active repair targets. Version 17 adds
-/// owner-only carried identities separately from available units.
-/// Version 19 marks provisional building footprints and reports paid deferred
-/// construction through `UnitObs::site` instead of `UnitObs::founding`.
-/// Version 20 distinguishes explored pits from fire-blocking rock and peaks.
-pub const OBSERVATION_VERSION: u32 = 20;
+pub const OBSERVATION_VERSION: u32 = 1;
 
 /// An own passenger that remains alive but is unavailable for new assignments.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,8 +122,7 @@ pub struct BuildingObs {
     pub built: bool,
     /// Live sight right now (false = remembered ghost).
     pub seen: bool,
-    /// Upgrade-ladder rung (0 = base; ghosts report their last-seen
-    /// hull, which for now is always the base row).
+    /// Upgrade-ladder rung (0 = base). Ghosts always report 0.
     #[serde(default)]
     pub tier: u8,
 }
@@ -178,9 +164,8 @@ pub struct ObservationData {
     /// Active repair targets of own workers, sorted by worker id. Allied and
     /// hostile programs remain opaque even when their bodies are visible.
     pub my_repair_targets: Vec<(UnitId, Target)>,
-    /// Teammates' units — always in team sight, never commandable.
-    /// Their intent is as opaque as an enemy's: allies coordinate by
-    /// position, not telepathy.
+    /// Teammates' units: always in team sight, never commandable. Their
+    /// intent is as opaque as an enemy's.
     pub ally_units: Vec<UnitObs>,
     /// Teammates' buildings.
     pub ally_buildings: Vec<BuildingObs>,
@@ -228,8 +213,7 @@ pub struct ObservationData {
     pub salvage_incidents: Vec<TilePos>,
     /// Radar blips: tiles holding an unidentified hostile contact inside
     /// an Array's outer ring but out of sight. Always empty under the
-    /// omniscient builder (it has no unidentified anything). Sorted by
-    /// (y, x).
+    /// omniscient builder. Sorted by (y, x).
     pub blips: Vec<TilePos>,
     /// Team-local contacts usable by ordinary attack commands.
     #[serde(default)]
@@ -237,12 +221,11 @@ pub struct ObservationData {
     /// The seat's faction — which variants of the varied roles it may
     /// train.
     pub faction: Faction,
-    /// Own shells in flight, counted not located — the policy knows
-    /// its guns spoke.
+    /// Number of own shells in flight.
     pub my_shells: usize,
     /// Impact tiles of hostile shells this seat can currently justify
-    /// seeing (fog-honest: the impact tile must be visible — the same
-    /// rule the arc renderer draws by). Sorted by (y, x).
+    /// seeing (fog-honest: the impact tile must be visible). Sorted by
+    /// (y, x).
     pub incoming_shells: Vec<TilePos>,
 }
 
@@ -278,17 +261,16 @@ impl ObservationData {
         }
     }
 
-    /// Whether `tile` is known impassable terrain — a binary point lookup
-    /// into `known_rock`, which is sorted by (y, x) both by row-major
-    /// construction and by the orientation re-sort.
+    /// Whether `tile` is known impassable terrain: a binary search of
+    /// `known_rock`, which both builders emit sorted by (y, x).
     pub fn known_rock_at(&self, tile: TilePos) -> bool {
         self.known_rock
             .binary_search_by_key(&(tile.y, tile.x), |p| (p.y, p.x))
             .is_ok()
     }
 
-    /// Whether `tile` holds a known scrap node — the same sorted point
-    /// lookup into `known_scrap`.
+    /// Whether `tile` holds a known scrap node: a binary search of
+    /// `known_scrap`.
     pub fn known_scrap_at(&self, tile: TilePos) -> bool {
         self.known_scrap
             .binary_search_by_key(&(tile.y, tile.x), |(p, _)| (p.y, p.x))
@@ -351,29 +333,32 @@ impl ObservationData {
             if b.player == me {
                 obs.my_buildings.push(own_building(b));
                 obs.my_queues.push(b.queue.iter().copied().collect());
-                obs.my_queue_progress
-                    .push(if b.queue.is_empty() { 0 } else { b.progress });
+                obs.my_queue_progress.push(if b.queue.is_empty() {
+                    0
+                } else {
+                    b.training_progress()
+                });
             } else if !state.hostile(me, b.player) {
                 obs.ally_buildings.push(BuildingObs {
-                    provisional: b.provisional,
+                    provisional: b.provisional(),
                     id: b.id,
                     player: b.player,
                     kind: b.kind,
                     anchor: b.anchor,
                     hp: b.hp,
-                    built: b.built,
+                    built: b.built(),
                     seen: true,
                     tier: b.tier,
                 });
             } else {
                 obs.enemy_buildings.push(BuildingObs {
-                    provisional: b.provisional,
+                    provisional: b.provisional(),
                     id: b.id,
                     player: b.player,
                     kind: b.kind,
                     anchor: b.anchor,
                     hp: b.hp,
-                    built: b.built,
+                    built: b.built(),
                     seen: true,
                     tier: b.tier,
                 });
@@ -444,29 +429,32 @@ impl ObservationData {
             if b.player == me {
                 obs.my_buildings.push(own_building(b));
                 obs.my_queues.push(b.queue.iter().copied().collect());
-                obs.my_queue_progress
-                    .push(if b.queue.is_empty() { 0 } else { b.progress });
+                obs.my_queue_progress.push(if b.queue.is_empty() {
+                    0
+                } else {
+                    b.training_progress()
+                });
             } else if !state.hostile(me, b.player) {
                 obs.ally_buildings.push(BuildingObs {
-                    provisional: b.provisional,
+                    provisional: b.provisional(),
                     id: b.id,
                     player: b.player,
                     kind: b.kind,
                     anchor: b.anchor,
                     hp: b.hp,
-                    built: b.built,
+                    built: b.built(),
                     seen: true,
                     tier: b.tier,
                 });
             } else if b.tiles().any(|t| vision.visible(t)) && state.building_apparent(me, b) {
                 obs.enemy_buildings.push(BuildingObs {
-                    provisional: b.provisional,
+                    provisional: b.provisional(),
                     id: b.id,
                     player: b.player,
                     kind: b.kind,
                     anchor: b.anchor,
                     hp: b.hp,
-                    built: b.built,
+                    built: b.built(),
                     seen: true,
                     tier: b.tier,
                 });
@@ -499,12 +487,10 @@ impl ObservationData {
         }
         obs.enemy_buildings
             .sort_by_key(|b| (b.anchor.y, b.anchor.x, b.player));
-        // Remembered salvage: what this player last saw, everywhere. Rock
-        // is static, so explored is knowledge enough.
-        // Row slices, the way vision::refresh itself walks: the point
-        // accessors re-tested the same fog bits up to seven times per
-        // tile, and the per-tile frame test rescanned the frame list
-        // for every cell — the frames get their own single pass below.
+        // Remembered salvage: what this player last saw, everywhere. Terrain
+        // is static, so explored is knowledge enough. Walk row slices rather
+        // than point accessors so each fog bit is read once; frames get their
+        // own pass below.
         for y in 0..state.map().height() {
             let (visible, explored, scrap_mem, wreck_mem) = vision.rows(y).expect("row in range");
             let tiles = state.map().grid().row(y).expect("row in range");
@@ -535,14 +521,13 @@ impl ObservationData {
                 }
             }
         }
-        // Frames are authored in row-major order, the same order the
-        // per-tile walk produced them in.
+        // Frames are authored in row-major order, which this pass preserves.
         for frame in state.map().extractor_frames() {
             if (0..2).any(|dy| (0..2).any(|dx| vision.explored(frame.offset(dx, dy)))) {
                 obs.known_frames.push(*frame);
             }
         }
-        // Blips ride through untouched: tiles only, by construction.
+        // Blips carry tiles only, so they pass through unfiltered.
         obs.blips = vision.contacts().to_vec();
         obs.contact_tracks = vision.tracks().to_vec();
         obs.my_shells = state.shells().iter().filter(|s| s.player == me).count();
@@ -628,7 +613,7 @@ fn own_unit(state: &State, u: &crate::state::Unit) -> UnitObs {
         Order::Found { kind, anchor } => state
             .buildings()
             .iter()
-            .find(|b| b.player == u.player && b.kind == kind && b.anchor == anchor && !b.built)
+            .find(|b| b.player == u.player && b.kind == kind && b.anchor == anchor && !b.built())
             .map(|b| b.id),
         _ => None,
     };
@@ -639,7 +624,7 @@ fn own_unit(state: &State, u: &crate::state::Unit) -> UnitObs {
         tile: u.tile(),
         hp: u.hp,
         idle: u.order == Order::Idle,
-        carrying: u.carrying,
+        carrying: u.carrying(),
         harvesting: match u.order {
             Order::Harvest { node, .. } => Some(node),
             _ => None,
@@ -655,7 +640,7 @@ fn own_unit(state: &State, u: &crate::state::Unit) -> UnitObs {
             _ => None,
         },
         repairing: matches!(u.order, Order::Repair { .. } | Order::RepairUnit { .. }),
-        grounded: u.landed,
+        grounded: u.landed(),
     }
 }
 
@@ -674,19 +659,19 @@ fn enemy_unit(u: &crate::state::Unit) -> UnitObs {
         salvaging: None,  // ditto
         founding: None,   // ditto
         repairing: false,
-        grounded: u.landed,
+        grounded: u.landed(),
     }
 }
 
 fn own_building(b: &crate::state::Building) -> BuildingObs {
     BuildingObs {
-        provisional: b.provisional,
+        provisional: b.provisional(),
         id: b.id,
         player: b.player,
         kind: b.kind,
         anchor: b.anchor,
         hp: b.hp,
-        built: b.built,
+        built: b.built(),
         seen: true,
         tier: b.tier,
     }

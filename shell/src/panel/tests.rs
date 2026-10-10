@@ -225,7 +225,7 @@ fn recurring_income_tracks_real_output_upgrade_downtime_and_foundry_warmup() {
             building: reclaimer,
         },
     }]);
-    assert!(!game.state.building(reclaimer).unwrap().built);
+    assert!(!game.state.building(reclaimer).unwrap().built());
     assert_eq!(rate(&game, reclaimer), 0);
     for _ in 0..300 {
         game.state.tick(&[]);
@@ -773,8 +773,8 @@ fn build_chips_wear_the_works_they_are_raising() {
     game.presentation.selection.units = vec![harvester];
     let panel = build_for_palette(&game.view(), &BindingMap::classic(), false).expect("panel");
     assert_eq!(panel.queue.len(), 2, "two legs of one program");
-    // Two Build chips that no longer look the same: each carries
-    // its own works, ghosted while the site is still rising.
+    // Two Build chips look different: each carries its own works,
+    // ghosted while the site is still rising.
     let faction = game.state.player(game.presentation.human).faction;
     assert_eq!(
         panel.queue[0].icon,
@@ -897,10 +897,13 @@ fn every_own_chip_removes_its_order_but_sites_cancel_outright() {
                 pursue: true,
                 resume: None,
             },
-            Order::Unload { at: goal },
+            Order::Unload {
+                at: goal,
+                reverse: false,
+            },
             Order::Harvest {
                 node: TilePos::new(4, 4),
-                anchor: Some(tile),
+                anchor: tile,
                 retiring: false,
             },
             Order::ReturnCargo {
@@ -986,9 +989,8 @@ fn a_chip_whose_subject_is_gone_falls_back_to_the_bare_verb() {
 
 #[test]
 fn a_foreign_program_is_never_enriched() {
-    // Enriching an inspected ally's chips would rest the panel on a
-    // claim about what team sight shares; a teammate's dock says
-    // the verb and nothing about what it acts on.
+    // A teammate's dock shows the verb and nothing about what it acts
+    // on, rather than relying on what team sight shares.
     let (mut game, harvester) = builder_game();
     place(&mut game, harvester, BuildingKind::Turret, false);
     game.presentation.selection.units = vec![harvester];

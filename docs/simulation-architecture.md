@@ -16,21 +16,20 @@ lives in `geometry`, outside the private tick implementation.
 step. Camera state, input state, interpolation, effects, audio, and UI never
 enter `State` and cannot affect an outcome.
 
-A `Scenario` contains the map, seed, players, starting entities, and bot setup
-needed to begin a match. It may also carry browser metadata that the simulation
+A `Scenario` contains the map, players, starting entities, and bot setup needed
+to begin a match. It may also carry browser metadata that the simulation
 deliberately ignores. The complete scenario is embedded in a replay, so
-reconstruction does not depend on the original scenario file. Its seed
-initializes the simulation RNG. Each player-facing bot seat carries a separate
-personality seed in its configuration; the bot derives its profile from that
-seed, not the scenario seed.
+reconstruction does not depend on the original scenario file. The simulation has
+no random stream of its own. Each player-facing bot seat carries a personality
+seed in its configuration, and the bot derives its profile from that seed.
 
 All outcome-relevant arithmetic uses fixed point or integers. Fixed-point vector
 scaling computes unsigned magnitudes before restoring the sign, preserving exact
 negation for representable results so opposite movement rays cannot drift by one
-raw unit. Entity tables are kept in stable id order, random choices use
-`chassis::rng::Pcg32`, and selection rules end in explicit deterministic
-tie-breakers. `State::hash` serializes the authoritative state canonically;
-readable protocol views are not substitutes for that fingerprint.
+raw unit. Entity tables are kept in stable id order, and selection rules end in
+explicit deterministic tie-breakers. `State::hash` serializes the authoritative
+state canonically; readable protocol views are not substitutes for that
+fingerprint.
 
 `TickReport` and its `Event` values are output only. Consumers may use them for
 statistics, effects, animation, sound, and assertions, or drop them entirely.
@@ -69,8 +68,6 @@ Validation covers, among other things:
 - coherent construction, salvage, recovery, ghost, radar, and memory state;
 - canonical ordering for every collection whose order is observable.
 
-`Pcg32` validates its odd stream increment at its own deserialization boundary.
-
 Each new serialized field needs an invariant decision. The integrity tests
 exercise meaningful malformed relationships and bounds, while round-tripping
 states the real simulation produces so validation cannot become stricter than
@@ -79,7 +76,7 @@ primitive decoding checks for each field.
 
 ## Tick pipeline
 
-Phase order is game behavior. `State::tick` currently performs:
+Phase order is game behavior. `State::tick` performs:
 
 1. Capture any newly stranded economy's finite recovery entitlement and resolve
    provisional sites whose full footprints are visible.
@@ -102,7 +99,8 @@ Phase order is game behavior. `State::tick` currently performs:
 13. Rebuild team-shared visibility and reconcile fog memory. Activate or refund
     newly visible provisional sites. Newly discovered mines cancel unstarted
     sites before the next command. Tile goals whose clicked tile the owner's
-    team has now explored take their spread slots.
+    team has now explored take their spread slots, and units left without a
+    route drop their stall counts.
 14. Determine victory or draw from surviving, non-resigned teams and discard any
     remaining pending crashes when the match ends.
 
@@ -131,7 +129,7 @@ displacement, capped at flight speed and reduced by the crash's deceleration.
 Crash duration and blast profiles live in `sim/src/stats.rs`; trajectory and
 impact resolution live in `sim/src/tick/aircraft_crashes.rs`. A hovering
 transport therefore falls in place. The removed aircraft and its cargo cease
-acting immediately, and ordinary death salvage is unchanged.
+acting immediately and leave ordinary death salvage.
 
 At contact, the blast damages hostile ground units and nearby building
 footprints. Allies and airborne units are immune; impacts over pits do no
@@ -194,8 +192,8 @@ a `Goal`: the clicked tile, the spread slot the unit aims for around it, and an
 optional endpoint. A tile goal must lie on the map, and an off-map one is
 refused as `OutOfBounds`; a goal that cannot be reached is never refused. Each
 movement domain's half of a group snaps the clicked tile to the nearest open
-tile within `GOAL_SNAP_RADIUS` (air clamps onto the map and scans three tiles
-further), then gives its members, in id order, the open tiles ring-scanned
+tile within `GOAL_SNAP_RADIUS` (air clamps onto the map and scans a wider
+radius), then gives its members, in id order, the open tiles ring-scanned
 outward from that center; members past the last open tile share it, and with no
 open tile near the click every member's target stays the clicked tile. That
 resolution happens when the command is issued if the issuer's team has explored
@@ -208,7 +206,9 @@ knowledge, so a group never spreads before its owner's team has seen the clicked
 tile. Patrols spread each leg the same way. A rally walk, the walk a unit that
 cannot hit an attack target takes to that target's tile, and an `Unload` drop
 point each resolve as rank 0, so a rally's newborns and a group's pacifists
-share one tile.
+share one tile. Every air route snaps a peak goal to open sky with the same
+scan, framed by the flyer's own approach, so mirrored flights snap to mirrored
+sky.
 
 When the target lies outside the unit's reachable ground, the unit routes to the
 reachable tile nearest it by squared distance instead, and stores that tile as
@@ -235,7 +235,10 @@ touching bodies within `CROWD_CHAIN_REACH`, to one within `ARRIVAL_NEAR` of the
 endpoint. Only bodies of the walker's own team count toward that chain, so a
 hostile body that may be out of sight never changes where a short walk stops. A
 crowd therefore never makes a goal count as unreachable. An unreachable `Unload`
-sets its riders down where the flight ended.
+sets its riders down where the flight ended. Riders take the open tiles
+ring-scanned outward from where the transport stopped, framed by the transport's
+approach when the order was issued, so mirrored drops set riders on mirrored
+tiles.
 
 ## Movement and collision
 
@@ -261,11 +264,11 @@ to one another; an exact tie goes to the earlier unit of one seat. When
 productive units fill the legal positions, overflow approaches wait outside the
 interaction area. A worker that already reaches the surface works where it
 stands, and a held position is chosen again once new ground makes it
-unreachable. Ranged candidates retain their weapon's minimum and maximum range,
-line of fire, and movement layer. Fixed-wing aircraft retain run-in attacks.
-Building artwork and its approximate contact outline retain their authored
-facing; asymmetric contact can differ under a map half-turn. Rectangular
-placement, travel, and ranged reach remain unchanged.
+unreachable. Ranged candidates respect their weapon's minimum and maximum range,
+line of fire, and movement layer. Fixed-wing aircraft attack with run-ins
+instead. Building artwork and its approximate contact outline keep their
+authored facing, so asymmetric contact can differ under a map half-turn.
+Placement, travel, and ranged reach use the rectangular footprint.
 
 Talon, Darter, Shrike, Sylph, Kestrel, and Gnat cruise heading-first but can
 hover at rest. Their travel and fixed-gun traverse rates are independent of
@@ -278,7 +281,7 @@ Arrivals, Stop, and in-range attacks hover rather than orbit or land. Fixed guns
 traverse with the body before firing ordinary hitscan shots; Advance only fires
 when already aligned and does not turn away from its route to aim. These
 aircraft spawn facing the map center, matching mirrored initial turn costs.
-Buzzard, Wisp, and Skyhook retain independent travel without a cruise turn
+Buzzard, Wisp, and Skyhook travel independently of heading, with no cruise turn
 radius.
 
 Condor and Moth use committed heading-first flight: only the heading steers, at
@@ -294,9 +297,9 @@ fitting arc is longest, tangent to the point where the route ran out, and if it
 is ever pressed into the envelope it slides along the boundary while turning
 back in. A step into a Peak drops the route so the brain replans from the actual
 position, while the airframe slides along the face. Near the target bearing, a
-three-quarter-step angular deadband prevents alternating corrections across the
-256-step compass boundary. Turns settle on the nearer of the two bearings
-bracketing the goal ray.
+small angular deadband prevents alternating corrections across the 256-step
+compass boundary. Turns settle on the nearer of the two bearings bracketing the
+goal ray.
 
 A bomber's roll-out after a release, and its departure leg when it is inside
 release range or inside its own acceptance ring of the attack tile, go only to
@@ -335,8 +338,8 @@ tile can lie beyond the airframe's own eyes. A touchdown also needs clearance:
 no other ground body on the tile or within the two bodies' combined radius of
 the resting point, because parked bodies are immovable and such an overlap would
 never resolve. It touches down when it passes within `LANDING_TOUCHDOWN` of the
-tile center and rests where it met the tile, keeping its heading; the `landed`
-flag makes it a ground body for targeting, collision, buried charges, and
+tile center and rests where it met the tile, keeping its heading; its landed
+motor makes it a ground body for targeting, collision, buried charges, and
 footprints while it never moves. A tile that fills during the approach sends the
 landing around to the nearest clear tile; an overflown tile costs a fresh
 run-in. An idle aircraft lands itself after `AUTO_LAND_IDLE_TICKS` of orbit, and
@@ -372,11 +375,11 @@ tie.
 
 Routes stay body-blind, but a ground follower never admits a lookahead leg
 through a friendly ground body standing still, and a body whose contact cancels
-most of its intended progress toward its waypoint for twelve running ticks drops
-its route so its brain plans again from where it actually is; the counter is
-serialized and validated. Only friendly bodies count for the lookahead: steering
-around an unseen enemy before contact would leak its position, so hostile bodies
-are still met by the collision resolver alone.
+most of its intended progress toward its waypoint for `STALL_REPLAN_TICKS`
+running ticks drops its route so its brain plans again from where it actually
+is; the counter is serialized and validated. Only friendly bodies count for the
+lookahead: steering around an unseen enemy before contact would leak its
+position, so hostile bodies are still met by the collision resolver alone.
 
 If a newly accepted foundation leaves a body without an escape route, make-way
 relocates it to a passable perimeter tile. That ring is ordered in the founder's
@@ -384,7 +387,9 @@ approach frame, so rotating the map rotates the fallback destinations too.
 Relocation happens only after acceptance and payment.
 
 Approaching a footprint orders passable doorsteps in the body's local approach
-frame, then uses an owner-local unit rank to spread equivalent workers.
+frame, then uses an owner-local unit rank to spread equivalent workers. A Sapper
+pressing a building and a long gun backing out of its dead zone take the nearest
+doorstep or firing stand, with equal distances ranked in that same frame.
 Ground-production orders spawn doorsteps in the producer's radial frame around
 the map. In both cases, dot and cross products replace an absolute scan
 direction, so half-turned producers and workers receive corresponding geometric
@@ -396,10 +401,9 @@ Autonomous harvest replacement preserves worker distance, safe route length,
 source amount, anchor distance and source kind as its economic priorities. Exact
 ties use coordinates oriented by the worker's approach to the work-zone anchor.
 A worker standing on that anchor uses its hull bearing instead, so mirrored
-workers choose mirrored sources without depending on seat or unit ids. Work
-tiles that other friendly workers hold or are heading for are last resorts,
-taken only when every tile around a source is spoken for; a parked worker also
-claims every tile whose center lies within 0.9 tiles of its hull.
+workers choose mirrored sources without depending on seat or unit ids. The work
+position around the chosen source goes through the same crowd-aware chooser as
+building work.
 
 Group `Run`, `Advance`, and `Hunt` commands likewise resolve a blocked center
 and spread per-unit destinations in the approaching body's half-turn frame. The
@@ -418,42 +422,42 @@ turn-limited aircraft take part in no collision at all: a committed arc that
 steering has already checked against the world cannot be shoved off it. Moving
 bodies slide around contacts. A productive stationary unit holds its position
 against an approaching unit; other stationary bodies receive ordinary
-separation. Friendly contacts around productive work allow 65 percent of summed
-body radii, while moving and waiting crowds use full body spacing. Terrain wins
-over a proposed push, and a per-tick budget prevents dense groups from exploding
-outward. Candidate pairs are gathered and ordered once per tick, and every pass
-walks that list. An overlap within a small slop counts as resting contact and is
-not corrected, so rounding alone never keeps a parked crowd moving, and a tick
-with no deeper overlap runs no pass at all. Iteration direction alternates with
-tick parity to avoid a permanent id-order advantage. When bodies are perfectly
-stacked and geometry provides no separating vector, the deterministic
-owner-local-rank direction is rotated into the stack's map-relative half-turn
-frame.
+separation. Same-owner contacts around productive work allow a compressed
+fraction of summed body radii, while moving and waiting crowds use full body
+spacing. Terrain wins over a proposed push, and a per-tick budget prevents dense
+groups from exploding outward. Candidate pairs are gathered and ordered once per
+tick, and every pass walks that list. An overlap within a small slop counts as
+resting contact and is not corrected, so rounding alone never keeps a parked
+crowd moving, and a tick with no deeper overlap runs no pass at all. Iteration
+direction alternates with tick parity to avoid a permanent id-order advantage.
+When bodies are perfectly stacked and geometry provides no separating vector,
+the deterministic owner-local-rank direction is rotated into the stack's
+map-relative half-turn frame.
 
 ## Economy, construction, salvage, and repair
 
 Scrap nodes block ground until exhausted. Harvesters work a bounded zone, carry
-a finite load, and deposit at a Foundry. Resource work retains its precise
-position in the selected doorstep tile and chassis-overhang allowance.
-Construction, building repair, salvage, and unloading instead approach the
-coarse building surface with chassis clearance. Work starts only after the motor
-has stopped and its path has ended; the shell uses the same building-work reach
-predicate. Field welds use the two bodies' combined radii plus 0.10 tiles for
-approach and 0.15 tiles for work, and still settle both bodies' departures
-before billing. Wreck gathering retains its bounded resource approach and also
-waits for the motor to stop.
+a finite load, and deposit at a Foundry. Resource work uses a precise position
+in the selected doorstep tile with a chassis-overhang allowance. Construction,
+building repair, salvage, and unloading instead approach the coarse building
+surface with chassis clearance. Work starts only after the motor has stopped and
+its path has ended; the shell uses the same building-work reach predicate. Field
+welds use the two bodies' combined radii plus `WORK_APPROACH_GAP` for approach
+and `WORK_REACH` for work, and settle both bodies' departures before billing.
+Wreck gathering uses the bounded resource approach and also waits for the motor
+to stop.
 
-Unloading takes ten uninterrupted work ticks. The worker retains its cargo and
-Foundry identity until the final tick clears the load and credits the bank once.
-The deposit event identifies both entities and reports the actual saturating
-credit. Displacement outside reach restarts the release; replacing the order,
-boarding, or losing the destination cancels it without losing cargo. Reissuing
-the same delivery preserves progress. Automatic deliveries can choose another
-Foundry after target loss; explicit deliveries retain their usual failure
-policy. A delivery route ends at any point already within unloading reach, then
-brakes before releasing cargo. Workers without a following order leave the
-contact ring after their final delivery so a retired crew cannot block the last
-loaded workers. Queued work takes precedence over this short departure.
+Unloading takes `UNLOAD_TICKS` uninterrupted work ticks. The worker retains its
+cargo and Foundry identity until the final tick clears the load and credits the
+bank once. The deposit event identifies both entities and reports the actual
+saturating credit. Displacement outside reach restarts the release; replacing
+the order, boarding, or losing the destination cancels it without losing cargo.
+Reissuing the same delivery preserves progress. Automatic deliveries can choose
+another Foundry after target loss; explicit deliveries retain their usual
+failure policy. A delivery route ends at any point already within unloading
+reach, then brakes before releasing cargo. Workers without a following order
+leave the contact ring after their final delivery so a retired crew cannot block
+the last loaded workers. Queued work takes precedence over this short departure.
 Reservations and blocked-dock replanning use physical approach points and hull
 clearance instead of tile centers. The following job begins on the next tick.
 
@@ -476,11 +480,12 @@ movement. Recurring economy runs in the production phase: Reclaimers and
 Refineries pay on their cadences, restored Extractors provide fixed remote
 income, and a completed same-owner Foundry within the support radius raises an
 Extractor's fixed yield without stacking. Completed Foundries also provide the
-baseline drip and a finite recovery entitlement for a stranded seat. Crucibles
-consume nearby wreck salvage for income, nearest tile first and then the richer
-one, with exact ties ordered in the crucible's half-turn frame so mirrored
-crucibles burn mirrored tiles. These are ordinary authoritative rules, not shell
-conveniences.
+baseline drip and a finite recovery entitlement for a stranded seat: one with no
+machine that can harvest, whether in the world, aboard a transport, or prepaid
+in a live production queue. Crucibles consume nearby wreck salvage for income,
+nearest tile first and then the richer one, with exact ties ordered in the
+crucible's half-turn frame so mirrored crucibles burn mirrored tiles. These are
+ordinary authoritative rules, not shell conveniences.
 
 Extractor frames are immutable authored map features. Only an Extractor may
 claim one, other foundations cannot cover one, and destroying an Extractor
@@ -520,17 +525,17 @@ receive the same full refund. Unrelated queued orders survive cancellation.
 The first actual crew work over an undiscovered armed charge triggers its blast
 before construction hp or completion resolves. The new site is destroyed; nearby
 hostile ground units and charges take the ordinary mine damage. Ground movement
-retains its existing post-movement trigger. Construction triggers resolve in
-mine-id order after the volley; a charge destroyed by the volley or an earlier
-blast does not fire. Multiple workers cannot multiply one detonation. An
-artillery impact on an overlapping scaffold hits the scaffold directly; the
+over a charge triggers it after the movement phase. Construction triggers
+resolve in mine-id order after the volley; a charge destroyed by the volley or
+an earlier blast does not fire. Multiple workers cannot multiply one detonation.
+An artillery impact on an overlapping scaffold hits the scaffold directly; the
 buried charge remains vulnerable to the shell's ordinary splash damage.
 
 An unstarted tier-zero site is cancelled with a full refund when its final
 living worker loses its active or queued commitment, including replacement,
 Stop, failed travel, boarding, or death. Replacement construction can use these
 refunds atomically: rejection preserves the old sites and programs. Once work
-has started, an abandoned site retains the existing decay and health-based
+has started, an abandoned site follows the ordinary decay and health-based
 refund rules. Provisional scaffolds never decay. An upgrade pays up front and
 takes a completed building offline as a committed site on its new tier. The
 building refits itself at one progress tick per simulation tick: it cannot be
@@ -560,25 +565,24 @@ building destroyed by that tick's volley.
 
 Every unit or armed building reads immutable stats describing range, minimum
 range, cooldown, damage, target domains, splash, indirect fire, and whether the
-shot is hitscan or a real projectile. Buildings count as ground targets. Weapons
-may cover ground, air, or both; sidearms are separate weapon slots and cooldowns
-are stored per slot.
+shot is hitscan or a real projectile with its own payload and flight speed.
+Buildings count as ground targets. Weapons may cover ground, air, or both;
+sidearms are separate weapon slots and cooldowns are stored per slot.
 
-Ground chassis retain a motor speed independently of collision displacement.
-They accelerate from rest over six ticks and brake from full speed over three.
-The hull turns toward its target every tick and keeps rolling through a bend,
-easing off as the heading error grows; off the exact bearing the body travels
-along its heading, so a bend is driven as an arc. Only an error past 96 of 256
-compass steps (135 degrees) brakes along the existing heading and pivots in
-place. Final approaches reduce speed to stop at the goal, and inside the last
-braking step the body lands on the point whatever its bearing. Stop and lost
-paths brake without retaining the old order. Newly blocked terrain can arrest
-that coast. Turn rate remains the ceiling of movement speed times 64, bounded to
-four through ten compass steps per tick; Breaker retains four, and Avalanche and
-Bombard retain three. Within eight compass steps of the bearing the body tracks
-the target point directly. Ground units spawn facing the map center so mirrored
-placements have mirrored initial turn costs. Independent weapon mounts can aim
-during travel; fixed weapons wait for the motor to stop before turning to aim.
+Ground chassis keep a motor speed independent of collision displacement. They
+accelerate from rest over `GROUND_ACCEL_TICKS` and brake from full speed over
+`GROUND_BRAKE_TICKS`. The hull turns toward its target every tick and keeps
+rolling through a bend, easing off as the heading error grows; off the exact
+bearing the body travels along its heading, so a bend is driven as an arc. Only
+an error past `GROUND_PIVOT_THRESHOLD` brakes along the existing heading and
+pivots in place. Final approaches reduce speed to stop at the goal, and inside
+the last braking step the body lands on the point whatever its bearing. Stop and
+lost paths brake without keeping the old order. Newly blocked terrain can arrest
+that coast. Hull turn rates come from `UnitKind::ground_turn_rate`. Within
+`GROUND_ALIGNED_STEPS` of the bearing the body tracks the target point directly.
+Ground units spawn facing the map center so mirrored placements have mirrored
+initial turn costs. Independent weapon mounts can aim during travel; fixed
+weapons wait for the motor to stop before turning to aim.
 
 A ground follower does not drive a grid route corner by corner. Each tick it
 looks ahead a bounded number of waypoints and steers for the furthest one its
@@ -596,46 +600,43 @@ a wide hull beside a wall never loses a leg it could always walk.
 A pathless ground unit can still be braking. Group arrival propagation and
 anchored collision priority require its motor speed to be zero.
 
-Paths and destination allocation remain advisory. The ordinary collision
-relaxation still separates bodies laterally after propulsion, with its original
-per-tick budgets and alternating order. No future journey, service timetable or
-contact-steering coordinator controls ground travel. Motor speed is serialized
-and validated; observational motion reports split propulsion from collision
-correction without affecting state or hashes.
+Motor speed is serialized and validated. Observational motion reports split
+propulsion from collision correction without affecting state or hashes.
 
 Collision corrections require every tile touching the proposed position to be
 passable in the body's domain. An exact grid edge touches two tiles and a corner
 touches four; neither face of a blocking tile admits an exact-edge correction.
 This contact rule is separate from ordinary `TilePos::containing` lookup and
-retains the same displacement budget and deterministic pair order.
+uses the same displacement budget and deterministic pair order.
 
-Ground weapons require alignment within two compass steps before firing.
-Sentinel, Warden, and Lancer have independent serialized `turret_heading`
-bearings, traversing eight, five, and six steps per tick respectively while the
-hull follows its route. An absent bearing initially follows the hull; other unit
-kinds cannot deserialize this field. Fixed ground weapons aim with the chassis.
-During Advance they only take already-aligned opportunistic shots; independent
-mounts can traverse while advancing. Ground sidearms share the current weapon
-bearing and cannot fire off-axis. Workers turn toward their stationary work
-target without delaying work progress.
+Ground weapons fire only once their bearing is within a small tolerance of the
+target. Sentinel, Warden, and Lancer have independent serialized
+`turret_heading` bearings that traverse at `UnitKind::turret_turn_rate` while
+the hull follows its route. An absent bearing initially follows the hull; other
+unit kinds cannot deserialize this field. Fixed ground weapons aim with the
+chassis. During Advance they only take already-aligned opportunistic shots;
+independent mounts can traverse while advancing. Ground sidearms share the
+current weapon bearing and cannot fire off-axis. Workers turn toward their
+stationary work target without delaying work progress.
 
 Buzzard uses its compass heading for an independent turret, while its air
-movement remains unrestricted by heading. The turret traverses six compass steps
-per tick and shares the two-step firing tolerance. It tracks visible, shootable
-targets during reload. An advance keeps its route while traversing toward its
-ordinary opportunistic target; cooldown starts only once the turret aligns.
-Hidden structures cannot attract an advancing weapon or reveal themselves
-through turret tracking.
+movement is unrestricted by heading. The turret traverses at
+`UnitKind::turret_turn_rate` and shares the ground firing tolerance. It tracks
+visible, shootable targets during reload. An advance keeps its route while
+traversing toward its ordinary opportunistic target; cooldown starts only once
+the turret aligns. Hidden structures cannot attract an advancing weapon or
+reveal themselves through turret tracking.
 
-Bombard keeps serialized `brace_ticks` from zero to twelve. It turns with the
-spades stowed, then spends twelve aligned ticks deploying; its heading stays
-fixed inside the firing tolerance while planted. After a shot, eight ticks of
-recoil protection precede retraction at three deployment ticks per tick. A new
-aim, lost firing solution, or movement order retracts the spades before further
-turning or translation. Reloading at an unchanged firing stance keeps them
-planted. Advance does not fire Bombard potshots. Deserialization bounds the
-deployment counter, rejects it on other kinds and requires transported riders to
-have stowed spades.
+A unit whose stats carry a brace, today the Bombard, stands on a braced motor
+while its spades are out, counting deployment ticks up to the brace's
+deployment. It turns with the spades stowed, then deploys over that many aligned
+ticks; its heading stays fixed inside the firing tolerance while planted. After
+a shot, a short recoil window precedes retraction, which runs faster than
+deployment. A new aim, lost firing solution, or movement order retracts the
+spades before further turning or translation. Reloading at an unchanged firing
+stance keeps them planted. A braced gun never fires potshots on Advance.
+Deserialization bounds the deployment counter and rejects a braced motor on
+kinds without a brace; a transported rider keeps no motor at all.
 
 `AttackTarget` resolves through team knowledge to a visible entity, remembered
 building footprint, or mobile contact. Explicit attacks approach weapon range
@@ -646,10 +647,10 @@ focus and advances queued orders.
 
 Automatic acquisition prefers visible eligible enemies over radar contacts and
 does not acquire building ghosts. Automatic radar fire may stop Idle, Hunt, or
-Patrol to aim, but cannot pursue, retreat, or start a bomber run. Run and
-Advance retain their existing movement and firing rules. A fireable explicit
-target takes priority. Defenses retain blocked or out-of-range focus while
-firing at fallback targets; Stop clears focus.
+Patrol to aim, but cannot pursue, retreat, or start a bomber run. It does not
+change Run or Advance. A fireable explicit target takes priority. Defenses
+retain blocked or out-of-range focus while firing at fallback targets; Stop
+clears focus.
 
 Ground-capable defenses automatically acquire visible hostile buildings when no
 eligible visible unit is in firing range with a clear shot. Building acquisition
@@ -664,21 +665,21 @@ ordinary rock cover. For anonymous contacts, ground-capable direct fire uses
 ground cover and air-only fire uses air rules. Peaks block both. Blind hitscan
 spends a shot and selects one eligible hostile in the reported tile by distance
 to its center, then id. Remembered-building hitscan resolves against a footprint
-at the aim point. Both retain normal splash rules and report firing coordinates
+at the aim point. Both apply normal splash rules and report firing coordinates
 without a victim id, including on misses.
 
 Hitscan attacks buffer damage for same-tick resolution. Projectile weapons
 launch a serialized `Shell` toward a fixed fire-time aim point. Predictive aim
 samples ground motor speed and heading, including pathless coasting; air units
-retain the current steering-line estimate. The snapshot precedes unit brains and
+use the current steering-line estimate. The snapshot precedes unit brains and
 does not consult later route turns. A shell is unguided after it leaves the
 weapon. Radar aim uses a fixed-point velocity estimated from the rolling
 one-second tile-center history, clamped to a global movement bound; a fresh
-contact has zero estimated velocity. A serialized projectile kind preserves
-missile, bomb, or shell identity independently of shooter survival.
-Deserialization rejects a kind inconsistent with a shooter that still exists. On
-arrival, buildings take only a direct hit; eligible enemy units may take splash
-according to the weapon's domain mask.
+contact has zero estimated velocity. A shell keeps its weapon's payload kind
+(missile, bomb, or shell) and its launch tick for presentation, independently of
+shooter survival; deserialization requires it to launch no later than it lands.
+On arrival, buildings take only a direct hit; eligible enemy units may take
+splash according to the weapon's domain mask.
 
 ## Fog, memory, radar, and teams
 
@@ -687,25 +688,24 @@ from completed allied buildings and allied units; explored ground only grows.
 Rocks do not occlude vision. Teammates receive byte-identical shared sight and
 memory, computed once per team and cloned to later seats.
 
-The bot `Observation` copies both masks in canonical row-major order. Policies
-therefore distinguish current sight from remembered terrain without consulting
-authoritative state; seat orientation transforms both masks with the rest of the
-observed world. Observation schema 20 distinguishes explored pits from
-fire-blocking rock and peaks, marks provisional footprints and paid deferred
-sites, and exposes continuous contact tracks and each own carried unit's
-identity, kind, health, and carrier separately from available units. This is
-presence evidence, not permission to assign or command a passenger. Allied and
-enemy manifests remain opaque.
+`ObservationData::fog_honest` copies both masks in canonical row-major order, so
+a policy distinguishes current sight from remembered terrain without consulting
+authoritative state. It distinguishes explored pits from fire-blocking rock and
+peaks, marks provisional footprints and paid deferred sites, and exposes
+team-shared contact tracks and each own carried unit's identity, kind, health,
+and carrier separately from available units. This is presence evidence, not
+permission to assign or command a passenger. Allied and enemy manifests remain
+opaque. The debug protocol's `FogView` projects the same knowledge for players
+and agents; a parity test in `protocol/src/view/tests.rs` keeps the two in
+agreement.
 
-The maintained player-facing controller also receives a `PublicMapBriefing`
-derived from the final authored `Scenario`. It contains static terrain,
-Extractor frames, initial scrap locations and amounts, teams, and each seat's
-starting Foundry anchor. These are the same facts available through the
-pre-match map and roster: a starting anchor is a reconnaissance prior rather
-than a current enemy contact, and an initial resource amount says nothing about
-later depletion. The briefing is immutable, stays separate from
-`StrategicIntelligence`, and is transformed once into the same latched seat
-orientation as the dynamic observation.
+`oxide-opponent` also builds one immutable `MapModel` per match from the
+authored `Scenario`, through the same `Scenario::parse_map_and_anchors` that
+state construction uses. It reads static terrain, Extractor frames, initial
+scrap, teams, and each seat's starting Foundry anchor: the facts available
+through the pre-match map and roster. A starting anchor is a reconnaissance
+prior rather than a current enemy contact, and an initial resource amount says
+nothing about later depletion.
 
 Enemy buildings remain as last-seen ghosts until their footprint is observed
 again. Scrap and wreck amounts likewise freeze at the last visible value. Arrays
@@ -720,14 +720,14 @@ ranked by predicted distance, previous distance, contact id, and coordinates.
 Visible identity can link visible observations; radar matching uses only
 reported movement. Unmatched tracks end immediately, and ids are never reused.
 
-Salvage-relevant hostile incidents, such as a Harvester hit or an allied loss,
-remember only the victim's tile for a bounded caution period, never the
-attacker's identity or location. Only fire from an attacker the victim's team
-cannot see leaves an incident; a visible attacker is live danger that ends when
-it dies or leaves sight. A worker already inside a remembered static firing
-envelope may retreat laterally or outward, without approaching any overlapping
-gun. This escape rule never makes the source eligible for work and does not
-permit crossing mobile or radar pressure.
+Salvage-relevant hostile incidents, such as a hit on any machine that can
+harvest or an allied loss, remember only the victim's tile for a bounded caution
+period, never the attacker's identity or location. Only fire from an attacker
+the victim's team cannot see leaves an incident; a visible attacker is live
+danger that ends when it dies or leaves sight. A worker already inside a
+remembered static firing envelope may retreat laterally or outward, without
+approaching any overlapping gun. This escape rule never makes the source
+eligible for work and does not permit crossing mobile or radar pressure.
 
 All allegiance checks route through normalized team ids. Teammates share vision,
 cannot target one another, and win or lose as a team. Resignation makes a seat

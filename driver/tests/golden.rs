@@ -1,7 +1,7 @@
 //! Golden-image regression tests.
 //!
-//! The driver's software renderer is bit-deterministic, so these compare
-//! PNG bytes exactly — no tolerance thresholds to tune. When an intentional
+//! The CPU renderer in `oxide-kit` is bit-deterministic, so these compare
+//! PNG bytes exactly, with no tolerance. When an intentional
 //! sim or renderer change moves the pixels:
 //!
 //! 1. `BLESS=1 cargo test -p oxide-driver` to regenerate,
@@ -9,7 +9,7 @@
 //! 3. commit them together with the change and say why.
 
 use chassis::grid::TilePos;
-use oxide_driver::render;
+use oxide_kit::render;
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, ScenarioMode, UnitSpec};
 use oxide_sim::{
     BuildingKind, Command, Faction, PlayerCommand, PlayerId, Scenario, State, Target, UnitId,
@@ -60,11 +60,11 @@ fn skirmish_opening_matches_golden() {
 // ---------------------------------------------------------------------------
 //
 // The skirmish goldens only ever exercise ground, rock, full nodes and
-// healthy machines. This scenario is built in test code — never under
-// `scenarios/`, which ships to players and is swept by the hash fixtures,
-// the liveness gate and the map gates — and driven through a scripted
+// healthy machines. This scenario is built in test code, never under
+// `scenarios/`, which ships to players and is read by the hash fixtures,
+// the integrity tests and the map gates. It is driven through a scripted
 // program until the final state carries every branch of
-// `kit/src/render.rs`: all three terrains, rubble, scrap full and rich and
+// `kit/src/render.rs`: every terrain, rubble, scrap full and rich and
 // worked down past half, a wreck tile, standing and half-built structures
 // of every kind, damaged machines of every kind on both rosters, a laden
 // harvester, and a same-faction hostile pair.
@@ -211,8 +211,8 @@ fn showcase_scenario() -> (Scenario, Cast) {
             UnitKind::Sentinel,
             UnitKind::Sentinel,
             UnitKind::Sentinel,
-            // 0.15 additions, interleaved so every victim's shooter
-            // stands one column over (2.24 tiles, inside every range).
+            // Interleaved so every victim's shooter stands one column
+            // over (2.24 tiles, inside every range).
             UnitKind::Warden,
             UnitKind::Tender,
             UnitKind::Sentinel,
@@ -335,7 +335,6 @@ fn showcase_scenario() -> (Scenario, Cast) {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "renderer showcase".into(),
-        seed: 20_130,
         map: SHOWCASE_MAP.iter().map(|r| (*r).to_string()).collect(),
         players: vec![
             seat("West Ferrous", Faction::Ferrous, 700),
@@ -485,9 +484,9 @@ fn opening_orders(cast: &Cast) -> Vec<PlayerCommand> {
         attack(1, e[9], w[9]),
         attack(1, e[10], w[10]),
         attack(2, cast.interloper, w[10]),
-        // The 0.15 roster's wounds: Wardens trade, the flanking
-        // sentinels wound the labor machines, the interceptors clip the
-        // scouts, and the anti-air rear clips the interceptors.
+        // The line's tail: Wardens trade, the flanking sentinels wound the
+        // labor machines, the interceptors clip the scouts, and the
+        // anti-air rear clips the interceptors.
         attack(0, w[11], e[11]),
         attack(1, e[11], w[11]),
         attack(0, w[13], e[12]),
@@ -523,8 +522,8 @@ fn disengage(cast: &Cast) -> Vec<PlayerCommand> {
     vec![
         walk(0, cast.west.clone(), 6, 14),
         walk(1, cast.east.clone(), 14, 27),
-        // Clear of the widened west column's march lane (idle aggro
-        // killed it at its old post once the line grew eight slots).
+        // Clear of the west column's march lane, where idle aggro would
+        // kill it.
         walk(2, vec![cast.interloper], 36, 6),
         walk(0, cast.annex_f.clone(), 32, 15),
         walk(1, cast.annex_c.clone(), 47, 27),
@@ -735,14 +734,20 @@ fn showcase_covers_every_rendered_feature() {
         BuildingKind::ScuttleCharge,
     ] {
         assert!(
-            state.buildings().iter().any(|b| b.kind == kind && b.built),
+            state
+                .buildings()
+                .iter()
+                .any(|b| b.kind == kind && b.built()),
             "no standing {kind:?}"
         );
-        // Anything constructible must show a site form — the Foundry
-        // included, now that expansions are buildable.
+        // Anything constructible must show a site form, the Foundry
+        // included.
         assert_eq!(
             kind.base_stats().construction.is_some(),
-            state.buildings().iter().any(|b| b.kind == kind && !b.built),
+            state
+                .buildings()
+                .iter()
+                .any(|b| b.kind == kind && !b.built()),
             "{kind:?}'s scaffolding coverage disagrees with whether it can be built"
         );
     }
@@ -761,7 +766,7 @@ fn showcase_covers_every_rendered_feature() {
         state
             .units()
             .iter()
-            .any(|u| u.kind == UnitKind::Harvester && u.carrying > 0),
+            .any(|u| u.kind == UnitKind::Harvester && u.carrying() > 0),
         "no laden harvester: the carried-scrap dot goes unrendered"
     );
 

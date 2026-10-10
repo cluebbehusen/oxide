@@ -131,14 +131,14 @@ impl Ledger {
         self.push(Command::UpgradeBuilding { building });
     }
 
-    /// Issues one unit order while the allowance lasts, leaving out units
-    /// sitting out orders. An order left with no units issues nothing and
-    /// counts as given. Purchases never count against the allowance.
     /// Reports an attack this decision launched.
     pub(crate) fn launched(&mut self, launch: crate::missions::Launch) {
         self.decision.launches.push(launch);
     }
 
+    /// Issues one unit order while the allowance lasts, leaving out units
+    /// sitting out orders. An order left with no units issues nothing and
+    /// counts as given. Purchases never count against the allowance.
     pub(crate) fn order(&mut self, mut command: Command) -> bool {
         if self.decision.unit_orders == self.decision.allowance {
             return false;
@@ -241,10 +241,11 @@ pub(crate) struct Producer<'a> {
 }
 
 /// Defense first, then worker recovery, then an affordable saving target
-/// unless a defense is short, then workers, then lifts, attacks, strikes,
-/// focus fire and scouting, then production. A short defense instead buys an
-/// emergency static defense, trains no more Harvesters, and frees protected
-/// scrap for this decision's production.
+/// unless a defense is short, then workers, then lifts, attacks, anti-air
+/// clearing, strikes, raids, focus fire, tending and scouting, then
+/// production. A short defense instead buys an emergency static defense,
+/// trains no Harvester beyond worker recovery, and frees protected scrap for
+/// this decision's production.
 #[expect(
     clippy::too_many_lines,
     reason = "one decision in its documented priority order"
@@ -564,8 +565,6 @@ pub(crate) fn decide(
         }
         if !short {
             train_tenders(observation, profile, &free, &mut ledger);
-            // Raiding waits for an economy that can spare it: a personality
-            // lever, sooner the more guile.
             let raiding = income.saturating_add(4 * u32::from(profile.traits.guile)) >= RAID_INCOME;
             let scuttlers = if raiding {
                 Missions::raid_squad(observation, map, profile, &persistent.memory, &scratch)
@@ -892,9 +891,9 @@ fn train_carriers(
 
 /// Trains a scout while fewer are in production than the `lacking` stale
 /// places no scout could take but the one it would train could reach: the
-/// faction's air scout at a built Airworks, else a Scuttler at a Foundry. Once an air scout can be trained a Scuttler
-/// no longer counts, since one that could reach a stale point would already
-/// be scouting.
+/// faction's air scout at a built Airworks, else a Scuttler at a Foundry.
+/// Once an air scout can be trained a Scuttler no longer counts, since one
+/// that could reach a stale point would already be scouting.
 fn train_scout(
     observation: &ObservationData,
     producers: &[Producer<'_>],
@@ -1203,7 +1202,7 @@ fn arm(
 }
 
 /// Per mille of income protected for the saving target. Stance and greed set
-/// it; visible hostile combat near the seat's buildings lowers it, so the
+/// it; armed enemy units in sight near the seat's buildings lower it, so the
 /// seat spends on defense when it is threatened.
 fn share(observation: &ObservationData, profile: &ResolvedProfile) -> u32 {
     let base = match profile.stance {
@@ -1216,10 +1215,10 @@ fn share(observation: &ObservationData, profile: &ResolvedProfile) -> u32 {
     let threat: u32 = observation
         .enemy_units
         .iter()
-        .filter(|unit| armed(unit.kind))
+        .filter(|unit| unit.kind.stats().can_fight())
         .filter(|unit| {
             observation.my_buildings.iter().any(|building| {
-                let size = building.kind.base_stats().size;
+                let size = building.kind.size();
                 gap(building.anchor, size, unit.tile, (1, 1)) < 12
             })
         })
@@ -1290,7 +1289,8 @@ fn depletion(observation: &ObservationData, map: &MapModel) -> u32 {
 }
 
 /// Income per minute, less four for each point of guile, at which the seat
-/// starts keeping Scuttlers for raiding.
+/// starts keeping Scuttlers for raiding: a personality limit, since raiding
+/// waits for an economy that can spare it.
 const RAID_INCOME: u32 = 900;
 
 /// What a needed lift adds to the Airworks' investment score.

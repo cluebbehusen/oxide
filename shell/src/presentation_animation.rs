@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use chassis::fx::Vec2Fx;
 use oxide_sim::stats::{Domain, MAX_WEAPONS};
 use oxide_sim::{
-    Building, BuildingId, BuildingKind, Event, Order, State, Unit, UnitId, UnitKind,
+    Building, BuildingId, BuildingKind, BuildingPhase, Event, Order, State, Unit, UnitId, UnitKind,
     UnitRepairSource,
 };
 
@@ -270,7 +270,7 @@ enum UnitWorkFact {
 impl UnitAnimationFacts {
     /// Reads the unit's visible mechanisms from the post-tick world.
     pub(crate) fn capture(state: &State, unit: &Unit, moved: bool) -> Self {
-        let unloading = unit.unloading.and_then(|release| {
+        let unloading = unit.unloading().and_then(|release| {
             state
                 .building(release.foundry)
                 .filter(|b| unit.work_stopped() && state.in_building_work_reach(unit, b.id))
@@ -291,7 +291,7 @@ impl UnitAnimationFacts {
         };
         let work_target = if work == UnitWorkFact::Idle {
             None
-        } else if let Some(release) = unit.unloading {
+        } else if let Some(release) = unit.unloading() {
             Some(WorkTarget::Building(release.foundry))
         } else {
             match unit.order {
@@ -314,7 +314,7 @@ impl UnitAnimationFacts {
             kind: unit.kind,
             moved,
             work,
-            carrying: unit.carrying,
+            carrying: unit.carrying(),
             demolition_contact: sapper_at_contact(state, unit),
             cooldowns: unit.cooldowns,
         }
@@ -430,23 +430,23 @@ impl BuildingAnimationFacts {
     /// world. Render visibility remains the caller's responsibility.
     pub(crate) fn capture(state: &State, building: &Building) -> Self {
         let production = building
-            .built
+            .built()
             .then_some(())
             .and_then(|()| building.queue.front().copied())
-            .filter(|kind| building.progress < kind.stats().train_ticks)
-            .map(|kind| (kind, building.progress, kind.stats().train_ticks));
+            .filter(|kind| building.training_progress() < kind.stats().train_ticks)
+            .map(|kind| (kind, building.training_progress(), kind.stats().train_ticks));
         // The active tier's clock: a committed upgrade rebuilds on the
-        // NEW tier's labor budget, and a base denominator would show the
+        // new tier's labor budget, and a base denominator would show the
         // scaffold complete early.
         let construction_total = building.stats().construction.map(|stats| stats.build_ticks);
         Self {
             id: building.id,
             kind: building.kind,
             tier: building.tier,
-            built: building.built,
-            progress: building.progress,
+            built: building.built(),
+            progress: building.construction_progress().unwrap_or(0),
             construction_total,
-            construction_active: !building.built && active_site_construction(state, building),
+            construction_active: !building.built() && active_site_construction(state, building),
             production,
             cooldown: building.cooldown,
         }
@@ -718,18 +718,11 @@ impl AnimationController {
                     )
                 })
         });
-        let propulsion = match facts.kind {
-            UnitKind::Buzzard => PropulsionState::LiftRotors {
-                cycle: clock.cycle(facts.id.0, BUZZARD_ROTOR_PERIOD, options.reduced_motion),
-            },
-            UnitKind::Wisp => PropulsionState::LiftRotors {
-                cycle: clock.cycle(facts.id.0, WISP_ROTOR_PERIOD, options.reduced_motion),
-            },
-            UnitKind::Skyhook => PropulsionState::LiftRotors {
-                cycle: clock.cycle(facts.id.0, SKYHOOK_ROTOR_PERIOD, options.reduced_motion),
-            },
-            _ => PropulsionState::None,
-        };
+        let propulsion = rotor_period(facts.kind).map_or(PropulsionState::None, |period| {
+            PropulsionState::LiftRotors {
+                cycle: clock.cycle(facts.id.0, period, options.reduced_motion),
+            }
+        });
         UnitAnimationState {
             work_target: facts.work_target,
             welding_arm: self.welding_arm(facts, work, clock, options),
@@ -739,7 +732,7 @@ impl AnimationController {
             attack: self.unit_attack(facts.id, facts.kind, clock),
             weapons,
             propulsion,
-            scanner: matches!(facts.kind, UnitKind::Kestrel | UnitKind::Gnat)
+            scanner: (facts.kind.role() == oxide_sim::stats::Role::Scout)
                 .then(|| clock.cycle(facts.id.0, 96, options.reduced_motion)),
             transport: self.transport_action(facts.id, clock),
             demolition_preparation: facts
@@ -772,24 +765,21 @@ impl AnimationController {
             }
         });
         let activity = if facts.built {
+            let production = |period| {
+                facts
+                    .production
+                    .map_or(BuildingActivity::Idle, |(unit, progress, total)| {
+                        BuildingActivity::Production {
+                            unit,
+                            progress: ratio(progress, total),
+                            cycle: clock.cycle(facts.id.0, period, options.reduced_motion),
+                        }
+                    })
+            };
             match facts.kind {
-                BuildingKind::Foundry | BuildingKind::Fabricator | BuildingKind::Crucible => {
-                    let period = match facts.kind {
-                        BuildingKind::Foundry => FOUNDRY_PRODUCTION_PERIOD,
-                        BuildingKind::Fabricator => FABRICATOR_PRODUCTION_PERIOD,
-                        BuildingKind::Crucible => CRUCIBLE_PRODUCTION_PERIOD,
-                        _ => unreachable!("production match narrowed the building kind"),
-                    };
-                    facts
-                        .production
-                        .map_or(BuildingActivity::Idle, |(unit, progress, total)| {
-                            BuildingActivity::Production {
-                                unit,
-                                progress: ratio(progress, total),
-                                cycle: clock.cycle(facts.id.0, period, options.reduced_motion),
-                            }
-                        })
-                }
+                BuildingKind::Foundry => production(FOUNDRY_PRODUCTION_PERIOD),
+                BuildingKind::Fabricator => production(FABRICATOR_PRODUCTION_PERIOD),
+                BuildingKind::Crucible => production(CRUCIBLE_PRODUCTION_PERIOD),
                 BuildingKind::Airworks => self.airworks_activity(facts, clock, options),
                 BuildingKind::Array => BuildingActivity::ArraySweep {
                     cycle: clock.cycle(facts.id.0, ARRAY_SWEEP_PERIOD, options.reduced_motion),
@@ -801,7 +791,11 @@ impl AnimationController {
                     cycle: clock.cycle(facts.id.0, RECLAIMER_PERIOD, options.reduced_motion),
                 },
                 BuildingKind::RepairBay => self.repair_activity(facts.id, clock),
-                _ => BuildingActivity::Idle,
+                BuildingKind::Turret
+                | BuildingKind::FlakTurret
+                | BuildingKind::Bastion
+                | BuildingKind::Barricade
+                | BuildingKind::ScuttleCharge => BuildingActivity::Idle,
             }
         } else {
             BuildingActivity::Idle
@@ -871,7 +865,7 @@ impl AnimationController {
     ) -> Option<AttackPhase> {
         let stamp = self.building_attacks.get(&building)?;
         let elapsed = clock.elapsed_since(stamp.completed_tick)?;
-        attack_phase(elapsed, stamp.weapon, building_attack_timing(kind))
+        attack_phase(elapsed, stamp.weapon, building_attack_timing(kind)?)
     }
 
     fn repair_activity(&self, building: BuildingId, clock: AnimationClock) -> BuildingActivity {
@@ -993,21 +987,28 @@ fn unit_attack_timing(kind: UnitKind) -> AttackTiming {
     }
 }
 
-fn building_attack_timing(kind: BuildingKind) -> AttackTiming {
-    match kind {
-        BuildingKind::FlakTurret => AttackTiming {
-            report_ticks: FLAK_TURRET_REPORT_TICKS,
-            recover_ticks: 3.0,
-        },
-        BuildingKind::Bastion => AttackTiming {
-            report_ticks: 1.0,
-            recover_ticks: 3.0,
-        },
-        _ => AttackTiming {
-            report_ticks: 2.0,
-            recover_ticks: 3.0,
-        },
-    }
+/// How long a defense's report and recovery last; none for a building
+/// without guns.
+fn building_attack_timing(kind: BuildingKind) -> Option<AttackTiming> {
+    let report_ticks = match kind {
+        BuildingKind::Turret => 2.0,
+        BuildingKind::FlakTurret => FLAK_TURRET_REPORT_TICKS,
+        BuildingKind::Bastion => 1.0,
+        BuildingKind::Foundry
+        | BuildingKind::Fabricator
+        | BuildingKind::Array
+        | BuildingKind::Reclaimer
+        | BuildingKind::RepairBay
+        | BuildingKind::Extractor
+        | BuildingKind::Airworks
+        | BuildingKind::Crucible
+        | BuildingKind::Barricade
+        | BuildingKind::ScuttleCharge => return None,
+    };
+    Some(AttackTiming {
+        report_ticks,
+        recover_ticks: 3.0,
+    })
 }
 
 fn attack_phase(elapsed: f32, weapon: usize, timing: AttackTiming) -> Option<AttackPhase> {
@@ -1035,11 +1036,37 @@ fn weapon_cycle(remaining: u32, total: u32, tick_fraction: f32) -> WeaponCycle {
 }
 
 fn unit_move_period(kind: UnitKind) -> u64 {
+    rotor_period(kind).unwrap_or(GROUND_MOVE_PERIOD)
+}
+
+/// Ticks per lift-rotor cycle for a rotorcraft; none for every other kind.
+/// Every kind is listed, so a new one must say whether it flies on rotors.
+fn rotor_period(kind: UnitKind) -> Option<u64> {
     match kind {
-        UnitKind::Buzzard => BUZZARD_ROTOR_PERIOD,
-        UnitKind::Wisp => WISP_ROTOR_PERIOD,
-        UnitKind::Skyhook => SKYHOOK_ROTOR_PERIOD,
-        _ => GROUND_MOVE_PERIOD,
+        UnitKind::Buzzard => Some(BUZZARD_ROTOR_PERIOD),
+        UnitKind::Wisp => Some(WISP_ROTOR_PERIOD),
+        UnitKind::Skyhook => Some(SKYHOOK_ROTOR_PERIOD),
+        UnitKind::Harvester
+        | UnitKind::Sentinel
+        | UnitKind::Scuttler
+        | UnitKind::Lancer
+        | UnitKind::Bombard
+        | UnitKind::Flakhound
+        | UnitKind::Stinger
+        | UnitKind::Darter
+        | UnitKind::Talon
+        | UnitKind::Warden
+        | UnitKind::Tender
+        | UnitKind::Excavator
+        | UnitKind::Kestrel
+        | UnitKind::Gnat
+        | UnitKind::Shrike
+        | UnitKind::Sylph
+        | UnitKind::Condor
+        | UnitKind::Moth
+        | UnitKind::Breaker
+        | UnitKind::Avalanche
+        | UnitKind::Sapper => None,
     }
 }
 
@@ -1052,9 +1079,9 @@ fn ratio(value: u32, total: u32) -> f32 {
 }
 
 fn sapper_at_contact(state: &State, unit: &Unit) -> bool {
-    if unit.kind != UnitKind::Sapper {
+    let Some(demolition) = unit.kind.stats().demolition else {
         return false;
-    }
+    };
     let Order::Attack { target, .. } = unit.order else {
         return false;
     };
@@ -1062,7 +1089,7 @@ fn sapper_at_contact(state: &State, unit: &Unit) -> bool {
         .attack_view(unit.player, target)
         .map(|view| view.aim_from(unit.pos));
     target_pos.is_some_and(|target| {
-        let reach = oxide_sim::stats::SAPPER_CONTACT_RANGE;
+        let reach = demolition.contact_range;
         unit.pos.dist_sq(target) <= reach * reach
     })
 }
@@ -1077,7 +1104,7 @@ fn active_harvesting(state: &State, unit: &Unit) -> Option<Vec2Fx> {
     else {
         return None;
     };
-    if unit.carrying >= harvest.capacity || unit.unloading.is_some() || !unit.work_stopped() {
+    if unit.carrying() >= harvest.capacity || unit.unloading().is_some() || !unit.work_stopped() {
         return None;
     }
     let active = (state.map().scrap_at(node) > 0 || state.map().wreck_at(node) > 0)
@@ -1090,8 +1117,9 @@ fn active_unit_construction(state: &State, unit: &Unit) -> Option<(BuildingId, V
         return None;
     };
     state.building(site).and_then(|building| {
-        (!building.built
-            && building.progress > 0
+        (building
+            .construction_progress()
+            .is_some_and(|progress| progress > 0)
             && building.player == unit.player
             && unit.kind.stats().harvest.is_some()
             && unit.work_stopped()
@@ -1107,7 +1135,7 @@ fn active_unit_repair(state: &State, unit: &Unit) -> Option<Vec2Fx> {
     match unit.order {
         Order::Repair { building } => state.building(building).and_then(|patient| {
             (patient.player == unit.player
-                && patient.built
+                && patient.built()
                 && patient.hp > 0
                 && patient.hp < patient.stats().max_hp
                 && state.in_building_work_reach(unit, patient.id))
@@ -1120,7 +1148,7 @@ fn active_unit_repair(state: &State, unit: &Unit) -> Option<Vec2Fx> {
                 && patient.hp < patient.kind.stats().max_hp
                 && patient.path.is_none()
                 && !matches!(patient.order, Order::Found { .. })
-                && patient.drive_speed == chassis::fx::Fx::ZERO
+                && patient.drive_speed() == chassis::fx::Fx::ZERO
                 && unit.in_repair_reach(patient))
             .then_some(patient.pos)
         }),
@@ -1137,7 +1165,7 @@ fn active_unit_salvage(state: &State, unit: &Unit) -> Option<Vec2Fx> {
     };
     state.building(building).and_then(|target| {
         (target.player == unit.player
-            && target.built
+            && target.built()
             && target.hp > 0
             && target.kind != BuildingKind::Foundry
             && state.in_building_work_reach(unit, target.id))
@@ -1146,13 +1174,10 @@ fn active_unit_salvage(state: &State, unit: &Unit) -> Option<Vec2Fx> {
 }
 
 fn active_site_construction(state: &State, building: &Building) -> bool {
-    if building.built {
-        return false;
-    }
-    if building.tier > 0 {
-        return true;
-    }
-    building.progress > 0
+    let BuildingPhase::Site { progress } = building.phase else {
+        return building.upgrading();
+    };
+    progress > 0
         && state.units().iter().any(|unit| {
             unit.player == building.player
                 && unit.kind.stats().harvest.is_some()

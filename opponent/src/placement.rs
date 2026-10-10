@@ -189,7 +189,7 @@ struct Footprint {
 
 impl Footprint {
     fn of(kind: BuildingKind, anchor: TilePos) -> Self {
-        let (width, height) = kind.base_stats().size;
+        let (width, height) = kind.size();
         Self {
             anchor,
             width,
@@ -258,7 +258,7 @@ impl<'a> Danger<'a> {
             .filter(|building| building.built || !building.seen)
             .flat_map(|building| {
                 let stats = building.kind.tier_stats(building.tier);
-                let (width, height) = stats.size;
+                let (width, height) = building.kind.size();
                 let centre = (
                     i64::from(2 * building.anchor.x + width),
                     i64::from(2 * building.anchor.y + height),

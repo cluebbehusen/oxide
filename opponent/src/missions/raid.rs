@@ -12,7 +12,6 @@ use super::{
     MISSION_CAP, Mission, Missions, Objective, RaidPhase, Task, approach, hunt, mine, run,
     standing, value,
 };
-use crate::composition::{self, Role};
 use crate::decision::Ledger;
 use crate::frame::{HomeFrame, centre_distance, doubled, footprint_centre, ring};
 use crate::map::MapModel;
@@ -22,7 +21,6 @@ use chassis::grid::TilePos;
 
 use oxide_sim::observation::{BuildingObs, ObservationData, UnitObs};
 use oxide_sim::scenario::BotStance;
-use oxide_sim::stats::SAPPER_STRUCTURE_DAMAGE;
 use oxide_sim::{AttackTarget, BuildingKind, Command, RememberedBuilding, UnitId, UnitKind};
 use std::cmp::Reverse;
 
@@ -57,11 +55,25 @@ enum Raider {
 }
 
 fn raider(kind: UnitKind) -> Option<Raider> {
-    match kind {
-        UnitKind::Sapper => Some(Raider::Sapper),
-        UnitKind::Scuttler => Some(Raider::Scuttler),
-        kind if composition::role(kind) == Some(Role::AirStrike) => Some(Raider::Bomber),
-        _ => None,
+    use oxide_sim::stats::Role as Kind;
+    match kind.role() {
+        Kind::Sapper => Some(Raider::Sapper),
+        Kind::Scuttler => Some(Raider::Scuttler),
+        Kind::AirGround | Kind::Bomber => Some(Raider::Bomber),
+        Kind::Harvester
+        | Kind::Excavator
+        | Kind::Sentinel
+        | Kind::Warden
+        | Kind::Breaker
+        | Kind::Lancer
+        | Kind::Bombard
+        | Kind::Avalanche
+        | Kind::AntiAir
+        | Kind::AirAir
+        | Kind::Interceptor
+        | Kind::Tender
+        | Kind::Scout
+        | Kind::Skyhook => None,
     }
 }
 
@@ -156,7 +168,7 @@ impl Missions {
 
     /// Scuttlers a raid on the least guarded known harvest line not raided
     /// lately and not under known guns needs: its known guard by the margin,
-    /// at least one. None while no such line is known.
+    /// at least one. Zero while no such line is known.
     pub(crate) fn raid_squad(
         observation: &ObservationData,
         map: &MapModel,
@@ -344,9 +356,8 @@ impl Foray<'_> {
     /// for: for Sappers the most valuable known enemy building for its
     /// distance with little known defense, for the others the enemy
     /// Extractor or Foundry with the least known defense, nearest first.
-    /// Scuttlers leave lines that known enemy guns cover.
-    /// Targets recently raided are skipped, and ground raiders need a ground
-    /// route.
+    /// Scuttlers leave lines that known enemy guns cover. Targets recently
+    /// raided are skipped, and ground raiders need a ground route.
     fn target(&self, kind: Raider, strength: u64) -> Option<(Objective, TilePos, u64)> {
         let observation = self.observation;
         let now = observation.tick;
@@ -366,7 +377,7 @@ impl Foray<'_> {
             .filter_map(|target| {
                 let goal = match kind {
                     Raider::Bomber => {
-                        let size = target.building.base_stats().size;
+                        let size = target.building.size();
                         ring(target.anchor, size).min_by_key(|tile| {
                             (
                                 centre_distance(home, doubled(*tile)),
@@ -406,8 +417,12 @@ impl Foray<'_> {
                                 == (target.owner, target.building, target.anchor)
                         })
                         .map_or(1, |building| building.hp);
-                    let blasts = u64::from(hp.div_ceil(SAPPER_STRUCTURE_DAMAGE).max(1));
-                    let need = blasts * u64::from(UnitKind::Sapper.stats().cost);
+                    let sapper = UnitKind::Sapper.stats();
+                    let blast = sapper
+                        .demolition
+                        .map_or(1, |charge| charge.structure_damage);
+                    let blasts = u64::from(hp.div_ceil(blast).max(1));
+                    let need = blasts * u64::from(sapper.cost);
                     (need <= strength).then_some((target, goal, need))
                 })
                 .max_by_key(|(target, _, _)| {

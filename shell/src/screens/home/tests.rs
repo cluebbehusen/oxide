@@ -18,8 +18,8 @@ fn pick(home: &mut HomeScreen, row: usize) -> Out {
 
 #[test]
 fn rows_mean_the_same_verbs_with_and_without_a_continue_row() {
-    // The row shift is where a blind index goes wrong (the battery
-    // once resumed a match instead of opening the map list).
+    // The Continue row shifts every index below it, so each row must
+    // still map to its own verb.
     let mut fresh = HomeScreen::with_resumable(false);
     assert_eq!(pick(&mut fresh, 0), Out::Play);
     assert_eq!(pick(&mut fresh, 1), Out::Join);

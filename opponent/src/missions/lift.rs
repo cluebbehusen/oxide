@@ -361,9 +361,8 @@ impl Missions {
     /// while riders walk to their carriers. Once none is walking and none was
     /// sent, or time runs out, flies when what is aboard, with any bombers
     /// out clearing the way, meets the landing's need as now known, and
-    /// otherwise sets everyone down and lets them go.
-    /// A rider that stopped short of its carrier could not board it and is
-    /// not sent again.
+    /// otherwise sets everyone down and lets them go. A rider that stopped
+    /// short of its carrier could not board it and is not sent again.
     fn board(&mut self, flight: &Flight<'_>, lifting: &Lifting<'_>, ledger: &mut Ledger) {
         let waiting = &flight.grounded;
         let need = lifting.need(flight.target, flight.landing);
@@ -712,13 +711,12 @@ impl<'a> Lifting<'a> {
 
     /// Where to set a payload down near `target`: known open ground on the
     /// target's island, out of reach of known fire where any is, then as near
-    /// about four tiles from the target as it can be, so riders set down out
-    /// of range walk in. The one reachability check: every ground tile
-    /// riders could be set down on lies on the target's island, so none land
-    /// across a chasm.
+    /// `LANDING_GAP` empty tiles from the target as it can be, so riders set
+    /// down out of range walk in. Every ground tile riders could be set down
+    /// on lies on the target's island, so none land across a chasm.
     fn landing(&self, target: Objective) -> Option<TilePos> {
         let map = self.map;
-        let size = target.building.base_stats().size;
+        let size = target.building.size();
         let island = map.component(target.anchor)?;
         let spread_ok = |tile: TilePos| {
             (-SPREAD..=SPREAD).all(|dy| {
@@ -776,14 +774,7 @@ impl<'a> Lifting<'a> {
                 .iter()
                 .chain(&observation.my_buildings)
                 .chain(&observation.ally_buildings)
-                .any(|building| {
-                    gap(
-                        building.anchor,
-                        building.kind.base_stats().size,
-                        tile,
-                        (1, 1),
-                    ) < 0
-                })
+                .any(|building| gap(building.anchor, building.kind.size(), tile, (1, 1)) < 0)
     }
 
     /// The open home tile nearest `carrier`, away from other aircraft, where
@@ -825,7 +816,7 @@ impl<'a> Lifting<'a> {
     /// The tile beside `target` on its island nearest `from`.
     fn hunt_tile(&self, target: Objective, from: TilePos) -> Option<TilePos> {
         let island = self.map.component(target.anchor)?;
-        ring(target.anchor, target.building.base_stats().size)
+        ring(target.anchor, target.building.size())
             .filter(|tile| self.map.component(*tile) == Some(island))
             .min_by_key(|tile| {
                 (

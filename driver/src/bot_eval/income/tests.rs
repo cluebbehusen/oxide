@@ -8,7 +8,6 @@ fn scenario(map: Vec<String>, buildings: Vec<BuildingSpec>) -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "income".into(),
-        seed: 5,
         map,
         players: [Faction::Ferrous, Faction::Cupric]
             .into_iter()

@@ -43,6 +43,22 @@ const SOUND_NAMES: [&str; 40] = [
     "victory",
 ];
 
+/// Each defense rung's hull and mount stems.
+fn defense_rungs() -> Vec<(String, String)> {
+    BuildingKind::ALL
+        .into_iter()
+        .filter_map(|kind| crate::look::defense(kind).map(|look| (kind, look)))
+        .flat_map(|(kind, look)| {
+            (0..kind.tiers().len()).map(move |tier| {
+                (
+                    rung_stem(building_stem(kind), tier),
+                    rung_stem(look.mount, tier),
+                )
+            })
+        })
+        .collect()
+}
+
 fn manifest() -> Manifest {
     let path =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/sprites/atlas.json");
@@ -251,9 +267,9 @@ fn the_shell_and_the_atlas_name_the_same_sprites() {
         "the shell asks for sprites the atlas does not ship: {missing:?} \
              (regenerate with tools/gen_sprites.py)"
     );
-    // The other direction: art nothing draws is art nobody blessed.
-    // gen_sprites.py and the shell ship together, so a row with no
-    // reader is a half-landed change, not a spare part.
+    // The other direction: every atlas row needs a reader.
+    // gen_sprites.py and the shell ship together, so an unread row is
+    // an incomplete change.
     let mut orphans: Vec<&String> = atlas.keys().filter(|k| !named.contains(k)).collect();
     orphans.sort();
     assert!(
@@ -268,13 +284,7 @@ fn the_shell_and_the_atlas_name_the_same_sprites() {
 #[test]
 fn the_building_loader_finds_every_kind_in_the_shipped_atlas() {
     let art = building_art(&manifest()).expect("every building bank is in the atlas");
-    for kind in BuildingKind::ALL {
-        assert_eq!(
-            art[kind as usize].work.len(),
-            building_work_suffixes(kind).len(),
-            "{kind:?}"
-        );
-    }
+    assert_eq!(art.len(), BuildingKind::ALL.len());
 }
 
 #[test]
@@ -347,41 +357,12 @@ fn atlas_page_coordinates_preserve_sprite_canvas_and_legacy_banks() {
 #[test]
 fn defense_mounts_match_their_footprints_and_rotate_about_square_canvases() {
     let atlas = manifest();
-    for (base_stem, mount, actions) in [
-        (
-            building_stem(BuildingKind::Turret),
-            TURRET_BARREL_STEM,
-            ACTION_SUFFIXES_4.as_slice(),
-        ),
-        (
-            "turret_t1",
-            TURRET_BARREL_T1_STEM,
-            ACTION_SUFFIXES_4.as_slice(),
-        ),
-        (
-            "turret_t2",
-            TURRET_BARREL_T2_STEM,
-            ACTION_SUFFIXES_4.as_slice(),
-        ),
-        (
-            building_stem(BuildingKind::FlakTurret),
-            FLAK_MOUNT_STEM,
-            ACTION_SUFFIXES_8.as_slice(),
-        ),
-        (
-            "flak_turret_t1",
-            FLAK_MOUNT_T1_STEM,
-            ACTION_SUFFIXES_8.as_slice(),
-        ),
-        (
-            building_stem(BuildingKind::Bastion),
-            BASTION_MOUNT_STEM,
-            ACTION_SUFFIXES_9.as_slice(),
-        ),
-    ] {
-        let base = &atlas[&variant_keys(base_stem, "")[0]];
-        for suffix in std::iter::once("").chain(actions.iter().copied()) {
-            for key in variant_keys(mount, suffix) {
+    for (base_stem, mount) in defense_rungs() {
+        let base = &atlas[&variant_keys(&base_stem, "")[0]];
+        let actions = numbered_suffixes(&atlas, &mount, "action").unwrap();
+        assert!(!actions.is_empty(), "{mount} ships its firing frames");
+        for suffix in std::iter::once("").chain(actions.iter().map(String::as_str)) {
+            for key in variant_keys(&mount, suffix) {
                 let rect = &atlas[&key];
                 assert_eq!(
                     rect[2..],
@@ -392,8 +373,8 @@ fn defense_mounts_match_their_footprints_and_rotate_about_square_canvases() {
             }
         }
     }
-    for suffix in ACTION_SUFFIXES_9 {
-        for key in variant_keys("bastion", suffix) {
+    for suffix in numbered_suffixes(&atlas, "bastion", "action").unwrap() {
+        for key in variant_keys("bastion", &suffix) {
             assert_eq!(
                 atlas[&key][2..],
                 atlas[&variant_keys("bastion", "")[0]][2..],
@@ -523,12 +504,16 @@ fn authored_animation_families_are_complete_distinct_and_faction_safe() {
 
     let working = BuildingKind::ALL
         .into_iter()
-        .filter(|kind| !building_work_suffixes(*kind).is_empty());
-    for kind in working {
+        .map(|kind| {
+            let work = numbered_suffixes(&manifest(), building_stem(kind), "work").unwrap();
+            (kind, work)
+        })
+        .filter(|(_, work)| !work.is_empty());
+    for (kind, work) in working {
         let stem = building_stem(kind);
         let base = sprite_image(&format!("{stem}_ferrous"));
         let mut changed = false;
-        for suffix in building_work_suffixes(kind) {
+        for suffix in &work {
             assert_animation_variant(stem, suffix);
             changed |= sprite_image(&format!("{stem}_ferrous{suffix}")).bytes != base.bytes;
         }
@@ -536,15 +521,15 @@ fn authored_animation_families_are_complete_distinct_and_faction_safe() {
     }
     let refinery = sprite_image("reclaimer_t1_ferrous");
     let mut changed = false;
-    for suffix in WORK_SUFFIXES_12 {
-        assert_animation_variant("reclaimer_t1", suffix);
+    for suffix in numbered_suffixes(&manifest(), "reclaimer_t1", "work").unwrap() {
+        assert_animation_variant("reclaimer_t1", &suffix);
         changed |= sprite_image(&format!("reclaimer_t1_ferrous{suffix}")).bytes != refinery.bytes;
     }
     assert!(changed, "reclaimer_t1 needs at least one visible work pose");
     let deep_array = sprite_image("array_t1_ferrous");
     let mut changed = false;
-    for suffix in WORK_SUFFIXES_6 {
-        assert_animation_variant("array_t1", suffix);
+    for suffix in numbered_suffixes(&manifest(), "array_t1", "work").unwrap() {
+        assert_animation_variant("array_t1", &suffix);
         changed |= sprite_image(&format!("array_t1_ferrous{suffix}")).bytes != deep_array.bytes;
     }
     assert!(changed, "array_t1 needs at least one visible work pose");
@@ -576,8 +561,8 @@ fn authored_animation_families_are_complete_distinct_and_faction_safe() {
 fn production_action_and_cargo_rows_match_the_runtime_contract() {
     for kind in UnitKind::ALL {
         let stem = unit_stem(kind);
-        for suffix in unit_action_suffixes(kind) {
-            assert_animation_variant(stem, suffix);
+        for suffix in numbered_suffixes(&manifest(), stem, "action").unwrap() {
+            assert_animation_variant(stem, &suffix);
         }
     }
 
@@ -599,31 +584,24 @@ fn production_action_and_cargo_rows_match_the_runtime_contract() {
         );
     }
 
-    for (stem, suffixes) in [
-        (TURRET_BARREL_STEM, ACTION_SUFFIXES_4.as_slice()),
-        (TURRET_BARREL_T1_STEM, ACTION_SUFFIXES_4.as_slice()),
-        (TURRET_BARREL_T2_STEM, ACTION_SUFFIXES_4.as_slice()),
-        (FLAK_MOUNT_STEM, ACTION_SUFFIXES_8.as_slice()),
-        (FLAK_MOUNT_T1_STEM, ACTION_SUFFIXES_8.as_slice()),
-        (BASTION_MOUNT_STEM, ACTION_SUFFIXES_9.as_slice()),
-        ("bastion", ACTION_SUFFIXES_9.as_slice()),
-    ] {
-        for suffix in suffixes {
-            assert_animation_variant(stem, suffix);
+    let charge_racks = BuildingKind::ALL
+        .into_iter()
+        .filter(|kind| crate::look::defense(*kind).is_some_and(|look| look.charge_rack))
+        .map(|kind| building_stem(kind).to_owned());
+    for stem in defense_rungs()
+        .into_iter()
+        .map(|(_, mount)| mount)
+        .chain(charge_racks)
+    {
+        for suffix in numbered_suffixes(&manifest(), &stem, "action").unwrap() {
+            assert_animation_variant(&stem, &suffix);
         }
     }
 }
 
 #[test]
 fn defense_mount_art_covers_its_pivot_and_carries_an_allegiance_mask() {
-    for stem in [
-        TURRET_BARREL_STEM,
-        TURRET_BARREL_T1_STEM,
-        TURRET_BARREL_T2_STEM,
-        FLAK_MOUNT_STEM,
-        FLAK_MOUNT_T1_STEM,
-        BASTION_MOUNT_STEM,
-    ] {
+    for (_, stem) in defense_rungs() {
         let ferrous = sprite_image(&format!("{stem}_ferrous"));
         let cupric = sprite_image(&format!("{stem}_cupric"));
         let accent = sprite_image(&format!("{stem}_accent"));

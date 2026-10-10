@@ -15,7 +15,7 @@ pub(super) fn unit(victim: &mut Unit, amount: u32, events: &mut Vec<Event>) {
 }
 
 pub(super) fn building(victim: &mut Building, amount: u32, events: &mut Vec<Event>) {
-    if victim.hp == 0 || amount == 0 || victim.provisional {
+    if victim.hp == 0 || amount == 0 || victim.provisional() {
         return;
     }
     victim.hp = victim.hp.saturating_sub(amount);

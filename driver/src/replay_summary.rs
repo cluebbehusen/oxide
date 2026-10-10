@@ -1,23 +1,20 @@
 //! Token-efficient narrative digest of a replay: an event timeline, per-seat
 //! digests at intervals, and coarse ASCII minimaps.
 //!
-//! This is the review instrument for reading a bot game without screenshots.
-//! It re-executes the replay once through the same execution path as the rest
-//! of the driver and never touches simulation behavior. Determinism is by
-//! construction: every internal computation is integer math over the sim's
-//! own deterministic event stream, so the same replay and options yield the
-//! same report, byte for byte.
+//! Used to review a bot game without screenshots. It re-executes the replay
+//! once through `oxide-kit`'s shared playback path and never touches
+//! simulation behavior. Every computation is integer math over the sim's
+//! deterministic event stream, so the same replay and options yield the same
+//! report, byte for byte.
 //!
-//! Known caveats: boarded cargo leaves [`oxide_sim::State::units`], so
-//! army value dips while transports fly; building loss values use tier-0
-//! construction cost (the destruction event names no tier); validation is
-//! strict to the current [`oxide_sim::SIM_VERSION`] — a cross-version replay
-//! would narrate a divergent ghost game, so it is refused instead.
+//! Known caveats: boarded cargo leaves [`oxide_sim::State::units`], so army
+//! value dips while transports fly. A replay from any other
+//! [`oxide_sim::SIM_VERSION`] is refused because it would not reproduce.
 
-use crate::runner::GameReplay;
 use anyhow::Result;
 use chassis::grid::TilePos;
 use chassis::grid::as_index;
+use oxide_kit::runner::GameReplay;
 use oxide_sim::scenario::BotConfig;
 use oxide_sim::{
     BuildingId, BuildingKind, Event, Faction, GameResult, Order, PlayerId, SIM_VERSION, State,
@@ -28,21 +25,21 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 /// Version of the serialized [`SummaryReport`] contract.
-pub const REPLAY_SUMMARY_SCHEMA_VERSION: u32 = 4;
+pub const REPLAY_SUMMARY_SCHEMA_VERSION: u32 = 1;
 
-/// Space gate: a loss joins an active battle when within this many tiles of
-/// its running centroid. Above the longest direct-fire range in the game
-/// (the Bombard's 9.5 tiles), so both ends of an exchange cluster together;
-/// well below audited spawn spacing, so two bases never merge.
+/// Space gate: a loss joins an active battle when within this many tiles
+/// (Chebyshev) of the battle's first loss. Above the longest direct-fire
+/// range, so both ends of an exchange cluster together; well below spawn
+/// spacing, so two bases never merge.
 const BATTLE_RADIUS_TILES: i64 = 12;
 
 /// Time gate: a battle closes after this many ticks (30 seconds) without a
-/// nearby loss. Reinforcement waves re-engage well inside the window;
-/// assaults on one base minutes apart read as separate battles.
+/// nearby loss, so reinforcement waves stay in one battle while assaults
+/// minutes apart read as separate battles.
 const BATTLE_QUIET_TICKS: u64 = 300;
 
 /// Battles totaling less lost value than this fold into the digest window's
-/// skirmish counter instead of a timeline line (~two line units).
+/// skirmish counter instead of a timeline line.
 const BATTLE_VALUE_FLOOR: u64 = 200;
 
 /// Minimap cell army value at or above which the seat letter capitalizes.
@@ -110,8 +107,6 @@ pub struct ScenarioLine {
     pub start_tick: u64,
     /// Scenario display name.
     pub name: String,
-    /// Deterministic scenario seed.
-    pub seed: u64,
     /// Map width in tiles.
     pub map_width: i32,
     /// Map height in tiles.
@@ -244,7 +239,8 @@ pub enum TimelineKind {
 pub struct SeatLoss {
     /// The losing seat.
     pub seat: u8,
-    /// Total lost value in scrap (tier-0 construction cost for buildings).
+    /// Total lost value in scrap (construction plus every upgrade reached,
+    /// for buildings).
     pub value: u64,
     /// Units lost (workers included).
     pub units: u32,
@@ -258,9 +254,8 @@ pub struct SeatLoss {
     /// Value lost in workers and other non-combat units. A harvester
     /// massacre must never render as an army trade.
     pub worker_value: u64,
-    /// Value lost in transport airframes (their riders are counted as
-    /// whatever they were). Folding hulls into worker value read a
-    /// shootdown as "loaded worker transports".
+    /// Value lost in transport airframes; their riders count as whatever
+    /// they were.
     pub transport_value: u64,
     /// Value lost in completed buildings.
     pub building_value: u64,
@@ -292,10 +287,8 @@ pub struct SeatDigestRow {
     pub units: u32,
     /// Sum of living units' costs, workers included.
     pub army_value: u64,
-    /// Sum of living combat-capable units' costs. Reading `army_value`
-    /// as fighting power manufactured false "winner cannot finish"
-    /// verdicts — a mined-out seat's worker line is value that never
-    /// shoots.
+    /// Sum of living combat-capable units' costs: `army_value` without
+    /// workers, which never shoot.
     pub combat_value: u64,
     /// Top three unit kinds by count.
     pub top_kinds: Vec<(String, u32)>,
@@ -312,9 +305,8 @@ pub struct SeatDigestRow {
     pub hauled: u64,
     /// Units trained since the previous digest.
     pub trained: u32,
-    /// Units lost since the previous digest. Four identical roster
-    /// snapshots cannot otherwise be told apart from "trained 4, lost 4
-    /// under siege".
+    /// Units lost since the previous digest. Without it, a steady roster
+    /// cannot be told apart from equal training and losses.
     pub lost: u32,
     /// Buildings completed since the previous digest.
     pub buildings_completed: u32,
@@ -357,9 +349,8 @@ pub struct SeatTechReach {
 pub struct TechFirstRecord {
     /// The kind's stable name.
     pub name: String,
-    /// The seat began the game with this kind (tick 0, never trained or
-    /// built). Without these rows a census read starting Sentinels as
-    /// nearly never reached.
+    /// The seat began the recording with this kind, so a census does not
+    /// count starting kinds as never reached.
     #[serde(default)]
     pub starting: bool,
     /// Tick of the first training or completion.
@@ -443,9 +434,8 @@ struct BattleCluster {
     from_tick: u64,
     last_loss_tick: u64,
     /// The first loss tile. Membership is measured from here, not from
-    /// the running centroid, so a battle cannot drift across the map
-    /// one adjacent loss at a time (one measured cluster migrated 25
-    /// tiles over 2,956 ticks and reported as a single place).
+    /// the running centroid, so a battle cannot drift across the map one
+    /// adjacent loss at a time.
     anchor: (i64, i64),
     sum_x: i64,
     sum_y: i64,
@@ -484,7 +474,7 @@ struct Battle {
 struct BattleClusterer {
     active: Vec<BattleCluster>,
     battles: Vec<Battle>,
-    /// `(closing tick, 1)` per sub-floor battle, for the window counters.
+    /// Closing tick of each sub-floor battle, for the window counters.
     skirmishes: Vec<u64>,
 }
 
@@ -590,10 +580,10 @@ impl BattleClusterer {
     }
 }
 
-/// `"even"` when the two heaviest TEAM losses are within 25% of each other,
-/// else the lightest-losing team is favored. Aggregating by team keeps team
-/// maps honest: two allies each losing half an army must not read as an
-/// even three-way trade against their lone opponent.
+/// `"even"` when the two heaviest team losses are within 25% of each other,
+/// else the lightest-losing team is favored. Losses aggregate by team so two
+/// allies each losing half an army do not read as an even three-way trade
+/// against their lone opponent.
 fn battle_verdict(losses: &[SeatLoss], seat_team: &[u8]) -> String {
     let mut team_losses: BTreeMap<u8, u64> = BTreeMap::new();
     for loss in losses {
@@ -704,7 +694,7 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
             state
                 .buildings()
                 .iter()
-                .filter(|building| building.player.0 as usize == seat && building.built)
+                .filter(|building| building.player.0 as usize == seat && building.built())
                 .map(|building| building.kind)
                 .collect()
         })
@@ -795,13 +785,12 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
                 Event::BuildingDestroyed {
                     building,
                     player,
+                    tier,
                     pos,
                 } => {
                     let tile = TilePos::containing(*pos);
                     let known = ledgers.building.get(building).map(|(_, kind)| *kind);
-                    let value = known
-                        .and_then(|kind| kind.base_stats().construction)
-                        .map_or(0, |construction| u64::from(construction.cost));
+                    let value = known.map_or(0, |kind| u64::from(kind.invested_cost(*tier)));
                     let loss_kind = if known.is_some() {
                         windows[player.0 as usize].buildings_lost += 1;
                         LossKind::Building
@@ -1080,7 +1069,6 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
         scenario: ScenarioLine {
             start_tick: replay.start_tick(),
             name: replay.setup.name.clone(),
-            seed: replay.setup.seed,
             map_width: state.map().width(),
             map_height: state.map().height(),
             effective_ticks: effective,
@@ -1215,7 +1203,9 @@ fn built_count(state: &State, seat: u8, kind: BuildingKind) -> u32 {
         state
             .buildings()
             .iter()
-            .filter(|building| building.player.0 == seat && building.kind == kind && building.built)
+            .filter(|building| {
+                building.player.0 == seat && building.kind == kind && building.built()
+            })
             .count(),
     )
     .expect("seat indices fit in u32")
@@ -1292,7 +1282,7 @@ fn capture_digest(
                 state
                     .buildings()
                     .iter()
-                    .filter(|building| building.player.0 == seat_id && building.built)
+                    .filter(|building| building.player.0 == seat_id && building.built())
                     .count(),
             )
             .expect("seat indices fit in u32");
@@ -1344,7 +1334,7 @@ fn capture_digest(
 
 /// Downsampled whole-map view: `≤46` columns, one text row per `2×cell`
 /// tile rows (terminal glyphs are ~2:1 tall). Per cell, precedence
-/// top-down: a seat's Foundry digit (the immobile strategic anchor), the
+/// top-down: a seat's Foundry digit, the
 /// dominant seat's letter (UPPERCASE at or above the mass threshold),
 /// `$` for remaining scrap, then the most frequent terrain.
 fn minimap(state: &State) -> Vec<String> {
@@ -1389,7 +1379,7 @@ fn minimap(state: &State) -> Vec<String> {
     }
     let mut foundry: Vec<Option<u8>> = vec![None; cols * rows];
     for building in state.buildings() {
-        if !building.built {
+        if !building.built() {
             continue;
         }
         let seat = building.player.0;
@@ -1472,9 +1462,8 @@ impl SummaryReport {
         let scenario = &self.scenario;
         let _ = writeln!(
             out,
-            "{} — seed {}, {}x{}, {} ticks ({}), digest every {} ({})",
+            "{} — {}x{}, {} ticks ({}), digest every {} ({})",
             scenario.name,
-            scenario.seed,
             scenario.map_width,
             scenario.map_height,
             scenario.effective_ticks,

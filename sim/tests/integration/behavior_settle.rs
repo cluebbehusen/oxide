@@ -60,8 +60,8 @@ fn crowded_harvest_steady_state() {
 
 /// A parked blob: ten harvesters group-moved to a cluster, then left
 /// alone. Once arrival propagation settles them, every later tick must
-/// leave every position EXACTLY where it was — settled machines do not
-/// vibrate. This is the regression the deadband/settle work gates on.
+/// leave every position exactly where it was: settled machines do not
+/// vibrate.
 #[test]
 fn a_parked_crowd_goes_fully_stationary() {
     let units: Vec<_> = (0..10)

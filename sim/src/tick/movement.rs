@@ -1,22 +1,20 @@
-//! Phases 4–5: footprint eviction, path following, and collision
-//! resolution.
+//! Footprint eviction, path following, and collision resolution.
 //!
 //! Movement is per-unit work. Ground can close *during* a walk because a
 //! construction site claims its footprint when the command lands, so each
 //! step revalidates its next waypoint and drops a blocked path for the brain
 //! to plan again next tick. A pathless ground body left on claimed ground
 //! walks itself off through [`evict_claimed_ground`] rather than teleporting.
-//! Collision resolution then pushes overlapping
-//! bodies apart until they fit — units are solid to each other, but tiles
-//! are only ever blocked by terrain and buildings, so pathfinding stays
-//! deadlock-free while crowds physically jostle.
+//! Collision resolution then pushes overlapping bodies apart until they fit:
+//! units are solid to each other, but tiles are only ever blocked by terrain
+//! and buildings, so pathfinding stays deadlock-free while crowds jostle.
 
 mod cruise;
 mod ground;
 
 use super::flight;
 use crate::map::Map;
-use crate::state::{GroundTerrain, Order, ParkedBodies, PathFollow, State};
+use crate::state::{GroundTerrain, Motor, Order, ParkedBodies, PathFollow, State};
 use chassis::fx::{Fx, Vec2Fx, sqrt};
 use chassis::grid::TilePos;
 
@@ -33,28 +31,28 @@ pub(super) fn steer_ground_heading(unit: &mut crate::state::Unit, direction: Vec
 pub(super) fn steer_weapon_heading(unit: &mut crate::state::Unit, direction: Vec2Fx) -> bool {
     if unit.kind.has_ground_turret() {
         let bearing = unit.turret_heading.get_or_insert(unit.heading);
-        return steer_bearing(bearing, direction, unit.kind.turret_turn_rate());
+        return steer_bearing(bearing, direction, unit.kind.stats().turret_turn_rate);
     }
-    if unit.drive_speed > Fx::ZERO {
+    if unit.drive_speed() > Fx::ZERO {
         return false;
     }
-    if unit.kind == crate::UnitKind::Bombard {
+    if let Some(brace) = unit.kind.stats().brace {
         if !ground_weapon_aligned(unit, direction) {
-            if unit.brace_ticks > 0 {
+            if unit.braces() > 0 {
                 unit.retract_braces();
             } else {
                 steer_ground_heading(unit, direction);
             }
             return false;
         }
-        unit.brace_ticks = (unit.brace_ticks + 1).min(crate::stats::BOMBARD_BRACE_TICKS);
-        return unit.brace_ticks == crate::stats::BOMBARD_BRACE_TICKS;
+        unit.set_braces((unit.braces() + 1).min(brace.deploy_ticks));
+        return unit.braces() == brace.deploy_ticks;
     }
     let rate = unit
         .kind
         .ground_turn_rate()
-        .max(unit.kind.turret_turn_rate())
-        .max(unit.kind.cruise_turn_rate());
+        .max(unit.kind.stats().turret_turn_rate)
+        .max(unit.kind.stats().cruise_turn_rate);
     steer_heading(unit, direction, rate)
 }
 
@@ -79,7 +77,7 @@ fn heading_aligned(current: u8, desired: u8) -> bool {
 }
 
 pub(super) fn ground_weapon_aligned(unit: &crate::state::Unit, direction: Vec2Fx) -> bool {
-    (unit.kind.ground_turn_rate() == 0 && unit.kind.cruise_turn_rate() == 0)
+    (unit.kind.ground_turn_rate() == 0 && unit.kind.stats().cruise_turn_rate == 0)
         || direction == Vec2Fx::ZERO
         || heading_aligned(
             unit.weapon_heading(),
@@ -95,7 +93,7 @@ fn work_aim(state: &State, unit: &crate::state::Unit) -> Option<Vec2Fx> {
     if unit.path.is_some() || unit.kind.ground_turn_rate() == 0 {
         return None;
     }
-    if let Some(release) = unit.unloading {
+    if let Some(release) = unit.unloading() {
         return state
             .building(release.foundry)
             .map(|b| state.contact_surface(b).closest(unit.pos));
@@ -190,7 +188,7 @@ pub(super) fn escape_route(
     None
 }
 
-/// Pure preview of the phase-5 claimed-ground eviction for one unit.
+/// Pure preview of the claimed-ground eviction for one unit.
 ///
 /// Brains that require a body to remain still can consult the exact same
 /// predicate and route that [`evict_claimed_ground`] will apply later in
@@ -224,25 +222,23 @@ pub(super) fn claimed_ground_escape(state: &State, id: crate::ids::UnitId) -> Op
     escape_route(state, unit.kind, unit.tile(), unit.heading)
 }
 
-/// Phase-5 pre-pass: a pathless ground body standing on a building
-/// footprint walks off — an accepted foundation claims its ground
-/// instantly, and no sim rule expects a resting unit on a claimed
-/// footprint. Sets `path` ONLY: orders, queue, progress, leash, and
-/// settle all survive, so the body keeps its job while it clears the
-/// ground. Re-arms every tick because working brains null the path
-/// while standing still (extract, attack-in-range) — brains run first,
-/// eviction re-arms, movement consumes. Id order; deterministic scan.
-/// No route means the body stays put — a crowd the sim already
-/// tolerates — except at placement time, where `apply_build` deals a
-/// routeless body onto the perimeter instantly so nothing can end up
-/// inside a finished building.
+/// Movement pre-pass: a pathless ground body standing on a building
+/// footprint walks off, since an accepted foundation claims its ground
+/// instantly. Sets `path` only: orders, queue, progress, leash, and settle
+/// all survive, so the body keeps its job while it clears the ground.
+/// Re-arms every tick because working brains null the path while standing
+/// still (extract, attack-in-range): brains run first, eviction re-arms,
+/// movement consumes. Runs in id order. No route means the body stays put,
+/// except at placement time, where the build command places a routeless
+/// body onto the perimeter instantly so nothing can end up inside a
+/// finished building.
 pub(super) fn evict_claimed_ground(state: &mut State) {
     for i in 0..state.units.len() {
         let id = state.units[i].id;
         if let Some(path) = claimed_ground_escape(state, id) {
             // A landed airframe leaves a claimed footprint the only way it
             // can: it lifts off along that route.
-            state.units[i].landed = false;
+            state.units[i].lift_off();
             state.units[i].path = Some(path);
         }
     }
@@ -283,14 +279,19 @@ pub(super) fn note_stalls(
                     let made = net.x * toward.x + net.y * toward.y;
                     wanted > Fx::ZERO && made * Fx::from_num(4) < wanted
                 });
+        // Only a driving chassis can stall: anything else never walks a
+        // ground route under its own power.
+        let Motor::Ground { stall_ticks, .. } = &mut unit.motor else {
+            continue;
+        };
         if !stalled {
-            unit.stall_ticks = 0;
+            *stall_ticks = 0;
             continue;
         }
-        unit.stall_ticks += 1;
-        if unit.stall_ticks >= crate::stats::STALL_REPLAN_TICKS {
+        *stall_ticks += 1;
+        if *stall_ticks >= crate::stats::STALL_REPLAN_TICKS {
             unit.path = None;
-            unit.stall_ticks = 0;
+            *stall_ticks = 0;
         }
     }
 }
@@ -301,8 +302,10 @@ pub(super) fn note_stalls(
 /// its own invariants and the next route inherits a stale count.
 pub(super) fn forget_stalls_without_routes(state: &mut State) {
     for unit in &mut state.units {
-        if unit.path.is_none() {
-            unit.stall_ticks = 0;
+        if unit.path.is_none()
+            && let Motor::Ground { stall_ticks, .. } = &mut unit.motor
+        {
+            *stall_ticks = 0;
         }
     }
 }
@@ -342,20 +345,20 @@ pub(super) fn run(state: &mut State) -> (Vec<Vec2Fx>, Vec<bool>) {
     let mut travel = vec![Vec2Fx::ZERO; units.len()];
     let mut refused = vec![false; units.len()];
     for (slot, unit) in units.iter_mut().enumerate() {
-        if unit.hp == 0 || unit.brace_ticks > 0 {
+        if unit.hp == 0 || unit.braces() > 0 {
             continue;
         }
         let before = unit.pos;
         let stats = unit.kind.stats();
         if stats.turn_rate > 0 {
             // A landed airframe rests on its tile until an order lifts it.
-            if !unit.landed {
+            if !unit.landed() {
                 steer_turn_limited(unit, map, stats);
                 travel[slot] = unit.pos - before;
             }
             continue;
         }
-        if unit.kind.cruise_turn_rate() > 0 {
+        if unit.kind.stats().cruise_turn_rate > 0 {
             cruise::advance(unit, map);
             travel[slot] = unit.pos - before;
             continue;
@@ -366,7 +369,7 @@ pub(super) fn run(state: &mut State) -> (Vec<Vec2Fx>, Vec<bool>) {
                 &terrain.with_contact(contacts[slot]),
                 &parked[unit.player.0 as usize],
             );
-            if unit.drive_speed == Fx::ZERO
+            if unit.drive_speed() == Fx::ZERO
                 && let Some(aim) = work_aims[slot]
             {
                 steer_ground_heading(unit, aim - unit.pos);
@@ -645,10 +648,10 @@ fn collision_position_open(state: &State, domain: crate::stats::Domain, pos: Vec
 /// A unit that is standing still to work — extracting, welding, or
 /// holding fire on a target — resists shoving; movers yield around it.
 fn is_anchored(unit: &crate::state::Unit) -> bool {
-    unit.landed
+    unit.landed()
         || unit.kind.stats().turn_rate == 0
             && unit.path.is_none()
-            && unit.drive_speed == Fx::ZERO
+            && unit.drive_speed() == Fx::ZERO
             && matches!(
                 unit.order,
                 Order::Harvest { .. }
@@ -941,7 +944,7 @@ fn collision_pairs(
             radius: unit.kind.stats().radius,
             domain: unit.domain(),
             alive: unit.hp > 0,
-            shoveable: unit.kind.stats().turn_rate == 0 || unit.landed,
+            shoveable: unit.kind.stats().turn_rate == 0 || unit.landed(),
         })
         .collect();
     for (i, body) in bodies.iter().enumerate() {
@@ -1015,14 +1018,13 @@ fn sort_collision_pairs(
 /// One pass over the tick's candidate pairs; returns whether any pair
 /// overlapped beyond [`COLLISION_SLOP`].
 ///
-/// Corrections apply *immediately*, pair by pair, in deterministic order
-/// (Gauss–Seidel, not Jacobi). Accumulating all pushes first looks tidier
-/// but admits frozen equilibria: symmetric arrangements — several full
-/// harvesters magnetized to one doorstep — cancel to exactly zero net
-/// correction while everything still overlaps, and the bot economy stalls
-/// forever. Sequential application cannot cancel, so jams always evolve.
-/// Dead units are skipped: a corpse should not shove the living on its
-/// removal tick.
+/// Corrections apply immediately, pair by pair, in deterministic order
+/// (Gauss–Seidel, not Jacobi). Accumulating all pushes first admits frozen
+/// equilibria: symmetric arrangements, such as several full harvesters at
+/// one doorstep, cancel to exactly zero net correction while everything
+/// still overlaps. Sequential application cannot cancel, so jams always
+/// evolve. Dead units are skipped: a corpse should not shove the living on
+/// its removal tick.
 fn relaxation_pass(
     state: &mut State,
     travel: &[Vec2Fx],
@@ -1033,9 +1035,9 @@ fn relaxation_pass(
     let n = state.units.len();
     let mut any_overlap = false;
     // One per-unit displacement budget spans all relaxation passes in a
-    // tick. Clamping only per pair lets a unit in k overlaps move k × the
-    // cap, while resetting here lets it move one cap per pass; both made
-    // dense stacks visibly explode outward. Direct unit tests may call one
+    // tick. Clamping only per pair would let a unit in k overlaps move k ×
+    // the cap, and resetting here would let it move one cap per pass; both
+    // make dense stacks explode outward. Direct unit tests may call one
     // pass with a fresh buffer, so initialize only when its shape differs.
     if spent.len() != n {
         spent.clear();
@@ -1089,7 +1091,7 @@ fn relaxation_pass(
         // movers absorb the correction and flow around them.
         // A landed airframe is a fixture on its tile center: it takes no
         // correction at all, so the whole overlap falls on the mover.
-        let (share_i, share_j) = match (state.units[i].landed, state.units[j].landed) {
+        let (share_i, share_j) = match (state.units[i].landed(), state.units[j].landed()) {
             (true, true) => (Fx::ZERO, Fx::ZERO),
             (true, false) => (Fx::ZERO, Fx::ONE),
             (false, true) => (Fx::ONE, Fx::ZERO),

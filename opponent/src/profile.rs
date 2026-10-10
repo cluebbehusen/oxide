@@ -12,9 +12,8 @@ const TRAIT_JITTER: i16 = 7;
 const GUILE_JITTER: i16 = 18;
 const PRIMARY_BONUS: i16 = 16;
 const SECONDARY_BONUS: i16 = 8;
-/// Personality changes priorities, never the total amount of preference the
-/// planner can spend. A fixed budget prevents a lucky seed from becoming an
-/// accidental fifth difficulty level.
+/// The sum of the trait values. Personality changes priorities, never their
+/// total, so a lucky seed cannot act as an extra difficulty level.
 const TRAIT_BUDGET: i16 = 300;
 
 /// A strategic preference that can become a seeded specialty.

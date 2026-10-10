@@ -6,7 +6,7 @@ fn inspection_captures_exact_sorted_ticks_and_fog() {
     let report =
         inspect(&fixture(), &[12, 5, 0, 5], Some(PlayerId(1)), true).expect("fixture inspects");
 
-    assert_eq!(report.schema_version, 2);
+    assert_eq!(report.schema_version, 1);
     assert_eq!(report.scenario.name, "Skirmish Basin");
     assert_eq!(report.scenario.players[1].seat, 1);
     assert!(report.scenario.players[1].bot);

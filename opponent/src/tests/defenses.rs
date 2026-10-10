@@ -974,7 +974,7 @@ fn mirrored_seats_watch_bar_and_mine_mirrored_spots() {
     let mirrored: Vec<_> = west
         .into_iter()
         .map(|(kind, anchor, score)| {
-            let (w, h) = kind.base_stats().size;
+            let (w, h) = kind.size();
             let anchor = TilePos::new(width - w - anchor.x, height - h - anchor.y);
             (kind, anchor, score)
         })

@@ -8,105 +8,46 @@
 //!    them to the active screen (menu or the one gameplay input mapper),
 //! 3. advance the sim by wall clock (unless paused; `advance_ticks` from the
 //!    socket bypasses the clock entirely — that's driven mode),
-//! 4. render with interpolation,
+//! 4. render with interpolation, then settle any change of screen and
+//!    deliver the frame's notices,
 //! 5. capture any requested screenshot from the finished frame.
 //!
 //! Every screen variant carries that screen's complete state, so a mode
 //! without its payload is unrepresentable.
 
+mod audio;
+mod debug;
 mod persistence;
+mod screen;
 mod screen_flow;
+mod screenshot;
+mod ui_view;
 
 use crate::debug_server::IncomingRequest;
 use crate::frame_profile::{FrameObservation, FrameProfiler};
 use crate::frame_time::FrameTime;
 use crate::game::{Game, SoundKind};
-use crate::menu::{Menu, PreviewCache};
+use crate::menu::PreviewCache;
 use crate::numeric;
-use crate::numeric::Fit;
 use crate::screens::codex::CodexScreen;
 use crate::screens::final_map::FinalMapScreen;
 use crate::screens::home::HomeScreen;
 use crate::screens::lobby::LobbyScreen;
 use crate::screens::pause::PauseScreen;
-use crate::screens::playback::{PlaybackSession, ReturnTo as PlaybackReturn};
+use crate::screens::playback::PlaybackSession;
 use crate::screens::results::ResultsScreen;
 use crate::screens::settings::SettingsScreen;
 use crate::screens::shelf::Shelf;
+use crate::screens::wizard::launch::{NewMatch, PersonalitySeedSource, start_new_match};
 use crate::screens::wizard::{NewMatchDraft, Out as WizardOut, Step as WizardStep, Wizard};
 use crate::{Args, assets, autosave, config, input, render, screens, theme, tutorial};
 use anyhow::{Context, Result};
-use chassis::rng::Pcg32;
-use macroquad::audio::{PlaySoundParams, Sound, play_sound};
 use macroquad::prelude::*;
 use oxide_kit::diagnostics::{Stage, StageGuard};
-use oxide_protocol::{
-    CameraView, Key, MouseButton, OverlayView, RawEvent, Reply, Request, ResponseEnvelope,
-    SavedView, ScreenshotView, UiView,
-};
-use oxide_sim::{PlayerCommand, Scenario};
-use std::sync::mpsc::{Receiver, Sender};
-use std::time::{SystemTime, UNIX_EPOCH};
-
-const BOT_PERSONALITY_STREAM: u64 = 0x0B07_5EED;
-const BOT_PERSONALITY_WINDOW: u64 = 16;
-const AUTOMATION_PERSONALITY_SEED: u64 = 0xA117_0A7E_0B07_5EED;
-
-/// Which screen owns input this frame, holding that screen's state in
-/// the same place. Screens carry no match choices — the
-/// [`NewMatchDraft`] in [`App`] does, which is what lets Back walk the
-/// wizard flow without losing anything; the tutorial survives Pause
-/// round trips in [`App`] for the same reason.
-enum Screen {
-    /// The front door: play, settings, quit.
-    Home(HomeScreen),
-    /// Settings and the Controls remap screen. `back` is where leaving
-    /// returns to — Home, or the untouched pause menu whose payload
-    /// waits here intact so the cursor comes back to the row that
-    /// opened this screen.
-    Settings {
-        /// The screen itself.
-        screen: SettingsScreen,
-        /// The displaced screen, restored wholesale on leave.
-        back: Box<Screen>,
-    },
-    /// The codex — every machine and works with its figures — opened
-    /// over Home or the paused match, which waits here intact exactly
-    /// as it does under Settings.
-    Codex {
-        /// The screen itself.
-        screen: CodexScreen,
-        /// The displaced screen, restored wholesale on leave.
-        back: Box<Screen>,
-    },
-    /// The New Match wizard (map grid, then match setup).
-    Wizard(Wizard),
-    /// A LAN match gathering its machines. Leaving drops every
-    /// connection the lobby holds.
-    Lobby {
-        /// The screen itself.
-        screen: Box<LobbyScreen>,
-        /// Where leaving returns to: Home, or the match setup that hosted.
-        back: Box<Screen>,
-    },
-    /// The game proper — the session lives in [`App::game`], which
-    /// every screen needs as its backdrop.
-    Playing,
-    /// Read-only replay playback: the log is the match, seek included.
-    /// Boxed: the session carries a whole presentation `Game`, and the
-    /// enum should not make every other screen pay its size.
-    Playback(Box<PlaybackSession>),
-    /// The replay shelf.
-    Replays(Shelf),
-    /// Decided-match report and next steps.
-    Results(ResultsScreen),
-    /// Camera-only inspection of the already-final live state.
-    FinalMap(FinalMapScreen),
-    /// Game visible but veiled; the pause screen owns input,
-    /// confirmation and save-naming state included.
-    Pause(PauseScreen),
-    Busy(Box<persistence::Busy>),
-}
+use oxide_protocol::{Key, MouseButton, RawEvent, Request};
+use oxide_sim::Scenario;
+use screen::{Screen, ScreenKind};
+use std::sync::mpsc::Receiver;
 
 /// Everything that outlives a screen: the live session, the config,
 /// the input funnel, and the presentation caches.
@@ -118,10 +59,10 @@ struct App {
     config: config::Config,
     /// The live (or backdrop) game session.
     game: Game,
-    /// The lesson cards, when school is in session. Lives here, not in
-    /// a screen: the tutorial must survive Playing -> Pause -> Playing.
+    /// The tutorial's lesson cards, while a tutorial runs. Lives here, not
+    /// in a screen, so it survives Playing -> Pause -> Playing.
     tutorial: Option<tutorial::Tutorial>,
-    /// The wizard's remembered choices. Lives here, not in the wizard:
+    /// The wizard's remembered choices. Lives here, not in the wizard, so
     /// Home -> Wizard -> Back -> Wizard keeps the map pick and dials.
     draft: NewMatchDraft,
     /// Shell-only entropy for New Match opponent identities. A base is
@@ -135,12 +76,15 @@ struct App {
     /// A menu-context error line (message, wall-clock deadline): map
     /// and launch failures report here and the menus stay up — the
     /// in-game toast strip only draws with the HUD.
-    menu_notice: Option<(String, f64)>,
+    menu_notice: Option<screen_flow::MenuNotice>,
+    /// Messages for the player, delivered to whatever screen is up once
+    /// the frame's transitions settle.
+    notices: Vec<Notice>,
     /// When the current screen's coaching text shows.
     hint_clock: crate::hints::HintClock,
     /// Window-size persistence: written once the size has been stable
-    /// for a second — a live resize is a burst of intermediate sizes
-    /// nobody wants fsynced.
+    /// for a second, so a live resize does not save every intermediate
+    /// size.
     pending_size: Option<((u32, u32), f64)>,
     /// Modifier truth for chord capture: tracked globally from raw
     /// events, every frame, whatever the screen — a Ctrl pressed on one
@@ -152,13 +96,15 @@ struct App {
     /// Events injected over the debug socket, consumed next frame.
     injected: Vec<RawEvent>,
     /// Screenshot requests parked until after this frame renders.
-    pending_shots: Vec<PendingScreenshot>,
+    pending_shots: Vec<screenshot::PendingScreenshot>,
     /// The one texture atlas and its source rects.
     sprites: assets::Sprites,
     /// The generated clips.
     sounds: assets::Sounds,
     /// The rate-limiting clip player.
-    mixer: Mixer,
+    mixer: crate::mixer::Mixer,
+    /// Menu clicks and refusals, heard whatever session is on screen.
+    ui_sounds: Vec<(SoundKind, Option<Vec2>)>,
     /// Continuously running score beds and their pure crossfade state.
     ///
     /// Automation leaves this absent so a driven shell never starts
@@ -186,410 +132,11 @@ struct App {
     clock: std::time::Instant,
 }
 
-#[derive(Debug, Clone)]
-struct PersonalitySeedSource {
-    next_base: u64,
-}
-
-impl PersonalitySeedSource {
-    fn for_session(automation: bool) -> Self {
-        Self::for_session_with_entropy(automation, Self::from_entropy)
-    }
-
-    fn for_session_with_entropy(
-        automation: bool,
-        entropy: impl FnOnce() -> PersonalitySeedSource,
-    ) -> Self {
-        if automation {
-            Self::from_seed(AUTOMATION_PERSONALITY_SEED)
-        } else {
-            entropy()
-        }
-    }
-
-    fn from_entropy() -> Self {
-        let nanos = match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(duration) => duration.as_nanos(),
-            Err(error) => error.duration().as_nanos(),
-        };
-        let folded_time = (nanos & 0xFFFF_FFFF_FFFF_FFFF) as u64 ^ (nanos >> 64) as u64;
-        let process = u64::from(std::process::id()).rotate_left(32);
-        Self::from_seed(folded_time ^ process)
-    }
-
-    fn from_seed(seed: u64) -> Self {
-        let mut rng = Pcg32::new(seed, BOT_PERSONALITY_STREAM);
-        Self {
-            // Scenario validation caps a roster at 16. Alignment makes
-            // `base + seat` a complete, non-wrapping 16-seed window.
-            next_base: rng.next_u64() & !(BOT_PERSONALITY_WINDOW - 1),
-        }
-    }
-
-    fn match_base(&self) -> u64 {
-        self.next_base
-    }
-
-    fn commit_launch(&mut self) {
-        self.next_base = self.next_base.wrapping_add(BOT_PERSONALITY_WINDOW);
-    }
-}
-
-/// Builds the game a filled-in draft describes.
-fn launch(draft: &NewMatchDraft, personality_seed_base: u64) -> Result<Game> {
-    Game::new(draft_scenario(draft, personality_seed_base)?)
-}
-
-/// What starting a draft built.
-enum NewMatch {
-    /// A match on this machine alone.
-    Local(Box<Game>),
-    /// A lobby hosting the match for its remote chairs.
-    Hosted(Box<crate::netplay::HostLobby>),
-}
-
-/// Starts a draft: a local match, or a lobby listening on `bind` when a
-/// chair is remote.
-fn start_new_match(
-    draft: &NewMatchDraft,
-    personality_seed_base: u64,
-    bind: &str,
-) -> Result<NewMatch> {
-    if !screens::wizard::draft_hosts(draft) {
-        return Ok(NewMatch::Local(Box::new(launch(
-            draft,
-            personality_seed_base,
-        )?)));
-    }
-    let scenario = draft_scenario(draft, personality_seed_base)?;
-    let host = oxide_sim::PlayerId(
-        draft
-            .seat_choice
-            .min(scenario.players.len() - 1)
-            .fit::<u8>(),
-    );
-    let lobby =
-        crate::netplay::HostLobby::new(bind, scenario, host, &crate::build_identity().revision)?;
-    Ok(NewMatch::Hosted(Box::new(lobby)))
-}
-
-/// The scenario a filled-in draft describes.
-fn draft_scenario(draft: &NewMatchDraft, personality_seed_base: u64) -> Result<Scenario> {
-    let mut scenario = (**draft.scenario.as_ref().context("draft has a map")?).clone();
-    // One consumer, one source: the per-seat vector the setup screen filled.
-    // Every opponent runs with its chosen difficulty and stance. This launch base gives each chair a distinct
-    // hidden identity; after this point it is ordinary scenario/replay data.
-    anyhow::ensure!(
-        draft.seats.len() == scenario.players.len(),
-        "draft seats out of step with the map"
-    );
-    // Discovery lists every parseable JSON without building it, so a
-    // zero-seat file can reach here — refuse it as a launch error
-    // instead of underflowing the seat clamp below.
-    anyhow::ensure!(!scenario.players.is_empty(), "the map has no player seats");
-    let seat_choice = draft.seat_choice.min(scenario.players.len() - 1);
-    for (i, player) in scenario.players.iter_mut().enumerate() {
-        let plan = draft.seats[i];
-        player.bot = i != seat_choice && !plan.remote;
-        player.bot_config = player.bot.then(|| {
-            oxide_sim::scenario::BotConfig::new(
-                plan.difficulty,
-                plan.stance,
-                personality_seed_base.wrapping_add(i as u64),
-            )
-        });
-    }
-    // Per-seat faction chips (the setup screen's): Auto keeps the
-    // authored roster; an override retints the seat, starting units
-    // remapped through their roles. Same-faction opponents are
-    // readable now — the allegiance accents carry friend-or-foe, so
-    // faction is a free choice, not a fairness rule.
-    for (i, plan) in draft.seats.iter().enumerate() {
-        if let Some(faction) = screens::wizard::faction_override(plan.faction_choice) {
-            scenario.retint_seat(i, faction);
-        }
-    }
-    // Per-seat team chips (the setup screen's): teams regroup seats
-    // without touching factions — an FFA chip drops the seat onto its
-    // own team, and the sim densifies chosen ids by first appearance
-    // at build. The scenario carries the choice, so saves and replays
-    // reproduce the grouping with no extra plumbing. An all-one-team
-    // draft fails the build (OneTeam) like any other launch error;
-    // the wizard refuses it earlier with the reason inline.
-    for (i, plan) in draft.seats.iter().enumerate() {
-        scenario.players[i].team = screens::wizard::team_override(plan.team_choice);
-    }
-    // Duels use the same independent faction choices as larger maps.
-    // Auto keeps each seat's authored faction; overriding one seat
-    // retints only that seat, which supports swaps and mirror matches.
-    // Seat names must stay unique: the victory banner, the panel, and
-    // the stats screen all address seats by name. Retints can land two
-    // seats on one faction-derived label ("North West Ferrous" twice),
-    // so duplicates take an ordinal instead of refusing to launch.
-    let mut seen: Vec<String> = Vec::new();
-    for player in &mut scenario.players {
-        if seen.contains(&player.name) {
-            let mut n = 2;
-            while seen.contains(&format!("{} {n}", player.name)) {
-                n += 1;
-            }
-            player.name = format!("{} {n}", player.name);
-        }
-        seen.push(player.name.clone());
-    }
-    let mut names: Vec<&str> = scenario.players.iter().map(|p| p.name.as_str()).collect();
-    names.sort_unstable();
-    names.dedup();
-    anyhow::ensure!(
-        names.len() == scenario.players.len(),
-        "seat names collide after setup"
-    );
-    Ok(scenario)
-}
-
-/// A screenshot request parked until after this frame renders.
-struct PendingScreenshot {
-    id: u64,
-    path: String,
-    reply: Sender<ResponseEnvelope>,
-}
-
-/// Plays queued clips with a per-kind rate limit, so twenty simultaneous
-/// weapon reports read as battle, not noise.
-#[derive(Default)]
-struct Mixer {
-    rocket_loops: crate::rocket_audio::RocketLoops,
-    last_played: std::collections::HashMap<SoundKind, f64>,
-    /// Alternates the basic zap between two clips so volleys read as
-    /// many guns, not one sample looping.
-    laser_flip: bool,
-}
-
-impl Mixer {
-    /// Which settings bus a clip bills against.
-    fn bus(volumes: &config::Volumes, kind: SoundKind) -> f32 {
-        let bus = match kind {
-            SoundKind::Click | SoundKind::Denied => volumes.ui,
-            _ => volumes.effects,
-        };
-        volumes.master * bus
-    }
-
-    fn min_gap(kind: SoundKind) -> f64 {
-        match kind {
-            SoundKind::Laser | SoundKind::ScuttlerFire => 0.09,
-            SoundKind::SentinelFire => 0.08,
-            SoundKind::LancerFire | SoundKind::Ack => 0.15,
-            SoundKind::BombardFire
-            | SoundKind::BastionFire
-            | SoundKind::Artillery
-            | SoundKind::ArtilleryLaunch => 0.2,
-            SoundKind::FlakhoundFire | SoundKind::FlakTurretFire => 0.12,
-            SoundKind::WardenFire => 0.1,
-            SoundKind::BreakerFire
-            | SoundKind::AvalancheFire
-            | SoundKind::RocketMotor
-            | SoundKind::RocketImpact
-            | SoundKind::BombRelease
-            | SoundKind::DemolitionBoom => 0.2,
-            SoundKind::UpgradeDone => 0.3,
-            SoundKind::StingerFire
-            | SoundKind::BuzzardFire
-            | SoundKind::DarterFire
-            | SoundKind::TalonFire
-            | SoundKind::WispFire => 0.1,
-            SoundKind::UnitDeath => 0.12,
-            SoundKind::Deposit => 0.15,
-            SoundKind::Alert => 1.5,
-            _ => 0.05,
-        }
-    }
-
-    fn base_volume(kind: SoundKind) -> f32 {
-        match kind {
-            SoundKind::Laser => 0.18,
-            SoundKind::UnitDeath => 0.35,
-            SoundKind::BuildingBoom => 0.6,
-            SoundKind::Deposit => 0.25,
-            SoundKind::TrainDone => 0.3,
-            SoundKind::Click => 0.25,
-            SoundKind::Denied => 0.3,
-            SoundKind::Alert => 0.4,
-            SoundKind::Victory | SoundKind::Defeat => 0.6,
-            SoundKind::Artillery | SoundKind::RocketImpact => 0.5,
-            SoundKind::ArtilleryLaunch => 0.4,
-            SoundKind::Ack => 0.18,
-            SoundKind::SentinelFire => 0.26,
-            SoundKind::ScuttlerFire => 0.2,
-            SoundKind::LancerFire => 0.32,
-            SoundKind::BombardFire => 0.5,
-            SoundKind::FlakhoundFire => 0.3,
-            SoundKind::StingerFire => 0.25,
-            SoundKind::BuzzardFire => 0.35,
-            SoundKind::DarterFire => 0.25,
-            SoundKind::TalonFire => 0.28,
-            SoundKind::WispFire => 0.23,
-            SoundKind::BastionFire => 0.55,
-            SoundKind::FlakTurretFire => 0.34,
-            SoundKind::WardenFire => 0.3,
-            SoundKind::BreakerFire => 0.55,
-            SoundKind::AvalancheFire => 0.5,
-            SoundKind::RocketMotor => 0.35,
-            SoundKind::BombRelease => 0.45,
-            SoundKind::DemolitionBoom => 0.65,
-            SoundKind::UpgradeDone => 0.35,
-        }
-    }
-
-    fn clip<'a>(&mut self, sounds: &'a assets::Sounds, kind: SoundKind) -> &'a Sound {
-        match kind {
-            SoundKind::Laser => {
-                self.laser_flip = !self.laser_flip;
-                if self.laser_flip {
-                    &sounds.laser
-                } else {
-                    &sounds.laser2
-                }
-            }
-            SoundKind::UnitDeath => &sounds.unit_death,
-            SoundKind::BuildingBoom => &sounds.building_boom,
-            SoundKind::Deposit => &sounds.deposit,
-            SoundKind::TrainDone => &sounds.train_done,
-            SoundKind::Click => &sounds.click,
-            SoundKind::Denied => &sounds.denied,
-            SoundKind::Alert => &sounds.alert,
-            SoundKind::Victory => &sounds.victory,
-            SoundKind::Defeat => &sounds.defeat,
-            SoundKind::Artillery => &sounds.artillery_boom,
-            SoundKind::ArtilleryLaunch => &sounds.artillery_launch,
-            SoundKind::Ack => &sounds.ack,
-            SoundKind::SentinelFire => &sounds.attack_sentinel,
-            SoundKind::ScuttlerFire => &sounds.attack_scuttler,
-            SoundKind::LancerFire => &sounds.attack_lancer,
-            SoundKind::BombardFire => &sounds.attack_bombard,
-            SoundKind::FlakhoundFire => &sounds.attack_flakhound,
-            SoundKind::StingerFire => &sounds.attack_stinger,
-            SoundKind::BuzzardFire => &sounds.attack_buzzard,
-            SoundKind::DarterFire => &sounds.attack_darter,
-            SoundKind::TalonFire => &sounds.attack_talon,
-            SoundKind::WispFire => &sounds.attack_wisp,
-            SoundKind::BastionFire => &sounds.attack_bastion,
-            SoundKind::FlakTurretFire => &sounds.attack_flak_turret,
-            SoundKind::WardenFire => &sounds.attack_warden,
-            SoundKind::BreakerFire => &sounds.attack_breaker,
-            SoundKind::AvalancheFire => &sounds.avalanche_launch,
-            SoundKind::RocketMotor => &sounds.rocket_motors[0],
-            SoundKind::RocketImpact => &sounds.rocket_impact,
-            SoundKind::BombRelease => &sounds.bomb_release,
-            SoundKind::DemolitionBoom => &sounds.demolition_boom,
-            SoundKind::UpgradeDone => &sounds.upgrade_done,
-        }
-    }
-
-    fn play(
-        &mut self,
-        sounds: &assets::Sounds,
-        kind: SoundKind,
-        volumes: &config::Volumes,
-        attenuation: f32,
-    ) {
-        let now = get_time();
-        let min_gap = Self::min_gap(kind);
-        if now - self.last_played.get(&kind).copied().unwrap_or(f64::MIN) < min_gap {
-            return;
-        }
-        self.last_played.insert(kind, now);
-        let volume = Self::base_volume(kind) * Self::bus(volumes, kind) * attenuation;
-        if volume <= 0.0 {
-            return;
-        }
-        let sound = self.clip(sounds, kind);
-        play_sound(
-            sound,
-            PlaySoundParams {
-                looped: false,
-                volume,
-            },
-        );
-    }
-}
-
-fn match_soundtrack_scene(game: &crate::game::Scene<'_>, paused: bool) -> crate::soundtrack::Scene {
-    match game.state.result() {
-        Some(oxide_sim::GameResult::Draw) => crate::soundtrack::Scene::Result,
-        Some(oxide_sim::GameResult::Victory { team })
-            if !game.state.player(game.presentation.human).resigned
-                && game.state.player(game.presentation.human).team == team =>
-        {
-            crate::soundtrack::Scene::Victory
-        }
-        Some(oxide_sim::GameResult::Victory { .. }) => crate::soundtrack::Scene::Defeat,
-        None if paused => crate::soundtrack::Scene::Pause,
-        None => crate::soundtrack::Scene::Match,
-    }
-}
-
-fn result_playback(game: &Game) -> Result<PlaybackSession> {
+/// A viewer over the live match's record so far; the match waits untouched.
+fn live_playback(game: &Game) -> Result<PlaybackSession> {
     let mut replay = game.recorder.clone();
     replay.meta.ticks = Some(game.state.current_tick());
-    let mut session = PlaybackSession::from_replay(replay)?;
-    session.return_to = PlaybackReturn::Results;
-    Ok(session)
-}
-
-fn soundtrack_scene(screen: &Screen, game: &Game) -> crate::soundtrack::Scene {
-    match screen {
-        Screen::Playing => match_soundtrack_scene(&game.view(), false),
-        Screen::Playback(playback) => match_soundtrack_scene(
-            &playback.view(),
-            playback.paused || playback.seeking.is_some(),
-        ),
-        Screen::FinalMap(_) => match_soundtrack_scene(&game.view(), true),
-        Screen::Busy(_) | Screen::Pause(_) => match_soundtrack_scene(&game.view(), true),
-        Screen::Settings { back, .. } | Screen::Codex { back, .. }
-            if matches!(**back, Screen::Pause(_)) =>
-        {
-            match_soundtrack_scene(&game.view(), true)
-        }
-        Screen::Results(_) => match_soundtrack_scene(&game.view(), false),
-        Screen::Home(_)
-        | Screen::Lobby { .. }
-        | Screen::Settings { .. }
-        | Screen::Codex { .. }
-        | Screen::Wizard(_)
-        | Screen::Replays(_) => crate::soundtrack::Scene::Menu,
-    }
-}
-
-fn raises_combat_music(kind: SoundKind) -> bool {
-    matches!(
-        kind,
-        SoundKind::Alert
-            | SoundKind::Laser
-            | SoundKind::UnitDeath
-            | SoundKind::BuildingBoom
-            | SoundKind::Artillery
-            | SoundKind::ArtilleryLaunch
-            | SoundKind::SentinelFire
-            | SoundKind::ScuttlerFire
-            | SoundKind::LancerFire
-            | SoundKind::BombardFire
-            | SoundKind::FlakhoundFire
-            | SoundKind::StingerFire
-            | SoundKind::BuzzardFire
-            | SoundKind::DarterFire
-            | SoundKind::TalonFire
-            | SoundKind::WispFire
-            | SoundKind::BastionFire
-            | SoundKind::FlakTurretFire
-            | SoundKind::WardenFire
-            | SoundKind::BreakerFire
-            | SoundKind::AvalancheFire
-            | SoundKind::RocketMotor
-            | SoundKind::RocketImpact
-            | SoundKind::BombRelease
-            | SoundKind::DemolitionBoom
-    )
+    PlaybackSession::from_replay(replay)
 }
 
 #[expect(clippy::too_many_lines, reason = "startup and the native frame loop")]
@@ -662,8 +209,8 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         game.presentation
             .toast("Recovery unavailable: no writable data folder is configured");
     }
-    game.presentation.paused = args.paused;
-    game.presentation.speed = args.speed;
+    game.clock.paused = args.paused;
+    game.clock.speed = args.speed;
     mark("game built");
 
     // Launched for a purpose (a scenario, a resume, or an agent socket)?
@@ -696,9 +243,12 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         let mut session = PlaybackSession::open(path)?;
         // The clock flags drive whichever session is visible: a viewer
         // launch applies them to the transport, not the hidden match.
-        session.paused = args.paused;
-        session.speed = numeric::to_f32(args.speed);
-        Screen::Playback(Box::new(session))
+        session.clock.paused = args.paused;
+        session.clock.speed = args.speed;
+        Screen::Playback {
+            session: Box::new(session),
+            back: Box::new(Screen::Home(HomeScreen::open())),
+        }
     } else if purposeful {
         Screen::Playing
     } else {
@@ -738,6 +288,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         input: input::InputState::new(),
         previews: PreviewCache::default(),
         menu_notice: None,
+        notices: Vec::new(),
         hint_clock: crate::hints::HintClock::default(),
         pending_size: None,
         capture_ctrl: false,
@@ -746,7 +297,8 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         pending_shots: Vec::new(),
         sprites,
         sounds,
-        mixer: Mixer::default(),
+        mixer: crate::mixer::Mixer::default(),
+        ui_sounds: Vec::new(),
         soundtrack,
         frame_profiler: FrameProfiler::new(profile_frames),
         report_job: crate::diagnostic_report::ReportJob::default(),
@@ -761,7 +313,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         lingering: None,
         clock: std::time::Instant::now(),
     };
-    let mut ui_view = capture_ui(&screen, &app);
+    let mut ui_view = ui_view::capture_ui(&screen, &app);
     // A rerun pass re-enters the loop inside the same presented frame;
     // the frame's starting screen is the one recorded before it.
     let mut rerun_pass = false;
@@ -773,44 +325,29 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                 Ok(text) => (text, false),
                 Err(error) => (format!("Diagnostic operation failed: {error}"), true),
             };
-            if let Screen::Settings {
-                screen: settings, ..
-            } = &mut screen
-            {
-                settings.notice = Some(crate::screens::settings::Notice { text, danger });
-            } else {
-                app.menu_notice = Some((text, get_time() + 8.0));
-            }
+            app.notify(text, danger);
         }
-        let (diagnostic_tick, diagnostic_units, diagnostic_buildings) =
-            visible_profile_state(&screen, &app);
+        let visible = screen.visible(&app.game);
         oxide_kit::diagnostics::frame(oxide_kit::diagnostics::FrameContext {
-            screen: visible_profile_mode(&screen),
-            tick: diagnostic_tick,
-            units: diagnostic_units,
-            buildings: diagnostic_buildings,
-            speed: visible_speed(&screen, &app.game),
+            screen: screen.profile_mode(),
+            tick: visible.state().current_tick(),
+            units: visible.state().units().len(),
+            buildings: visible.state().buildings().len(),
+            speed: visible.speed(),
             width: numeric::to_u32(screen_width()),
             height: numeric::to_u32(screen_height()),
             dpi: f64::from(macroquad::miniquad::window::dpi_scale()),
-            paused: match &screen {
-                Screen::Playback(playback) => playback.paused,
-                Screen::Pause(_) => true,
-                _ => app.game.presentation.paused,
-            },
+            paused: screen.kind() == ScreenKind::Pause || visible.paused(),
             minimized: input::reported_minimized(),
-            recording: match &screen {
-                Screen::Playback(_) => None,
-                _ => app.game.recovery.as_ref(),
-            },
+            recording: visible.recording(),
         });
         let input_diagnostic_scope = visible_stage(&screen, &app, Stage::Input);
         app.game.poll_recovery();
         let time = FrameTime::measure(get_frame_time());
-        if !rerun_pass {
-            began_playing = matches!(screen, Screen::Playing);
+        let first_pass = !std::mem::take(&mut rerun_pass);
+        if first_pass {
+            began_playing = screen.kind() == ScreenKind::Playing;
         }
-        rerun_pass = false;
         if let Some(rx) = &debug_rx {
             while let Ok(incoming) = rx.try_recv() {
                 // An injected event is consumed by the NEXT frame; any
@@ -818,7 +355,9 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                 // from the pre-input frame. Hold the rest of the queue
                 // until the event has actually been felt.
                 let holds_queries = matches!(incoming.request, Request::InjectEvent { .. });
-                handle_request(incoming, &mut app, &mut screen, &ui_view);
+                let before = screen.kind();
+                debug::handle_request(incoming, &mut app, &mut screen, &ui_view);
+                screen_flow::settle(&mut app, before, &screen);
                 if holds_queries {
                     break;
                 }
@@ -830,16 +369,17 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         // Debug requests are control-plane work between presented frames, not
         // native frame work. Start timing after draining them so Resume and
         // status polling cannot become an artificial slow frame.
-        let performance_started = app
-            .performance
-            .begin(app.config.performance_display, performance_context(&screen));
+        let performance_started = app.performance.begin(
+            app.config.performance_display,
+            screen.kind().performance_context(),
+        );
         let frame_started = if app.frame_profiler.enabled() {
             performance_started.or_else(|| Some(std::time::Instant::now()))
         } else {
             None
         };
-        let frame_tick_start = visible_tick(&screen, &app);
-        let frame_mode = visible_profile_mode(&screen);
+        let frame_tick_start = screen.visible(&app.game).tick();
+        let frame_mode = screen.profile_mode();
         app.poll_persistence(&mut screen);
         // The camera never queries the window itself; feed it the viewport
         // once per frame (handles live resizes, keeps camera math pure),
@@ -850,14 +390,15 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             .camera
             .set_viewport(vec2(screen_width(), screen_height()));
         render::set_viewport(screen_width(), screen_height());
-        app.game.presentation.camera.update(time.presentation);
+        // A rerun pass shares its frame's time; the glide moves once.
+        if first_pass {
+            app.game.presentation.camera.update(time.presentation);
+        }
 
         let input_diagnostic_scope = visible_stage(&screen, &app, Stage::Input);
-        let mut events = if app.args.automation {
-            Vec::new()
-        } else {
-            input::poll_events(text_entry(&screen))
-        };
+        let mut events = hardware_events(first_pass && !app.args.automation, || {
+            input::poll_events(screen.text_entry())
+        });
         if let Some((frame, last_top)) = trace_frames.as_mut() {
             *frame += 1;
             let now = std::time::Instant::now();
@@ -895,7 +436,9 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         if let Some(link) = &mut app.net
             && let Some(end) = link.pump(&mut app.game, now)
         {
+            let before = screen.kind();
             screen = app.end_network_match(end, screen);
+            screen_flow::settle(&mut app, before, &screen);
         }
         if app
             .lingering
@@ -904,8 +447,10 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         {
             app.lingering = None;
         }
+        let before = screen.kind();
         screen = report_under_menu(&app.game, screen);
-        let screen_before = std::mem::discriminant(&screen);
+        screen_flow::settle(&mut app, before, &screen);
+        let before = screen.kind();
         let screen_frame = screen_flow::update_and_draw(
             &mut app,
             screen,
@@ -916,11 +461,14 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         )?;
         gl_use_default_material();
         screen = screen_frame.screen;
-        if !screen_holds_live_match(&screen)
-            && let Some(link) = app.net.take()
-        {
-            app.lingering = link.leave(&app.game, app.clock.elapsed());
-        }
+        // Before any rerun: the next pass belongs to the new screen.
+        screen_flow::settle(&mut app, before, &screen);
+        screen_flow::deliver_notices(
+            &mut app.notices,
+            &mut app.game,
+            &mut app.menu_notice,
+            &mut screen,
+        );
         let rerun = screen_frame.rerun;
         let profile_frame_active = screen_frame.profile_frame_active;
         if rerun {
@@ -939,15 +487,13 @@ pub(crate) async fn run(args: Args) -> Result<()> {
 
         // The menu-context error line draws over whichever menu is up;
         // the gameplay screens speak through the HUD's toast strip.
-        if !matches!(
-            screen,
-            Screen::Playing | Screen::Playback(_) | Screen::FinalMap(_)
-        ) && let Some((msg, until)) = &app.menu_notice
+        if !screen.kind().gameplay()
+            && let Some(notice) = &mut app.menu_notice
         {
-            if get_time() < *until {
+            if let Some(msg) = notice.show(get_time()) {
                 let s = render::ui_scale();
                 let width = measure_text(msg, None, numeric::font_size(16.0 * s), 1.0).width;
-                let y = if matches!(screen, Screen::Results(_)) {
+                let y = if screen.kind() == ScreenKind::Results {
                     screens::results::action_rects(vec2(screen_width(), screen_height()), s)[0].y
                         - 10.0 * s
                 } else {
@@ -965,96 +511,20 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             }
         }
 
-        if std::mem::discriminant(&screen) != screen_before {
-            app.input.reset_transient();
-        }
         // A touch-only player types through the on-screen keyboard, which
         // follows the name field: every way out of naming hides it, and a
         // tap on the field brings back one the player dismissed.
-        let refocus = match &mut screen {
-            Screen::Pause(pause) => pause.take_keyboard_request(),
-            Screen::Lobby { screen, .. } => screen.take_keyboard_request(),
-            _ => false,
-        };
-        let wanted = text_entry(&screen);
+        let refocus = screen.take_keyboard_request();
+        let wanted = screen.text_entry();
         if crate::platform::TOUCH_ONLY && (wanted != app.soft_keyboard || (wanted && refocus)) {
             macroquad::miniquad::window::show_keyboard(wanted);
             app.soft_keyboard = wanted;
         }
-        ui_view = capture_ui(&screen, &app);
+        ui_view = ui_view::capture_ui(&screen, &app);
+        audio::frame(&mut app, &mut screen, time.presentation);
 
-        // The mixer serves whichever session is visible; playback owns a
-        // separate presentation game and therefore a separate sound queue.
-        let (queued, cam_center, cam_half_extents, cam_zoom): (
-            Vec<(SoundKind, Option<Vec2>)>,
-            Vec2,
-            Vec2,
-            f32,
-        ) = match &mut screen {
-            Screen::Playback(pb) => (
-                std::mem::take(&mut pb.presentation.sounds_pending),
-                pb.presentation.camera.center,
-                pb.presentation.camera.viewport() / pb.presentation.camera.zoom * 0.5,
-                pb.presentation.camera.zoom,
-            ),
-            _ => (
-                std::mem::take(&mut app.game.presentation.sounds_pending),
-                app.game.presentation.camera.center,
-                app.game.presentation.camera.viewport() / app.game.presentation.camera.zoom * 0.5,
-                app.game.presentation.camera.zoom,
-            ),
-        };
-        let (motor_game, motor_running) = match &screen {
-            Screen::Playback(pb) => (pb.view(), !pb.paused && pb.seeking.is_none()),
-            Screen::Playing => (app.game.view(), !app.game.presentation.paused),
-            _ => (app.game.view(), false),
-        };
-        app.mixer.rocket_loops.update(
-            &motor_game,
-            motor_running,
-            &app.sounds.rocket_motors,
-            app.config.volumes.master
-                * app.config.volumes.effects
-                * Mixer::base_volume(SoundKind::RocketMotor),
-        );
-        let mixed = crate::audio_mix::frame_mix(queued, cam_center, cam_half_extents, cam_zoom);
-        let combat_impulse = mixed.iter().any(|event| raises_combat_music(event.kind));
-        for event in mixed {
-            app.mixer
-                .play(&app.sounds, event.kind, &app.config.volumes, event.gain);
-        }
-        if let Some(soundtrack) = &mut app.soundtrack {
-            soundtrack.update(
-                soundtrack_scene(&screen, &app.game),
-                combat_impulse,
-                time.presentation,
-                app.config.volumes,
-            );
-            soundtrack.apply(&app.sounds);
-        }
-
-        if !app.pending_shots.is_empty() {
-            // One readback serves every request that arrived this frame.
-            let image = get_screen_data();
-            for shot in app.pending_shots.drain(..) {
-                let response = match write_png(&image, &shot.path) {
-                    Ok((width, height)) => ResponseEnvelope::ok(
-                        shot.id,
-                        Reply::Screenshot(ScreenshotView {
-                            path: shot.path,
-                            width,
-                            height,
-                            renderer: "gpu".to_string(),
-                        }),
-                    ),
-                    Err(err) => ResponseEnvelope::err(shot.id, format!("screenshot: {err:#}")),
-                };
-                shot.reply.send(response).ok();
-            }
-        }
-        // Persist the window size once it has settled: the config
-        // documents window persistence, and only settings writes ever
-        // saved it before.
+        screenshot::serve(&mut app);
+        // Persist the window size once it has settled.
         let live = (
             numeric::to_u32(screen_width()),
             numeric::to_u32(screen_height()),
@@ -1068,12 +538,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                     if get_time() - since > 1.0 {
                         app.config.window = live;
                         if let Err(err) = app.config.save() {
-                            let line = format!("could not save settings: {err}");
-                            if matches!(screen, Screen::Playing) {
-                                app.game.presentation.toast(line);
-                            } else {
-                                app.menu_notice = Some((line, get_time() + 5.0));
-                            }
+                            app.notify(format!("could not save settings: {err}"), true);
                         }
                         app.pending_size = None;
                     }
@@ -1090,19 +555,20 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             // autosave swallows the quit (prevent_quit is in force) and
             // raises the failure dialog instead of exiting over data loss.
             app.config.save().ok();
-            // The dialog's home-vs-match classification must see THROUGH
+            // The dialog's home-vs-match classification must see through
             // screens opened from Pause: a quit while Settings or Playback
             // sits over a paused match still has an unsaved match behind
-            // it, and a Home-classified Cancel would strand it with no
-            // route back.
-            let over_a_match = screen_holds_live_match(&screen);
+            // it, and a Home-classified Cancel would strand it.
+            let over_a_match = screen.holds_live_match();
             if let Screen::Busy(busy) = &mut screen {
                 busy.request_quit();
             } else {
+                let before = screen.kind();
                 screen = app.persistence_screen(
                     persistence::Intent::Leave(screens::pause::LeaveVerb::Quit, !over_a_match),
                     screen,
                 );
+                screen_flow::settle(&mut app, before, &screen);
             }
         }
 
@@ -1120,7 +586,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         app.live_streak = next_live_streak(
             app.live_streak,
             began_playing,
-            matches!(screen, Screen::Playing),
+            screen.kind() == ScreenKind::Playing,
         );
         let wait_diagnostic_scope = visible_stage(&screen, &app, Stage::Present);
         next_frame().await;
@@ -1161,47 +627,7 @@ fn pause_menu(game: &Game) -> PauseScreen {
 }
 
 fn visible_stage(screen: &Screen, app: &App, stage: Stage) -> Option<StageGuard<'static>> {
-    oxide_kit::diagnostics::stage(stage, visible_tick(screen, app))
-}
-
-fn visible_tick(screen: &Screen, app: &App) -> u64 {
-    match screen {
-        Screen::Playback(playback) => playback.engine.position(),
-        _ => app.game.state.current_tick(),
-    }
-}
-
-fn performance_context(screen: &Screen) -> u8 {
-    match screen {
-        Screen::Playing => 1,
-        Screen::Playback(_) => 2,
-        Screen::FinalMap(_) => 3,
-        _ => 0,
-    }
-}
-
-fn visible_speed(screen: &Screen, live: &Game) -> f64 {
-    match screen {
-        Screen::Playback(playback) => f64::from(playback.speed),
-        _ => live.presentation.speed,
-    }
-}
-
-fn visible_profile_mode(screen: &Screen) -> &'static str {
-    match screen {
-        Screen::Home(_) => "home",
-        Screen::Settings { .. } => "settings",
-        Screen::Codex { .. } => "codex",
-        Screen::Wizard(_) => "wizard",
-        Screen::Lobby { .. } => "lobby",
-        Screen::Playing => "playing",
-        Screen::Playback(_) => "playback",
-        Screen::FinalMap(_) => "final_map",
-        Screen::Results(_) => "results",
-        Screen::Replays(_) => "replays",
-        Screen::Pause(_) => "pause",
-        Screen::Busy(busy) => busy.mode(),
-    }
+    oxide_kit::diagnostics::stage(stage, screen.visible(&app.game).tick())
 }
 
 fn record_profile_frame(
@@ -1215,49 +641,19 @@ fn record_profile_frame(
     let Some(started) = started else {
         return;
     };
-    let (tick_end, units, buildings) = visible_profile_state(screen, app);
+    let state = screen.visible(&app.game).state();
     app.frame_profiler.record(FrameObservation {
         mode,
         active_playing,
         tick_start,
-        tick_end,
+        tick_end: state.current_tick(),
         work_ms: started.elapsed().as_secs_f64() * 1000.0,
-        units,
-        buildings,
+        units: state.units().len(),
+        buildings: state.buildings().len(),
     });
 }
 
-fn visible_profile_state(screen: &Screen, app: &App) -> (u64, usize, usize) {
-    let state = match screen {
-        Screen::Playback(playback) => &playback.engine.state,
-        _ => &app.game.state,
-    };
-    (
-        state.current_tick(),
-        state.units().len(),
-        state.buildings().len(),
-    )
-}
-
-/// Whether closing the window would abandon a live match hidden behind the
-/// current screen. This decides whether Cancel on a failed quit-save can
-/// return to that match or must return to the front door.
-fn screen_holds_live_match(screen: &Screen) -> bool {
-    match screen {
-        Screen::Playing | Screen::Results(_) | Screen::FinalMap(_) | Screen::Pause(_) => true,
-        Screen::Settings { back, .. } | Screen::Codex { back, .. } => {
-            matches!(**back, Screen::Pause(_))
-        }
-        Screen::Playback(playback) => matches!(
-            playback.return_to,
-            PlaybackReturn::Pause | PlaybackReturn::Results
-        ),
-        Screen::Home(_) | Screen::Wizard(_) | Screen::Replays(_) | Screen::Lobby { .. } => false,
-        Screen::Busy(_) => true,
-    }
-}
-
-/// Keeps the cross-screen cursor position honest even when a click arrives
+/// Keeps the cross-screen cursor position current even when a click arrives
 /// without a preceding move event, as injected and some native clicks do.
 fn track_pointer_position(mouse: &mut Vec2, event: &RawEvent) {
     match *event {
@@ -1269,30 +665,37 @@ fn track_pointer_position(mouse: &mut Vec2, event: &RawEvent) {
 }
 
 impl App {
-    /// Swaps in a freshly built match: session toggles carry over from the
-    /// old game, the frame profile and transient input start clean, and the
-    /// tutorial is whatever this session calls for.
-    fn install_session(&mut self, fresh: Game, paused: bool, tutorial: Option<tutorial::Tutorial>) {
-        self.tutorial = tutorial;
-        self.game = keep_flags(fresh, &self.game);
-        self.game.presentation.paused = paused;
+    /// The one way a match arrives: session toggles carry over from the
+    /// old game, which retires off the frame thread, and the frame profile
+    /// and the session's input start clean.
+    fn install(&mut self, fresh: Game, how: Install) {
+        let fresh = keep_flags(fresh, &self.game);
+        let old = std::mem::replace(&mut self.game, fresh);
+        self.persistence.retire(old);
+        self.game.clock.paused = how.paused;
+        if let Some(link) = how.net {
+            // A LAN match runs in real time with no debug overlay.
+            self.game.clock.speed = 1.0;
+            self.game.presentation.overlay = false;
+            self.net = Some(link);
+        }
+        self.tutorial = how.tutorial;
         self.performance.reset();
         self.input.reset_session();
     }
 
-    /// Swaps in a LAN match from the lobby with the link that carries it:
-    /// real time, no overlay, no tutorial.
-    fn install_networked(&mut self, game: Game, link: crate::netplay::Link) {
-        self.install_session(game, false, None);
-        self.game.presentation.speed = 1.0;
-        self.game.presentation.overlay = false;
-        self.net = Some(link);
+    /// Tells the player something; see [`screen_flow::deliver_notices`].
+    fn notify(&mut self, text: impl Into<String>, danger: bool) {
+        self.notices.push(Notice {
+            text: text.into(),
+            danger,
+        });
     }
 
     /// Reports why a LAN match ended and leaves it through the ordinary
     /// leave save, which keeps its replay.
     fn end_network_match(&mut self, end: crate::netplay::End, screen: Screen) -> Screen {
-        self.menu_notice = Some((end.notice(), get_time() + 10.0));
+        self.notify(end.notice(), true);
         if matches!(screen, Screen::Busy(_)) {
             return screen;
         }
@@ -1303,26 +706,45 @@ impl App {
     }
 }
 
+/// A message for the player, shown on whatever screen is up when the
+/// frame delivers it.
+struct Notice {
+    text: String,
+    /// A complaint rather than a confirmation.
+    danger: bool,
+}
+
+/// How a freshly built match arrives.
+struct Install {
+    /// Whether it opens paused.
+    paused: bool,
+    /// The lesson cards riding on it, for the tutorial.
+    tutorial: Option<tutorial::Tutorial>,
+    /// The link carrying a LAN match.
+    net: Option<crate::netplay::Link>,
+}
+
+impl Install {
+    /// A match on this machine.
+    fn local(paused: bool) -> Self {
+        Self {
+            paused,
+            tutorial: None,
+            net: None,
+        }
+    }
+}
+
 /// Carries session-level toggles (pause/speed/overlay) onto a fresh game.
 fn keep_flags(mut fresh: Game, old: &Game) -> Game {
     if let Some(writer) = &old.recovery {
         writer.finish(old.state.current_tick());
     }
-    fresh.presentation.paused = old.presentation.paused;
-    fresh.presentation.speed = old.presentation.speed;
+    fresh.clock.paused = old.clock.paused;
+    fresh.clock.speed = old.clock.speed;
     fresh.presentation.overlay = old.presentation.overlay;
     fresh.recovery_root.clone_from(&old.recovery_root);
     fresh
-}
-
-/// Whether a text field owns input: the save-name field or the host
-/// address.
-fn text_entry(screen: &Screen) -> bool {
-    match screen {
-        Screen::Pause(pause) => pause.naming(),
-        Screen::Lobby { screen, .. } => screen.text_entry(),
-        _ => false,
-    }
 }
 
 /// Consecutive presented frames that began and ended in live play.
@@ -1334,134 +756,11 @@ fn next_live_streak(streak: u8, began_playing: bool, ended_playing: bool) -> u8 
     }
 }
 
-/// A top-bar control's rect for the automation surface: reported only
-/// during live play, and only while the bar draws it.
-fn live_rect(screen: &Screen, rect: Rect) -> Option<[f32; 4]> {
-    (matches!(screen, Screen::Playing) && rect.w > 0.0).then_some([rect.x, rect.y, rect.w, rect.h])
-}
-
-/// The debug protocol's stable name for what the player is looking at,
-/// which also keys the coaching clock.
-fn screen_mode(screen: &Screen) -> &'static str {
-    match screen {
-        Screen::Home(_) => "home",
-        Screen::Settings { screen: sc, .. } => sc.mode_name(),
-        Screen::Codex { screen: codex, .. } => codex.mode_name(),
-        Screen::Wizard(w) => w.mode_name(),
-        Screen::Playing => "playing",
-        Screen::Playback(_) => "playback",
-        Screen::FinalMap(_) => "final_map",
-        Screen::Results(_) => "results",
-        Screen::Replays(_) => "replays",
-        Screen::Lobby { .. } => "lobby",
-        Screen::Busy(busy) => busy.mode(),
-        Screen::Pause(ps) => {
-            if ps.saving_failed() {
-                "save_failed"
-            } else if ps.naming() {
-                "save_name"
-            } else if ps.confirming() {
-                "confirm_pause"
-            } else {
-                "pause_menu"
-            }
-        }
-    }
-}
-
-fn capture_ui(screen: &Screen, app: &App) -> UiView {
-    let (mode_name, menu): (&str, Option<&Menu>) = match screen {
-        Screen::Home(home) => (screen_mode(screen), Some(&home.menu)),
-        Screen::Settings { screen: sc, .. } => (screen_mode(screen), Some(&sc.menu)),
-        Screen::Codex { screen: codex, .. } => (screen_mode(screen), Some(&codex.menu)),
-        Screen::Wizard(w) => {
-            // The wizard's custom screens (grid, setup) speak the same
-            // protocol surface the row menus do — automation keeps its
-            // footing across redesigns.
-            let (title, items, selected) = w.ui_surface(&app.draft);
-            // The frame injected this viewport before drawing, so the
-            // range reports the grid window the player is actually
-            // seeing.
-            let visible = w.ui_visible_range(&app.draft, render::viewport(), render::ui_scale());
-            return UiView {
-                mode: screen_mode(screen).to_string(),
-                title: Some(title),
-                selected: Some(selected),
-                items,
-                visible_range: Some(visible),
-                hover: w.ui_hover(),
-                chrome: None,
-                panel_regions: None,
-                menu_button: None,
-                pause_status: None,
-                group_column: None,
-            };
-        }
-        Screen::Playing | Screen::Playback(_) | Screen::FinalMap(_) => (screen_mode(screen), None),
-        Screen::Results(results) => {
-            return UiView {
-                mode: screen_mode(screen).to_string(),
-                title: Some("MATCH RESULT".to_string()),
-                selected: Some(results.selected()),
-                items: ResultsScreen::items(),
-                visible_range: Some([0, 4]),
-                hover: results.hover(),
-                chrome: None,
-                panel_regions: None,
-                menu_button: None,
-                pause_status: None,
-                group_column: None,
-            };
-        }
-        Screen::Replays(shelf) => (screen_mode(screen), Some(&shelf.menu)),
-        Screen::Lobby { screen: lobby, .. } => (screen_mode(screen), Some(&lobby.menu)),
-        Screen::Busy(busy) => (screen_mode(screen), Some(&busy.menu)),
-        Screen::Pause(ps) => (screen_mode(screen), Some(&ps.menu)),
-    };
-    UiView {
-        mode: mode_name.to_string(),
-        title: menu.map(|menu| menu.title.clone()),
-        selected: menu.map(|menu| menu.selected),
-        items: menu.map_or_else(Vec::new, |menu| menu.items.clone()),
-        visible_range: menu.map(Menu::visible_range),
-        hover: menu.and_then(Menu::hover),
-        menu_button: live_rect(screen, app.game.presentation.layout.get().menu_button),
-        pause_status: live_rect(screen, app.game.presentation.layout.get().pause_status),
-        group_column: live_rect(screen, app.game.presentation.layout.get().group_column),
-        panel_regions: matches!(screen, Screen::Playing).then(|| {
-            app.game
-                .presentation
-                .layout
-                .get()
-                .panel_regions
-                .map(|r| [r.x, r.y, r.w, r.h])
-        }),
-        chrome: matches!(screen, Screen::Playing).then(|| {
-            let l = app.game.presentation.layout.get();
-            let m = l.minimap;
-            // JSON has no Infinity: an absent panel reports the window
-            // bottom, a band no click can land in.
-            let panel_top = if l.panel_top.is_finite() {
-                l.panel_top
-            } else {
-                screen_height()
-            };
-            let o = l.orders;
-            [
-                l.top_bar_h,
-                panel_top,
-                m.x,
-                m.y,
-                m.w,
-                m.h,
-                l.panel_right,
-                o.x,
-                o.y,
-                o.w,
-                o.h,
-            ]
-        }),
-    }
+/// This pass's hardware input. Macroquad reports a frame's key presses until
+/// the frame is presented, so a rerun pass inside the same frame must not read
+/// them again: the screen a key opened would receive that key too.
+fn hardware_events(poll_hardware: bool, poll: impl FnOnce() -> Vec<RawEvent>) -> Vec<RawEvent> {
+    if poll_hardware { poll() } else { Vec::new() }
 }
 
 /// Dark translucent layer between the world and a menu.
@@ -1476,369 +775,6 @@ fn veil() {
         screen_height(),
         Color::new(0.04, 0.04, 0.06, 0.96),
     );
-}
-
-/// Writes a captured frame as PNG with real error handling — macroquad's
-/// own `export_png` unwraps on failure, which would let one malformed
-/// debug-socket path abort the entire session.
-fn write_png(image: &Image, path: &str) -> Result<(u32, u32)> {
-    if let Some(parent) = std::path::Path::new(path).parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)?;
-    }
-    let file = std::fs::File::create(path).with_context(|| format!("creating {path}"))?;
-    let mut encoder = png::Encoder::new(
-        std::io::BufWriter::new(file),
-        u32::from(image.width),
-        u32::from(image.height),
-    );
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    let mut writer = encoder.write_header().context("writing png header")?;
-    // The GL framebuffer is bottom-up; PNG rows are top-down.
-    let stride = usize::from(image.width) * 4;
-    let mut flipped = Vec::with_capacity(image.bytes.len());
-    for row in image.bytes.chunks_exact(stride).rev() {
-        flipped.extend_from_slice(row);
-    }
-    writer
-        .write_image_data(&flipped)
-        .context("writing png data")?;
-    Ok((u32::from(image.width), u32::from(image.height)))
-}
-
-/// The mutating verbs a read-only viewer refuses wholesale — commands
-/// and session swaps would act through the replay onto the hidden match
-/// behind it.
-fn viewer_refuses(request: &Request) -> bool {
-    matches!(
-        request,
-        Request::BeginPerformanceWindow { .. }
-            | Request::SendCommand { .. }
-            | Request::LoadScenario { .. }
-            | Request::LoadReplay { .. }
-            | Request::SaveReplay { .. }
-    )
-}
-
-fn frozen_map_refuses(request: &Request) -> bool {
-    viewer_refuses(request)
-        || matches!(
-            request,
-            Request::AdvanceTicks { .. }
-                | Request::PresentTicks { .. }
-                | Request::Resume
-                | Request::SetSpeed { .. }
-        )
-}
-
-/// Answers one debug request. Screenshots are parked; everything else
-/// responds immediately, between frames, against a settled world.
-///
-/// One dispatcher over every session kind: the shared surface (state
-/// reads, the driven clock) goes through
-/// [`oxide_protocol::dispatch_shared`] against whichever session owns
-/// the screen — the replay viewer when it is up, the live game
-/// otherwise. What remains here is window-shaped (camera, UI, input,
-/// screenshots, the overlay), answered for the screen the window shows,
-/// or live-mutating (commands, loads, saves), refused wholesale while
-/// the viewer owns the screen.
-/// Which session a request addresses, and whether it is allowed to —
-/// decided before any state is touched. The Playback pick is the
-/// load-bearing row: a regression there aims a viewer-bound
-/// `AdvanceTicks` at the hidden live match, which advances silently.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Route {
-    /// The final battlefield is frozen; time and session verbs bounce.
-    RefuseFrozen,
-    /// A local mutating verb while the read-only viewer owns the screen.
-    RefuseViewer,
-    /// A verb a LAN match cannot honor on this machine.
-    RefuseLockstep,
-    /// A locally-answered verb against the app's own state.
-    Local,
-}
-
-/// The local routing guards around shared protocol dispatch. Frozen-map
-/// and lockstep refusal run before dispatch; the viewer's read-only guard
-/// runs after a request proves not to be shared. `net` is the live match's
-/// role and bound seat when it is a LAN match.
-fn route(
-    playback: bool,
-    final_map: bool,
-    net: Option<(crate::game::network::NetRole, oxide_sim::PlayerId)>,
-    request: &Request,
-) -> Route {
-    if final_map && frozen_map_refuses(request) {
-        return Route::RefuseFrozen;
-    }
-    if !playback && net.is_some_and(|(role, seat)| lockstep_refuses(role, seat, request)) {
-        return Route::RefuseLockstep;
-    }
-    if playback && viewer_refuses(request) {
-        return Route::RefuseViewer;
-    }
-    Route::Local
-}
-
-/// What a LAN match refuses: its clock, speed, and roster belong to the
-/// session, only the host pauses, and a machine speaks only for its seat.
-fn lockstep_refuses(
-    role: crate::game::network::NetRole,
-    seat: oxide_sim::PlayerId,
-    request: &Request,
-) -> bool {
-    matches!(
-        request,
-        Request::AdvanceTicks { .. }
-            | Request::PresentTicks { .. }
-            | Request::SetSpeed { .. }
-            | Request::LoadScenario { .. }
-            | Request::LoadReplay { .. }
-            | Request::BeginPerformanceWindow { .. }
-    ) || (role == crate::game::network::NetRole::Client
-        && matches!(request, Request::Pause | Request::Resume))
-        || matches!(request, Request::SendCommand { player, .. } if *player != seat)
-}
-
-fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen, ui_view: &UiView) {
-    let IncomingRequest { id, request, reply } = incoming;
-    if matches!(screen, Screen::Busy(_)) && frozen_map_refuses(&request) {
-        reply
-            .send(ResponseEnvelope::err(
-                id,
-                "a save or load owns the session; wait for it to finish",
-            ))
-            .ok();
-        return;
-    }
-    let playback = matches!(&*screen, Screen::Playback(_));
-    let final_map = matches!(&*screen, Screen::FinalMap(_));
-    let net = app
-        .game
-        .net_role()
-        .map(|role| (role, app.game.presentation.human));
-    match route(playback, final_map, net, &request) {
-        Route::RefuseFrozen => {
-            reply
-                .send(ResponseEnvelope::err(
-                    id,
-                    "the final battlefield is frozen; return to the report first".to_string(),
-                ))
-                .ok();
-            return;
-        }
-        Route::RefuseLockstep => {
-            reply
-                .send(ResponseEnvelope::err(
-                    id,
-                    "a LAN match owns its clock and seats; this machine cannot do that",
-                ))
-                .ok();
-            return;
-        }
-        Route::RefuseViewer | Route::Local => {}
-    }
-    let shared = {
-        let session: &mut dyn oxide_protocol::DebugSession = match &mut *screen {
-            Screen::Playback(pb) => &mut **pb,
-            _ => &mut app.game,
-        };
-        oxide_protocol::dispatch_shared(session, &request)
-    };
-    if let Some(outcome) = shared {
-        // Resuming implies gameplay: leave the pause menu too, or the
-        // sim runs behind a menu that still claims it is paused —
-        // Settings opened over a paused match included. A screen
-        // transition, not a session operation, which is why it lives
-        // with the screen's owner instead of inside the trait. (While
-        // the viewer owns the screen no pause menu can be up, so this
-        // matches nothing there.)
-        if matches!(request, Request::Resume) && outcome.is_ok() {
-            let over_pause = match &*screen {
-                Screen::Pause(_) => true,
-                Screen::Settings { back, .. } | Screen::Codex { back, .. } => {
-                    matches!(**back, Screen::Pause(_))
-                }
-                _ => false,
-            };
-            if over_pause {
-                *screen = Screen::Playing;
-                app.input.reset_transient();
-            }
-        }
-        let envelope = match outcome {
-            Ok(inner) => ResponseEnvelope::ok(id, inner),
-            Err(error) => ResponseEnvelope::err(id, error),
-        };
-        reply.send(envelope).ok();
-        return;
-    }
-    // The viewer is read-only: refusing beats acknowledging a request
-    // that would silently mutate the hidden match.
-    if route(playback, final_map, net, &request) == Route::RefuseViewer {
-        let refusal = "the viewer is read-only; leave playback first".to_string();
-        reply.send(ResponseEnvelope::err(id, refusal)).ok();
-        return;
-    }
-    let game = &mut app.game;
-    let outcome: Result<Reply, String> =
-        match request {
-            Request::QueryCamera => {
-                // Window-shaped answers describe the screen the window
-                // shows — the viewer's render vehicle during playback.
-                let game = match &*screen {
-                    Screen::Playback(pb) => &pb.presentation.camera,
-                    _ => &game.presentation.camera,
-                };
-                let (lo, hi) = game.world_rect();
-                Ok(Reply::Camera(CameraView {
-                    center: [f64::from(game.center.x), f64::from(game.center.y)],
-                    zoom: f64::from(game.zoom),
-                    viewport: [f64::from(screen_width()), f64::from(screen_height())],
-                    world_rect: [
-                        f64::from(lo.x),
-                        f64::from(lo.y),
-                        f64::from(hi.x),
-                        f64::from(hi.y),
-                    ],
-                }))
-            }
-            Request::QueryUi => Ok(Reply::Ui(ui_view.clone())),
-            Request::QueryPerformance { reset } => {
-                if app.frame_profiler.enabled() {
-                    Ok(Reply::Performance(app.frame_profiler.snapshot(reset)))
-                } else {
-                    Err("native frame profiling is disabled; launch the shell with --profile-frames"
-                    .to_string())
-                }
-            }
-            Request::BeginPerformanceWindow { from_tick, to_tick } => {
-                if !matches!(&*screen, Screen::Playing) {
-                    Err("exact frame windows require the live Playing screen".to_string())
-                } else if !game.presentation.paused {
-                    Err("pause the live match before arming a frame window".to_string())
-                } else if game.state.current_tick() != from_tick {
-                    Err(format!(
-                        "profile window starts at tick {from_tick}, but the live match is at {}",
-                        game.state.current_tick()
-                    ))
-                } else {
-                    app.frame_profiler
-                        .arm(from_tick, to_tick)
-                        .map(|()| Reply::Ok)
-                }
-            }
-            Request::ToggleOverlay => {
-                let game = match &mut *screen {
-                    Screen::Playback(pb) => &mut pb.presentation,
-                    _ => &mut game.presentation,
-                };
-                game.overlay = !game.overlay;
-                Ok(Reply::Overlay(OverlayView {
-                    enabled: game.overlay,
-                }))
-            }
-            Request::SendCommand { player, command } => {
-                if (player.0 as usize) < game.state.players().len() {
-                    game.stage(PlayerCommand { player, command });
-                    Ok(Reply::Ok)
-                } else {
-                    Err(format!("no such player {player}"))
-                }
-            }
-            Request::InjectEvent { event } => {
-                // The hardware funnel admits only printable ASCII into Text
-                // (input.rs char_event); injected events walk the identical
-                // path, so they honor the identical contract — a control
-                // byte or non-ASCII char is refused, not persisted into a
-                // save name the font cannot draw.
-                if let oxide_protocol::RawEvent::Text { ch } = event
-                    && !('\u{20}'..='\u{7e}').contains(&ch)
-                {
-                    Err(format!(
-                        "text event {ch:?} is outside printable ASCII; the funnel refuses it"
-                    ))
-                } else {
-                    app.injected.push(event);
-                    Ok(Reply::Ok)
-                }
-            }
-            Request::Screenshot { path } => {
-                // The default name carries the tick of the world the frame
-                // will actually show — the replayed one during playback.
-                let shown_tick = match &*screen {
-                    Screen::Playback(pb) => pb.engine.state.current_tick(),
-                    _ => game.state.current_tick(),
-                };
-                let path = path.unwrap_or_else(|| format!("screenshots/tick-{shown_tick}.png"));
-                app.pending_shots
-                    .push(PendingScreenshot { id, path, reply });
-                return; // responds after the frame renders
-            }
-            Request::LoadScenario { path } => Scenario::load(&path)
-                .map_err(|err| format!("loading {path}: {err}"))
-                .and_then(|scenario| {
-                    Game::new(scenario).map_err(|err| format!("building scenario: {err:#}"))
-                })
-                .map(|fresh| {
-                    app.tutorial = None;
-                    *game = keep_flags(fresh, game);
-                    app.performance.reset();
-                    *screen = Screen::Playing;
-                    app.input.reset_session();
-                    Reply::Ok
-                }),
-            Request::LoadReplay { path } => oxide_kit::load_replay(&path)
-                .map_err(|err| format!("loading replay {path}: {err}"))
-                .and_then(|replay| {
-                    Game::from_replay(replay).map_err(|err| format!("resuming replay: {err:#}"))
-                })
-                .map(|fresh| {
-                    app.tutorial = None;
-                    *game = keep_flags(fresh, game);
-                    app.performance.reset();
-                    *screen = Screen::Playing;
-                    app.input.reset_session();
-                    Reply::Status(game.status_view())
-                }),
-            Request::SaveReplay { path } => {
-                game.recorder.meta.ticks = Some(game.state.current_tick());
-                let parent = std::path::Path::new(&path).parent();
-                if let Some(parent) = parent
-                    && !parent.as_os_str().is_empty()
-                {
-                    std::fs::create_dir_all(parent).ok();
-                }
-                match game.recorder.save(&path) {
-                    Ok(()) => Ok(Reply::Saved(SavedView {
-                        path,
-                        commands: game.recorder.commands.len(),
-                    })),
-                    Err(err) => Err(format!("saving replay: {err}")),
-                }
-            }
-            // The shared surface was answered above; listing it keeps this
-            // match exhaustive, so a new protocol request forces a decision
-            // about which side of the capability split it lives on.
-            Request::Status
-            | Request::QueryState { .. }
-            | Request::QueryFogView { .. }
-            | Request::StateHash
-            | Request::AdvanceTicks { .. }
-            | Request::PresentTicks { .. }
-            | Request::Pause
-            | Request::Resume
-            | Request::SetSpeed { .. } => {
-                unreachable!("shared requests are answered by dispatch_shared")
-            }
-        };
-    let response = match outcome {
-        Ok(ok) => ResponseEnvelope::ok(id, ok),
-        Err(err) => ResponseEnvelope::err(id, err),
-    };
-    reply.send(response).ok();
 }
 
 #[cfg(test)]

@@ -564,7 +564,7 @@ impl ReactivityDetectors {
             let foundries: Vec<&Building> = own
                 .iter()
                 .copied()
-                .filter(|building| building.kind == BuildingKind::Foundry && building.built)
+                .filter(|building| building.kind == BuildingKind::Foundry && building.built())
                 .collect();
             for (domain, presses, found) in [
                 (
@@ -596,7 +596,7 @@ impl ReactivityDetectors {
                         && !state.hostile(player, building.player)
                         && state.accepts_commands(building.player)
                         && building.kind == BuildingKind::Foundry
-                        && building.built
+                        && building.built()
                         && building.hp > 0
                 })
                 .collect();
@@ -753,7 +753,7 @@ fn owner(state: &State, target: Target) -> Option<PlayerId> {
 /// Whether `kind` fights or carries others.
 fn attacker(kind: UnitKind) -> bool {
     let stats = kind.stats();
-    !stats.weapons.is_empty() || stats.transport_capacity > 0
+    stats.can_fight() || stats.transport_capacity > 0
 }
 
 fn armed_aircraft(unit: &Unit) -> bool {
@@ -787,7 +787,7 @@ fn first_foundries(state: &State) -> Vec<Option<Start>> {
                 .min_by_key(|building| building.id)
                 .map(|building| Start {
                     anchor: building.anchor,
-                    size: building.stats().size,
+                    size: building.kind.size(),
                 })
         })
         .collect()
@@ -863,7 +863,7 @@ fn press(
             .iter()
             .filter(|unit| {
                 unit.kind.stats().domain == domain
-                    && !unit.kind.stats().weapons.is_empty()
+                    && unit.kind.stats().can_fight()
                     && gap(unit.tile(), foundry) <= PRESS_TILES
             })
             .map(|unit| unit.id.0)
@@ -1047,7 +1047,7 @@ fn evacuate(
 fn repair(watch: &mut SeatWatch, own: &[&Building], seen: &[&Unit], now: u64) {
     let clear = |building: &Building| {
         !seen.iter().any(|enemy| {
-            !enemy.kind.stats().weapons.is_empty() && gap(enemy.tile(), building) <= CLEAR_TILES
+            enemy.kind.stats().can_fight() && gap(enemy.tile(), building) <= CLEAR_TILES
         })
     };
     for building in own {
@@ -1059,7 +1059,7 @@ fn repair(watch: &mut SeatWatch, own: &[&Building], seen: &[&Unit], now: u64) {
         }
         let id = building.id.0;
         let max = building.stats().max_hp.max(1);
-        let damaged = building.built && building.hp * 1_000 < max * DAMAGED;
+        let damaged = building.built() && building.hp * 1_000 < max * DAMAGED;
         // One damage episode is one case: a building whose case closed opens
         // another only once it has been back above the threshold.
         if !damaged {
@@ -1069,7 +1069,7 @@ fn repair(watch: &mut SeatWatch, own: &[&Building], seen: &[&Unit], now: u64) {
             Some(patient) => {
                 if building.hp > patient.hp {
                     watch.found.repair.answer(&patient.case, now);
-                } else if !clear(building) || !building.built {
+                } else if !clear(building) || !building.built() {
                     watch.found.repair.lapse();
                 } else if now - patient.case.opened >= REPAIR_TICKS {
                     watch.found.repair.miss(&patient.case);
@@ -1097,7 +1097,7 @@ fn repair(watch: &mut SeatWatch, own: &[&Building], seen: &[&Unit], now: u64) {
 fn restore(watch: &mut SeatWatch, state: &State, player: PlayerId, own: &[&Building], now: u64) {
     watch.extractors = own
         .iter()
-        .filter(|building| building.kind == BuildingKind::Extractor && building.built)
+        .filter(|building| building.kind == BuildingKind::Extractor && building.built())
         .map(|building| (building.id.0, building.anchor))
         .collect();
     let sites: Vec<TilePos> = watch.restores.keys().copied().collect();
@@ -1115,7 +1115,7 @@ fn restore(watch: &mut SeatWatch, state: &State, player: PlayerId, own: &[&Build
             let contested = state.units().iter().any(|unit| {
                 unit.hp > 0
                     && state.hostile(player, unit.player)
-                    && !unit.kind.stats().weapons.is_empty()
+                    && unit.kind.stats().can_fight()
                     && unit.tile().chebyshev(site) <= PRESS_TILES
             });
             if contested {

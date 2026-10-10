@@ -21,7 +21,7 @@ fn loaded(kind: UnitKind) -> (State, UnitId, BuildingId) {
         .unwrap()
         .id;
     let mut data = serde_json::to_value(&state).unwrap();
-    data["units"][0]["carrying"] = json!(7);
+    data["units"][0]["worker"]["carrying"] = json!(7);
     state = serde_json::from_value(data).unwrap();
     (state, worker, foundry)
 }
@@ -66,7 +66,7 @@ fn return_cargo_replaces_work_and_queue_then_deposits_once_and_stays() {
             serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
         assert_eq!(state.hash(), restored.hash());
         let events = run_until(&mut state, 1000, |s, _| {
-            s.unit(worker).unwrap().carrying == 0
+            s.unit(worker).unwrap().carrying() == 0
         });
         assert_eq!(
             events
@@ -117,7 +117,7 @@ fn return_cargo_deposits_before_repair_even_with_an_empty_bank() {
                 .events,
         );
         let events = run_until(&mut state, 1000, |s, _| {
-            s.unit(worker).unwrap().carrying == 0
+            s.unit(worker).unwrap().carrying() == 0
         });
         assert!(
             events
@@ -150,7 +150,7 @@ fn return_cargo_still_delivers_when_the_patient_is_healed_en_route() {
     data["buildings"][0]["hp"] = json!(state.building(foundry).unwrap().stats().max_hp);
     state = serde_json::from_value(data).unwrap();
     run_until(&mut state, 1000, |s, _| {
-        s.unit(worker).unwrap().carrying == 0
+        s.unit(worker).unwrap().carrying() == 0
     });
     assert!(matches!(state.unit(worker).unwrap().order, Order::Idle));
 }
@@ -219,7 +219,7 @@ fn return_cargo_skips_a_sealed_near_foundry_and_honors_explicit_destinations() {
         .unwrap()
         .id;
     let mut data = serde_json::to_value(&state).unwrap();
-    data["units"][0]["carrying"] = json!(5);
+    data["units"][0]["worker"]["carrying"] = json!(5);
     let mut state: State = serde_json::from_value(data).unwrap();
     let mut control = state.clone();
     let report = state.tick(&[cmd(0, delivery(worker, Some(near), false))]);
@@ -237,7 +237,7 @@ fn return_cargo_skips_a_sealed_near_foundry_and_honors_explicit_destinations() {
         matches!(state.unit(worker).unwrap().order, Order::ReturnCargo { foundry, .. } if foundry == far)
     );
     run_until(&mut state, 1000, |s, _| {
-        s.unit(worker).unwrap().carrying == 0
+        s.unit(worker).unwrap().carrying() == 0
     });
 }
 
@@ -262,7 +262,7 @@ fn return_cargo_retains_the_load_when_its_foundry_disappears() {
             .iter()
             .any(|e| matches!(e, Event::OrderStalled { unit, .. } if *unit == worker))
     );
-    assert_eq!(state.unit(worker).unwrap().carrying, 7);
+    assert_eq!(state.unit(worker).unwrap().carrying(), 7);
     assert!(matches!(state.unit(worker).unwrap().order, Order::Idle));
 }
 
@@ -281,7 +281,7 @@ fn return_cargo_rejects_forged_worker_and_target_references() {
             }
             if target == foundry {
                 data["units"][0]["kind"] = json!("sentinel");
-                data["units"][0]["carrying"] = json!(0);
+                data["units"][0]["worker"]["carrying"] = json!(0);
             }
             assert!(
                 serde_json::from_value::<State>(data).is_err(),
@@ -312,7 +312,7 @@ fn return_cargo_cancels_a_partial_harvest_and_can_be_overridden_by_move() {
             .events,
     );
     run_until(&mut state, 100, |s, _| {
-        s.unit(worker).unwrap().carrying >= 3
+        s.unit(worker).unwrap().carrying() >= 3
     });
     accepted(&state.tick(&[cmd(0, delivery(worker, None, false))]).events);
     let returning: State = serde_json::from_value(serde_json::to_value(&state).unwrap()).unwrap();
@@ -331,10 +331,10 @@ fn return_cargo_cancels_a_partial_harvest_and_can_be_overridden_by_move() {
     run_until(&mut state, 500, |s, _| {
         matches!(s.unit(worker).unwrap().order, Order::Idle)
     });
-    assert!(state.unit(worker).unwrap().carrying > 0);
+    assert!(state.unit(worker).unwrap().carrying() > 0);
     let mut state = returning;
     run_until(&mut state, 1000, |s, _| {
-        s.unit(worker).unwrap().carrying == 0
+        s.unit(worker).unwrap().carrying() == 0
     });
     for _ in 0..200 {
         state.tick(&[]);
@@ -357,7 +357,7 @@ fn return_cargo_honors_a_far_explicit_foundry_and_saturates_the_bank() {
         .id;
     let worker = state.units()[0].id;
     let mut data = serde_json::to_value(&state).unwrap();
-    data["units"][0]["carrying"] = json!(5);
+    data["units"][0]["worker"]["carrying"] = json!(5);
     let mut state: State = serde_json::from_value(data).unwrap();
     accepted(
         &state
@@ -368,7 +368,7 @@ fn return_cargo_honors_a_far_explicit_foundry_and_saturates_the_bank() {
         matches!(state.unit(worker).unwrap().order, Order::ReturnCargo { foundry, .. } if foundry == far)
     );
     let events = run_until(&mut state, 1000, |s, _| {
-        s.unit(worker).unwrap().carrying == 0
+        s.unit(worker).unwrap().carrying() == 0
     });
     assert!(
         events
@@ -382,11 +382,13 @@ fn return_cargo_honors_a_far_explicit_foundry_and_saturates_the_bank() {
             <= u.kind.stats().radius + oxide_sim::stats::WORK_REACH
     );
     let mut data = serde_json::to_value(&state).unwrap();
-    data["units"][0]["carrying"] = json!(5);
+    data["units"][0]["worker"]["carrying"] = json!(5);
     data["players"][0]["scrap"] = json!(u32::MAX - 2);
     state = serde_json::from_value(data).unwrap();
     state.tick(&[cmd(0, delivery(worker, Some(far), false))]);
-    let events = run_until(&mut state, 20, |s, _| s.unit(worker).unwrap().carrying == 0);
+    let events = run_until(&mut state, 20, |s, _| {
+        s.unit(worker).unwrap().carrying() == 0
+    });
     assert!(
         events
             .iter()
@@ -401,9 +403,9 @@ fn return_cargo_refuses_empty_workers_and_unfinished_foundries_without_changing_
         let (state, worker, _) = loaded(UnitKind::Harvester);
         let mut data = serde_json::to_value(&state).unwrap();
         if empty {
-            data["units"][0]["carrying"] = json!(0);
+            data["units"][0]["worker"]["carrying"] = json!(0);
         } else {
-            data["buildings"][0]["built"] = json!(false);
+            data["buildings"][0]["phase"] = json!({"phase": "site"});
             data["buildings"][0]["hp"] = json!(1);
         }
         let mut state: State = serde_json::from_value(data).unwrap();
@@ -447,7 +449,7 @@ fn mirrored_workers_return_to_mirrored_doorsteps() {
         let mut data = serde_json::to_value(&state).unwrap();
         for (index, pos) in [west, east].into_iter().enumerate() {
             data["units"][index]["pos"] = serde_json::to_value(pos).unwrap();
-            data["units"][index]["carrying"] = json!(7);
+            data["units"][index]["worker"]["carrying"] = json!(7);
         }
         state = serde_json::from_value(data).unwrap();
         let workers: Vec<UnitId> = state.units().iter().map(|unit| unit.id).collect();

@@ -8,26 +8,19 @@ pub mod bot_ladder;
 pub mod bot_pressure;
 pub mod client;
 pub mod evaluation;
-pub mod factorial;
 pub mod ios;
 pub mod ledger;
-pub mod pace;
 pub mod pool;
 pub mod profile;
 pub mod replay_inspect;
 pub mod replay_ledger;
 pub mod replay_summary;
+pub mod rotation;
 pub mod seat_summary;
 pub mod session;
 pub mod shots;
 pub mod smoke;
-pub mod sweep;
 pub mod tick_profile;
-
-// Shared with the shell via oxide-kit; re-exported so the driver's
-// public surface (and its own `crate::render`-style paths) survive
-// the split unchanged.
-pub use oxide_kit::{playback, render, runner, stats};
 
 /// Provenance of this driver build.
 pub fn build_identity() -> oxide_kit::recovery::BuildIdentity {

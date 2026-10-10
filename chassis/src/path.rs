@@ -9,7 +9,6 @@
 //! Determinism: the open set orders by `(f, h, query-oriented tile rank)`.
 //! The rank is unique and reverses with the query under a map half-turn, so
 //! equal-cost routes stay canonical without favoring one absolute corner.
-//! Same query, same path, every time.
 
 use crate::fx::{Fx, Vec2Fx};
 use crate::grid::{CARDINALS, DIAGONALS, TilePos, as_index};
@@ -26,13 +25,12 @@ use std::collections::BinaryHeap;
 /// cannot slip between two blockers, mirroring [`astar`]'s no-corner-cut
 /// rule.
 ///
-/// Direction symmetry is NOT guaranteed: a segment that grazes a tile
+/// Direction symmetry is not guaranteed: a segment that grazes a tile
 /// corner exactly can round to opposite sides of it depending on which
-/// end the walk starts from (1/7-slope shots, say — the reciprocal is
-/// inexact in binary). What IS guaranteed, and what seat fairness rests
-/// on, is mirror symmetry: a 180°-rotated segment over 180°-rotated
-/// terrain computes the identical verdict, because every quantity here
-/// is sign-symmetric. A test pins that property.
+/// end the walk starts from (e.g. a 1/7 slope, whose reciprocal is inexact
+/// in binary). Seat fairness relies on mirror symmetry instead: a
+/// 180°-rotated segment over 180°-rotated terrain gets the identical
+/// verdict, because every quantity here is sign-symmetric.
 pub fn line_blocked(a: Vec2Fx, b: Vec2Fx, mut passable: impl FnMut(TilePos) -> bool) -> bool {
     let start = TilePos::containing(a);
     let end = TilePos::containing(b);
@@ -50,16 +48,12 @@ pub fn line_blocked(a: Vec2Fx, b: Vec2Fx, mut passable: impl FnMut(TilePos) -> b
     let step_x = step(delta.x);
     let step_y = step(delta.y);
     // Parametric distance (0..1 along the segment) to the next x/y tile
-    // boundary, and per-tile increments — SATURATING Q32.32 arithmetic.
-    // A delta component can be as small as one fixed-point ulp (two
-    // machines a hair apart across a tile boundary), and 1/ulp is 2^32 —
-    // past the type's ceiling. Saturation is exactly correct here: a
-    // t_max at MAX means "this axis crosses no more boundaries within
-    // the segment," which is precisely how the zero-delta arm already
-    // behaves, and every non-degenerate segment computes bit-identical
-    // values to the plain arithmetic. Deltas are div'd by their abs
-    // (positive), so saturation lands on MAX and never on MIN, whose
-    // own abs would panic.
+    // boundary, and per-tile increments, in saturating Q32.32. A delta
+    // component can be one ulp, and 1/ulp = 2^32 exceeds the type's range.
+    // A t_max of MAX means "this axis crosses no more boundaries within the
+    // segment", matching the zero-delta arm; non-degenerate segments get
+    // the same values as plain arithmetic. Both operands are non-negative,
+    // so saturation lands on MAX, never on MIN (whose abs would panic).
     let (mut t_max_x, t_delta_x) = if step_x == 0 {
         (Fx::MAX, Fx::MAX)
     } else {
@@ -110,7 +104,7 @@ pub fn line_blocked(a: Vec2Fx, b: Vec2Fx, mut passable: impl FnMut(TilePos) -> b
             return true;
         }
     }
-    false // numerically exhausted without hitting anything — clear
+    false // step budget exhausted without hitting a blocker
 }
 
 /// Whether a body of `radius` sweeping the segment from `a` to `b` crosses a
@@ -174,13 +168,11 @@ const DIAGONAL_COST: u32 = 14;
 
 /// Reusable allocation storage for repeated A* queries on one thread.
 ///
-/// Grid cells are validity-stamped with a per-query generation counter, so a
-/// new query costs only the cells it actually touches — there is no
-/// whole-grid clear between queries. A query that exhausts its reachable
-/// component leaves that proof available until the next call; cheap
-/// invalid/trivial/blocked-goal exits hide any prior proof without paying to
-/// clear the retained capacity. Reusing allocations keeps
-/// [`astar_with_scratch`] behavior identical to [`astar`].
+/// Cells are stamped with a per-query generation, so a query costs only the
+/// cells it touches; there is no whole-grid clear between queries. A query
+/// that exhausts its reachable component keeps that proof until the next
+/// call; early exits (invalid endpoints, trivial path, blocked goal) hide any
+/// prior proof. [`astar_with_scratch`] returns the same results as [`astar`].
 #[derive(Default)]
 pub struct AstarScratch {
     best_g: Vec<u32>,
@@ -198,9 +190,8 @@ pub struct AstarScratch {
     last_expansions: u32,
 }
 
-/// A Dial (bucket) priority queue specialized to this A*'s keys, popping
-/// the exact `(f, h, query-oriented rank)` order of the tuple heap it
-/// replaced.
+/// A Dial (bucket) priority queue specialized to this A*'s keys, popping in
+/// exact `(f, h, query-oriented rank)` order.
 ///
 /// Two facts make sixteen buckets sufficient, both properties of the
 /// octile 10/14 cost model rather than tuning:
@@ -209,9 +200,8 @@ pub struct AstarScratch {
 ///   neighbor's key exceeds its parent's by at most two edge costs, so
 ///   every live key sits in a 28-wide window above the cursor.
 /// - Every g sums 10s and 14s and every h is `10*max + 4*min`, so all
-///   keys are EVEN: the window holds at most 15 distinct key values,
-///   and `(f / 2) % 16` addresses each unambiguously — no lap can
-///   alias inside the window.
+///   keys are even: the window holds at most 15 distinct key values,
+///   and `(f / 2) % 16` addresses each unambiguously.
 ///
 /// Each bucket is a small binary heap over `(h, rank, index)`, preserving the
 /// within-f tie-break exactly while carrying the real index as payload;
@@ -298,10 +288,8 @@ impl AstarScratch {
     }
 
     /// Whether the previous exhausted query proved `tile` belongs to the
-    /// start's reachable component.
-    ///
-    /// This is useful after an exhausted search proves that several alternate
-    /// goals are unreachable from the same origin under the same predicate.
+    /// start's reachable component, so one exhausted search can answer for
+    /// several alternate goals from the same origin and predicate.
     pub fn last_search_reached(&self, tile: TilePos) -> bool {
         if !self.last_exhausted
             || tile.x < 0
@@ -336,10 +324,9 @@ impl AstarScratch {
 }
 
 thread_local! {
-    /// Per-thread scratch behind [`astar`], so every plain call reuses
-    /// allocations. Safe for determinism: scratch reuse is behavior-identical
-    /// to fresh storage (a differential test pins it), so results never depend
-    /// on which thread ran the query or what it searched before.
+    /// Per-thread scratch behind [`astar`]. Scratch reuse is behavior-identical
+    /// to fresh storage, so results never depend on which thread ran the query
+    /// or what it searched before.
     static SHARED_SCRATCH: std::cell::RefCell<AstarScratch> =
         std::cell::RefCell::new(AstarScratch::default());
 }
@@ -535,10 +522,8 @@ fn astar_inner<const PRUNE: bool>(
             cell_index
         }
     };
-    // Cells are generation-stamped rather than cleared: only tiles this query
-    // actually touches cost anything, so a short path on a huge map stays
-    // cheap. Resize never initializes meaningfully — stale cells are dead by
-    // stamp mismatch, including retained cells after a dimension change.
+    // Resized cells need no initialization: stale cells, including retained
+    // cells after a dimension change, are dead by stamp mismatch.
     scratch.best_g.resize(cell_count, 0);
     scratch.came_from.resize(cell_count, 0);
     scratch.stamp.resize(cell_count, 0);
@@ -610,9 +595,7 @@ fn astar_inner<const PRUNE: bool>(
 
         // The cardinal verdicts double as the diagonals' corner-cut
         // companions, so record them once instead of re-asking the
-        // predicate: 16 probe calls per expansion become at most 8,
-        // and harvest predicates are the profile's hottest stack.
-        // Slots are derived from the offset's sign, not CARDINALS'
+        // predicate. Slots derive from the offset's sign, not CARDINALS'
         // order, so reordering that constant cannot flip the rule.
         let mut cardinal_open = [false; 4]; // [+x, -x, +y, -y]
         for (dx, dy) in CARDINALS {

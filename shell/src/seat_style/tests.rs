@@ -13,7 +13,6 @@ fn scenario(count: usize, team: impl Fn(usize) -> Option<u8>) -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "Seat presentation".into(),
-        seed: 1,
         map: map
             .into_iter()
             .map(|row| row.into_iter().collect())
@@ -115,7 +114,7 @@ fn live_and_replay_views_share_prepared_styles_after_viewer_changes() {
     let viewport = macroquad::prelude::vec2(1100.0, 720.0);
     let mut game = crate::game::Game::with_viewport(scenario.clone(), viewport).unwrap();
     let mut playback = crate::screens::playback::PlaybackSession::from_replay(
-        oxide_kit::GameReplay::new(oxide_sim::SIM_VERSION, scenario),
+        oxide_kit::GameReplay::new(oxide_sim::SIM_VERSION, "test", scenario),
     )
     .unwrap();
     for viewer in [0, 8, 15] {

@@ -20,16 +20,19 @@ pub use event::{Event, GroundMotion, StallReason, TickReport, UnitRepairSource};
 pub use ids::{AttackTarget, BuildingId, ContactId, PlayerId, RememberedBuilding, Target, UnitId};
 pub use scenario::Scenario;
 pub use state::{
-    Aim, Building, ExtractorIncome, Faction, GameResult, Goal, Leash, Order, OrderKey,
-    PlaceRefusal, Player, ProjectileKind, State, StateIntegrityError, Unit,
+    Aim, Building, BuildingPhase, ExtractorIncome, Faction, GameResult, Goal, Leash, Motor, Order,
+    OrderKey, PlaceRefusal, Player, Recovery, Rider, State, StateIntegrityError, Unit, Unloading,
+    Worker,
 };
-pub use stats::{BuildingKind, UnitKind};
+pub use stats::{BuildingKind, ProjectileKind, UnitKind};
 pub use tick::CommandPhaseView;
 pub use vision::{GhostBuilding, Vision};
 
-/// Version stamped into replays; a replay is only guaranteed to reproduce on
-/// the sim version that recorded it.
-pub const SIM_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Version stamped into replays, saves and checkpoints; a replay is only
+/// guaranteed to reproduce on the sim version that recorded it. It tracks
+/// simulation behavior and saved-state shape, independent of the package
+/// version.
+pub const SIM_VERSION: u32 = 1;
 
 /// Fixed simulation rate. The shell converts wall time into ticks; the sim
 /// itself only ever counts ticks.

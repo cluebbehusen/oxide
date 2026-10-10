@@ -24,8 +24,6 @@ pub struct Scenario {
     pub mode: ScenarioMode,
     /// Display name.
     pub name: String,
-    /// Master seed for simulation randomness.
-    pub seed: u64,
     /// The playfield as ASCII rows (see [`crate::map`] for the legend).
     pub map: Vec<String>,
     /// One entry per player; matches require an anchor `1`..`8` or `a`..`h`
@@ -39,9 +37,8 @@ pub struct Scenario {
     /// tests. Skipped when empty for compact scenario and replay files.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub buildings: Vec<BuildingSpec>,
-    /// Authored presentation metadata for browsers and previews. The
-    /// sim ignores it entirely; it is hashed with the scenario text like
-    /// any other byte, and absent on older files.
+    /// Authored presentation metadata for browsers and previews. The sim
+    /// ignores it; it is hashed with the scenario text like any other byte.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meta: Option<ScenarioMeta>,
 }
@@ -70,9 +67,9 @@ pub struct ScenarioMeta {
     /// One-sentence strategic hook.
     #[serde(default)]
     pub hook: String,
-    /// Pace label: "quick", "standard", "large", or "vast" — a claim
-    /// about map *scale*, which map-audit's route bands hold honest.
-    /// It is not a clock reading; `driver pace-sweep` measures those.
+    /// Pace label: "quick", "standard", "large", or "vast": a claim about
+    /// map scale, checked against map-audit's route bands. It is not a
+    /// clock reading.
     #[serde(default)]
     pub pace: String,
     /// Optional measured duration band, e.g. "5-8 min". This is a
@@ -107,8 +104,7 @@ pub struct PlayerSpec {
     /// Which roster this seat runs (and its sprite tint).
     pub faction: Faction,
     /// Team index; seats sharing one stand and fall together. `None`
-    /// puts the seat on its own team (every pre-team scenario is a
-    /// free-for-all of one-player teams).
+    /// puts the seat on its own team.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub team: Option<u8>,
     /// Starting scrap.
@@ -392,10 +388,8 @@ impl Scenario {
         let (map, anchors) = self.parse_map_and_anchors()?;
         // Teams normalize to dense ids by first appearance: seats naming
         // the same explicit id share one, and every omitted seat gets a
-        // fresh singleton — an authored id can never alias a "team of
-        // one" seat, whatever number it picked. For every shipped map
-        // (all-explicit in authored order, or all-omitted) the dense ids
-        // equal the raw values, so old hashes stand.
+        // fresh singleton, so an authored id can never alias a "team of
+        // one" seat, whatever number it picked.
         let mut team_ids: Vec<(Option<u8>, u8)> = Vec::new();
         let players: Vec<Player> = self
             .players
@@ -420,9 +414,7 @@ impl Scenario {
                     faction: spec.faction,
                     team,
                     scrap: spec.scrap,
-                    recovery_allowance: 0,
-                    recovery_target: 0,
-                    recovery_ready: true,
+                    recovery: crate::state::Recovery::Ready,
                     resigned: false,
                     eliminated_at: None,
                 }
@@ -434,11 +426,11 @@ impl Scenario {
                 return Err(ScenarioError::OneTeam);
             }
         }
-        let mut state = State::assemble(map, players, self.seed);
+        let mut state = State::assemble(map, players);
         state.mode = self.mode;
 
         for &(player, anchor) in &anchors {
-            let (w, h) = BuildingKind::Foundry.base_stats().size;
+            let (w, h) = BuildingKind::Foundry.size();
             let footprint_ok = (0..h)
                 .flat_map(|dy| (0..w).map(move |dx| anchor.offset(dx, dy)))
                 .all(|t| state.passable(t));
@@ -449,12 +441,12 @@ impl Scenario {
         }
 
         // Authored structures claim ground before units so a unit spec
-        // standing inside a footprint fails honestly as BadUnit. Overlaps
+        // standing inside a footprint fails as BadUnit. Overlaps
         // among the structures themselves fail here: the first placement
         // registers its footprint, so the second's ground reads occupied.
         for (index, spec) in self.buildings.iter().enumerate() {
             let anchor = TilePos::new(spec.x, spec.y);
-            let (w, h) = spec.kind.base_stats().size;
+            let (w, h) = spec.kind.size();
             let footprint_ok = (0..h)
                 .flat_map(|dy| (0..w).map(move |dx| anchor.offset(dx, dy)))
                 .all(|t| state.passable(t));
@@ -477,15 +469,12 @@ impl Scenario {
         }
 
         // Authoring tripwire: every pair of Foundries must share a route
-        // some mover can actually take, or the victory condition is
-        // unreachable by construction. Ground connectivity is the
-        // ordinary case; an air route is an honest fallback — the shared
-        // tree reaches the sky at tier two, so a Foundry across a pit
-        // can genuinely be scouted, bombed, and boarded. Only terrain
-        // that seals the sky as well (mesas) makes a true seal. Flood
-        // over terrain (scrap mines out and buildings — foundries and
-        // authored structures alike — can be demolished, so terrain is
-        // the honest floor of reachability).
+        // some mover can take, or the victory condition is unreachable by
+        // construction. Ground connectivity is the ordinary case; an air
+        // route is a valid fallback, since every faction can reach the sky
+        // at tier two. Only terrain that also seals the sky (peaks) makes a
+        // true seal. Flood over terrain only: scrap mines out and buildings
+        // can be demolished.
         if self.mode.is_match()
             && let Some((first, rest)) = anchors.split_first()
         {

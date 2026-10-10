@@ -61,11 +61,11 @@ fn cruising_aircraft_bank_on_reversal_and_hover_on_arrival() {
                     .wrapping_sub(before.heading)
                     .cast_signed()
                     .unsigned_abs()
-                    <= kind.cruise_turn_rate(),
+                    <= kind.stats().cruise_turn_rate,
                 "{kind:?}"
             );
             assert!(after.pos.dist(before.pos) <= kind.stats().speed + Fx::DELTA * 16);
-            assert!(!after.landed);
+            assert!(!after.landed());
             if after.order == Order::Idle {
                 break;
             }
@@ -77,7 +77,7 @@ fn cruising_aircraft_bank_on_reversal_and_hover_on_arrival() {
             state.tick(&[]);
             assert_eq!(state.units()[0].pos, arrived.pos);
             assert_eq!(state.units()[0].heading, arrived.heading);
-            assert!(!state.units()[0].landed);
+            assert!(!state.units()[0].landed());
         }
     }
 }
@@ -211,7 +211,7 @@ fn cruising_fighters_turn_to_targets_without_becoming_bombers() {
                         .wrapping_sub(before)
                         .cast_signed()
                         .unsigned_abs()
-                        <= kind.cruise_turn_rate()
+                        <= kind.stats().cruise_turn_rate
                 );
                 assert!(state.shells().is_empty());
                 if report.events.iter().any(
@@ -347,7 +347,7 @@ fn stop_interrupts_a_banked_patrol_and_holds_position() {
         for _ in 0..100 {
             state.tick(&[]);
             assert_eq!(state.units()[0].pos, before);
-            assert!(!state.units()[0].landed);
+            assert!(!state.units()[0].landed());
         }
     }
 }
@@ -371,7 +371,7 @@ fn rotorcraft_retain_independent_travel_and_bombers_remain_committed() {
         let before = state.units()[0].pos;
         move_to(&mut state, TilePos::new(10, 26), false);
         let delta = state.units()[0].pos - before;
-        assert_eq!(kind.cruise_turn_rate(), 0);
+        assert_eq!(kind.stats().cruise_turn_rate, 0);
         if kind.stats().turn_rate == 0 {
             assert!(delta.x < Fx::ZERO);
             assert!((delta.x + kind.stats().speed).abs() <= Fx::DELTA * 16);

@@ -15,7 +15,6 @@ fn arena(map: Vec<String>, units: Vec<UnitSpec>, buildings: Vec<BuildingSpec>) -
     Scenario {
         mode: ScenarioMode::Match,
         name: "field-kit-arena".into(),
-        seed: 17,
         map,
         players: players(800),
         units,
@@ -273,7 +272,7 @@ fn a_mast_under_construction_detects_nothing() {
         state
             .buildings()
             .iter()
-            .any(|b| b.anchor == mast && !b.built),
+            .any(|b| b.anchor == mast && !b.built()),
         "the site is claimed at once, unfinished"
     );
     assert!(
@@ -287,7 +286,7 @@ fn a_mast_under_construction_detects_nothing() {
         if state
             .buildings()
             .iter()
-            .any(|b| b.anchor == mast && b.built)
+            .any(|b| b.anchor == mast && b.built())
         {
             break;
         }
@@ -296,7 +295,7 @@ fn a_mast_under_construction_detects_nothing() {
         state
             .buildings()
             .iter()
-            .any(|b| b.anchor == mast && b.built),
+            .any(|b| b.anchor == mast && b.built()),
         "the mast never finished"
     );
     assert!(
@@ -344,7 +343,7 @@ fn the_deep_array_upgrade_buys_the_wide_ring() {
         let b = state
             .building(mast_id)
             .expect("the works survives its own site");
-        assert_eq!((b.built, b.tier), (false, 1), "offline as a tier-1 site");
+        assert_eq!((b.built(), b.tier), (false, 1), "offline as a tier-1 site");
     }
     assert!(
         !apparent(&state, 0, far),
@@ -353,13 +352,16 @@ fn the_deep_array_upgrade_buys_the_wide_ring() {
 
     for _ in 0..2_000 {
         state.tick(&[]);
-        if state.building(mast_id).is_some_and(|b| b.built) {
+        if state
+            .building(mast_id)
+            .is_some_and(oxide_sim::Building::built)
+        {
             break;
         }
     }
     let b = state.building(mast_id).expect("the mast survives");
     assert!(
-        b.built && b.tier == 1,
+        b.built() && b.tier == 1,
         "the mast stood back up as a Deep Array"
     );
     assert!(
@@ -532,12 +534,22 @@ fn the_sapper_cracks_the_wall_and_is_consumed() {
     let wall_hp = state.building(wall).unwrap().hp;
     assert_eq!(
         wall_hp,
-        BuildingKind::Barricade.base_stats().max_hp - oxide_sim::stats::SAPPER_STRUCTURE_DAMAGE,
+        BuildingKind::Barricade.base_stats().max_hp
+            - oxide_sim::UnitKind::Sapper
+                .stats()
+                .demolition
+                .expect("the sapper demolishes")
+                .structure_damage,
         "the wall takes the full charge"
     );
     let bystander_hp = state.unit(bystander).map_or(0, |u| u.hp);
     assert!(
-        splash_distance.expect("the sapper detonated") <= oxide_sim::stats::SAPPER_BLAST_RADIUS,
+        splash_distance.expect("the sapper detonated")
+            <= oxide_sim::UnitKind::Sapper
+                .stats()
+                .demolition
+                .expect("the sapper demolishes")
+                .blast_radius,
         "the stationary bystander must be inside the blast"
     );
     assert!(

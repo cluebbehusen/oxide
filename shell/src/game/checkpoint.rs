@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct GameCheckpoint {
-    version: u32,
     session: SessionCheckpoint,
     human: PlayerId,
     demo: crate::tutorial::Demo,
@@ -47,7 +46,6 @@ impl Game {
 impl SaveCapture {
     pub(crate) fn checkpoint(self) -> Result<GameCheckpoint> {
         Ok(GameCheckpoint {
-            version: 2,
             session: SessionCheckpoint::capture(
                 &self.scenario,
                 &self.state,
@@ -100,11 +98,7 @@ impl GameCheckpoint {
 
     pub(crate) fn restore(self) -> Result<RestoredGame> {
         let checkpoint = self;
-        anyhow::ensure!(
-            checkpoint.version == 2,
-            "unsupported shell checkpoint version"
-        );
-        let recorder = checkpoint.session.recording()?;
+        let recorder = checkpoint.session.recording(&crate::build_identity())?;
         let recovery_origin = Some(checkpoint.session.clone());
         let core = checkpoint.session.restore()?;
         anyhow::ensure!(
@@ -258,7 +252,6 @@ impl RestoredGame {
         let mut presentation = Presentation::new(&core.state, human, crate::render::viewport());
         presentation.reset_after_jump(&core.state);
         presentation.boundary_fog = boundary_fog;
-        presentation.paused = true;
         presentation.conceded_banner = concede_stats.is_some();
         let end_stats = core
             .state
@@ -276,6 +269,11 @@ impl RestoredGame {
             concede_stats,
             demo,
             presentation,
+            // A restored match opens paused.
+            clock: super::Clock {
+                paused: true,
+                ..super::Clock::default()
+            },
             autosave_done: false,
             suppress_presentation: false,
             net: None,

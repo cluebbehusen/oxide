@@ -39,15 +39,13 @@ fn recovery_records_the_shell_boundary_and_resumes_the_same_future() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
-/// The resume guarantee the hash check alone cannot see: the
-/// watch-back loop replays every re-executed tick through the
-/// seat bots so they rebuild their cross-tick memory (RNG streams,
-/// raid memory, blacklists). Deleting that loop keeps the resume
-/// hash identical — the recorded commands carry it — and only the
-/// FUTURE diverges, which is exactly what this pins.
+/// The watch-back loop replays every re-executed tick through the seat
+/// bots so they rebuild their cross-tick memory. Without it the resume
+/// hash still matches (the recorded commands carry it) and only the
+/// future diverges, which this test catches.
 #[test]
 fn a_resumed_session_plays_the_same_future_as_an_unsaved_one() {
-    // Seat 1 is the shipped bot whose memory the watch-back rebuilds.
+    // Seat 1 is a bot whose memory the watch-back rebuilds.
     let mut scenario = oxide_sim::Scenario::skirmish();
     oxide_kit::bench::all_bots(&mut scenario);
     scenario.players[0].bot = false;
@@ -180,7 +178,7 @@ fn local_sessions_accept_any_bot_roster_and_resume() {
 #[test]
 fn replay_without_duration_infers_its_tail_and_restores_finished_stats() {
     let scenario = Scenario::skirmish();
-    let mut replay = GameReplay::new(SIM_VERSION, scenario);
+    let mut replay = GameReplay::new(SIM_VERSION, "test", scenario);
     replay.record(
         0,
         PlayerCommand {
@@ -206,13 +204,13 @@ fn wall_clock_pause_and_hitch_rules_bound_simulation_debt() {
         macroquad::prelude::vec2(1280.0, 800.0),
     )
     .expect("game");
-    game.presentation.paused = true;
+    game.clock.paused = true;
     assert!(!game.advance_wall_clock(10.0, None));
     assert_eq!(game.state.current_tick(), 0);
-    assert_eq!(game.presentation.render_alpha(), 1.0);
+    assert_eq!(game.clock.render_alpha(), 1.0);
 
-    game.presentation.paused = false;
-    game.presentation.speed = 64.0;
+    game.clock.paused = false;
+    game.clock.speed = 64.0;
     assert!(!game.advance_wall_clock(1.0, None));
     assert_eq!(game.state.current_tick(), u64::from(MAX_TICKS_PER_FRAME));
     assert!(
@@ -302,7 +300,7 @@ fn articulated_hulls_keep_authoritative_bearings_when_paused_or_jumped() {
 fn cruising_aircraft_keep_authoritative_facing_across_timeline_jumps() {
     for kind in UnitKind::ALL
         .into_iter()
-        .filter(|kind| kind.cruise_turn_rate() > 0)
+        .filter(|kind| kind.stats().cruise_turn_rate > 0)
     {
         let mut scenario = Scenario::skirmish();
         scenario.units[0].kind = kind;
@@ -330,7 +328,7 @@ fn head_on_pair() -> (Game, [UnitId; 2]) {
     let mut map = vec!["........................................"; 24];
     map[2] = "..1.....................................";
     let scenario = serde_json::from_value(serde_json::json!({
-        "name": "Head-on pass", "seed": 1, "map": map,
+        "name": "Head-on pass", "map": map,
         "players": [{"name": "You", "faction": "ferrous", "scrap": 0, "bot": false}],
         "units": [
             {"player": 0, "kind": "sentinel", "x": 12, "y": 12},
@@ -393,7 +391,7 @@ fn rotor_game(kind: UnitKind) -> Game {
     let mut map = vec!["........................................"; 24];
     map[2] = "..1................................2....";
     let scenario = serde_json::from_value(serde_json::json!({
-        "name": "Rotor turning", "seed": 1, "map": map,
+        "name": "Rotor turning", "map": map,
         "players": [
             {"name": "You", "faction": "ferrous", "scrap": 0, "bot": false},
             {"name": "Target", "faction": "cupric", "scrap": 0, "bot": true}
@@ -504,9 +502,9 @@ fn externally_driven_tick_fractions_are_clamped_to_one_frame() {
         macroquad::prelude::vec2(1280.0, 800.0),
     )
     .expect("game");
-    game.presentation.sync_external_tick_fraction(2.0);
+    game.presentation.set_tick_fraction(2.0);
     assert_eq!(game.presentation.tick_fraction(), 1.0);
-    game.presentation.sync_external_tick_fraction(-1.0);
+    game.presentation.set_tick_fraction(-1.0);
     assert_eq!(game.presentation.tick_fraction(), 0.0);
 }
 
@@ -563,9 +561,8 @@ fn demo_flags_read_only_the_humans_commands() {
     });
     game.do_tick();
     assert!(game.demo.trained_fighter);
-    // Run a few more ticks with no human commands and check the
-    // unrelated flags stay cold — only the human's own commands
-    // may grade the tutorial.
+    // Further ticks without human commands leave the unrelated flags
+    // unset: only the human's own commands grade the tutorial.
     for _ in 0..20 {
         game.do_tick();
     }
@@ -662,7 +659,7 @@ fn paused_wall_time_freezes_presentation() {
         age: 0.0,
     });
 
-    game.presentation.paused = true;
+    game.clock.paused = true;
     game.update_wall_clock_fx(0.25);
     assert_eq!(
         game.presentation.fx_time(),
@@ -674,7 +671,7 @@ fn paused_wall_time_freezes_presentation() {
         "transient effects must hold too"
     );
 
-    game.presentation.paused = false;
+    game.clock.paused = false;
     game.update_wall_clock_fx(0.25);
     assert_eq!(game.presentation.fx_time(), 0.25);
     assert_eq!(game.presentation.fx[0].age, 0.25);
@@ -687,7 +684,7 @@ fn wall_clock_profile_bound_cannot_overshoot_inside_a_multi_tick_frame() {
         macroquad::prelude::vec2(1280.0, 800.0),
     )
     .expect("skirmish builds");
-    game.presentation.speed = 8.0;
+    game.clock.speed = 8.0;
 
     assert!(game.advance_wall_clock(1.0, Some(5)));
     assert_eq!(game.state.current_tick(), 5);
@@ -708,12 +705,12 @@ fn playback_and_seeks_face_a_parked_airframe_by_its_heading() {
     let condor = game.state.units()[0].id;
     for _ in 0..600 {
         game.advance_ticks(1);
-        if game.state.unit(condor).is_some_and(|u| u.landed) {
+        if game.state.unit(condor).is_some_and(oxide_sim::Unit::landed) {
             break;
         }
     }
     let parked = game.state.unit(condor).expect("the Condor survives");
-    assert!(parked.landed, "premise: the idle Condor parks itself");
+    assert!(parked.landed(), "premise: the idle Condor parks itself");
     let expected =
         f32::from(parked.heading) * std::f32::consts::TAU / 256.0 + std::f32::consts::FRAC_PI_2;
     let snapshot = (*game.state).clone();
@@ -805,7 +802,6 @@ fn a_team_concession_raises_the_surrender_overlay() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "concede-arena".into(),
-        seed: 42,
         map: vec![
             "####################".into(),
             "#1..............3..#".into(),

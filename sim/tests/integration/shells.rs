@@ -1,7 +1,8 @@
 //! Real artillery: shells lead current motion at fire time, fly unguided,
 //! and resolve on arrival against whatever stands there. Dodgeable by a
-//! later course change, deadly to straight commitments and the rooted,
-//! loyal to no one once launched. Public API only, like `domains.rs`.
+//! later course change, deadly to straight commitments and stationary
+//! targets, and independent of the shooter once launched. Public API only,
+//! like `domains.rs`.
 
 use crate::common;
 use common::{cmd, open_arena, players, run, unit};
@@ -222,24 +223,16 @@ fn shells_outlive_their_shooters() {
     let bombard = state.units()[0].id;
     let scuttler = state.units()[2].id;
     let hp_before = state.unit(scuttler).unwrap().hp;
-    // The shooter dies the tick after launch; its shell flies on and
-    // still lands ("a shell in flight chooses nothing" — including
-    // dying with its gun).
+    // The shooter is stopped the tick after launch; its shell flies on
+    // and still lands.
     state.tick(&[cmd(
         0,
         Command::Stop {
             units: vec![bombard],
         },
     )]);
-    // Simulate the shooter's death by enemy action: a swarm appears is
-    // overkill — the sim only needs the unit gone, and the honest path
-    // is damage. Two enemy scuttlers spawn nearby in scenario terms is
-    // not possible mid-game, so we let the original scuttler's team
-    // kill it via a fresh assault from the second seat's forces. The
-    // simplest honest lever: the enemy scuttler attacks the bombard
-    // (slow walk), while the shell (30 ticks) lands first — instead,
-    // assert the weaker but real property: the shell keeps flying when
-    // its shooter's ORDER is gone (stopped), and lands on schedule.
+    // This asserts the weaker property: the shell keeps flying when its
+    // shooter's order is gone, and lands on schedule.
     assert_eq!(state.shells().len(), 1);
     run(&mut state, 60);
     assert!(state.shells().is_empty(), "the sky cleared on schedule");
@@ -324,7 +317,7 @@ fn a_straight_mover_is_led_hit_and_replayed_bit_exactly() {
             units: vec![bombard],
         },
     );
-    let mut replay = Replay::new(SIM_VERSION, scenario);
+    let mut replay = Replay::new(SIM_VERSION, "test", scenario);
     for command in &setup_commands {
         replay.record(0, command.clone());
     }
@@ -451,12 +444,19 @@ fn neighbor_shot(
         );
     }
     let mut value = serde_json::to_value(&state).unwrap();
-    value["units"][0]["brace_ticks"] = serde_json::json!(oxide_sim::stats::BOMBARD_BRACE_TICKS);
+    value["units"][0]["motor"] = serde_json::json!({
+        "motor": "braced",
+        "ticks": oxide_sim::UnitKind::Bombard
+            .stats()
+            .brace
+            .expect("the bombard braces")
+            .deploy_ticks,
+    });
     // Start at cruise speed to keep the shot on the authored visibility boundary.
-    value["units"][2]["drive_speed"] = serde_json::json!(UnitKind::Harvester.stats().speed);
+    value["units"][2]["motor"]["speed"] = serde_json::json!(UnitKind::Harvester.stats().speed);
     if !air {
         for index in [1, 3] {
-            value["units"][index]["drive_speed"] =
+            value["units"][index]["motor"]["speed"] =
                 serde_json::json!(UnitKind::Harvester.stats().speed);
         }
     }
@@ -516,7 +516,7 @@ fn neighbor_shot(
         victim.path.is_some(),
         "the fire-time target must still be moving"
     );
-    assert_eq!(victim.drive_speed, victim.kind.stats().speed);
+    assert_eq!(victim.drive_speed(), victim.kind.stats().speed);
     assert_eq!(victim.heading, 128);
     assert!(before.can_see(PlayerId(0), victim.tile()));
     assert_eq!(before.can_see(PlayerId(0), neighbor_unit.tile()), !hidden);
@@ -593,7 +593,7 @@ fn advance_fire_leads_the_same_moving_path_without_becoming_an_attack() {
         )]);
     }
     assert_eq!(
-        state.unit(target).unwrap().drive_speed,
+        state.unit(target).unwrap().drive_speed(),
         UnitKind::Scuttler.stats().speed
     );
     common::face_target(&mut state, launcher, Target::Unit(target));
@@ -719,7 +719,6 @@ fn team_range(kind: UnitKind, with_spotter: bool) -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "team-shell-range".into(),
-        seed: 9,
         map: vec![
             "##############################".into(),
             "#1.........................2.#".into(),
@@ -863,7 +862,6 @@ fn peak_prediction_range() -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "peak-prediction-range".into(),
-        seed: 11,
         map: vec![
             "########################".into(),
             "#1.....................#".into(),
@@ -1025,7 +1023,7 @@ fn predictive_aim_falls_back_before_crossing_a_peak() {
         "the target must still be approaching the peak"
     );
     assert_eq!(victim.pos.y, chassis::fx::Fx::lit("8.5"));
-    assert!(victim.drive_speed > chassis::fx::Fx::ZERO);
+    assert!(victim.drive_speed() > chassis::fx::Fx::ZERO);
     let current = victim.pos;
     let (_, aim, _) = unit_launch(&events, bombard).expect("the current line is legal");
     assert_eq!(
@@ -1036,11 +1034,10 @@ fn predictive_aim_falls_back_before_crossing_a_peak() {
 
 #[test]
 fn a_siege_shell_lands_on_the_footprint_edge_and_still_counts() {
-    // Aiming at a building lobs at its closest footprint point — an
-    // exact edge coordinate that floors into the NEIGHBORING tile.
-    // Direct hits are distance-to-footprint, not tile containment, or
-    // sieges deal nothing (found the honest way: a six-gun battery
-    // timed out a victory test without scratching the foundry).
+    // Aiming at a building lobs at its closest footprint point, an exact
+    // edge coordinate that can floor into the neighboring tile. Direct
+    // hits are distance-to-footprint, not tile containment, or sieges
+    // deal nothing.
     let mut state = range(vec![
         unit(0, UnitKind::Bombard, 14, 5),
         // Pacifist eyes on the target: attack commands are sight-gated.

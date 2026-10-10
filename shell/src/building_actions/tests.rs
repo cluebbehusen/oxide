@@ -5,8 +5,7 @@ use oxide_sim::Scenario;
 
 pub(crate) fn fixture(kind: BuildingKind, tiers: &[u8], scrap: u32) -> Game {
     let mut scenario = Scenario::from_json(r#"{
-        "name":"Building actions", "seed":1,
-        "map":["........................................", "........................................",
+        "name":"Building actions", "map":["........................................", "........................................",
           "..1.................................2...", "........................................",
           "........................................", "........................................",
           "........................................", "........................................",
@@ -105,7 +104,7 @@ fn mixed_tiers_advance_once_and_skip_max_tier_with_pending_input() {
         for (id, tier) in ids.iter().zip(tiers) {
             let b = game.state.building(*id).unwrap();
             assert_eq!(b.tier, (tier + 1).min(kind.tiers().len().fit::<u8>() - 1));
-            assert_eq!(b.built, !expected.contains(id));
+            assert_eq!(b.built(), !expected.contains(id));
         }
     }
 }
@@ -233,8 +232,7 @@ fn group_site_cancellation_skips_completed_and_committed_upgrades() {
         .iter_mut()
         .find(|b| b["id"] == serde_json::json!(ids[1]))
         .unwrap();
-    site["built"] = false.into();
-    site["progress"] = 1.into();
+    site["phase"] = serde_json::json!({"phase": "site", "progress": 1});
     site["hp"] = (BuildingKind::Turret.base_stats().max_hp / 5).into();
     *game.state = serde_json::from_value(json).unwrap();
     game.state.validate_invariants().unwrap();
@@ -255,7 +253,7 @@ fn group_site_cancellation_skips_completed_and_committed_upgrades() {
     assert_eq!(game.presentation.selection.buildings, vec![ids[0], ids[2]]);
     assert_accepted(&mut game);
     assert!(game.state.building(ids[1]).is_none());
-    assert!(!game.state.building(ids[0]).unwrap().built);
+    assert!(!game.state.building(ids[0]).unwrap().built());
 }
 
 #[test]
@@ -294,7 +292,7 @@ fn every_building_inherits_single_and_group_actions_from_capabilities() {
                 assert_eq!(batch.recipients.len(), count);
             }
             for b in &mut selected.buildings {
-                b.built = false;
+                b.phase = oxide_sim::BuildingPhase::Site { progress: 0 };
             }
             assert!(
                 selected

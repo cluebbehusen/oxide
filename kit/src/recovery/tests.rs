@@ -3,7 +3,7 @@ use oxide_sim::{Command, PlayerCommand, PlayerId, Scenario};
 use std::time::{Duration, Instant};
 
 fn base() -> GameReplay {
-    let mut replay = GameReplay::new(SIM_VERSION, Scenario::skirmish());
+    let mut replay = GameReplay::new(SIM_VERSION, "test", Scenario::skirmish());
     replay.meta.ticks = Some(0);
     replay
 }
@@ -127,7 +127,9 @@ fn checkpoint_recovery_rejects_missing_pending_inputs_and_truncated_completion()
             kind: RecordingKind::LiveMatch,
             session: "origin".into(),
             build: BuildIdentity::default(),
-            base: checkpoint.recording().unwrap(),
+            base: checkpoint
+                .recording(&crate::recovery::BuildIdentity::default())
+                .unwrap(),
             checkpoint: Some(checkpoint.clone()),
         },
     )
@@ -190,7 +192,9 @@ fn checkpoint_recovery_rejects_missing_pending_inputs_and_truncated_completion()
     let record = inspect_reader(&mut bytes.as_slice()).unwrap();
     assert!(record.issue.unwrap().contains("omits pending"));
     assert_eq!(record.replay.meta.ticks, Some(1));
-    let mut bad_base = checkpoint.recording().unwrap();
+    let mut bad_base = checkpoint
+        .recording(&crate::recovery::BuildIdentity::default())
+        .unwrap();
     bad_base.meta.ticks = Some(2);
     assert!(checkpoint.clone().resume_recording(&bad_base).is_err());
     assert!(validate_origin(RecordingKind::LiveMatch, &bad_base, Some(&checkpoint)).is_err());

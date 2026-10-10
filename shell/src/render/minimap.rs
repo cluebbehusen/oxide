@@ -1,7 +1,7 @@
 //! The minimap: its corner geometry (one source for drawing, clicks,
-//! and the debug protocol's chrome report) and its drawing — live
-//! state on visible ground, memories elsewhere, same rule as the
-//! world renderer.
+//! and the debug protocol's chrome report) and its drawing, which shows
+//! live state on visible ground and memories elsewhere, like the world
+//! renderer.
 
 use super::*;
 use crate::numeric::Fit;
@@ -14,8 +14,8 @@ const MINI_ROCK: Color = color_u8!(84, 84, 96, 255);
 const MINI_PEAK: Color = color_u8!(48, 47, 57, 255);
 const MINI_PIT: Color = color_u8!(6, 6, 9, 255);
 
-/// Minimap identity color: the same faction-own, cool-allied, warm-hostile
-/// seat accents used by the world renderer.
+/// Minimap identity color: the same seat accents the world renderer uses
+/// (own faction, cool allies, warm hostiles).
 fn mini_entity_color(game: &crate::game::Scene<'_>, owner: oxide_sim::PlayerId) -> Color {
     super::seat_identity_color(game, owner)
 }
@@ -24,9 +24,8 @@ fn dim(color: Color) -> Color {
     Color::new(color.r * 0.55, color.g * 0.55, color.b * 0.55, color.a)
 }
 
-/// The minimap's face of the staleness ramp: memories slide toward the
-/// dim ground color as they age, mirroring the world view's alpha fade
-/// — the documented rule is the same memory story on both surfaces.
+/// The minimap's staleness fade: memories slide toward the dim ground
+/// color as they age, matching the world view's alpha fade.
 fn stale_toward(color: Color, floor: Color, age: f32) -> Color {
     let t = super::staleness_fade(age);
     Color::new(
@@ -37,8 +36,8 @@ fn stale_toward(color: Color, floor: Color, age: f32) -> Color {
     )
 }
 
-/// Shared stamp read: how long since the player last saw this key
-/// (unstamped memories — loaded saves — start their ramp now).
+/// How long since the player last saw this key. Unstamped memories (from
+/// loaded saves) start aging now.
 fn memory_age(game: &crate::game::Scene<'_>, key: (i32, i32)) -> f32 {
     let mut seen = game.presentation.last_seen.borrow_mut();
     let stamp = *seen
@@ -49,13 +48,12 @@ fn memory_age(game: &crate::game::Scene<'_>, key: (i32, i32)) -> f32 {
 
 /// Where the minimap sits (flush bottom-right, matching the command
 /// band's bottom edge) for a map of `map_w`×`map_h` tiles in a
-/// `viewport`-pixel window. Pure — shared with input hit-testing and
-/// unit tests.
+/// `viewport`-pixel window. Shared with input hit-testing and unit tests.
 pub fn minimap_rect_for(map_w: i32, map_h: i32, viewport: Vec2) -> Rect {
     minimap_rect_scaled(map_w, map_h, viewport, ui_scale())
 }
 
-/// Testable core of [`minimap_rect_for`] (no window queries).
+/// [`minimap_rect_for`] with an explicit UI scale.
 pub fn minimap_rect_scaled(map_w: i32, map_h: i32, viewport: Vec2, s: f32) -> Rect {
     let mw = map_w as f32;
     let mh = map_h as f32;
@@ -73,12 +71,12 @@ pub fn minimap_rect(game: &crate::game::Scene<'_>) -> Rect {
     )
 }
 
-/// The world point under a screen position, if it lies on the minimap —
-/// how clicks jump the camera (and where armed ground orders land).
+/// The world point under a screen position, if it lies on the minimap.
+/// Clicks use it to jump the camera and to aim armed ground orders.
 pub fn minimap_world_at(game: &crate::game::Scene<'_>, screen: Vec2) -> Option<Vec2> {
-    // The *published* rect, not a recomputation — hit-testing reads the
-    // LayoutModel like all chrome, and never touches the window (which
-    // also keeps the whole click path headless-testable).
+    // The published rect, not a recomputation: hit-testing reads the
+    // LayoutModel like all chrome and never touches the window, which
+    // keeps the click path headless-testable.
     minimap_world_in(
         game.presentation.layout.get().minimap,
         game.state.map().width(),
@@ -102,7 +100,7 @@ pub fn minimap_world_clamped(game: &crate::game::Scene<'_>, screen: Vec2) -> Opt
     minimap_world_in(rect, game.state.map().width(), clamped)
 }
 
-/// Testable core of [`minimap_world_at`] (no window queries).
+/// Testable core of [`minimap_world_at`], given the minimap rect.
 pub fn minimap_world_in(rect: Rect, map_w: i32, screen: Vec2) -> Option<Vec2> {
     if !rect.contains(screen) {
         return None;
@@ -115,11 +113,9 @@ pub fn minimap_world_in(rect: Rect, map_w: i32, screen: Vec2) -> Option<Vec2> {
 }
 
 /// The minimap's terrain-and-fog layer: one pixel per tile, uploaded to
-/// a texture and drawn as a single scaled quad. The per-tile color walk
-/// is unchanged from the per-rectangle path it replaced — what this
-/// removes is one immediate-mode quad submission per map tile per frame
-/// (65,536 of them on the largest legal map). Created lazily inside the
-/// draw so headless sessions never touch the GPU.
+/// a texture and drawn as a single scaled quad instead of one quad per
+/// tile. Created lazily inside the draw so headless sessions never touch
+/// the GPU.
 pub(crate) struct MinimapLayer {
     image: Image,
     texture: Texture2D,
@@ -140,8 +136,8 @@ impl MinimapLayer {
     }
 }
 
-/// The whole war at a glance, under the same fog rules as the world view
-/// (and, like everything else, omniscient while the F1 overlay is up).
+/// Draws the minimap under the same fog rules as the world view
+/// (omniscient while the F1 overlay is up).
 pub(crate) fn draw_minimap(game: &crate::game::Scene<'_>) {
     let rect = game.presentation.layout.get().minimap;
     if rect.w <= 0.0 || rect.h <= 0.0 {
@@ -186,10 +182,9 @@ pub(crate) fn draw_minimap(game: &crate::game::Scene<'_>) {
                 (_, _) => SCRAP_COLOR,
             };
             if visible {
-                // Stamp what is on show. The world renderer only
-                // stamps camera-visible tiles, so without this a node
-                // re-scouted off-camera resumed fading from its old
-                // timestamp the moment sight dropped.
+                // Stamp what is on show. The world renderer stamps only
+                // camera-visible tiles, so without this a node re-scouted
+                // off-camera would keep fading from its old timestamp.
                 if tile.scrap > 0 || tile.wreck > 0 {
                     game.presentation
                         .last_seen
@@ -198,9 +193,8 @@ pub(crate) fn draw_minimap(game: &crate::game::Scene<'_>) {
                 }
                 base
             } else if scrap > 0 {
-                // Remembered salvage ages like the world view's: the
-                // dot stays (recorded honestly) but stops pretending
-                // to be news.
+                // Remembered salvage fades like the world view's but
+                // never disappears.
                 stale_toward(
                     dim(base),
                     dim(MINI_GROUND),
@@ -218,7 +212,7 @@ pub(crate) fn draw_minimap(game: &crate::game::Scene<'_>) {
     }
     layer.texture.update(&layer.image);
     // Downscaled tiles (sub-pixel on grand maps) blend; upscaled tiles
-    // stay crisp blocks, matching the old per-tile rectangles.
+    // stay crisp blocks.
     layer.texture.set_filter(if scale < 1.0 {
         FilterMode::Linear
     } else {
@@ -238,11 +232,10 @@ pub(crate) fn draw_minimap(game: &crate::game::Scene<'_>) {
 
     if !omniscient {
         for ghost in vision.ghosts() {
-            let (w, h) = ghost.kind.base_stats().size;
+            let (w, h) = ghost.kind.size();
             let age = memory_age(game, (ghost.anchor.x, ghost.anchor.y));
-            // Through the allegiance cue like every live marker: a
-            // remembered hostile twin must keep its dark press, or the
-            // cue vanishes exactly when the player plans from memory.
+            // Ghosts keep their dimmed seat color as it fades, so
+            // allegiance stays readable when the player plans from memory.
             let color = stale_toward(
                 dim(mini_entity_color(game, ghost.owner)),
                 dim(MINI_GROUND),
@@ -267,7 +260,7 @@ pub(crate) fn draw_minimap(game: &crate::game::Scene<'_>) {
         if !seen {
             continue;
         }
-        let (w, h) = building.stats().size;
+        let (w, h) = building.kind.size();
         draw_rectangle(
             rect.x + building.anchor.x as f32 * scale,
             rect.y + building.anchor.y as f32 * scale,
@@ -300,8 +293,8 @@ pub(crate) fn draw_minimap(game: &crate::game::Scene<'_>) {
     let y2 = rect.y + hi.y.min(game.state.map().height() as f32) * scale;
     draw_rectangle_lines(x, y, (x2 - x).max(4.0), (y2 - y).max(4.0), 1.5, BONE);
 
-    // Under-attack pulses: an expanding, fading ring where trouble is —
-    // or, damped, a steady marker that fades without expanding.
+    // Under-attack pulses: an expanding, fading ring at each alert, or
+    // under reduced motion a steady marker that fades without expanding.
     for (world, age) in &game.presentation.alerts {
         let center = vec2(rect.x + world.x * scale, rect.y + world.y * scale);
         let (radius, alpha) = if reduced_motion() {

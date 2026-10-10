@@ -1,7 +1,7 @@
 //! Standing chrome and overlays: the top bar with its controls hint,
 //! toasts, the salvage hover tooltip, the omniscient debug overlay,
-//! and the endgame verdict. The `LayoutModel` publish rides in the hud
-//! so drawn and clickable can never disagree.
+//! and the endgame verdict. The HUD publishes the `LayoutModel` so drawn
+//! and clickable regions cannot disagree.
 
 use super::*;
 use crate::numeric;
@@ -9,7 +9,7 @@ use crate::numeric::Fit;
 use crate::render::prim::{fill_rect, line_between, stroke_rect};
 use crate::theme::TEXT_ACCENT;
 
-/// Fill shared by the top bar's badges: the idle nag, the alert, and
+/// Fill shared by the top bar's badges: the idle count, the alert, and
 /// the menu button.
 const TOP_BAR_BADGE: Color = color_u8!(57, 45, 30, 255);
 
@@ -485,12 +485,13 @@ pub(crate) fn draw_hud(
     game: &crate::game::Scene<'_>,
     sprites: &Sprites,
     input: &InputState,
+    bindings: &crate::action::BindingMap,
     performance: Option<&crate::performance::PerformanceView>,
 ) {
     let s = ui_scale();
-    // A spectator commands nothing: no bank, no unit count, no idle
-    // nag — the viewer's transport bar is its own chrome. The layout
-    // still publishes below so the minimap stays clickable.
+    // A spectator commands nothing: no bank, unit count, or idle badge;
+    // the viewer's transport bar is its own chrome. The layout still
+    // publishes below so the minimap stays clickable.
     let mut idle_badge = Rect::new(0.0, 0.0, 0.0, 0.0);
     let mut alert_badge = Rect::new(0.0, 0.0, 0.0, 0.0);
     let mut menu_button = Rect::new(0.0, 0.0, 0.0, 0.0);
@@ -507,8 +508,7 @@ pub(crate) fn draw_hud(
             PANEL,
         );
         let label = |action| {
-            input
-                .bindings
+            bindings
                 .chord_for(action)
                 .map(BindingMap::chord_label)
                 .unwrap_or_default()
@@ -542,10 +542,10 @@ pub(crate) fn draw_hud(
         let alert_text = (!game.presentation.alerts.is_empty()).then(|| {
             alert_badge_text(&label(Action::JumpToLastAlert), crate::platform::TOUCH_ONLY)
         });
-        let status = if game.presentation.paused {
+        let status = if game.clock.paused {
             paused_status(&label(Action::TogglePause), crate::platform::TOUCH_ONLY)
-        } else if (game.presentation.speed - 1.0).abs() > f64::EPSILON {
-            format!("x{:.2}", game.presentation.speed)
+        } else if (game.clock.speed - 1.0).abs() > f64::EPSILON {
+            format!("x{:.2}", game.clock.speed)
         } else {
             let seconds = game.state.current_tick() / u64::from(oxide_sim::TICKS_PER_SECOND);
             format!("{}:{:02}", seconds / 60, seconds % 60)
@@ -610,7 +610,8 @@ pub(crate) fn draw_hud(
         pause_status = bar.pause_status;
     }
 
-    *game.presentation.panel_model.borrow_mut() = crate::panel::build_for_input(game, input);
+    *game.presentation.panel_model.borrow_mut() =
+        crate::panel::build_for_input(game, bindings, input);
     let panel = game.presentation.panel_model.borrow();
     let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
     let mut roster_slots = [(zero, crate::panel::CardAction::None); 8];
@@ -626,7 +627,7 @@ pub(crate) fn draw_hud(
     let mut minimap = minimap_rect(game);
     let mut panel_regions = [zero; 2];
     if let Some(panel) = panel.as_ref() {
-        let geometry = draw_panel(game, sprites, input, panel);
+        let geometry = draw_panel(game, sprites, input, bindings, panel);
         roster_slots = geometry.roster_slots;
         roster_count = geometry.roster_count;
         cards = geometry.cards;
@@ -659,7 +660,7 @@ pub(crate) fn draw_hud(
     } else {
         zero
     };
-    // Publish the frame's chrome geometry — the model hit-testing reads.
+    // Publish the frame's chrome geometry for hit-testing.
     let mut layout = crate::layout::LayoutModel::compute(
         vec2(screen_width(), screen_height()),
         s,
@@ -728,10 +729,9 @@ pub(crate) fn draw_hud(
     }
 
     // Spectator strip: a foundry-less or resigned seat on a living team
-    // stays in the match by design — masterless machines finish their
-    // orders and the team plays on — but the human deserves to be told
-    // the seat has no voice left. Commands still route; the sim rejects
-    // them.
+    // stays in the match (its machines finish their orders and the team
+    // plays on), so tell the human the seat can no longer act. Commands
+    // still route; the sim rejects them.
     let resigned = game.state.player(game.presentation.human).resigned;
     if game.state.result().is_none() && !game.state.accepts_commands(game.presentation.human) {
         let text = if resigned {
@@ -753,9 +753,8 @@ pub(crate) fn draw_hud(
 }
 
 /// A team-game concession can leave the match undecided while the ally
-/// keeps fighting. This compact exit offer is the only result-like layer
-/// gameplay still draws; a decided match moves to the dedicated Results
-/// screen with touchable next steps.
+/// keeps fighting. This compact exit offer is the only result layer
+/// gameplay draws; a decided match moves to the Results screen.
 pub(crate) fn draw_result_overlay(game: &crate::game::Scene<'_>) {
     if !game.presentation.conceded_banner || game.state.result().is_some() {
         return;

@@ -128,12 +128,11 @@ fn harvesters_weld_wounds_shut_for_a_price() {
 
 #[test]
 fn a_rejected_welders_prepaid_coin_comes_back() {
-    // The review scenario, made deterministic: two FRESH welders join
-    // a turret one hp from full. Their meters run in phase — both bill
-    // their first scrap on the same tick — but the ceiling accepts one
-    // step and rejects the other whole. The rejected welder's prepaid
-    // coin must come back at resolution; before the refund it simply
-    // vanished, and the crew paid two scrap for one hp.
+    // Two fresh welders join a turret one hp from full. Their meters run
+    // in phase (both bill their first scrap on the same tick), but the
+    // ceiling accepts one step and rejects the other whole. The rejected
+    // welder's prepaid scrap must come back at resolution, or the crew
+    // pays two scrap for one hp.
     let mut scenario = arena(vec![
         unit(0, UnitKind::Harvester, 4, 2),
         unit(1, UnitKind::Sentinel, 12, 6),
@@ -405,7 +404,7 @@ fn repair_rejects_the_healthy_the_foreign_and_the_unfinished() {
     let site = state
         .buildings()
         .iter()
-        .find(|b| !b.built)
+        .find(|b| !b.built())
         .expect("site placed")
         .id;
     let report = state.tick(&[cmd(
@@ -474,9 +473,9 @@ fn reclaimers_trickle_scrap_forever() {
 
 #[test]
 fn reissued_repairs_still_pay_for_the_welding() {
-    // The scripted tiers re-command their welder every think; the
-    // reissue must not reset the billing counter, or badly damaged
-    // buildings heal for free.
+    // A controller may re-command its welder every decision; the reissue
+    // must not reset the billing counter, or badly damaged buildings heal
+    // for free.
     let mut state = arena(vec![
         unit(0, UnitKind::Harvester, 4, 2),
         unit(1, UnitKind::Sentinel, 12, 6),
@@ -488,9 +487,8 @@ fn reissued_repairs_still_pay_for_the_welding() {
     let raiders = vec![state.units()[1].id, state.units()[2].id];
     let (turret, welder, _) = wounded_turret(&mut state, builder, &raiders);
     let bank_before = state.player(PlayerId(0)).scrap;
-    // Reissue the identical repair every 4 ticks — the bot-think cadence
-    // that used to reset the billing counter before it ever reached a
-    // whole scrap.
+    // Reissue the identical repair every 4 ticks: resetting the billing
+    // counter on reissue would keep it from ever reaching a whole scrap.
     let mut healed = false;
     for _ in 0..150 {
         state.tick(&[cmd(

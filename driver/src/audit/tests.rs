@@ -4,8 +4,7 @@ use oxide_sim::scenario::ScenarioMode;
 #[test]
 fn an_obstruction_never_shrinks_the_reported_air_route() {
     // The same map with and without the peak blob: adding an
-    // obstruction must never make air_tiles smaller. Mixed
-    // endpoint conventions once reported 8 open and 7 blocked.
+    // obstruction must never make air_tiles smaller.
     let build_map = |peaks: bool| {
         let mut rows = vec!["####################".to_string()];
         for y in 1..13 {
@@ -25,7 +24,6 @@ fn an_obstruction_never_shrinks_the_reported_air_route() {
         Scenario {
             mode: ScenarioMode::Match,
             name: "detour".into(),
-            seed: 5,
             map: rows,
             players: Scenario::skirmish().players,
             units: Vec::new(),
@@ -47,11 +45,9 @@ fn an_obstruction_never_shrinks_the_reported_air_route() {
 
 #[test]
 fn a_peak_detour_never_reads_shorter_than_the_straight_line() {
-    // Foundries on a diagonal with a peak blob astride the line:
-    // the detour branch must speak the same Euclidean-ish unit as
-    // open sky. A hop-counting BFS once made this exact geometry
-    // read CLOSER than an unobstructed flight (diagonal hops cost
-    // 1), inverting pace comparisons between maps.
+    // Foundries on a diagonal with a peak blob astride the line: the
+    // detour must report the same unit as open sky, so it never reads
+    // closer than an unobstructed flight.
     let mut rows = vec!["####################".to_string()];
     for y in 1..13 {
         let mut row = String::from("#");
@@ -70,7 +66,6 @@ fn a_peak_detour_never_reads_shorter_than_the_straight_line() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "detour".into(),
-        seed: 5,
         map: rows,
         players: Scenario::skirmish().players,
         units: Vec::new(),
@@ -89,9 +84,8 @@ fn a_peak_detour_never_reads_shorter_than_the_straight_line() {
 
 #[test]
 fn mirrored_seats_measure_identically() {
-    // Shipped maps are 180-degree symmetric; an audit that reports
-    // different room or spacing for mirror-identical seats would send
-    // map authors chasing ghosts in the measuring stick.
+    // Skirmish is 180-degree symmetric, so its mirror-identical seats
+    // must measure the same room and spacing.
     let audit = audit(&Scenario::skirmish()).unwrap();
     assert_eq!(audit.seats.len(), 2);
     let (a, b) = (&audit.seats[0], &audit.seats[1]);

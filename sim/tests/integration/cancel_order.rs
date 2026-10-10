@@ -19,7 +19,6 @@ fn sandbox(width: usize, height: usize, units: &[(u8, UnitKind, i32, i32)]) -> S
     Scenario {
         mode: ScenarioMode::Sandbox,
         name: "cancel-order".into(),
-        seed: 5,
         map: vec![".".repeat(width); height],
         players: [Faction::Ferrous, Faction::Cupric]
             .into_iter()
@@ -191,13 +190,13 @@ fn a_cancelled_harvest_keeps_its_cargo() {
         ),
     ]);
     run_until(&mut state, 400, |state, _| {
-        state.unit(worker).unwrap().carrying > 0
+        state.unit(worker).unwrap().carrying() > 0
     });
-    let cargo = state.unit(worker).unwrap().carrying;
+    let cargo = state.unit(worker).unwrap().carrying();
     state.tick(&[cancel(worker, OrderKey::Harvest { anchor: node }, 0, &[])]);
     let unit = state.unit(worker).unwrap();
     assert_eq!(keys(&state, worker), walks(&[home]));
-    assert_eq!(unit.carrying, cargo, "the hopper stays full");
+    assert_eq!(unit.carrying(), cargo, "the hopper stays full");
 }
 
 #[test]
@@ -224,7 +223,15 @@ fn cancelling_the_last_build_order_on_an_unstarted_site_refunds_it() {
         .expect("the site stands")
         .id;
     let paid = state.player(PlayerId(0)).scrap;
-    assert_eq!(state.building(site).unwrap().progress, 0, "test premise");
+    assert_eq!(
+        state
+            .building(site)
+            .unwrap()
+            .construction_progress()
+            .unwrap_or(0),
+        0,
+        "test premise"
+    );
     let report = state.tick(&[cancel(worker, OrderKey::Build { site }, 0, &[])]);
     let cost = BuildingKind::Turret
         .base_stats()

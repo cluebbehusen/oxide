@@ -1,4 +1,4 @@
-//! The 0.15 roster additions: the Warden line, the Tender's torch, the
+//! Roster additions: the Warden line, the Tender's torch, the
 //! Excavator's double-pace labor and its tech gate, and the scout and
 //! interceptor wings.
 
@@ -20,7 +20,6 @@ fn arena(scrap: u32, fabricator: bool, units: Vec<UnitSpec>) -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "roster-arena".into(),
-        seed: 9,
         map: vec![
             "####################".into(),
             "#1.................#".into(),
@@ -86,10 +85,10 @@ fn the_excavator_waits_on_the_fabricator_and_builds_at_double_pace() {
         for tick in 0..2_000u64 {
             state.tick(&[]);
             let building = state.building(site).unwrap();
-            if building.progress > 0 {
+            if building.construction_progress().unwrap_or(0) > 0 {
                 started.get_or_insert(tick);
             }
-            if building.built {
+            if building.built() {
                 return tick - started.expect("construction started") + 1;
             }
         }

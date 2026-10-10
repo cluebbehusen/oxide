@@ -90,7 +90,7 @@ pub(crate) fn threat(
     memory
         .units()
         .iter()
-        .filter(|unit| !unit.kind.stats().weapons.is_empty())
+        .filter(|unit| unit.kind.stats().can_fight())
         .filter(|unit| unit.kind.stats().domain == domain)
         .filter(|unit| domain == Domain::Air || map.distance(me, unit.tile) != UNREACHABLE)
         .map(|unit| unit.value(now))

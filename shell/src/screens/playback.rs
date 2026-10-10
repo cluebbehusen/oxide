@@ -2,6 +2,7 @@
 //! borrows it for rendering, interpolation, effects, and audio.
 
 use crate::action::{Action, ActionEvent, ActionResolver, BindingMap, Context as InputContext};
+use crate::camera::controls::{MinimapPoint, ViewerHands, event_point, held_pan, pan_toward};
 use crate::frame_time::FrameTime;
 use crate::game::{self, GameReplay, Presentation, Scene};
 use crate::numeric;
@@ -9,7 +10,6 @@ use crate::numeric::Fit;
 use crate::press::{Fed, Press};
 use crate::render;
 use crate::render::prim::{fill_rect, stroke_rect};
-use crate::viewer_touch::ViewerTouch;
 use anyhow::{Context, Result};
 use macroquad::prelude::*;
 #[cfg(test)]
@@ -17,42 +17,15 @@ use oxide_protocol::Key;
 use oxide_protocol::{MouseButton, RawEvent};
 use oxide_sim::SIM_VERSION;
 
-/// Where closing a playback viewer returns.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReturnTo {
-    /// A cold launch or replay-shelf viewer returns to Home.
-    Home,
-    /// A viewer opened over a paused live match returns to Pause.
-    Pause,
-    /// A completed match's viewer returns to its report.
-    Results,
-}
-
-/// What a held left press is dragging in playback.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlaybackDrag {
-    /// The timeline, seeking as it moves.
-    Timeline,
-    /// The minimap, steering the camera like live play.
-    Minimap,
-}
-
 /// Replay engine, presentation, and viewer transport controls.
 pub struct PlaybackSession {
     pub engine: oxide_kit::playback::Playback,
     pub presentation: Presentation,
-    pub speed: f32,
-    pub paused: bool,
-    pub accum: f32,
-    pub bindings: BindingMap,
+    /// Whether replay time runs, how fast, and its tick debt.
+    pub clock: game::Clock,
     resolver: ActionResolver,
-    middle_anchor: Option<Vec2>,
-    /// What a held left press is dragging, if anything.
-    pub drag: Option<PlaybackDrag>,
-    /// Explicit return destination. A tick-count heuristic resurrected
-    /// matches Main Menu had already discarded, while a boolean origin
-    /// could not distinguish the replay shelf from a match report.
-    pub return_to: ReturnTo,
+    /// A held left press is dragging the timeline, seeking as it moves.
+    pub scrubbing: bool,
     /// A seek in flight: the target tick, chipped away a budget per
     /// frame so the render thread never freezes on a long jump.
     pub seeking: Option<u64>,
@@ -60,10 +33,8 @@ pub struct PlaybackSession {
     buttons: Press<Transport>,
     /// The finger scrubbing the timeline, if one landed on the bar.
     scrub_finger: Option<u64>,
-    /// The finger steering the camera from the minimap.
-    minimap_finger: Option<u64>,
-    /// Pan and pinch for fingers on the battlefield.
-    viewer_touch: crate::viewer_touch::ViewerTouch,
+    /// Middle-drag, wheel, minimap and finger camera control.
+    hands: ViewerHands,
     /// The composition timeline overlay is showing.
     pub show_stats: bool,
     /// Match statistics, computed from the record on first toggle —
@@ -80,6 +51,7 @@ impl PlaybackSession {
             &self.replay.setup,
             &[],
             &self.presentation,
+            &self.clock,
         )
     }
 
@@ -105,25 +77,19 @@ impl PlaybackSession {
             oxide_sim::PlayerId(vantage.fit::<u8>()),
             render::viewport(),
         );
-        // Spectator truth: fog-free, but NOT the developer overlay —
-        // playback must look like the game, not the debugger.
+        // Spectator view: fog-free, but without the developer overlay, so
+        // playback looks like the game.
         presentation.spectate = true;
         Ok(Self {
             engine,
             presentation,
-            speed: 1.0,
-            paused: false,
-            accum: 0.0,
-            bindings: BindingMap::classic(),
+            clock: game::Clock::default(),
             resolver: ActionResolver::default(),
-            middle_anchor: None,
-            drag: None,
-            return_to: ReturnTo::Home,
+            scrubbing: false,
             seeking: None,
             buttons: Press::default(),
             scrub_finger: None,
-            minimap_finger: None,
-            viewer_touch: ViewerTouch::default(),
+            hands: ViewerHands::default(),
             show_stats: false,
             stats: None,
             replay: record,
@@ -143,11 +109,11 @@ impl PlaybackSession {
 
     fn sync_render_clock(&mut self) {
         self.presentation
-            .sync_external_tick_fraction(self.accum / game::TICK_DT);
+            .set_tick_fraction(self.clock.tick_fraction());
     }
 
     fn reset_clock_debt(&mut self) {
-        self.accum = 0.0;
+        self.clock.accum = 0.0;
         self.sync_render_clock();
     }
 }
@@ -178,13 +144,13 @@ pub fn scrub_rect(game: &Scene<'_>, viewport: Vec2) -> macroquad::prelude::Rect 
     macroquad::prelude::Rect::new(12.0 * s, y, (right - 12.0 * s).max(60.0 * s), 10.0 * s)
 }
 
-pub fn playback_hud(pb: &PlaybackSession, viewport: Vec2, mouse: Vec2) {
+pub fn playback_hud(pb: &PlaybackSession, bindings: &BindingMap, viewport: Vec2, mouse: Vec2) {
     let s = render::ui_scale();
     let size = 18.0 * s;
     for (rect, button) in transport_buttons(s) {
         let label = match button {
             Transport::Back => "BACK",
-            Transport::PlayPause if pb.paused => "PLAY",
+            Transport::PlayPause if pb.clock.paused => "PLAY",
             Transport::PlayPause => "PAUSE",
         };
         crate::button::draw(rect, label, rect.contains(mouse), s);
@@ -219,8 +185,8 @@ pub fn playback_hud(pb: &PlaybackSession, viewport: Vec2, mouse: Vec2) {
         composition_band(pb, stats, bar, s);
     }
     if let Some(target) = pb.seeking {
-        // Mid-seek the transport numbers would lie (the state is
-        // sprinting through the record); show honest progress instead.
+        // Mid-seek the transport numbers would show intermediate state;
+        // show seek progress instead.
         let line = format!("SEEKING  {} / {target}", pb.engine.position());
         let width = measure_text(&line, None, numeric::font_size(size), 1.0).width;
         let x = (screen_width() - width) * 0.5;
@@ -239,13 +205,13 @@ pub fn playback_hud(pb: &PlaybackSession, viewport: Vec2, mouse: Vec2) {
         "PLAYBACK {} / {} | {}x{} | {} pause | {}/{} seek | {} stats | {} leave",
         pb.engine.position(),
         pb.engine.total(),
-        pb.speed,
-        if pb.paused { " PAUSED" } else { "" },
-        pb.bindings.label(Action::ReplayPause),
-        pb.bindings.label(Action::ReplayBack),
-        pb.bindings.label(Action::ReplayForward),
-        pb.bindings.label(Action::ReplayStats),
-        pb.bindings.label(Action::Back),
+        pb.clock.speed,
+        if pb.clock.paused { " PAUSED" } else { "" },
+        bindings.label(Action::ReplayPause),
+        bindings.label(Action::ReplayBack),
+        bindings.label(Action::ReplayForward),
+        bindings.label(Action::ReplayStats),
+        bindings.label(Action::Back),
     );
     // A 640px window cannot seat the controls hint; the transport
     // numbers alone must never run off both edges. A touch-only build
@@ -259,8 +225,8 @@ pub fn playback_hud(pb: &PlaybackSession, viewport: Vec2, mouse: Vec2) {
             "PLAYBACK  {} / {}  |  {}x{}",
             pb.engine.position(),
             pb.engine.total(),
-            pb.speed,
-            if pb.paused { "  |  PAUSED" } else { "" },
+            pb.clock.speed,
+            if pb.clock.paused { "  |  PAUSED" } else { "" },
         )
     } else {
         full
@@ -402,11 +368,11 @@ impl PlaybackSession {
     /// Returns true when the viewer should close.
     pub fn apply_input(
         &mut self,
+        bindings: &BindingMap,
         events: &[RawEvent],
         dt: f32,
         viewport: Vec2,
-        zoom_inverted: bool,
-        pan_speed: f32,
+        prefs: crate::config::CameraPrefs,
         mouse: &mut Vec2,
     ) -> bool {
         let mut seek_to: Option<u64> = None;
@@ -416,22 +382,22 @@ impl PlaybackSession {
         for e in events {
             match e {
                 RawEvent::KeyDown { key } => {
-                    if let Some(ActionEvent::Pressed(action)) = self.resolver.key_edge_in(
-                        &self.bindings,
-                        *key,
-                        true,
-                        InputContext::Playback,
-                    ) {
+                    if let Some(ActionEvent::Pressed(action)) =
+                        self.resolver
+                            .key_edge_in(bindings, *key, true, InputContext::Playback)
+                    {
                         match action {
                             Action::Back => leave = true,
-                            Action::ReplayPause => self.paused = !self.paused,
+                            Action::ReplayPause => self.clock.paused = !self.clock.paused,
                             Action::ReplayBack => {
                                 seek_to = Some(self.engine.position().saturating_sub(500));
                             }
                             Action::ReplayForward => seek_to = Some(self.engine.position() + 500),
                             Action::ReplayStart => seek_to = Some(self.engine.start()),
                             Action::ReplayEnd => seek_to = Some(self.engine.total()),
-                            Action::ReplaySpeed(n) => self.speed = 0.5 * 2_f32.powi(i32::from(n)),
+                            Action::ReplaySpeed(n) => {
+                                self.clock.speed = 0.5 * 2_f64.powi(i32::from(n));
+                            }
                             Action::ReplayStats => self.toggle_stats(),
                             _ => {}
                         }
@@ -439,7 +405,7 @@ impl PlaybackSession {
                 }
                 RawEvent::KeyUp { key } => {
                     self.resolver
-                        .key_edge_in(&self.bindings, *key, false, InputContext::Playback);
+                        .key_edge_in(bindings, *key, false, InputContext::Playback);
                 }
                 _ => {
                     // The corner buttons see the pointer first; the
@@ -452,10 +418,12 @@ impl PlaybackSession {
                     };
                     match self.buttons.feed(e, zone_at) {
                         Fed::Activated(Transport::Back) => leave = true,
-                        Fed::Activated(Transport::PlayPause) => self.paused = !self.paused,
+                        Fed::Activated(Transport::PlayPause) => {
+                            self.clock.paused = !self.clock.paused;
+                        }
                         Fed::Held => {}
                         Fed::Ignored => {
-                            self.apply_pointer(e, viewport, ui, zoom_inverted, mouse, &mut seek_to);
+                            self.apply_pointer(e, viewport, ui, prefs, mouse, &mut seek_to);
                         }
                     }
                 }
@@ -464,151 +432,78 @@ impl PlaybackSession {
         if leave {
             return true;
         }
-        let mut dir = vec2(0.0, 0.0);
-        if self.resolver.is_held(Action::PanUp) {
-            dir.y -= 1.0;
-        }
-        if self.resolver.is_held(Action::PanDown) {
-            dir.y += 1.0;
-        }
-        if self.resolver.is_held(Action::PanLeft) {
-            dir.x -= 1.0;
-        }
-        if self.resolver.is_held(Action::PanRight) {
-            dir.x += 1.0;
-        }
-        if dir != vec2(0.0, 0.0) {
-            let world_per_sec = 240.0 * pan_speed / self.presentation.camera.zoom;
-            self.presentation
-                .camera
-                .pan(dir.normalize() * world_per_sec * dt);
-        }
+        pan_toward(
+            &mut self.presentation.camera,
+            held_pan(&self.resolver),
+            prefs,
+            dt,
+        );
         if let Some(target) = seek_to {
             // A fresh transport command replaces any seek in flight.
             self.seeking = Some(target.clamp(self.engine.start(), self.engine.total()));
-            self.accum = 0.0;
+            self.clock.accum = 0.0;
         }
         false
     }
 
     /// One pointer event on the timeline, minimap, or battlefield. A
-    /// finger that lands on the timeline scrubs and one on the minimap
-    /// steers; any other finger pans or pinches the camera.
+    /// finger or press that lands on the timeline scrubs; everything else
+    /// is the camera's.
     fn apply_pointer(
         &mut self,
         e: &RawEvent,
         viewport: Vec2,
         ui: f32,
-        zoom_inverted: bool,
+        prefs: crate::config::CameraPrefs,
         mouse: &mut Vec2,
         seek_to: &mut Option<u64>,
     ) {
+        let bar = scrub_rect(&self.view(), viewport);
         match *e {
-            RawEvent::MouseMove { x, y } => {
-                *mouse = vec2(x, y);
-                if let Some(anchor) = self.middle_anchor {
-                    self.presentation
-                        .camera
-                        .pan((anchor - *mouse) / self.presentation.camera.zoom);
-                    self.middle_anchor = Some(*mouse);
-                }
-                match self.drag {
-                    Some(PlaybackDrag::Timeline) => {
-                        let bar = scrub_rect(&self.view(), viewport);
-                        *seek_to = Some(self.tick_at(bar, mouse.x));
-                    }
-                    Some(PlaybackDrag::Minimap) => self.steer_minimap(*mouse),
-                    None => {}
-                }
-            }
             RawEvent::MouseDown {
                 button: MouseButton::Left,
                 x,
                 y,
-            } => {
+            } if bar.contains(vec2(x, y)) => {
                 *mouse = vec2(x, y);
-                let bar = scrub_rect(&self.view(), viewport);
-                if bar.contains(*mouse) {
-                    self.drag = Some(PlaybackDrag::Timeline);
-                    *seek_to = Some(self.tick_at(bar, mouse.x));
-                } else if let Some(world) = render::minimap_world_at(&self.view(), *mouse) {
-                    self.presentation.camera.center = world;
-                    self.presentation.camera.pan(vec2(0.0, 0.0));
-                    self.drag = Some(PlaybackDrag::Minimap);
-                }
+                self.scrubbing = true;
+                *seek_to = Some(self.tick_at(bar, x));
+                return;
             }
             RawEvent::MouseUp {
                 button: MouseButton::Left,
                 ..
-            } => {
-                self.drag = None;
+            } => self.scrubbing = false,
+            RawEvent::TouchDown { id, .. } if self.scrub_finger == Some(id) => {
+                // A platform's repeat report of the scrubbing finger.
+                return;
             }
-            RawEvent::Wheel { delta } => {
-                let delta = if zoom_inverted { -delta } else { delta };
-                self.presentation.camera.zoom_at(*mouse, delta);
+            RawEvent::TouchDown { id, x, y }
+                if self.scrub_finger.is_none()
+                    && crate::layout::touch_pad(bar, ui).contains(vec2(x, y)) =>
+            {
+                self.scrub_finger = Some(id);
+                *seek_to = Some(self.tick_at(bar, x));
+                return;
             }
-            RawEvent::MouseDown {
-                button: MouseButton::Middle,
-                x,
-                y,
-            } => self.middle_anchor = Some(vec2(x, y)),
-            RawEvent::MouseUp {
-                button: MouseButton::Middle,
-                ..
-            } => self.middle_anchor = None,
-            RawEvent::TouchDown { id, x, y } => {
-                let p = vec2(x, y);
-                let bar = scrub_rect(&self.view(), viewport);
-                if self.scrub_finger == Some(id) || self.minimap_finger == Some(id) {
-                    // A platform's repeat report of a finger already
-                    // scrubbing or steering.
-                } else if self.scrub_finger.is_none()
-                    && crate::layout::touch_pad(bar, ui).contains(p)
-                {
-                    self.scrub_finger = Some(id);
-                    *seek_to = Some(self.tick_at(bar, p.x));
-                } else if self.minimap_finger.is_none()
-                    && let Some(world) = render::minimap_world_at(&self.view(), p)
-                {
-                    self.minimap_finger = Some(id);
-                    self.presentation.camera.center = world;
-                    self.presentation.camera.pan(vec2(0.0, 0.0));
-                } else {
-                    self.viewer_touch
-                        .apply(e, &mut self.presentation.camera, ui);
-                }
+            RawEvent::TouchMove { id, x, .. } if self.scrub_finger == Some(id) => {
+                *seek_to = Some(self.tick_at(bar, x));
+                return;
             }
-            RawEvent::TouchMove { id, x, y } => {
-                if self.scrub_finger == Some(id) {
-                    let bar = scrub_rect(&self.view(), viewport);
-                    *seek_to = Some(self.tick_at(bar, x));
-                } else if self.minimap_finger == Some(id) {
-                    self.steer_minimap(vec2(x, y));
-                } else {
-                    self.viewer_touch
-                        .apply(e, &mut self.presentation.camera, ui);
-                }
-            }
-            RawEvent::TouchUp { id, .. } => {
-                if self.scrub_finger == Some(id) {
-                    self.scrub_finger = None;
-                } else if self.minimap_finger == Some(id) {
-                    self.minimap_finger = None;
-                } else {
-                    self.viewer_touch
-                        .apply(e, &mut self.presentation.camera, ui);
-                }
+            RawEvent::TouchUp { id, .. } if self.scrub_finger == Some(id) => {
+                self.scrub_finger = None;
+                return;
             }
             _ => {}
         }
-    }
-
-    /// A held minimap press keeps steering, clamped so sliding off the
-    /// edge doesn't stall the pan: the same feel as live play.
-    fn steer_minimap(&mut self, p: Vec2) {
-        if let Some(world) = render::minimap_world_clamped(&self.view(), p) {
-            self.presentation.camera.center = world;
-            self.presentation.camera.pan(vec2(0.0, 0.0));
+        let minimap = event_point(e).map_or_else(MinimapPoint::default, |p| MinimapPoint {
+            under: render::minimap_world_at(&self.view(), p),
+            clamped: render::minimap_world_clamped(&self.view(), p),
+        });
+        self.hands
+            .pointer(e, minimap, &mut self.presentation.camera, mouse, prefs, ui);
+        if self.scrubbing && matches!(e, RawEvent::MouseMove { .. }) {
+            *seek_to = Some(self.tick_at(bar, mouse.x));
         }
     }
 
@@ -618,9 +513,8 @@ impl PlaybackSession {
     /// live play.
     pub fn advance_frame(&mut self, time: FrameTime, viewport: Vec2) {
         if let Some(target) = self.seeking {
-            // Budgeted: a slice per frame keeps a long first jump from
-            // hitching the render thread; sim ticks run thousands per
-            // second, so 2000 is comfortably under a frame.
+            // Budgeted: a slice per frame keeps a long jump from hitching
+            // the render thread.
             if self.engine.seek_step(target, 2_000) {
                 self.seeking = None;
             }
@@ -628,34 +522,27 @@ impl PlaybackSession {
             // destination as both interpolation endpoints instead of
             // drawing motion from the prior timeline while seeking.
             self.presentation.reset_after_jump(&self.engine.state);
-        } else if !self.paused && !self.engine.at_end() {
-            self.accum += time.raw * self.speed;
-            let ticks = numeric::to_u64(self.accum / game::TICK_DT);
-            if ticks > 0 {
-                self.accum -= ticks as f32 * game::TICK_DT;
-                // One tick per present: fog is per-tick truth, and
-                // batching sight checks against the final state judged
-                // sounds by the wrong tick's sight. Ticks past the cap
-                // are dropped debt, exactly like the live clock after a
-                // hitch.
-                for _ in 0..ticks.min(24) {
-                    self.presentation.remember_previous_tick(&self.engine.state);
-                    let events = self.engine.advance(1);
-                    self.presentation.observe_tick(
-                        &self.engine.state,
-                        &events,
-                        &self.engine.last_motion,
-                    );
-                    if self.engine.at_end() {
-                        break;
-                    }
+        } else if !self.clock.paused && !self.engine.at_end() {
+            // One tick at a time: fog is per-tick truth, so each tick's
+            // sounds are judged by that tick's sight.
+            for _ in 0..self.clock.due_ticks(time.raw) {
+                self.presentation.remember_previous_tick(&self.engine.state);
+                let events = self.engine.advance(1);
+                self.presentation.observe_tick(
+                    &self.engine.state,
+                    &events,
+                    &self.engine.last_motion,
+                );
+                if self.engine.at_end() {
+                    break;
                 }
             }
         }
         self.sync_render_clock();
-        self.presentation.paused = self.paused;
-        self.presentation
-            .update_wall_clock_fx(&self.engine.state, time.presentation);
+        if !self.clock.paused {
+            self.presentation
+                .update_fx(&self.engine.state, time.presentation);
+        }
         self.presentation.camera.set_viewport(viewport);
         self.presentation.camera.update(time.presentation);
     }
@@ -663,22 +550,15 @@ impl PlaybackSession {
     #[cfg(test)]
     fn update(
         &mut self,
+        bindings: &BindingMap,
         events: &[RawEvent],
         dt: f32,
         viewport: Vec2,
-        zoom_inverted: bool,
-        pan_speed: f32,
+        prefs: crate::config::CameraPrefs,
         mouse: &mut Vec2,
     ) -> bool {
         let time = FrameTime::measure(dt);
-        let leave = self.apply_input(
-            events,
-            time.presentation,
-            viewport,
-            zoom_inverted,
-            pan_speed,
-            mouse,
-        );
+        let leave = self.apply_input(bindings, events, time.presentation, viewport, prefs, mouse);
         if !leave {
             self.advance_frame(time, viewport);
         }
@@ -693,10 +573,10 @@ impl oxide_protocol::DebugSession for PlaybackSession {
     fn status(&self) -> oxide_protocol::StatusView {
         oxide_protocol::StatusView {
             tick: self.engine.state.current_tick(),
-            paused: self.paused,
-            speed: f64::from(self.speed),
+            paused: self.clock.paused,
+            speed: self.clock.speed,
             scenario: self.replay.setup.name.clone(),
-            sim_version: SIM_VERSION.to_string(),
+            sim_version: SIM_VERSION,
             result: self.engine.state.result(),
             recorded_commands: 0,
         }
@@ -707,10 +587,10 @@ impl oxide_protocol::DebugSession for PlaybackSession {
     }
 
     fn advance(&mut self, ticks: u64) -> oxide_protocol::AdvancedView {
-        // Seek, don't advance: advance collects the interval's events
-        // for presentation, and a million-tick battle's worth of them is
-        // memory nobody will hear. The reply reports what actually ran —
-        // a replay near its end advances less than asked.
+        // Seek, don't advance: advance collects the interval's events for
+        // presentation, which over a long interval is wasted memory. The
+        // reply reports what actually ran; a replay near its end advances
+        // less than asked.
         //
         // An external transport op replaces any UI seek in flight: left
         // pending, the stale target resumes next frame and rewinds the
@@ -759,14 +639,13 @@ impl oxide_protocol::DebugSession for PlaybackSession {
     }
 
     fn set_paused(&mut self, paused: bool) -> Result<(), String> {
-        self.paused = paused;
-        self.presentation.paused = paused;
+        self.clock.paused = paused;
         Ok(())
     }
 
     fn set_speed(&mut self, multiplier: f64) -> Result<(), String> {
         oxide_protocol::check_speed(multiplier)?;
-        self.speed = numeric::to_f32(multiplier);
+        self.clock.speed = multiplier;
         Ok(())
     }
 }

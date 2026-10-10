@@ -50,8 +50,8 @@ cargo run --release --locked -p oxide-driver -- run scenarios/compass-grand.json
 cargo run --release --locked -p oxide-driver -- run scenarios/skyhook-anchorage.json --bots --ticks 6480 --save-replay replays/performance/skyhook.json
 ```
 
-Use the authored scenario seeds and configured bot profiles. `--bots` retains
-one passive local seat and the configured opponents; `--all-bots` is a different
+Use the authored scenarios and configured bot profiles. `--bots` retains one
+passive local seat and the configured opponents; `--all-bots` is a different
 workload. Preserve these generated inputs for the candidate/control comparison.
 Do not independently regenerate both sides and assume their worlds are equal.
 Record the source commit and any setup/profile changes beside the results.
@@ -87,12 +87,6 @@ improvement.
 
 Use the native shell for these measurements. The live protocol remains usable
 for UI/status queries while a persistence operation owns the session.
-
-For a fixed late-game input, copy the retained
-[Skyhook checkpoint](../../../../driver/tests/fixtures/performance/skyhook-late.oxsave)
-into the isolated profile's saves folder, then load it through the shelf. It has
-seven bots at tick 21839 and is a profiling fixture, not a format-compatibility
-golden. Replace it deliberately when the unpublished format changes.
 
 For an isolated automated session, launch from a separate terminal. This changes
 only the child process environment and prints the disposable profile location:

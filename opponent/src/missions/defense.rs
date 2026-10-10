@@ -15,6 +15,7 @@ use crate::decision::Ledger;
 use crate::frame::{HomeFrame, centre_distance, doubled, footprint_centre, gap, ring};
 use crate::map::MapModel;
 use crate::memory::Memory;
+use chassis::fx::Fx;
 use chassis::grid::TilePos;
 use oxide_sim::observation::{BuildingObs, ObservationData, UnitObs};
 use oxide_sim::stats::{Domain, WeaponStats};
@@ -46,9 +47,10 @@ impl Missions {
     /// threats until, in each domain it is attacked from, they outweigh the
     /// attackers by half again, and sends them at the grounded threat nearest
     /// the Foundry, else at a gun out of sight. A shelling building counts
-    /// with the known defense around it, and only while the units the defense
-    /// holds or could take would beat that defense by half again. A defense that is only
-    /// recovering lends its units, as does an attack not yet fighting.
+    /// with the known defense around it, and only while the units the
+    /// defense holds or could take would beat that defense by half again. A
+    /// defense that is only recovering lends its units, as does an attack not
+    /// yet fighting.
     /// Returns each of the seat's own Foundries whose defense falls short of
     /// its attackers, home-nearest first.
     ///
@@ -494,7 +496,7 @@ fn besieged<'a>(
         (0..foundries.len()).min_by_key(|index| {
             let foundry = foundries[*index];
             (
-                gap(foundry.anchor, foundry.kind.base_stats().size, anchor, size),
+                gap(foundry.anchor, foundry.kind.size(), anchor, size),
                 frame.rank(centre, footprint_centre(foundry.kind, foundry.anchor)),
             )
         })
@@ -507,21 +509,17 @@ fn besieged<'a>(
             continue;
         };
         // A gun shelling the base from beyond the threat gap still counts.
-        let near = buildings.iter().any(|building| {
-            gap(
-                building.anchor,
-                building.kind.base_stats().size,
-                enemy.tile,
-                (1, 1),
-            ) < reach
-        }) || shelled.iter().any(|impact| {
-            enemy
-                .kind
-                .stats()
-                .weapons
-                .iter()
-                .any(|weapon| shells(weapon, doubled(enemy.tile), *impact))
-        });
+        let near = buildings
+            .iter()
+            .any(|building| gap(building.anchor, building.kind.size(), enemy.tile, (1, 1)) < reach)
+            || shelled.iter().any(|impact| {
+                enemy
+                    .kind
+                    .stats()
+                    .weapons
+                    .iter()
+                    .any(|weapon| shells(weapon, doubled(enemy.tile), *impact))
+            });
         if !near {
             continue;
         }
@@ -543,7 +541,7 @@ fn besieged<'a>(
         {
             continue;
         }
-        let size = building.kind.base_stats().size;
+        let size = building.kind.size();
         let centre = footprint_centre(building.kind, building.anchor);
         let Some(index) = nearest(building.anchor, size, centre) else {
             continue;
@@ -572,12 +570,7 @@ fn shelled(observation: &ObservationData, buildings: &[BuildingObs]) -> Vec<Tile
         .copied()
         .filter(|impact| {
             buildings.iter().any(|building| {
-                gap(
-                    building.anchor,
-                    building.kind.base_stats().size,
-                    *impact,
-                    (1, 1),
-                ) < THREAT_GAP
+                gap(building.anchor, building.kind.size(), *impact, (1, 1)) < THREAT_GAP
             })
         })
         .collect()
@@ -604,7 +597,7 @@ fn shells(weapon: &WeaponStats, from: (i64, i64), impact: TilePos) -> bool {
     let to = doubled(impact);
     let (dx, dy) = (to.0 - from.0, to.1 - from.1);
     weapon.targets.ground
-        && (weapon.indirect || weapon.projectile)
+        && (weapon.indirect || weapon.projectile.is_some())
         && dx * dx + dy * dy <= reach * reach
 }
 
@@ -654,12 +647,7 @@ fn unseen<'a>(
     let nearest = |impact: TilePos| {
         foundries.iter().copied().min_by_key(|foundry| {
             (
-                gap(
-                    foundry.anchor,
-                    foundry.kind.base_stats().size,
-                    impact,
-                    (1, 1),
-                ),
+                gap(foundry.anchor, foundry.kind.size(), impact, (1, 1)),
                 frame.rank(
                     doubled(impact),
                     footprint_centre(foundry.kind, foundry.anchor),
@@ -775,19 +763,14 @@ fn guard(
         .filter(|building| map.component(building.anchor) == component)
         .min_by_key(|building| {
             (
-                gap(
-                    building.anchor,
-                    building.kind.base_stats().size,
-                    flyer,
-                    (1, 1),
-                ),
+                gap(building.anchor, building.kind.size(), flyer, (1, 1)),
                 frame.rank(
                     doubled(flyer),
                     footprint_centre(building.kind, building.anchor),
                 ),
             )
         })?;
-    ring(building.anchor, building.kind.base_stats().size)
+    ring(building.anchor, building.kind.size())
         .filter(|tile| map.component(*tile) == component)
         .min_by_key(|tile| frame.rank(doubled(flyer), doubled(*tile)))
 }
@@ -796,14 +779,8 @@ fn guard(
 /// its longest reach against ground if longer. `None` when it cannot hit
 /// ground at all.
 fn ground_reach(enemy: &UnitObs) -> Option<i32> {
-    enemy
-        .kind
-        .stats()
-        .weapons
-        .iter()
-        .filter(|weapon| weapon.targets.ground)
-        .map(|weapon| weapon.range.ceil().to_num::<i32>().max(THREAT_GAP))
-        .max()
+    let reach = crate::defenses::reach(enemy.kind);
+    (reach > Fx::ZERO).then(|| reach.ceil().to_num::<i32>().max(THREAT_GAP))
 }
 
 #[cfg(test)]

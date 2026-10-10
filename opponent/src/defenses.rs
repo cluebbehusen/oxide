@@ -1,9 +1,10 @@
 //! Static defense: Turrets, Bastions and Flak Turrets beside the seat's most
 //! valuable buildings, on the side threats come from, Arrays watching the
 //! way in, Barricades ahead of the guns, Scuttle Charges on the approach,
-//! upgrades for them, and a Repair Bay where the seat's wounded are. Each is an ordinary investment, worth what it adds to
-//! the cover of those buildings' approaches. A short defense also buys one
-//! defense at once where attackers find a building's approach uncovered.
+//! upgrades for them, and a Repair Bay where the seat's wounded are. Each is
+//! an ordinary investment, worth what it adds to the cover of those
+//! buildings' approaches. A short defense also buys one defense at once where
+//! attackers find a building's approach uncovered.
 
 use crate::composition;
 use crate::decision::Ledger;
@@ -289,7 +290,7 @@ impl Cover {
             min2: i64::MAX,
             range: Fx::ZERO,
             minimum: Fx::MAX,
-            size: stats.size,
+            size: kind.size(),
             ground: false,
             air: false,
         };
@@ -534,10 +535,11 @@ impl<'a> Guard<'a> {
 
     /// What a defense of `kind` at `anchor` adds to `asset`'s approach: for a
     /// gun, the army scrap it closes of the shortfall against the threat
-    /// along the way at each sample it covers, at most its strength. A Bastion counts only samples its owner's or an
-    /// ally's buildings see, since it fires no further than something spots
-    /// for it. An Array adds two thousand for each point further along the way
-    /// in that nothing sees yet.
+    /// along the way at each sample it covers, at most its strength. A
+    /// Bastion counts only samples its owner's or an ally's buildings see,
+    /// since it fires no further than something spots for it. An Array adds
+    /// two thousand for each point further along the way in that nothing
+    /// sees yet.
     fn gain(asset: &Asset, kind: BuildingKind, anchor: TilePos, reach: Option<Cover>) -> u64 {
         if kind == BuildingKind::Array {
             let centre = footprint_centre(kind, anchor);
@@ -600,7 +602,7 @@ impl<'a> Guard<'a> {
         for gun in observation.my_buildings.iter().filter(|building| {
             building.built && matches!(building.kind, BuildingKind::Turret | BuildingKind::Bastion)
         }) {
-            let size = gun.kind.base_stats().size;
+            let size = gun.kind.size();
             let fronted = barricades.iter().any(|barricade| {
                 gap(gun.anchor, size, barricade.anchor, (1, 1)) <= BARRICADE_GAP + 1
             });
@@ -658,9 +660,7 @@ impl<'a> Guard<'a> {
                 continue;
             }
             let health = health(self.memory, observation.tick, approach.source, self.stakes);
-            // Charges deal the threat's health in the share of the way the
-            // guns covering it leave open, of the samples `counts`, one body
-            // to a blast.
+            // The charges a field needs over the samples `counts`.
             let need = |counts: &dyn Fn(usize) -> bool, share: (u64, u64)| {
                 let open: Vec<u64> = approach
                     .open
@@ -743,12 +743,12 @@ impl<'a> Guard<'a> {
     }
 
     /// The best spot for a Repair Bay beside a guarded building: where its
-    /// aura reaches the most missing value among the
-    /// seat's wounded ground units and damaged buildings that no Repair Bay
-    /// reaches yet, as its anchor and that value.
+    /// aura reaches the most missing value among the seat's wounded ground
+    /// units and damaged buildings that no Repair Bay reaches yet, as its
+    /// anchor and that value.
     fn bay(&self) -> Option<(TilePos, u64)> {
         let observation = self.observation;
-        let size = BuildingKind::RepairBay.base_stats().size;
+        let size = BuildingKind::RepairBay.size();
         let bays: Vec<TilePos> = observation
             .my_buildings
             .iter()
@@ -784,7 +784,7 @@ impl<'a> Guard<'a> {
                     .construction
                     .as_ref()
                     .map_or(FOUNDRY_REPAIR_PRICE, |construction| construction.cost);
-                let span = Span::of(building.kind.base_stats().size, building.anchor);
+                let span = Span::of(building.kind.size(), building.anchor);
                 (span, price, building.hp, stats.max_hp)
             });
         let wounds: Vec<(Span, u64)> = units
@@ -848,7 +848,7 @@ impl<'a> Guard<'a> {
             .map
             .component(anchor)
             .is_some_and(|ground| self.crews.contains(&ground));
-        let (width, height) = kind.base_stats().size;
+        let (width, height) = kind.size();
         let laned = || {
             (0..height)
                 .flat_map(|dy| (0..width).map(move |dx| anchor.offset(dx, dy)))
@@ -1059,10 +1059,10 @@ pub(crate) fn investments(
 
 /// An upgrade for a built defense, worth what the strength it adds closes at
 /// the approach samples the next tier covers, per scrap, or for an Array the
-/// far points its radar watches, each by how sure the seat
-/// is of the threat, unless an enemy in sight could hit it while it is down,
-/// from the defense's reach or its own, or the next tier needs a building the
-/// seat has not built.
+/// far points its radar watches, each by how sure the seat is of the threat,
+/// unless an enemy in sight could hit it while it is down, from the
+/// defense's reach or its own, or the next tier needs a building the seat
+/// has not built.
 fn upgrade(guard: &Guard<'_>, building: &BuildingObs, weight: u64) -> Option<(Investment, u32)> {
     let observation = guard.observation;
     if !building.built {
@@ -1088,23 +1088,13 @@ fn upgrade(guard: &Guard<'_>, building: &BuildingObs, weight: u64) -> Option<(In
         .max()
         .unwrap_or(0);
     let threatened = observation.enemy_units.iter().any(|enemy| {
-        let Some(strike) = enemy
-            .kind
-            .stats()
-            .weapons
-            .iter()
-            .filter(|weapon| weapon.targets.ground)
-            .map(|weapon| weapon.range.ceil().to_num::<i32>())
-            .max()
-        else {
+        let strike = self::reach(enemy.kind);
+        if strike == Fx::ZERO {
             return false;
-        };
-        gap(
-            building.anchor,
-            building.kind.base_stats().size,
-            enemy.tile,
-            (1, 1),
-        ) < reach.max(strike) + UPGRADE_CLEARANCE
+        }
+        let strike = strike.ceil().to_num::<i32>();
+        gap(building.anchor, building.kind.size(), enemy.tile, (1, 1))
+            < reach.max(strike) + UPGRADE_CLEARANCE
     });
     if !ready || threatened {
         return None;
@@ -1201,7 +1191,7 @@ pub(crate) fn emergency(
         (Domain::Ground, BuildingKind::Turret),
         (Domain::Air, BuildingKind::FlakTurret),
     ] {
-        let size = kind.base_stats().size;
+        let size = kind.size();
         // An unfinished one beside its buildings already answers it.
         let unanswered = |asset: &Asset| {
             !observation.my_buildings.iter().any(|building| {
@@ -1308,13 +1298,17 @@ fn health(memory: &Memory, now: u64, source: (i64, i64), stakes: Stakes) -> u64 
     near.max(stakes.minimum * u64::from(sentinel.max_hp) / u64::from(sentinel.cost))
 }
 
-/// How far `kind` fires at buildings.
+/// How far `kind` strikes buildings, a demolition charge's contact
+/// included; zero when it cannot.
 pub(crate) fn reach(kind: UnitKind) -> Fx {
-    kind.stats()
+    let stats = kind.stats();
+    let contact = stats.demolition.map(|charge| charge.contact_range);
+    stats
         .weapons
         .iter()
         .filter(|weapon| weapon.targets.ground)
         .map(|weapon| weapon.range)
+        .chain(contact)
         .max()
         .unwrap_or(Fx::ZERO)
 }
@@ -1327,7 +1321,7 @@ fn armed_near(
 ) -> impl Iterator<Item = &SeenUnit> {
     memory.units().iter().filter(move |unit| {
         let stats = unit.kind.stats();
-        !stats.weapons.is_empty()
+        stats.can_fight()
             && stats.domain == domain
             && chebyshev(doubled(unit.tile), source) <= 2 * GROUP_TILES
     })
@@ -1366,7 +1360,7 @@ fn in_sight(observation: &ObservationData, map: &MapModel) -> Vec<Enemy> {
 /// Whether `kind` fights or carries others.
 fn attacker(kind: UnitKind) -> bool {
     let stats = kind.stats();
-    !stats.weapons.is_empty() || stats.transport_capacity > 0
+    stats.can_fight() || stats.transport_capacity > 0
 }
 
 /// The ground around a `size` footprint at `anchor`.
@@ -1403,7 +1397,7 @@ fn buildings(observation: &ObservationData, frame: HomeFrame) -> Vec<Asset> {
         .iter()
         .filter(|building| building.built)
         .filter_map(|building| {
-            let size = building.kind.base_stats().size;
+            let size = building.kind.size();
             let value = match building.kind {
                 BuildingKind::Foundry if foundries.len() == 1 => 16,
                 BuildingKind::Foundry => FOUNDRY_VALUE,
@@ -1412,12 +1406,8 @@ fn buildings(observation: &ObservationData, frame: HomeFrame) -> Vec<Asset> {
                 BuildingKind::Fabricator => 8,
                 BuildingKind::Extractor => {
                     let supported = foundries.iter().any(|foundry| {
-                        gap(
-                            foundry.anchor,
-                            foundry.kind.base_stats().size,
-                            building.anchor,
-                            size,
-                        ) <= OUTLYING_GAP
+                        gap(foundry.anchor, foundry.kind.size(), building.anchor, size)
+                            <= OUTLYING_GAP
                     });
                     if supported { 8 } else { OUTLYING_VALUE }
                 }
@@ -1440,12 +1430,12 @@ fn buildings(observation: &ObservationData, frame: HomeFrame) -> Vec<Asset> {
 }
 
 /// What the seat guards, most valuable first: each base, and each Extractor
-/// more than eight tiles from every Foundry on its own. A base grows from the
+/// beyond `OUTLYING_GAP` of every Foundry on its own. A base grows from the
 /// seat's start Foundry, a Foundry founded on an expansion site, or failing
 /// those any Foundry on its ground, and holds every other built building but
 /// defenses nearest it on that ground.
 fn bases(observation: &ObservationData, map: &MapModel, frame: HomeFrame) -> Vec<Asset> {
-    let size = |building: &BuildingObs| building.kind.base_stats().size;
+    let size = |building: &BuildingObs| building.kind.size();
     let foundries: Vec<&BuildingObs> = observation
         .my_buildings
         .iter()
@@ -1622,7 +1612,7 @@ impl Known<'_> {
                 )
                 .map(|(kind, anchor)| Base {
                     centre: footprint_centre(kind, anchor),
-                    grounds: grounds(self.map, anchor, kind.base_stats().size),
+                    grounds: grounds(self.map, anchor, kind.size()),
                 })
                 .collect()
         })
@@ -1948,7 +1938,7 @@ pub(crate) fn keeps_paths(
             .then(|| tile.row_major(width))
     };
     let tiles = |kind: BuildingKind, anchor: TilePos| {
-        let (w, h) = kind.base_stats().size;
+        let (w, h) = kind.size();
         (0..h).flat_map(move |dy| (0..w).map(move |dx| anchor.offset(dx, dy)))
     };
     let claims: Vec<(BuildingKind, TilePos)> = observation
@@ -1985,7 +1975,7 @@ pub(crate) fn keeps_paths(
     let open = |tile: TilePos| {
         index(tile).is_some_and(|at| !blocked[at]) && map.component(tile) == Some(ground)
     };
-    let foundry = BuildingKind::Foundry.base_stats().size;
+    let foundry = BuildingKind::Foundry.size();
     let mut reached = vec![false; chassis::grid::cell_count(width, height)];
     let foundries: Vec<TilePos> = observation
         .my_buildings
@@ -2034,7 +2024,7 @@ pub(crate) fn keeps_paths(
     let reached_at = |tile: TilePos| index(tile).is_some_and(|at| reached[at]);
     // Workers build from a tile beside a footprint's edge, not its corner.
     let sides = |kind: BuildingKind, anchor: TilePos| {
-        let (w, h) = kind.base_stats().size;
+        let (w, h) = kind.size();
         let inside = |v: i32, low: i32, len: i32| (low..low + len).contains(&v);
         ring(anchor, (w, h))
             .filter(move |tile| inside(tile.x, anchor.x, w) || inside(tile.y, anchor.y, h))
@@ -2056,7 +2046,7 @@ pub(crate) fn keeps_paths(
         .iter()
         .filter(|building| building.built && !building.kind.base_stats().produces.is_empty())
         .filter(|building| on(building.anchor))
-        .all(|building| beside(building.anchor, building.kind.base_stats().size));
+        .all(|building| beside(building.anchor, building.kind.size()));
     let nodes = map
         .home_nodes(me)
         .iter()
@@ -2156,7 +2146,7 @@ fn guard_sites(
     approach: &Approach,
     kind: BuildingKind,
 ) -> Vec<TilePos> {
-    let size = kind.base_stats().size;
+    let size = kind.size();
     if let Some(cut) = &approach.cut {
         let mut sites: Vec<TilePos> = cut
             .gates
@@ -2190,11 +2180,14 @@ fn guard_sites(
     sites
 }
 
-/// The domain a defense of `kind` fires at.
+/// The domain a defense of `kind` fires at: air for a gun that hits only
+/// aircraft, ground otherwise, an unarmed work such as the Array included.
 fn domain(kind: BuildingKind) -> Domain {
-    match kind {
-        BuildingKind::FlakTurret => Domain::Air,
-        _ => Domain::Ground,
+    let weapons = kind.base_stats().weapons;
+    if !weapons.is_empty() && weapons.iter().all(|weapon| !weapon.targets.ground) {
+        Domain::Air
+    } else {
+        Domain::Ground
     }
 }
 
@@ -2204,10 +2197,7 @@ fn chebyshev(a: (i64, i64), b: (i64, i64)) -> i64 {
 
 /// How many enemies a splash shell hits, in thousandths, against a spread
 /// enemy and a clustered one. A spread enemy stands too far apart for a
-/// shell to hit two. Staged fights of a lone Bastion against Sentinels
-/// matched about one and a third hits a shell in a column and four and a
-/// half in a clump; both count as clustered, so a clustered enemy counts
-/// three.
+/// shell to hit two; a clustered one, in a column or a clump, counts three.
 const SPLASH_TARGETS: [u64; 2] = [1_000, 3_000];
 
 /// What a gun holds off, in army scrap: the price of the Sentinels that would

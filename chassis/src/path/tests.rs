@@ -27,11 +27,10 @@ fn expansion_count_tracks_success_exhaustion_caps_and_early_exits() {
     assert_eq!(scratch.last_expansions(), 0);
 }
 
-/// The tuple-heap A* the dial replaced, kept verbatim as the
-/// oracle: identical expansion body, global
-/// `(f, h, query-oriented rank, index)` heap for the open set. The
-/// dial's whole claim is popping this exact order, so any divergence in
-/// paths or exhaustion isolates to the queue.
+/// Reference A* with the same expansion body and a global
+/// `(f, h, query-oriented rank, index)` tuple heap for the open set. The
+/// dial must pop this exact order, so any divergence in paths or
+/// exhaustion isolates to the queue.
 fn reference_astar(
     width: i32,
     height: i32,
@@ -129,7 +128,7 @@ fn reference_astar(
 /// Hundreds of random worlds, byte-compared against the oracle:
 /// walls at varied density, non-square dimensions, unreachable
 /// goals, tight expansion caps, and scratch reuse across all of
-/// it. The dial must match the tuple heap exactly, path for path.
+/// it. The dial must match the tuple heap path for path.
 #[test]
 fn the_dial_matches_the_tuple_heap_on_random_worlds() {
     let mut rng = crate::rng::Pcg32::new(90210, 7);
@@ -789,10 +788,8 @@ fn line_is_deterministic_and_symmetric_enough() {
 fn hairline_deltas_cannot_overflow_the_trace() {
     // Two machines a single fixed-point ulp apart straddling a tile
     // boundary: the parametric setup wants 1/ulp = 2^32, past the
-    // type's ceiling — this exact geometry panicked in FixedI64
-    // arithmetic before the walk went saturating. Adversarial in x,
-    // in y, and in both at once, in both directions, over open and
-    // blocked ground.
+    // type's range. Adversarial in x, in y, and in both at once, in both
+    // directions, over open and blocked ground.
     let (grid, ..) = arena(&["....", "....", "....", "...."]);
     let open = |p: TilePos| grid.get(p).copied().unwrap_or(false);
     let ulp = Fx::from_bits(1);
@@ -837,12 +834,10 @@ fn hairline_deltas_cannot_overflow_the_trace() {
 
 #[test]
 fn trace_is_mirror_fair() {
-    // The fairness the game rests on: a 180°-rotated shot over
-    // 180°-rotated terrain gets the identical verdict, so mirrored
-    // seats never disagree about the same engagement. (Direction
-    // symmetry along ONE segment is deliberately not promised — an
-    // exact corner graze can round differently from the two ends;
-    // see the doc comment.)
+    // A 180°-rotated shot over 180°-rotated terrain gets the identical
+    // verdict, so mirrored seats never disagree about the same
+    // engagement. Direction symmetry along one segment is not promised;
+    // see the doc comment.
     let rows = &["........", "..##....", "....#...", ".#......", "........"];
     let (grid, w, h) = arena(rows);
     let open = |p: TilePos| grid.get(p).copied().unwrap_or(false);

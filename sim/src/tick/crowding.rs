@@ -4,13 +4,10 @@ use chassis::fx::{Fx, Vec2Fx};
 use chassis::grid::{CARDINALS, TilePos};
 use std::collections::BTreeSet;
 
-pub(crate) fn compression() -> Fx {
-    const { Fx::lit("0.65") }
-}
 pub(crate) fn spacing(a: &Unit, b: &Unit) -> Fx {
     let distance = a.kind.stats().radius + b.kind.stats().radius;
     if a.player == b.player {
-        distance * compression()
+        distance * crate::stats::SAME_OWNER_COMPRESSION
     } else {
         distance
     }
@@ -35,15 +32,12 @@ struct Pressure {
     origin: Vec2Fx,
     neighbors: Vec<Neighbor>,
 }
-/// How far from its body a neighbor's destination may lie and still count
-/// as a claim: the square root of the window in [`Pressure::new`].
-const ARRIVAL_WINDOW: Fx = Fx::lit("1.25");
 
 impl Pressure {
     /// The neighbors that can affect [`rank`](Self::rank) at any point
     /// within `reach` of `center`. A neighbor counts only through a body or
     /// a destination closer to the point than their spacing, and a counted
-    /// destination lies within [`ARRIVAL_WINDOW`] of its body, so a body
+    /// destination lies within [`crate::stats::ARRIVAL_WINDOW`] of its body, so a body
     /// farther than `reach` plus both from `center` never counts.
     fn new(state: &State, id: UnitId, center: Vec2Fx, reach: Fx) -> Self {
         let unit = state.unit(id).expect("position owner");
@@ -60,8 +54,10 @@ impl Pressure {
                 })
                 .filter(|other| {
                     // Margin for fixed-point rounding in the squared distances.
-                    let bound =
-                        reach + spacing(unit, other) + ARRIVAL_WINDOW + const { Fx::lit("0.0625") };
+                    let bound = reach
+                        + spacing(unit, other)
+                        + crate::stats::ARRIVAL_WINDOW
+                        + const { Fx::lit("0.0625") };
                     other.pos.dist_sq(center) < bound * bound
                 })
                 .map(|other| {
@@ -70,7 +66,8 @@ impl Pressure {
                         .as_ref()
                         .map(|path| path.final_point.unwrap_or(path.goal.center()))
                         .filter(|&point| {
-                            other.pos.dist_sq(point) <= ARRIVAL_WINDOW * ARRIVAL_WINDOW
+                            other.pos.dist_sq(point)
+                                <= crate::stats::ARRIVAL_WINDOW * crate::stats::ARRIVAL_WINDOW
                         });
                     Neighbor {
                         pos: other.pos,
@@ -128,7 +125,7 @@ pub(crate) fn choose(
     mut route: impl FnMut(chassis::grid::TilePos) -> Option<Vec<chassis::grid::TilePos>>,
 ) -> Option<crate::state::PathFollow> {
     let unit = state.unit(id).expect("position owner");
-    let push = unit.kind.stats().radius * 2 + const { Fx::lit("0.20") };
+    let push = unit.kind.stats().radius * 2 + crate::stats::WAITING_CLEARANCE;
     // Waiting positions sit at most `push` beyond the candidates.
     let reach = candidates
         .iter()
@@ -224,7 +221,7 @@ pub(crate) fn productive(state: &State, unit: &Unit) -> bool {
     if unit.kind.stats().turn_rate > 0 || !unit.work_stopped() {
         return false;
     }
-    if unit.unloading.is_some() {
+    if unit.unloading().is_some() {
         return true;
     }
     match unit.order {
@@ -236,7 +233,7 @@ pub(crate) fn productive(state: &State, unit: &Unit) -> bool {
             unit.kind
                 .stats()
                 .harvest
-                .is_some_and(|h| unit.carrying < h.capacity)
+                .is_some_and(|h| unit.carrying() < h.capacity)
                 && unit.in_work_reach(node, (1, 1))
         }
         crate::Order::Build { site } => state.in_building_work_reach(unit, site),

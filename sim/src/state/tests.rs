@@ -12,7 +12,7 @@ fn parked_bodies_mark_exactly_the_resting_friendly_ground_tiles() {
     let (width, height) = (state.map.width(), state.map.height());
     state.units[0].pos = TilePos::new(-1, 2).center();
     state.units[0].path = None;
-    state.units[0].drive_speed = Fx::ZERO;
+    state.units[0].set_drive_speed(Fx::ZERO);
     let mut marked = 0;
     for player in 0..state.players.len() {
         let viewer = PlayerId::from_index(player);
@@ -24,7 +24,7 @@ fn parked_bodies_mark_exactly_the_resting_friendly_ground_tiles() {
                     && state.units.iter().any(|u| {
                         u.hp > 0
                             && u.domain() == crate::stats::Domain::Ground
-                            && u.drive_speed == Fx::ZERO
+                            && u.drive_speed() == Fx::ZERO
                             && u.path.is_none()
                             && !state.hostile(viewer, u.player)
                             && u.tile() == tile
@@ -46,13 +46,10 @@ fn tiny_state() -> State {
             faction: Faction::Ferrous,
             team: 0,
             scrap: 0,
-            recovery_allowance: 0,
-            recovery_target: 0,
-            recovery_ready: true,
+            recovery: Recovery::Ready,
             resigned: false,
             eliminated_at: None,
         }],
-        7,
     )
 }
 
@@ -99,6 +96,17 @@ fn building_blocks_passability() {
         assert!(!state.passable(TilePos::new(pos.0, pos.1)));
     }
     assert!(state.passable(TilePos::new(3, 3)));
+}
+
+#[test]
+fn a_provisional_site_over_a_hidden_building_leaves_its_ground_blocked() {
+    let mut state = tiny_state();
+    state.place_building(PlayerId(0), BuildingKind::Foundry, TilePos::new(1, 1));
+    let before = state.building_occupancy.clone();
+    state.place_provisional_site(PlayerId(0), BuildingKind::Turret, TilePos::new(1, 1));
+    assert_eq!(state.building_occupancy, before);
+    state.rebuild_building_occupancy();
+    assert_eq!(state.building_occupancy, before);
 }
 
 #[test]

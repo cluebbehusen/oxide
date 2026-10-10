@@ -1,7 +1,8 @@
-//! Focus fire at Veteran and Prime: an engaged mission's members that can
-//! all already reach one enemy shoot the weakest such enemy together. Nobody
-//! chases, so focusing never pulls a member out of position or sends it after
-//! an enemy it cannot walk to. A defense sent at artillery keeps after it.
+//! Focus fire: an engaged mission's members that can all already reach one
+//! enemy shoot one such enemy together, the one each rung judges weakest.
+//! Nobody chases, so focusing never pulls a member out of position or sends
+//! it after an enemy it cannot walk to. A defense sent at artillery keeps
+//! after it.
 
 use super::{Missions, Task, hunt, mine, walking_gun};
 use crate::decision::Ledger;
@@ -18,8 +19,8 @@ use oxide_sim::{AttackTarget, Command, UnitId};
 const FOCUS_TILES: i32 = 6;
 
 impl Missions {
-    /// Points every engaged mission at its weakest reachable enemy, keeping a
-    /// focus while it lasts and ordering only when it changes.
+    /// Points every engaged mission at the reachable enemy it judges weakest,
+    /// keeping a focus while it lasts and ordering only when it changes.
     pub(crate) fn focus(
         &mut self,
         observation: &ObservationData,
@@ -28,9 +29,6 @@ impl Missions {
         difficulty: BotDifficulty,
         ledger: &mut Ledger,
     ) {
-        if !matches!(difficulty, BotDifficulty::Veteran | BotDifficulty::Prime) {
-            return;
-        }
         for mission in &mut self.list {
             let members: Vec<&UnitObs> = mission
                 .units
@@ -58,7 +56,13 @@ impl Missions {
                 .enemy_units
                 .iter()
                 .filter(|enemy| threatens(enemy, &members) && legal(enemy))
-                .min_by_key(|enemy| (enemy.hp, frame.rank(goal, doubled(enemy.tile)), enemy.id));
+                .min_by_key(|enemy| {
+                    (
+                        health(difficulty, enemy),
+                        frame.rank(goal, doubled(enemy.tile)),
+                        enemy.id,
+                    )
+                });
             match next {
                 Some(enemy) => {
                     let attack = Command::Attack {
@@ -81,24 +85,37 @@ impl Missions {
     }
 }
 
+/// How wounded `enemy` looks when choosing a focus, lowest first: a
+/// difficulty limit on judging targets. The upper rungs read its exact
+/// health, Standard only the quarter of its health bar it shows, and
+/// Scrapheap ignores wounds and takes the enemy nearest the mission's goal.
+fn health(difficulty: BotDifficulty, enemy: &UnitObs) -> u32 {
+    match difficulty {
+        BotDifficulty::Scrapheap => 0,
+        BotDifficulty::Standard => (4 * enemy.hp).div_ceil(enemy.kind.stats().max_hp.max(1)),
+        BotDifficulty::Veteran | BotDifficulty::Prime => enemy.hp,
+    }
+}
+
 /// Whether `enemy` stands near a member and can hit one.
 fn threatens(enemy: &UnitObs, members: &[&UnitObs]) -> bool {
+    let stats = enemy.kind.stats();
     members.iter().any(|unit| {
+        let domain = unit.body_domain();
         unit.tile.chebyshev(enemy.tile) <= FOCUS_TILES
-            && enemy
-                .kind
-                .stats()
+            && (stats
                 .weapons
                 .iter()
-                .any(|weapon| weapon.targets.covers(unit.body_domain()))
+                .any(|weapon| weapon.targets.covers(domain))
+                || (stats.demolition.is_some() && domain == Domain::Ground))
     })
 }
 
-/// The members that can hit `enemy`, by id, if every one of them already
-/// reaches it in a straight line between tile centres that terrain does not
-/// stop, as the simulation measures a shot, and every ground member stands on
-/// the enemy's ground, so one a little short steps closer rather than seeking
-/// a way round; otherwise none.
+/// The members that can hit `enemy`, by id, if every one of them armed
+/// against it already reaches it in a straight line between tile centres
+/// that terrain does not stop, as the simulation measures a shot, and every
+/// ground member stands on the enemy's ground, so one a little short steps
+/// closer rather than seeking a way round; otherwise none.
 fn shooters(map: &MapModel, members: &[&UnitObs], enemy: &UnitObs) -> Vec<UnitId> {
     let domain = enemy.body_domain();
     let mut shooters = Vec::new();

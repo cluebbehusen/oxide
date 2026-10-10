@@ -18,7 +18,6 @@ fn world_with_teams(
     let scenario = Scenario {
         mode: ScenarioMode::Sandbox,
         name: "reach".into(),
-        seed: 3,
         map: map.iter().map(|row| (*row).to_owned()).collect(),
         players: teams
             .iter()
@@ -55,21 +54,6 @@ const POCKET: [&str; 7] = [
 
 fn id(state: &State, slot: usize) -> UnitId {
     state.units[slot].id
-}
-
-#[test]
-fn rings_follow_the_spread_scan_order() {
-    for r in 0i32..6 {
-        let mut expected = Vec::new();
-        for dy in -r..=r {
-            for dx in -r..=r {
-                if dx.abs().max(dy.abs()) == r {
-                    expected.push((dx, dy));
-                }
-            }
-        }
-        assert_eq!(ring(r).collect::<Vec<_>>(), expected, "ring {r}");
-    }
 }
 
 #[test]
@@ -462,7 +446,7 @@ fn a_depletion_during_the_brain_phase_reopens_the_ground_for_later_walkers() {
     };
     state.units[1].order = Order::Harvest {
         node,
-        anchor: None,
+        anchor: node,
         retiring: false,
     };
     state.units[1].pos = crate::geometry::work_approach_point(

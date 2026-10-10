@@ -1,21 +1,15 @@
 //! Presentation shared by live play and replay playback. World state is borrowed.
 use super::{
-    Effect, PingKind, SoundKind, TICK_DT, Toast, angle_delta, fx, projectiles,
-    rotor_hull_turn_rate, world_vec,
+    Effect, PingKind, SoundKind, Toast, angle_delta, fx, projectiles, rotor_hull_turn_rate,
+    world_vec,
 };
 use super::{EffectKind, Selection};
 use crate::camera::Camera;
 use crate::numeric;
 use macroquad::prelude::{Vec2, vec2};
-use oxide_sim::{
-    Building, Event, PlayerCommand, PlayerId, Scenario, State, Target, UnitId, UnitKind,
-};
+use oxide_sim::{Building, Event, PlayerCommand, PlayerId, Scenario, State, Target, UnitId};
 use std::collections::HashMap;
 
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "pausing, the overlay, the concession banner and spectating are independent"
-)]
 pub struct Presentation {
     /// The seat local input controls.
     pub human: PlayerId,
@@ -23,10 +17,6 @@ pub struct Presentation {
     pub camera: Camera,
     /// Current selection.
     pub selection: Selection,
-    /// Wall clock stopped?
-    pub paused: bool,
-    /// Wall-clock multiplier.
-    pub speed: f64,
     /// Debug overlay on?
     pub overlay: bool,
     /// Positions at the previous tick, for render interpolation.
@@ -68,28 +58,28 @@ pub struct Presentation {
     /// Live under-attack alerts: world position and seconds of age.
     /// Pulsed on the minimap, jumpable, aged out by `update_fx`.
     pub alerts: Vec<(Vec2, f32)>,
-    /// Where trouble last landed — the jump key's target.
+    /// The latest alert position, which the jump key targets.
     pub last_alert: Option<Vec2>,
-    /// Per-region rate limiter for alerts (8-tile cells -> last raise
-    /// time in fx-seconds), so a running battle nags once, not per hit.
+    /// Per-region alert rate limiter: 8-tile cell to last raise time in
+    /// fx-seconds.
     pub(super) alert_gate: HashMap<(i32, i32), f32>,
     /// Presentation clock: seconds of fx time since session start.
     pub(super) fx_clock: f32,
     /// When each remembered tile (ghost anchors, scrap, wrecks) was
-    /// last actually seen, on the fx clock — presentation state behind
-    /// the staleness ramp. A `RefCell` because drawing borrows presentation.
+    /// last actually seen, on the fx clock; drives the staleness fade. A
+    /// `RefCell` because drawing borrows presentation.
     pub last_seen: std::cell::RefCell<HashMap<(i32, i32), f32>>,
     /// The minimap's cached terrain-and-fog texture layer. Presentation
     /// only, lazily created by the first minimap draw (headless sessions
     /// never touch the GPU). A `RefCell` because drawing borrows presentation.
     pub minimap_layer: std::cell::RefCell<Option<crate::render::MinimapLayer>>,
     pub boundary_fog: crate::boundary_fog::BoundaryFog,
-    /// The chrome geometry the renderer computed last frame — the one
-    /// model hit-testing reads, so drawn and clickable can never
+    /// The chrome geometry the renderer computed last frame. Hit-testing
+    /// reads this same model so drawn and clickable regions cannot
     /// disagree. A `Cell` because drawing borrows presentation.
     pub layout: std::cell::Cell<crate::layout::LayoutModel>,
     /// The frame's command panel, built once in `draw_hud` and read by
-    /// the tooltip pass — building it twice per frame was pure waste.
+    /// the tooltip pass.
     pub panel_model: std::cell::RefCell<Option<crate::panel::Panel>>,
     /// The selection's programs through the staged commands, shared by the
     /// orders dock and the waypoint chain. A `RefCell` because drawing
@@ -99,11 +89,13 @@ pub struct Presentation {
     /// Esc-to-menu exit) is up. Presentation only; opening the pause
     /// menu dismisses it so spectating the ally stays unobstructed.
     pub conceded_banner: bool,
-    /// Fog-free viewing without the debug chrome — the playback
-    /// viewer's stance. `overlay` remains the developer's F1 (grid,
-    /// ids, camera internals) and implies this.
+    /// Fog-free viewing without the debug chrome, used by the playback
+    /// viewer. `overlay` is the developer's F1 view (grid, ids, camera
+    /// internals) and implies this.
     pub spectate: bool,
-    pub(super) accum: f32,
+    /// Where between the last executed tick and the next the picture is
+    /// drawn, set by the clock that paces it.
+    tick_fraction: f32,
 }
 
 /// Salvage the viewer knows lies on a tile.
@@ -162,6 +154,8 @@ pub(crate) struct Scene<'a> {
     pub scenario: &'a Scenario,
     pub pending: &'a [PlayerCommand],
     pub presentation: &'a Presentation,
+    /// The clock pacing this world: paused, speed, and render alpha.
+    pub clock: &'a super::Clock,
     pub seat_styles: crate::seat_style::SeatStyles,
 }
 impl<'a> Scene<'a> {
@@ -170,12 +164,14 @@ impl<'a> Scene<'a> {
         scenario: &'a Scenario,
         pending: &'a [PlayerCommand],
         presentation: &'a Presentation,
+        clock: &'a super::Clock,
     ) -> Self {
         Self {
             state,
             scenario,
             pending,
             presentation,
+            clock,
             seat_styles: crate::seat_style::SeatStyles::new(
                 state,
                 presentation.human,
@@ -199,7 +195,7 @@ impl<'a> Scene<'a> {
     pub fn home_foundry(&self) -> Option<&'a Building> {
         self.state.buildings().iter().find(|b| {
             b.player == self.presentation.human
-                && !b.provisional
+                && !b.provisional()
                 && b.kind == oxide_sim::BuildingKind::Foundry
         })
     }
@@ -259,8 +255,6 @@ impl Presentation {
             human,
             camera,
             selection: Selection::default(),
-            paused: false,
-            speed: 1.0,
             overlay: false,
             prev_pos: HashMap::new(),
             prev_heading: HashMap::new(),
@@ -292,7 +286,7 @@ impl Presentation {
             projection: std::cell::RefCell::default(),
             conceded_banner: false,
             spectate: false,
-            accum: 0.0,
+            tick_fraction: 0.0,
         }
     }
     /// Whether rendering should ignore fog: the debug overlay or a
@@ -301,32 +295,22 @@ impl Presentation {
         self.overlay || self.spectate
     }
 
-    /// The effect clock — what aim holds and recoil age against.
+    /// The effect clock that aim holds and recoil age against.
     pub fn fx_time(&self) -> f32 {
         self.fx_clock
     }
 
     /// How far the presentation clock sits between the last executed
-    /// tick and the next, 0..1 — frozen while paused. Interpolation
-    /// fuel for anything that must move on sim time, not wall time.
+    /// tick and the next, 0..1, frozen while paused. Drives anything that
+    /// must move on sim time rather than wall time.
     pub fn tick_fraction(&self) -> f32 {
-        (self.accum / TICK_DT).clamp(0.0, 1.0)
+        self.tick_fraction
     }
 
-    /// Mirrors an externally owned replay clock into this render vehicle.
-    /// Playback advances through its own engine, so this changes only the
-    /// interpolation and authored-animation fraction, never simulation time.
-    pub(crate) fn sync_external_tick_fraction(&mut self, fraction: f32) {
-        self.accum = fraction.clamp(0.0, 1.0) * TICK_DT;
-    }
-
-    /// Interpolation factor for rendering between ticks.
-    pub fn render_alpha(&self) -> f32 {
-        if self.paused {
-            1.0
-        } else {
-            (self.accum / TICK_DT).clamp(0.0, 1.0)
-        }
+    /// Sets where between ticks the picture is drawn. Only the clock that
+    /// paces this session's world calls it; drawing never moves time.
+    pub(crate) fn set_tick_fraction(&mut self, fraction: f32) {
+        self.tick_fraction = fraction.clamp(0.0, 1.0);
     }
 
     /// Drops an order-acknowledgment ping at a world point.
@@ -337,8 +321,8 @@ impl Presentation {
     /// Drops an order-acknowledgment ping; a `queued` order's ping says
     /// it joined the program rather than replacing it.
     pub fn ping_order(&mut self, at: Vec2, kind: PingKind, queued: bool) {
-        // An order the sim accepted deserves an answer in the ear as
-        // well as the eye (the mixer rate-limits volley spam).
+        // Accepted orders get an audible acknowledgment too; the mixer
+        // rate-limits bursts.
         self.sounds_pending.push((SoundKind::Ack, None));
         self.fx.push(Effect {
             kind: EffectKind::Ping { at, kind, queued },
@@ -356,9 +340,8 @@ impl Presentation {
         }
     }
 
-    /// Ages and prunes effects and toasts.
-    /// Raises an under-attack alert, rate-limited per 8-tile region —
-    /// a running battle nags once, not once per hit.
+    /// Raises an under-attack alert, rate-limited per 8-tile region so a
+    /// running battle alerts once, not once per hit.
     pub(super) fn raise_alert(&mut self, world: Vec2) {
         let cell = (
             numeric::to_i32(world.x / 8.0),
@@ -425,8 +408,8 @@ impl Presentation {
         }
     }
 
-    /// Drops queued transient presentation — what a bulk jump (a seek)
-    /// must not replay as a burst of noise.
+    /// Drops queued transient presentation so a bulk jump (a seek) does
+    /// not replay it as a burst of noise.
     pub fn drop_presentation(&mut self, state: &State) {
         self.fx.clear();
         self.projection.take();
@@ -495,7 +478,7 @@ impl Presentation {
         for unit in state.units() {
             if unit.kind.stats().turn_rate > 0
                 || unit.kind.ground_turn_rate() > 0
-                || unit.kind.cruise_turn_rate() > 0
+                || unit.kind.stats().cruise_turn_rate > 0
             {
                 let angle = f32::from(unit.heading) * std::f32::consts::TAU / 256.0;
                 self.facing
@@ -524,7 +507,11 @@ impl Presentation {
             }
             if let Some(turn) = rotor_hull_turn_rate(unit.kind) {
                 let movement_facing = self.facing.get(&unit.id.0).copied().unwrap_or(0.0);
-                let target = if unit.kind == UnitKind::Wisp && !moving {
+                // A rotorcraft whose gun is fixed to its hull turns the hull
+                // to aim while it hovers.
+                let fixed_gun =
+                    unit.kind.stats().can_fight() && unit.kind.stats().turret_turn_rate == 0;
+                let target = if fixed_gun && !moving {
                     self.aim_units
                         .get(&unit.id.0)
                         .filter(|(_, at)| self.fx_time() - at < 1.2)
@@ -544,7 +531,7 @@ impl Presentation {
     /// neither may be drawn pointing anywhere else.
     fn slide_lean_allowed(&self, unit: &oxide_sim::state::Unit, propulsion: Vec2) -> bool {
         let aiming = !unit.kind.has_ground_turret()
-            && (unit.brace_ticks > 0
+            && (unit.braces() > 0
                 || self
                     .aim_units
                     .get(&unit.id.0)
@@ -617,15 +604,6 @@ impl Presentation {
             .iter()
             .map(|unit| (unit.id.0, world_vec(unit.pos)))
             .collect();
-    }
-
-    /// Advances presentation from ordinary frame time while the match runs.
-    /// Driven presentation steps use [`Self::update_fx`] directly because
-    /// they represent sim time even when the wall clock is paused.
-    pub fn update_wall_clock_fx(&mut self, state: &State, dt: f32) {
-        if !self.paused {
-            self.update_fx(state, dt);
-        }
     }
 
     pub(crate) fn draw_hull_heading(&self, state: &State, id: UnitId, alpha: f32) -> f32 {

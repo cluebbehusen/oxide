@@ -7,6 +7,38 @@ use crate::numeric::Fit;
 use oxide_sim::scenario::ScenarioMode;
 use oxide_sim::{PlayerCommand, UnitKind};
 
+/// The shipped default map: input tests never read a developer's saved
+/// bindings.
+fn classic() -> BindingMap {
+    BindingMap::classic()
+}
+
+/// The production funnel under the default map.
+fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]) {
+    apply_events_with(game, input, &classic(), events);
+}
+
+fn apply_events_with(
+    game: &mut Game,
+    input: &mut InputState,
+    bindings: &BindingMap,
+    events: &[RawEvent],
+) {
+    super::apply_events(game, input, bindings, events);
+}
+
+fn update_touch(game: &mut Game, input: &mut InputState) {
+    super::update_touch(game, input, &classic());
+}
+
+fn dispatch_action(game: &mut Game, input: &mut InputState, action: Action) {
+    super::dispatch::dispatch_action(game, input, &classic(), action);
+}
+
+fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::CardAction) {
+    super::activate_card(game, input, &classic(), action);
+}
+
 mod double_click;
 
 /// The waypoints `unit` draws in `game`'s current frame.
@@ -41,8 +73,8 @@ fn only_the_host_pauses_a_lan_match() {
     let mut input = InputState::new();
     dispatch_action(&mut host, &mut input, Action::TogglePause);
     dispatch_action(&mut client, &mut input, Action::TogglePause);
-    assert!(host.presentation.paused);
-    assert!(!client.presentation.paused);
+    assert!(host.clock.paused);
+    assert!(!client.clock.paused);
     assert!(
         client
             .presentation
@@ -204,7 +236,6 @@ fn skyhook_interaction_game() -> Game {
     let scenario = oxide_sim::Scenario::from_json(
         "{
         \"name\": \"skyhook interaction\",
-        \"seed\": 7,
         \"players\": [
             {\"name\": \"F\", \"faction\": \"ferrous\", \"scrap\": 100, \"bot\": false},
             {\"name\": \"C\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": true}
@@ -334,7 +365,7 @@ fn shift_click_selects_and_toggles_same_owner_buildings() {
     assert_eq!(own.len(), 2);
     let center = |game: &Game, id| {
         let building = game.state.building(id).unwrap();
-        let size = building.stats().size;
+        let size = building.kind.size();
         game.presentation.camera.to_screen(vec2(
             building.anchor.x as f32 + size.0 as f32 * 0.5,
             building.anchor.y as f32 + size.1 as f32 * 0.5,
@@ -645,7 +676,6 @@ fn extractor_input_game() -> Game {
     let scenario = oxide_sim::Scenario::from_json(
         "{
         \"name\": \"frame input\",
-        \"seed\": 7,
         \"players\": [
             {\"name\": \"F\", \"faction\": \"ferrous\", \"scrap\": 500, \"bot\": false},
             {\"name\": \"C\", \"faction\": \"cupric\", \"scrap\": 500, \"bot\": true,
@@ -821,11 +851,11 @@ fn a_misclick_keeps_placement_armed_and_a_shift_click_repeats() {
     assert_eq!(game.pending.len(), 1, "legal ground stages the site");
     assert!(input.placing.is_some(), "shift keeps the wall going up");
 
-    // A plain click (press AND release — the mode settles at the
-    // release, where the placement drag ends) disarms after staging.
-    // Skirmish's 150 scrap is spent after the shift stamp, and a
-    // BROKE click now refuses and keeps the mode armed — so the
-    // disarm half runs in a fresh, still-funded session.
+    // A plain click (press and release; the mode settles at the release,
+    // where the placement drag ends) disarms after staging. Skirmish's
+    // 150 scrap is spent after the shift stamp, and an unaffordable click
+    // refuses and keeps the mode armed, so the disarm half runs in a
+    // fresh, still-funded session.
     let mut game = headless_game();
     let mut input = InputState::new();
     game.presentation.selection.units = vec![
@@ -851,8 +881,8 @@ fn a_misclick_keeps_placement_armed_and_a_shift_click_repeats() {
 
 #[test]
 fn a_click_on_a_unit_selects_it_headlessly() {
-    // The whole event path — resolver, hit-testing, selection —
-    // exercised with no window: the C5 extraction's proof.
+    // The whole event path (resolver, hit-testing, selection) runs with
+    // no window.
     let mut game = headless_game();
     let mut input = InputState::new();
     let unit = game.state.units()[0].id;
@@ -1055,7 +1085,6 @@ fn edge_scrap_game() -> Game {
     let scenario = oxide_sim::Scenario::from_json(
         "{
         \"name\": \"edge scrap\",
-        \"seed\": 7,
         \"players\": [
             {\"name\": \"F\", \"faction\": \"ferrous\", \"scrap\": 500, \"bot\": false},
             {\"name\": \"C\", \"faction\": \"cupric\", \"scrap\": 500, \"bot\": true,
@@ -1486,12 +1515,42 @@ fn the_build_palette_has_no_duplicate_structures() {
             assert_ne!(a, b);
         }
     }
-    assert_eq!(kinds.len(), 13);
     assert!(
         crate::action::BUILD_CATEGORIES
             .iter()
             .all(|(_, kinds)| kinds.len() <= 4)
     );
+}
+
+#[test]
+fn the_build_palette_offers_every_building_kind() {
+    // A kind missing here could be built by a bot but never by a human.
+    for kind in oxide_sim::BuildingKind::ALL {
+        assert!(
+            crate::action::BUILD_CATEGORIES
+                .iter()
+                .any(|(_, kinds)| kinds.contains(&kind)),
+            "{kind:?} has no build palette slot"
+        );
+    }
+}
+
+#[test]
+fn every_faction_roster_fits_the_production_hotkeys() {
+    for producer in oxide_sim::BuildingKind::ALL {
+        for faction in [oxide_sim::Faction::Ferrous, oxide_sim::Faction::Cupric] {
+            let roster = producer
+                .base_stats()
+                .produces
+                .iter()
+                .filter(|kind| kind.faction().is_none_or(|f| f == faction))
+                .count();
+            assert!(
+                roster <= usize::from(crate::action::TRAIN_SLOTS),
+                "{producer:?} trains {roster} {faction:?} kinds"
+            );
+        }
+    }
 }
 
 #[test]
@@ -1547,7 +1606,7 @@ fn a_right_click_anywhere_on_an_own_site_resumes_it() {
         game.state
             .buildings()
             .iter()
-            .any(|b| b.anchor == anchor && !b.built),
+            .any(|b| b.anchor == anchor && !b.built()),
         "premise: the site stands"
     );
     // Select the harvester, then right-click the site's far corner.
@@ -1578,7 +1637,6 @@ fn a_shift_click_on_the_wounded_wall_queues_the_weld_not_the_rat() {
     let scenario = oxide_sim::Scenario::from_json(
         "{
         \"name\": \"gnawed wall\",
-        \"seed\": 7,
         \"players\": [
             {\"name\": \"F\", \"faction\": \"ferrous\", \"scrap\": 100, \"bot\": false},
             {\"name\": \"C\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": true}
@@ -1951,10 +2009,9 @@ fn the_hunt_card_is_touchable_and_arms_the_same_world_tap() {
 
 #[test]
 fn a_paused_stroke_bills_each_kind_at_its_own_price() {
-    // Bank 360: one staged turret (100) plus an armed bastion (250)
-    // is affordable at the ACTUAL sum (350). The old count-times-
-    // current-kind math priced the staged turret as a second bastion
-    // (500) and refused a funded placement.
+    // Bank 360: one staged turret (100) plus an armed bastion (250) is
+    // affordable at the actual sum (350), not priced as two bastions
+    // (500).
     let mut game = drag_arena(360);
     let mut input = InputState::new();
     let builder = game.state.units()[0].id;
@@ -2161,7 +2218,6 @@ fn team_game() -> Game {
     let scenario = oxide_sim::Scenario::from_json(
         "{
         \"name\": \"team stage\",
-        \"seed\": 9,
         \"players\": [
             {\"name\": \"me\", \"faction\": \"ferrous\", \"scrap\": 100, \"bot\": false, \"team\": 1},
             {\"name\": \"pal\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": true, \"team\": 1,
@@ -2210,8 +2266,7 @@ fn an_ally_selection_reads_its_orders_but_takes_none() {
 
     // The panel is read-only: no command cards; a single ally shows
     // static capability and its order chips.
-    let panel =
-        crate::panel::build_for_palette(&game.view(), &input.bindings, false).expect("a panel");
+    let panel = crate::panel::build_for_palette(&game.view(), &classic(), false).expect("a panel");
     assert!(panel.cards.is_empty(), "no verbs on an ally panel");
     assert!(
         panel
@@ -2294,8 +2349,7 @@ fn a_hostile_selection_inspects_and_leaks_nothing() {
 
     // Static kind-level capability facts are safe to inspect. Command cards
     // and order chips stay absent because order state reveals intent.
-    let panel =
-        crate::panel::build_for_palette(&game.view(), &input.bindings, false).expect("a panel");
+    let panel = crate::panel::build_for_palette(&game.view(), &classic(), false).expect("a panel");
     assert!(panel.cards.is_empty(), "no verbs on a hostile panel");
     assert!(panel.queue.is_empty(), "no order chips on a hostile panel");
     assert!(
@@ -2469,7 +2523,7 @@ fn a_touch_placement_drops_a_ghost_then_builds_where_it_is_drawn() {
         "the first tap only drops a ghost"
     );
     let ghost = input.ghost_anchor().expect("a ghost is down");
-    let (w, h) = kind.base_stats().size;
+    let (w, h) = kind.size();
     let center = vec2(
         ghost.x as f32 + w as f32 * 0.5,
         ghost.y as f32 + h as f32 * 0.5,
@@ -2926,7 +2980,8 @@ fn a_disabled_card_explains_itself_to_a_tap_or_a_click() {
         .expect("human Foundry")
         .id;
     game.presentation.selection.buildings = vec![foundry];
-    let panel = crate::panel::build_for_input(&game.view(), &input).expect("a Foundry panel");
+    let panel =
+        crate::panel::build_for_input(&game.view(), &classic(), &input).expect("a Foundry panel");
     let (index, why) = panel
         .cards
         .iter()
@@ -3005,8 +3060,8 @@ fn a_card_that_changes_under_a_resting_finger_activates_nothing() {
     layout.queue_count = 1;
     game.presentation.layout.set(layout);
     for shifts in [false, true] {
-        let mut panel =
-            crate::panel::build_for_input(&game.view(), &input).expect("a Foundry panel");
+        let mut panel = crate::panel::build_for_input(&game.view(), &classic(), &input)
+            .expect("a Foundry panel");
         panel.queue = vec![chip(UnitKind::Harvester, 0), chip(UnitKind::Sentinel, 1)];
         *game.presentation.panel_model.borrow_mut() = Some(panel);
         game.pending.clear();
@@ -3630,7 +3685,8 @@ fn a_tap_on_a_scrap_pile_selects_it_for_its_panel() {
     tap_world(&mut game, &mut input, vec2(7.5, 2.5));
     assert!(game.presentation.selection.units.is_empty());
     assert_eq!(game.presentation.selection.pile, Some(tile));
-    let panel = crate::panel::build_for_input(&game.view(), &input).expect("a pile panel");
+    let panel =
+        crate::panel::build_for_input(&game.view(), &classic(), &input).expect("a pile panel");
     assert_eq!(panel.title, "Scrap pile");
     assert!(panel.cards.is_empty(), "a pile takes no orders");
     let row = |panel: &crate::panel::Panel, label: &str| {
@@ -3657,7 +3713,8 @@ fn a_tap_on_a_scrap_pile_selects_it_for_its_panel() {
         queue: false,
     });
     game.present_ticks(1);
-    let panel = crate::panel::build_for_input(&game.view(), &input).expect("a pile panel");
+    let panel =
+        crate::panel::build_for_input(&game.view(), &classic(), &input).expect("a pile panel");
     assert_eq!(row(&panel, "Harvesters"), Some("1".into()));
 
     tap_world(&mut game, &mut input, vec2(12.5, 12.5));
@@ -3778,7 +3835,6 @@ fn an_allied_site_under_fog_refuses_selection() {
     let mut scenario = oxide_sim::Scenario {
         mode: ScenarioMode::Match,
         name: "ally-site-arena".into(),
-        seed: 7,
         map: vec![
             "################################".into(),
             "#1.............................#".into(),
@@ -3853,12 +3909,9 @@ fn an_allied_site_under_fog_refuses_selection() {
         "test premise: the claim landed instantly"
     );
     for _ in 0..100 {
-        if game
-            .state
-            .buildings()
-            .iter()
-            .any(|b| b.kind == oxide_sim::BuildingKind::Turret && b.progress > 0)
-        {
+        if game.state.buildings().iter().any(|b| {
+            b.kind == oxide_sim::BuildingKind::Turret && b.construction_progress().unwrap_or(0) > 0
+        }) {
             break;
         }
         game.state.tick(&[]);
@@ -3884,7 +3937,7 @@ fn an_allied_site_under_fog_refuses_selection() {
             .iter()
             .find(|b| b.kind == oxide_sim::BuildingKind::Turret)
             .expect("the ally claimed the site");
-        assert!(!site.built, "test premise: unfinished");
+        assert!(!site.built(), "test premise: unfinished");
         assert!(
             !site.tiles().any(|t| game.my_vision().visible(t)),
             "test premise: the site sits under fog"
@@ -3905,7 +3958,7 @@ fn an_allied_site_under_fog_refuses_selection() {
             .state
             .buildings()
             .iter()
-            .find(|b| b.player == oxide_sim::PlayerId(1) && b.built)
+            .find(|b| b.player == oxide_sim::PlayerId(1) && b.built())
             .unwrap();
         (
             foundry.id,
@@ -3930,7 +3983,6 @@ fn a_foreign_box_never_reaches_through_fog() {
     let scenario = oxide_sim::Scenario::from_json(
         "{
         \"name\": \"fog box\",
-        \"seed\": 9,
         \"players\": [
             {\"name\": \"me\", \"faction\": \"ferrous\", \"scrap\": 100, \"bot\": false},
             {\"name\": \"foe\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": true}
@@ -3991,7 +4043,6 @@ fn a_selected_hostile_drops_when_fog_recovers_it() {
     let scenario = oxide_sim::Scenario::from_json(
         "{
         \"name\": \"beacon\",
-        \"seed\": 4,
         \"players\": [
             {\"name\": \"me\", \"faction\": \"ferrous\", \"scrap\": 100, \"bot\": false},
             {\"name\": \"foe\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": true}
@@ -4293,9 +4344,9 @@ fn the_alert_badge_jumps_the_camera_by_click_or_tap() {
 fn a_tap_on_the_idle_badge_cycles_workers() {
     let mut game = headless_game();
     let mut input = InputState::new();
-    // Publish chrome with a live idle badge in the top bar — the
-    // bare-chrome swallow used to eat fingertip taps on it while the
-    // mouse path cycled workers.
+    // Publish chrome with a live idle badge in the top bar: a fingertip
+    // tap must cycle workers as a click does, not be swallowed as bare
+    // chrome.
     let badge = macroquad::math::Rect::new(200.0, 4.0, 60.0, 24.0);
     let mut layout = bare_layout(f32::INFINITY, 0.0);
     layout.idle_badge = badge;
@@ -4429,13 +4480,13 @@ fn the_status_toggles_pause_by_click_and_by_tap() {
     game.presentation.layout.set(top_bar_layout());
     let status = game.presentation.layout.get().pause_status.center();
     apply_events(&mut game, &mut input, &click(status.x, status.y));
-    assert!(game.presentation.paused);
+    assert!(game.clock.paused);
     apply_events(&mut game, &mut input, &click(status.x, status.y));
-    assert!(!game.presentation.paused);
+    assert!(!game.clock.paused);
     tap(&mut game, &mut input, status);
-    assert!(game.presentation.paused, "a fingertip pauses like the key");
+    assert!(game.clock.paused, "a fingertip pauses like the key");
     tap(&mut game, &mut input, status);
-    assert!(!game.presentation.paused);
+    assert!(!game.clock.paused);
     assert!(!input.take_menu_request());
 }
 
@@ -4451,7 +4502,7 @@ fn where_padded_targets_overlap_the_menu_wins() {
     assert!(crate::layout::touch_pad(layout.pause_status, 1.0).contains(p));
     tap(&mut game, &mut input, p);
     assert!(input.take_menu_request());
-    assert!(!game.presentation.paused);
+    assert!(!game.clock.paused);
 }
 
 #[test]
@@ -4637,7 +4688,6 @@ fn a_placement_drag_stamps_a_row_of_queued_builds() {
     let scenario = oxide_sim::Scenario::from_json(
         &serde_json::json!({
             "name": "Drag Range",
-            "seed": 3,
             "players": [
                 {"name": "Mason", "faction": "ferrous", "scrap": 1000, "bot": false},
                 {"name": "Idle", "faction": "cupric", "scrap": 0, "bot": true}
@@ -4724,8 +4774,7 @@ fn the_roster_strip_cuts_a_mixed_selection_both_ways() {
         .map(|u| u.id)
         .collect();
     game.presentation.selection.units = mine.clone();
-    let panel =
-        crate::panel::build_for_palette(&game.view(), &input.bindings, false).expect("panel");
+    let panel = crate::panel::build_for_palette(&game.view(), &classic(), false).expect("panel");
     let strip: Vec<_> = panel
         .roster
         .iter()
@@ -4880,11 +4929,11 @@ fn drag_feedback_starts_before_box_selection_does() {
 }
 
 /// A mouse already in flight when the button lands: the press must
-/// anchor the box where it LANDED, and the box must be drawable on the
-/// very frame of the press. The polled adapter could do neither — it
-/// stamped every button with the frame's LAST cursor position, so the
-/// anchor jumped forward by a frame of travel and `mouse ==
-/// drag_origin` made the rect zero-sized until the next frame.
+/// anchor the box where it landed, and the box must be drawable on the
+/// very frame of the press. A frame-polled adapter would stamp the
+/// button with the frame's last cursor position, moving the anchor
+/// forward by a frame of travel and leaving a zero-sized rect until the
+/// next frame.
 #[test]
 fn a_press_mid_flight_anchors_the_box_where_it_landed() {
     use macroquad::miniquad::EventHandler;
@@ -4993,7 +5042,7 @@ fn a_paste_chord_types_the_clipboard_only_into_a_text_field() {
 
 /// The selection consequence of the same frame: a unit sitting between
 /// the press point and where the pointer ended the frame belongs in the
-/// box. The old adapter threw that stretch away.
+/// box.
 #[test]
 fn the_stretch_between_press_and_frame_end_still_selects() {
     use macroquad::miniquad::EventHandler;
@@ -5029,9 +5078,9 @@ fn the_stretch_between_press_and_frame_end_still_selects() {
     got.sort_unstable();
     assert_eq!(got, want, "the whole sweep selects, press point included");
 
-    // The shape the polled adapter produced for that same frame: one
-    // MouseMove at the frame's END, and a press and release stamped
-    // there too. Origin == release, so the sweep read as a bare click.
+    // The shape a frame-polled adapter would produce for that same frame:
+    // one MouseMove at the frame's end, and a press and release stamped
+    // there too. Origin == release, so the sweep reads as a bare click.
     let mut input = InputState::new();
     input.ui = 1.0;
     game.presentation.selection.units.clear();
@@ -5052,7 +5101,6 @@ fn drag_arena(scrap: u32) -> Game {
     let scenario = oxide_sim::Scenario::from_json(
         &serde_json::json!({
             "name": "Drag Bank",
-            "seed": 3,
             "players": [
                 {"name": "Mason", "faction": "ferrous", "scrap": scrap, "bot": false},
                 {"name": "Idle", "faction": "cupric", "scrap": 0, "bot": true}
@@ -5136,17 +5184,16 @@ fn drag_over_ticking(game: &mut Game, input: &mut InputState, tiles: &[(i32, i32
 
 #[test]
 fn a_ticking_drag_spends_the_whole_bank() {
-    // Ten turrets, exactly funded — and the tick charging earlier
-    // stamps mid-drag must not make the gate bill them twice (the
-    // double-count cut a funded wall to half its length).
+    // Ten turrets, exactly funded, and the tick charging earlier stamps
+    // mid-drag must not make the gate bill them twice and cut the wall
+    // short.
     let mut game = drag_arena(1000);
     let mut input = InputState::new();
     game.presentation.selection.units = vec![game.state.units()[0].id];
     input.placing = Some(oxide_sim::BuildingKind::Turret);
     // Two short rows bracketing the builder: every anchor stays inside
-    // someone's sight even as the builder walks to its first site —
-    // a wall drawn off into fog refuses honestly, which is a
-    // different test.
+    // someone's sight even as the builder walks to its first site. A wall
+    // drawn off into fog is a different test.
     let tiles: Vec<_> = (4..=8)
         .map(|x| (x, 2))
         .chain((4..=8).map(|x| (x, 6)))
@@ -5444,7 +5491,6 @@ fn fog_corridor_game(kind: &str, units: impl IntoIterator<Item = (i32, i32)>) ->
     let scenario = oxide_sim::Scenario::from_json(
         &serde_json::json!({
             "name": "Corridor",
-            "seed": 11,
             "players": [
                 {"name": "Walker", "faction": "ferrous", "scrap": 0, "bot": false},
                 {"name": "Idle", "faction": "cupric", "scrap": 0, "bot": true}
@@ -5580,7 +5626,6 @@ fn an_attack_on_an_even_footprint_draws_at_its_center() {
     let scenario = oxide_sim::Scenario::from_json(
         &serde_json::json!({
             "name": "Even footprint",
-            "seed": 5,
             "players": [
                 {"name": "Raider", "faction": "ferrous", "scrap": 0, "bot": false},
                 {"name": "Target", "faction": "cupric", "scrap": 0, "bot": true}
@@ -5646,7 +5691,6 @@ fn work_on_an_even_footprint_draws_at_its_center() {
     let scenario = oxide_sim::Scenario::from_json(
         &serde_json::json!({
             "name": "Even footprint work",
-            "seed": 5,
             "players": [
                 {"name": "Builder", "faction": "ferrous", "scrap": 1000, "bot": false},
                 {"name": "Rival", "faction": "cupric", "scrap": 0, "bot": true}
@@ -5758,7 +5802,6 @@ fn the_docks_subject_always_draws_its_trail() {
     let scenario = oxide_sim::Scenario::from_json(
         &serde_json::json!({
             "name": "Crowd",
-            "seed": 9,
             "players": [
                 {"name": "Mass", "faction": "ferrous", "scrap": 0, "bot": false},
                 {"name": "Idle", "faction": "cupric", "scrap": 0, "bot": true}
@@ -5818,11 +5861,10 @@ fn the_docks_subject_always_draws_its_trail() {
 
 #[test]
 fn the_tutorial_survives_its_own_literal_instructions() {
-    // The regression gate for the 150-scrap dead end: every lesson,
-    // played exactly as its card words it (keyboard alternatives the
-    // text itself offers, world clicks for the rest), must stay
-    // affordable with the shipped numbers. If a cost change or a bank
-    // change re-opens the trap, this fails before a player finds it.
+    // Every lesson, played as its card words it (keyboard alternatives
+    // the text itself offers, world clicks for the rest), must stay
+    // affordable with the shipped numbers, so a cost or bank change that
+    // strands the player fails here.
     use crate::tutorial::{Tutorial, tutorial_scenario};
 
     let harvester_cost = UnitKind::Harvester.stats().cost;
@@ -5958,7 +6000,7 @@ fn the_tutorial_survives_its_own_literal_instructions() {
         "income survives the building lesson"
     );
 
-    // Lesson 4 — the trap's teeth: the fighter must be payable here.
+    // Lesson 4: the fighter must be payable here.
     assert!(
         bank(&game) >= sentinel_cost,
         "the fighter lesson re-opened the dead end: bank {} vs {} needed",
@@ -5994,8 +6036,8 @@ fn the_tutorial_survives_its_own_literal_instructions() {
     assert!(t.advance(game.demo));
     assert_eq!(t.step, 5, "advance graduates the march lesson");
 
-    // Lesson 6 is the pause menu, a frame-loop act outside the
-    // command stream; its flag flips in main.rs.
+    // Lesson 6 is the pause menu, a frame-loop act outside the command
+    // stream; its flag flips in `app::screen_flow`.
     game.demo.paused_menu = true;
     assert!(!t.advance(game.demo), "school is out");
 }
@@ -6007,7 +6049,7 @@ fn tap_panel_card(
     input: &mut InputState,
     pick: impl Fn(&crate::panel::Card) -> bool,
 ) {
-    let panel = crate::panel::build_for_input(&game.view(), input).expect("a panel");
+    let panel = crate::panel::build_for_input(&game.view(), &classic(), input).expect("a panel");
     let card = panel
         .cards
         .iter()
@@ -6248,7 +6290,7 @@ fn an_undrained_deferred_build_is_replaced_before_preflight() {
     walk(&mut game, TilePos::new(19, 6));
     for _ in 0..600 {
         if [first, replacement].iter().all(|anchor| {
-            let (w, h) = kind.base_stats().size;
+            let (w, h) = kind.size();
             (0..h).all(|dy| {
                 (0..w).all(|dx| {
                     game.state
@@ -6263,7 +6305,7 @@ fn an_undrained_deferred_build_is_replaced_before_preflight() {
     walk(&mut game, TilePos::new(7, 5));
     for _ in 0..600 {
         if [first, replacement].iter().all(|anchor| {
-            let (w, h) = kind.base_stats().size;
+            let (w, h) = kind.size();
             (0..h).all(|dy| {
                 (0..w).all(|dx| {
                     !game
@@ -6277,7 +6319,7 @@ fn an_undrained_deferred_build_is_replaced_before_preflight() {
         game.state.tick(&[]);
     }
     for anchor in [first, replacement] {
-        let (w, h) = kind.base_stats().size;
+        let (w, h) = kind.size();
         for dy in 0..h {
             for dx in 0..w {
                 let tile = anchor.offset(dx, dy);
@@ -6716,8 +6758,8 @@ fn a_plain_placement_replaces_the_selected_claim_while_shift_preserves_it() {
         .iter()
         .find(|b| b.anchor == old_spot)
         .unwrap();
-    assert!(!site.built);
-    assert_eq!(site.progress, 0);
+    assert!(!site.built());
+    assert_eq!(site.construction_progress(), Some(0));
     assert_eq!(
         game.state.unit(builder).unwrap().order,
         oxide_sim::Order::Build { site: site.id }
@@ -6726,7 +6768,7 @@ fn a_plain_placement_replaces_the_selected_claim_while_shift_preserves_it() {
     game.presentation.selection.units = vec![builder];
     input.build_menu = true;
     let affordable = |game: &Game, input: &InputState| {
-        crate::panel::build_for_input(&game.view(), input)
+        crate::panel::build_for_input(&game.view(), &classic(), input)
             .unwrap()
             .cards
             .iter()
@@ -6874,7 +6916,7 @@ fn an_automatic_upgrade_is_not_a_worker_target_or_a_scrappable_site() {
     let center = game.state.building(turret).expect("upgrade lives").center();
     assert_eq!(
         (
-            game.state.building(turret).unwrap().built,
+            game.state.building(turret).unwrap().built(),
             game.state.building(turret).unwrap().tier,
         ),
         (false, 1),
@@ -6901,7 +6943,7 @@ fn an_automatic_upgrade_is_not_a_worker_target_or_a_scrappable_site() {
     game.presentation.toasts.clear();
     game.presentation.selection.units.clear();
     game.presentation.selection.buildings = vec![turret];
-    super::dispatch::dispatch_action(&mut game, &mut input, Action::StopOrScrap);
+    super::dispatch::dispatch_action(&mut game, &mut input, &classic(), Action::StopOrScrap);
     assert!(
         game.pending.is_empty(),
         "the scrap hotkey must not stage Cancel"
@@ -6920,10 +6962,9 @@ fn construction_menu_shows_every_building_and_shortcuts_arm_the_visible_card() {
     use crate::action::{BUILD_CATEGORIES, building_category};
     let mut game = headless_game();
     let mut input = InputState::new();
-    input.bindings = crate::action::BindingMap::classic();
     let keys = [Key::Q, Key::E, Key::R, Key::T];
     dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
-    let panel = crate::panel::build_for_input(&game.view(), &input).unwrap();
+    let panel = crate::panel::build_for_input(&game.view(), &classic(), &input).unwrap();
     assert_eq!(panel.cards.len(), 14);
     let (back, buildings) = panel.cards.split_last().expect("cards");
     assert_eq!(back.action, crate::panel::CardAction::ClosePalette);
@@ -7181,7 +7222,12 @@ fn right_click_uses_building_memory_and_anonymous_contacts_and_stop_clears_focus
     let commands = std::mem::take(&mut game.pending);
     game.state.tick(&commands);
     assert!(game.state.building(defense).unwrap().focus.is_some());
-    super::dispatch::dispatch_action(&mut game, &mut InputState::new(), Action::StopOrScrap);
+    super::dispatch::dispatch_action(
+        &mut game,
+        &mut InputState::new(),
+        &classic(),
+        Action::StopOrScrap,
+    );
     assert!(matches!(
         game.pending.last().unwrap().command,
         Command::ClearFocus { .. }
@@ -7257,8 +7303,7 @@ fn a_hidden_mine_does_not_change_placement_selection_or_resume_input() {
     let anchor = TilePos::new(12, 4);
     for mined in [false, true] {
         let scenario=oxide_sim::Scenario::from_json(&serde_json::json!({
-            "name":"Mine placement","seed":17,
-            "players":[{"name":"Builder","faction":"ferrous","scrap":800,"bot":false},{"name":"Mines","faction":"cupric","scrap":0,"bot":true}],
+            "name":"Mine placement","players":[{"name":"Builder","faction":"ferrous","scrap":800,"bot":false},{"name":"Mines","faction":"cupric","scrap":0,"bot":true}],
             "map":["########################","#1.....................#","#......................#","#......................#","#......................#","#......................#","#......................#","#...................2..#","#......................#","########################"],
             "units":[{"player":0,"kind":"harvester","x":4,"y":4},{"player":0,"kind":"harvester","x":10,"y":2}],
             "buildings":if mined {vec![serde_json::json!({"player":1,"kind":"scuttle_charge","x":12,"y":4})]}else{vec![]}
@@ -7312,8 +7357,7 @@ fn a_hidden_mine_does_not_change_placement_selection_or_resume_input() {
 fn selecting_an_unfinished_mine_does_not_reveal_its_condition_after_concealment() {
     use oxide_sim::BuildingKind;
     let scenario=oxide_sim::Scenario::from_json(&serde_json::json!({
-        "name":"Mine visibility","seed":17,
-        "players":[{"name":"Observer","faction":"ferrous","scrap":800,"bot":false},{"name":"Mines","faction":"cupric","scrap":800,"bot":true}],
+        "name":"Mine visibility","players":[{"name":"Observer","faction":"ferrous","scrap":800,"bot":false},{"name":"Mines","faction":"cupric","scrap":800,"bot":true}],
         "map":["########################","#1.....................#","#......................#","#......................#","#......................#","#......................#","#......................#","#...................2..#","#......................#","########################"],
         "units":[{"player":0,"kind":"harvester","x":10,"y":2},{"player":1,"kind":"harvester","x":13,"y":4}],
         "buildings":[{"player":1,"kind":"fabricator","x":17,"y":2}]
@@ -7343,12 +7387,12 @@ fn selecting_an_unfinished_mine_does_not_reveal_its_condition_after_concealment(
     apply_events(&mut game, &mut input, &click(point.x, point.y));
     assert_eq!(game.presentation.selection.buildings, vec![mine]);
     for _ in 0..200 {
-        if game.state.building(mine).unwrap().built {
+        if game.state.building(mine).unwrap().built() {
             break;
         }
         game.do_tick();
     }
-    assert!(game.state.building(mine).unwrap().built);
+    assert!(game.state.building(mine).unwrap().built());
     assert!(game.presentation.selection.buildings.is_empty());
     assert!(
         game.my_vision()
@@ -7361,14 +7405,17 @@ fn selecting_an_unfinished_mine_does_not_reveal_its_condition_after_concealment(
 }
 
 fn controls_key(game: &mut Game, input: &mut InputState, key: Key) {
-    apply_events(game, input, &[key_down(key), key_up(key)]);
+    controls_key_with(game, input, &classic(), key);
+}
+
+fn controls_key_with(game: &mut Game, input: &mut InputState, bindings: &BindingMap, key: Key) {
+    apply_events_with(game, input, bindings, &[key_down(key), key_up(key)]);
 }
 
 #[test]
 fn group_recall_from_production_or_construction_never_purchases_anything() {
     let mut game = headless_game();
     let mut input = InputState::new();
-    input.bindings = crate::action::BindingMap::classic();
     let worker = game
         .state
         .units()
@@ -7414,29 +7461,31 @@ fn remapped_construction_sequence_arms_every_enabled_card_without_shift_changing
     });
     let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
     let mut input = InputState::new();
-    input.bindings = BindingMap::classic();
+    let mut bindings = BindingMap::classic();
     for (category, (_, kinds)) in BUILD_CATEGORIES.into_iter().enumerate() {
-        assert!(input.bindings.rebind(
+        assert!(bindings.rebind(
             Action::BuildCategory(category.fit::<u8>()),
             Chord::ctrl([Key::J, Key::K, Key::L, Key::O][category])
         ));
         for kind in kinds {
             let action = Action::Build(*kind);
-            let old = input.bindings.chord_for(action).unwrap();
-            assert!(input.bindings.rebind(action, Chord::ctrl(old.key)));
+            let old = bindings.chord_for(action).unwrap();
+            assert!(bindings.rebind(action, Chord::ctrl(old.key)));
             input.close_construction();
-            controls_key(&mut game, &mut input, Key::B);
-            apply_events(
+            controls_key_with(&mut game, &mut input, &bindings, Key::B);
+            apply_events_with(
                 &mut game,
                 &mut input,
+                &bindings,
                 &[key_down(Key::Ctrl), key_down(Key::Shift)],
             );
-            controls_key(
+            controls_key_with(
                 &mut game,
                 &mut input,
+                &bindings,
                 [Key::J, Key::K, Key::L, Key::O][category],
             );
-            let panel = crate::panel::build_for_input(&game.view(), &input).unwrap();
+            let panel = crate::panel::build_for_input(&game.view(), &bindings, &input).unwrap();
             let card = panel
                 .cards
                 .iter()
@@ -7444,11 +7493,12 @@ fn remapped_construction_sequence_arms_every_enabled_card_without_shift_changing
                 .unwrap();
             assert!(card.enabled, "{}: {:?}", card.title, card.why);
             assert!(card.hotkey.contains("Ctrl+"));
-            controls_key(&mut game, &mut input, old.key);
+            controls_key_with(&mut game, &mut input, &bindings, old.key);
             assert_eq!(input.placing, Some(*kind));
-            apply_events(
+            apply_events_with(
                 &mut game,
                 &mut input,
+                &bindings,
                 &[key_up(Key::Ctrl), key_up(Key::Shift)],
             );
         }
@@ -7474,8 +7524,8 @@ fn upgrade_and_rally_shortcuts_share_the_cards_owner_and_affordability_gates() {
     });
     let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
     let mut input = InputState::new();
-    input.bindings = BindingMap::classic();
-    assert!(input.bindings.rebind(Action::Upgrade, Chord::bare(Key::I)));
+    let mut bindings = BindingMap::classic();
+    assert!(bindings.rebind(Action::Upgrade, Chord::bare(Key::I)));
     let turret = game
         .state
         .buildings()
@@ -7484,7 +7534,7 @@ fn upgrade_and_rally_shortcuts_share_the_cards_owner_and_affordability_gates() {
         .unwrap()
         .id;
     game.presentation.selection.buildings = vec![turret];
-    controls_key(&mut game, &mut input, Key::I);
+    controls_key_with(&mut game, &mut input, &bindings, Key::I);
     assert!(
         matches!(game.pending.last().unwrap().command, Command::UpgradeBuilding { building } if building == turret)
     );
@@ -7497,11 +7547,11 @@ fn upgrade_and_rally_shortcuts_share_the_cards_owner_and_affordability_gates() {
         .unwrap()
         .id;
     game.presentation.selection.buildings = vec![enemy];
-    controls_key(&mut game, &mut input, Key::I);
+    controls_key_with(&mut game, &mut input, &bindings, Key::I);
     assert!(game.pending.is_empty());
     let foundry = game.home_foundry().unwrap().id;
     game.presentation.selection.buildings = vec![foundry];
-    controls_key(&mut game, &mut input, Key::Y);
+    controls_key_with(&mut game, &mut input, &bindings, Key::Y);
     assert_eq!(input.rallying, vec![foundry]);
 }
 
@@ -7525,12 +7575,9 @@ fn remapped_clear_rally_is_disabled_until_a_selected_producer_has_a_rally() {
         .collect();
     let producers = game.presentation.selection.buildings.clone();
     let mut input = InputState::new();
-    assert!(
-        input
-            .bindings
-            .rebind(Action::ClearRally, Chord::bare(Key::I))
-    );
-    controls_key(&mut game, &mut input, Key::I);
+    let mut bindings = crate::action::BindingMap::classic();
+    assert!(bindings.rebind(Action::ClearRally, Chord::bare(Key::I)));
+    controls_key_with(&mut game, &mut input, &bindings, Key::I);
     assert!(game.pending.is_empty());
 
     game.state.tick(&[PlayerCommand {
@@ -7540,7 +7587,7 @@ fn remapped_clear_rally_is_disabled_until_a_selected_producer_has_a_rally() {
             rally: Some(TilePos::new(14, 9)),
         },
     }]);
-    controls_key(&mut game, &mut input, Key::I);
+    controls_key_with(&mut game, &mut input, &bindings, Key::I);
     let expected: Vec<_> = producers
         .iter()
         .map(|id| PlayerCommand {
@@ -7554,7 +7601,7 @@ fn remapped_clear_rally_is_disabled_until_a_selected_producer_has_a_rally() {
     assert_eq!(*game.pending, expected);
     let commands = std::mem::take(&mut game.pending);
     game.state.tick(&commands);
-    controls_key(&mut game, &mut input, Key::I);
+    controls_key_with(&mut game, &mut input, &bindings, Key::I);
     assert!(game.pending.is_empty());
     assert!(
         producers
@@ -7588,9 +7635,7 @@ fn grouped_production_clicks_and_shortcuts_stage_the_same_batch() {
     let mut key_game = make_game();
     let mut mouse_input = InputState::new();
     let mut key_input = InputState::new();
-    mouse_input.bindings = BindingMap::classic();
-    key_input.bindings = BindingMap::classic();
-    let card = crate::panel::build_for_input(&mouse_game.view(), &mouse_input)
+    let card = crate::panel::build_for_input(&mouse_game.view(), &classic(), &mouse_input)
         .unwrap()
         .cards
         .into_iter()
@@ -7629,11 +7674,11 @@ fn grouped_upgrade_mouse_touch_and_remapped_keys_share_pending_eligibility() {
         let mut game = fixture(oxide_sim::BuildingKind::Turret, &[0, 1, 2], 450);
         let ids = game.presentation.selection.buildings.clone();
         let mut input = InputState::new();
-        input.bindings = BindingMap::classic();
+        let mut bindings = BindingMap::classic();
         if mode == 3 {
-            assert!(input.bindings.rebind(Action::Upgrade, Chord::bare(Key::I)));
+            assert!(bindings.rebind(Action::Upgrade, Chord::bare(Key::I)));
         }
-        let panel = crate::panel::build_for_input(&game.view(), &input).unwrap();
+        let panel = crate::panel::build_for_input(&game.view(), &bindings, &input).unwrap();
         let card = panel
             .cards
             .iter()
@@ -7649,18 +7694,20 @@ fn grouped_upgrade_mouse_touch_and_remapped_keys_share_pending_eligibility() {
         // Deliberately retain the old hit-test card between activations.
         for _ in 0..2 {
             match mode {
-                0 => apply_events(&mut game, &mut input, &click(260.0, 740.0)),
-                1 => apply_events(
+                0 => apply_events_with(&mut game, &mut input, &bindings, &click(260.0, 740.0)),
+                1 => apply_events_with(
                     &mut game,
                     &mut input,
+                    &bindings,
                     &[
                         touch_down(1, vec2(260.0, 740.0)),
                         touch_up(1, vec2(260.0, 740.0)),
                     ],
                 ),
-                _ => controls_key(
+                _ => controls_key_with(
                     &mut game,
                     &mut input,
+                    &bindings,
                     if mode == 2 { Key::U } else { Key::I },
                 ),
             }
@@ -7764,13 +7811,11 @@ fn return_cargo_card_and_shortcut_replace_work_for_both_workers() {
                 .find(|u| u["id"] == serde_json::json!(worker))
                 .unwrap();
             row["kind"] = serde_json::json!(kind);
-            row["carrying"] = serde_json::json!(4);
+            row["worker"]["carrying"] = serde_json::json!(4);
             *game.state = serde_json::from_value(data).unwrap();
             game.presentation.selection.units = vec![worker];
             let mut input = InputState::new();
-            input.bindings = crate::action::BindingMap::classic();
-            let panel =
-                crate::panel::build_for_palette(&game.view(), &input.bindings, false).unwrap();
+            let panel = crate::panel::build_for_palette(&game.view(), &classic(), false).unwrap();
             let card = panel
                 .cards
                 .iter()
@@ -7822,7 +7867,8 @@ fn the_dock_stop_square_halts_the_selection_by_click_and_tap() {
     for touch in [false, true] {
         let mut input = InputState::new();
         input.now = 1.0;
-        let panel = crate::panel::build_for_input(&game.view(), &input).expect("a panel");
+        let panel =
+            crate::panel::build_for_input(&game.view(), &classic(), &input).expect("a panel");
         let action = panel.stop.as_ref().expect("a busy unit can stop").action;
         *game.presentation.panel_model.borrow_mut() = Some(panel);
         let mut layout = bare_layout(680.0, 500.0);
@@ -7875,7 +7921,7 @@ fn return_cargo_foundry_click_keeps_empty_welders_and_loaded_workers() {
             .iter_mut()
             .find(|u| u["id"] == serde_json::json!(workers[0]))
             .unwrap();
-        loaded["carrying"] = serde_json::json!(4);
+        loaded["worker"]["carrying"] = serde_json::json!(4);
         if damaged {
             let building = data["buildings"]
                 .as_array_mut()
@@ -7913,8 +7959,7 @@ fn return_cargo_empty_selection_hides_the_card_and_refuses_the_shortcut() {
         .id;
     game.presentation.selection.units = vec![worker];
     let mut input = InputState::new();
-    input.bindings = crate::action::BindingMap::classic();
-    let panel = crate::panel::build_for_palette(&game.view(), &input.bindings, false).unwrap();
+    let panel = crate::panel::build_for_palette(&game.view(), &classic(), false).unwrap();
     assert!(
         !panel
             .cards
@@ -7953,7 +7998,6 @@ fn shared_cargo_shortcut_unloads_a_transport() {
     assert_eq!(game.state.unit(transport).unwrap().cargo.len(), 1);
     game.presentation.selection.units = vec![transport];
     let mut input = InputState::new();
-    input.bindings = crate::action::BindingMap::classic();
     controls_key(&mut game, &mut input, Key::U);
     assert!(
         matches!(game.pending.as_slice(), [PlayerCommand { command: Command::Unload { transport: id, queue: false, .. }, .. }] if *id == transport)
@@ -7982,7 +8026,7 @@ fn mixed_workers_use_the_cargo_shortcut_and_keep_other_unit_bindings() {
         .iter_mut()
         .find(|u| u["id"] == serde_json::json!(worker))
         .unwrap();
-    row["carrying"] = serde_json::json!(4);
+    row["worker"]["carrying"] = serde_json::json!(4);
     *game.state = serde_json::from_value(data).unwrap();
     game.presentation.selection.units = game
         .state
@@ -7993,7 +8037,6 @@ fn mixed_workers_use_the_cargo_shortcut_and_keep_other_unit_bindings() {
         .collect();
     assert!(game.presentation.selection.units.len() > 1);
     let mut input = InputState::new();
-    input.bindings = crate::action::BindingMap::classic();
     input.build_menu = true;
     controls_key(&mut game, &mut input, Key::U);
     assert!(!input.construction_open());

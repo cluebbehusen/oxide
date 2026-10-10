@@ -356,11 +356,10 @@ fn a_walking_patient_is_chased_not_welded() {
 
 #[test]
 fn a_move_landing_mid_weld_rides_no_farewell_heal() {
-    // Stationarity is intent: the tick a Run lands, the patient's
-    // order is set but its path is not built until its own brain runs
-    // — on the parity where the welder thinks first, path.is_none()
-    // used to let one heal ride the departure. Both parities must
-    // refuse it.
+    // Stationarity is intent: the tick a Run lands, the patient's order
+    // is set but its path is not built until its own brain runs. On the
+    // parity where the welder thinks first, checking only path.is_none()
+    // would let one heal ride the departure. Both parities must refuse it.
     for offset in [0u32, 1u32] {
         let mut state = arena(cast()).build().unwrap();
         let (welder, patient, raider) = (
@@ -731,7 +730,7 @@ fn a_stationary_builder_at_a_revealed_scaffold_is_weldable() {
             serde_json::json!(patient_pos - Vec2Fx::new(Fx::lit("0.7"), Fx::ZERO));
         json["units"][1]["pos"] = serde_json::json!(patient_pos);
         json["units"][1]["path"] = serde_json::Value::Null;
-        json["units"][1]["drive_speed"] = serde_json::json!(Fx::ZERO);
+        json["units"][1]["motor"]["speed"] = serde_json::json!(Fx::ZERO);
         let mut state: State = serde_json::from_value(json).unwrap();
 
         let before_hp = state.unit(patient).unwrap().hp;

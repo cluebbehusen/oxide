@@ -1,11 +1,10 @@
 //! Drawing: map, entities, effects, HUD, debug overlay.
 //!
-//! Split by layer (0.10 file diet): submodules own the minimap and,
-//! as the split continues, the panel, chrome, and world layers.
+//! Split by layer: submodules own the minimap, panel, chrome, and world
+//! layers.
 //!
 //! Reads the sim, never writes it. Unit positions interpolate between the
-//! previous and current tick so 20 sim ticks per second still looks like
-//! 60fps motion.
+//! previous and current tick so motion stays smooth between sim ticks.
 
 use crate::assets::{
     ExcavatorPose as SpriteExcavatorPose, HarvesterPose as SpriteHarvesterPose, Sprites,
@@ -15,10 +14,9 @@ use crate::numeric::Fit;
 pub(crate) mod tracks;
 static COLORBLIND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Colorblind accents: swap allegiance-critical indicator colors for a
-/// deutan/protan-safe orange-vs-blue pair. Sprites keep their art —
-/// this governs the signals that must never be ambiguous (minimap
-/// dots, alert pulses, allegiance tints).
+/// Colorblind accents: swaps allegiance indicator colors (minimap dots,
+/// alert pulses, allegiance tints) for colorblind-safe palettes. Sprite
+/// art is unchanged.
 pub fn set_colorblind(on: bool) {
     COLORBLIND.store(on, std::sync::atomic::Ordering::Relaxed);
 }
@@ -38,8 +36,8 @@ pub(crate) fn control_groups() -> bool {
     CONTROL_GROUPS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// The faction's indicator accent — the one allegiance color every
-/// signal derives from, colorblind-aware.
+/// The faction's colorblind-aware indicator accent, from which every
+/// allegiance signal derives.
 pub fn faction_accent(faction: oxide_sim::Faction) -> Color {
     crate::seat_style::faction_accent(faction, colorblind())
 }
@@ -55,15 +53,15 @@ pub(crate) fn seat_identity_tint(game: &Scene<'_>, owner: oxide_sim::PlayerId) -
     (style.cue != crate::seat_style::AllegianceCue::Mine).then_some(style.color)
 }
 
-/// How faded a memory draws after `age` seconds unseen: 0 fresh,
-/// climbing to a 0.55 fade over ninety seconds. Memories never vanish
-/// — the player recorded them honestly — they just stop pretending to
-/// be news.
+/// How faded a memory draws after `age` seconds unseen: 0 when fresh,
+/// rising to a capped fade at ninety seconds. Memories fade but never
+/// vanish.
 pub fn staleness_fade(age: f32) -> f32 {
     (age / 90.0).clamp(0.0, 1.0) * 0.55
 }
 
-/// Shared age of an honestly observed salvage tile in the presentation clock.
+/// Draw opacity for a salvage tile: full while visible, then fading with
+/// the time since it was last seen on the presentation clock.
 pub(crate) fn resource_memory_opacity(game: &Scene<'_>, pos: chassis::grid::TilePos) -> f32 {
     let mut seen = game.presentation.last_seen.borrow_mut();
     let now = game.presentation.fx_time();
@@ -114,14 +112,11 @@ pub(crate) use crate::theme::{
 };
 
 pub(crate) const OUTSIDE: Color = color_u8!(20, 20, 25, 255);
-// World decoration (selection rings, rally poles, breadcrumbs) keeps
-// its own bone pair: the text tiers in crate::theme answer for
-// legibility, and raising them must never thicken the world's weight.
+// World decoration (selection rings, rally poles, breadcrumbs) uses its
+// own bone pair so raising the text contrast tiers in crate::theme never
+// thickens world decoration.
 const BONE: Color = color_u8!(232, 228, 216, 255);
 const BONE_FAINT: Color = color_u8!(232, 228, 216, 90);
-const DEFAULT_UNIT_DRAW_SCALE: f32 = 1.05;
-const HEAVY_UNIT_DRAW_SCALE: f32 = 1.4;
-const LARGE_UNIT_DRAW_SCALE: f32 = 2.0;
 const SCRAP_COLOR: Color = crate::theme::TEXT_ACCENT;
 const HP_BACK: Color = color_u8!(20, 20, 24, 220);
 const DANGER: Color = crate::theme::TEXT_DANGER;
@@ -331,8 +326,8 @@ fn draw_capability_icon(
     }
 }
 
-/// The user's UI scale preference — atomic f32 bits so the settings
-/// screen can retune it live while every draw and hit-test path reads
+/// The user's UI scale preference, stored as atomic f32 bits so the
+/// settings screen can retune it live while draw and hit-test paths read
 /// it lock-free.
 #[cfg(not(test))]
 static USER_SCALE: std::sync::atomic::AtomicU32 =
@@ -344,8 +339,8 @@ thread_local! {
     static USER_SCALE: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
 }
 
-/// Installs the user scale factor (clamped to sane bounds; a config
-/// promising 0x or 10x chrome must not brick the window).
+/// Installs the user scale factor, clamped so a bad config cannot make
+/// chrome unusable.
 pub fn set_user_scale(factor: f32) {
     #[cfg(not(test))]
     USER_SCALE.store(
@@ -369,13 +364,11 @@ pub fn reduced_motion() -> bool {
     REDUCED_MOTION.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// UI scale factor: chrome (text, bars, minimap) is authored in logical
-/// pixels, and `screen_width()`/mouse coordinates are ALREADY logical —
-/// macroquad's high-dpi backing store absorbs the retina multiple
-/// underneath. Multiplying dpi in here double-sized every piece of
-/// chrome for four releases (the audit's giant menus and viewport-
-/// swallowing minimap, root-caused by a live probe: `screen_w=1280` on a
-/// 2560-pixel display). The user preference is the only factor.
+/// UI scale factor: the user preference, capped by window size. Chrome
+/// (text, bars, minimap) is authored in logical pixels, and
+/// `screen_width()` and mouse coordinates are already logical because
+/// macroquad's high-dpi backing store absorbs the display's pixel ratio,
+/// so the DPI factor must not be applied here.
 pub fn ui_scale() -> f32 {
     #[cfg(not(test))]
     let user = f32::from_bits(USER_SCALE.load(std::sync::atomic::Ordering::Relaxed));
@@ -399,21 +392,20 @@ static VIEW_WIDTH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::
 #[cfg(not(test))]
 static VIEW_HEIGHT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-// Under cfg(test) the storage is thread-local: libtest runs each test
-// on its own thread, so a test that injects a small window can't turn
-// a concurrently running layout test red — nor, by panicking
-// mid-test, leave the pollution behind for whoever runs next. Tests
-// therefore need no restore call; every test thread starts at the
-// 1280x800 headless default.
+// Under cfg(test) the storage is thread-local: libtest runs each test on
+// its own thread, so a test that injects a small window cannot affect a
+// concurrent layout test or leak into a later one, even by panicking.
+// Every test thread starts at the 1280x800 default and needs no restore.
 #[cfg(test)]
 thread_local! {
     static VIEW: std::cell::Cell<(u32, u32)> = const { std::cell::Cell::new((0, 0)) };
 }
 
-/// The frame loop hands the window size in once per frame; chrome
-/// scale math, menus, and session construction never query the window
-/// themselves — which is what lets all of them run headless (the
-/// default is the 1280x800 window).
+/// Installs the window size; the frame loop calls this once per frame.
+/// [`ui_scale`], menu layout, and session construction read it through
+/// [`viewport`] instead of querying the window, so they run headless
+/// (the default is 1280x800). HUD and world drawing query the window
+/// directly.
 #[cfg(not(test))]
 pub fn set_viewport(w: f32, h: f32) {
     VIEW_WIDTH.store(w.to_bits(), std::sync::atomic::Ordering::Relaxed);
@@ -486,19 +478,25 @@ fn view_height() -> f32 {
 }
 
 /// Draws one frame.
-pub fn draw(game: &crate::game::Scene<'_>, sprites: &Sprites, input: &InputState) {
-    draw_with_performance(game, sprites, input, None);
+pub fn draw(
+    game: &crate::game::Scene<'_>,
+    sprites: &Sprites,
+    input: &InputState,
+    bindings: &crate::action::BindingMap,
+) {
+    draw_with_performance(game, sprites, input, bindings, None);
 }
 
 pub(crate) fn draw_with_performance(
     game: &crate::game::Scene<'_>,
     sprites: &Sprites,
     input: &InputState,
+    bindings: &crate::action::BindingMap,
     performance: Option<&crate::performance::PerformanceView>,
 ) {
     clear_background(OUTSIDE);
     environment::draw_backdrop(game);
-    let alpha = game.presentation.render_alpha();
+    let alpha = game.clock.render_alpha();
     draw_tiles(game, sprites);
     pits::draw_pits(game, sprites.quarry_dressing(0).is_some());
     crate::render::world::draw_extractor_frames(game, sprites);
@@ -528,8 +526,8 @@ pub(crate) fn draw_with_performance(
     draw_blips(game);
     draw_rally_marker(game);
     draw_breadcrumbs(game, input);
-    // Deferred claims are the player's own intent, like breadcrumbs —
-    // a spectator has no chair whose promises deserve footprints.
+    // Deferred claims are the player's own intent, like breadcrumbs; a
+    // spectator has none.
     if !game.presentation.spectate {
         draw_pending_founds(game, sprites);
     }
@@ -538,7 +536,7 @@ pub(crate) fn draw_with_performance(
     draw_touch_box(game, input);
     draw_long_press_ring(input);
     draw_salvage_tooltip(game, input);
-    draw_hud(game, sprites, input, performance);
+    draw_hud(game, sprites, input, bindings, performance);
     if game.presentation.overlay {
         draw_overlay_info(game);
     }
@@ -566,7 +564,7 @@ fn visible_tiles(game: &crate::game::Scene<'_>) -> (TilePos, TilePos) {
 
 /// Per-theme terrain grading: a subtle multiplier on ground-layer
 /// sprites only. Units, chrome, the minimap, and the golden renderer
-/// stay untinted — grading is atmosphere, never information.
+/// stay untinted; grading is atmosphere, never information.
 pub fn theme_tint(theme: &str) -> Color {
     match theme {
         "rusted-yard" => Color::new(1.0, 0.95, 0.88, 1.0),
@@ -612,42 +610,19 @@ pub(crate) fn unit_visual_radius(kind: oxide_sim::UnitKind) -> f32 {
 }
 
 pub(crate) fn unit_draw_scale(kind: oxide_sim::UnitKind) -> f32 {
-    match kind {
-        oxide_sim::UnitKind::Condor
-        | oxide_sim::UnitKind::Moth
-        | oxide_sim::UnitKind::Breaker
-        | oxide_sim::UnitKind::Avalanche
-        | oxide_sim::UnitKind::Skyhook => LARGE_UNIT_DRAW_SCALE,
-        oxide_sim::UnitKind::Warden => HEAVY_UNIT_DRAW_SCALE,
-        oxide_sim::UnitKind::Excavator | oxide_sim::UnitKind::Shrike => 1.3,
-        oxide_sim::UnitKind::Sylph => 1.2,
-        _ => DEFAULT_UNIT_DRAW_SCALE,
-    }
+    crate::look::unit(kind).scale
 }
 
+/// A flyer's shadow size, shadow offset and body lift at `zoom`.
 pub(crate) fn air_presentation(kind: oxide_sim::UnitKind, zoom: f32) -> (Vec2, Vec2, f32) {
-    match kind {
-        oxide_sim::UnitKind::Condor => (
-            vec2(zoom * 1.75, zoom * 1.1875),
-            vec2(zoom * 0.125, zoom * 0.1875),
-            zoom * 0.0625,
-        ),
-        oxide_sim::UnitKind::Moth => (
-            vec2(zoom * 1.55, zoom),
-            vec2(zoom * 0.11, zoom * 0.17),
-            zoom * 0.08,
-        ),
-        oxide_sim::UnitKind::Skyhook => (
-            vec2(zoom * 1.78, zoom * 1.52),
-            vec2(zoom * 0.13, zoom * 0.20),
-            zoom * 0.07,
-        ),
-        _ => (
-            vec2(zoom * 0.9, zoom * 0.9),
-            vec2(zoom * 0.16, zoom * 0.26),
-            zoom * 0.18,
-        ),
-    }
+    let airframe = crate::look::unit(kind)
+        .airframe
+        .unwrap_or(crate::look::SMALL_AIRFRAME);
+    (
+        airframe.shadow * zoom,
+        airframe.shadow_offset * zoom,
+        airframe.lift * zoom,
+    )
 }
 
 fn tracked_mount_angle(
@@ -661,7 +636,7 @@ fn tracked_mount_angle(
         .get(&unit.id.0)
         .copied()
         .or_else(|| {
-            if unit.kind == oxide_sim::UnitKind::Sapper
+            if unit.kind.stats().demolition.is_some()
                 && let oxide_sim::Order::Attack { target, .. } = unit.order
             {
                 game.state
@@ -693,7 +668,7 @@ fn tracked_mount_angle(
                 return None;
             }
             let from = game.presentation.draw_pos(unit.id, unit.pos, alpha);
-            let (width, height) = target.stats().size;
+            let (width, height) = target.kind.size();
             from.clamp(
                 vec2(target.anchor.x as f32, target.anchor.y as f32),
                 vec2(
@@ -915,8 +890,8 @@ pub(crate) fn unit_body_pose(
         .and_then(|_| tracked_mount_angle(game, unit, alpha));
     let rotation = if unit.kind.stats().turn_rate > 0
         || unit.kind.ground_turn_rate() > 0
-        || unit.kind.cruise_turn_rate() > 0
-        || unit.kind.turret_turn_rate() > 0
+        || unit.kind.stats().cruise_turn_rate > 0
+        || unit.kind.stats().turret_turn_rate > 0
     {
         game.presentation
             .draw_heading(unit.id, unit.weapon_heading(), alpha)
@@ -985,7 +960,7 @@ fn draw_unit_pass(
     let zoom = game.presentation.camera.zoom;
     let airborne = domain == oxide_sim::stats::Domain::Air;
     // Frustum cull with a margin covering the sprite, its shadow, rings,
-    // and bars — off-camera machines cost nothing on grand maps.
+    // and bars.
     let (view_lo, view_hi) = game.presentation.camera.world_rect();
     for unit in game.state.units() {
         // The body's current layer, not its kind's: a parked airframe
@@ -1050,8 +1025,7 @@ fn draw_unit_pass(
                 );
             } else {
                 // Inspected, not commanded: a fainter ring outside the
-                // allegiance cue — "selected" and "mine" stay
-                // different claims.
+                // allegiance cue, so "selected" and "mine" stay distinct.
                 draw_circle_lines(
                     screen.x,
                     screen.y,
@@ -1062,8 +1036,8 @@ fn draw_unit_pass(
             }
         }
         let body_size = vec2(dest, dest);
-        if unit.kind == oxide_sim::UnitKind::Bombard
-            && let Some(source) = sprites.bombard_spades(unit.brace_ticks)
+        if unit.kind.stats().brace.is_some()
+            && let Some(source) = sprites.bombard_spades(unit.braces())
         {
             sprites.draw_unit(
                 body.x - body_size.x * 0.5,
@@ -1176,7 +1150,8 @@ fn draw_unit_pass(
                     DrawTextureParams {
                         dest_size: Some(body_size),
                         source: Some(source),
-                        rotation: if unit.kind == oxide_sim::UnitKind::Skyhook {
+                        // A mount that carries no weapon turns with the hull.
+                        rotation: if unit.kind.stats().weapons.is_empty() {
                             body_rotation
                         } else {
                             rotation
@@ -1239,25 +1214,12 @@ fn hp_bar(x: f32, y: f32, w: f32, hp: u32, max_hp: u32) {
     draw_rectangle(x, y, w * fraction, 3.0, color);
 }
 
-/// Order-acknowledgment rings, drawn above the fog: they are the player's
-/// own intent echoed back, not world intel to be hidden.
-/// The range language: what a selected machine can shoot, see, and
-/// detect — and the same rings under a placement ghost, because siting
-/// a Flak Turret or Bastion IS the decision its rings describe. Weapon
-/// reach draws in danger red, own vision in bone, the Array's radar
-/// detection in patina teal, and Repair Bay healing in green; where a gun
-/// outranges its own eyes
-/// (Bombard, Bastion), the gap between red and bone is the spotter's
-/// job, made visible.
-/// How many selected units draw their rings and programs — a boxed
-/// army of forty must not paint forty overlapping circles.
+/// How many selected units draw their rings and programs, so a large
+/// selection does not stack dozens of overlapping circles.
 const DECOR_CAP: usize = 12;
 
-// --- Minimap ------------------------------------------------------------
-
-/// The tutorial card's full rectangle — pure geometry shared by
-/// drawing and input, which treats the card as chrome (clicks on an
-/// instructional card must never reach the world).
+/// The tutorial card's full rectangle, shared by drawing and input; input
+/// treats the card as chrome so clicks on it never reach the world.
 pub fn tutorial_card_rect(t: &crate::tutorial::Tutorial) -> Rect {
     let s = ui_scale();
     let w = 460.0 * s;
@@ -1277,9 +1239,8 @@ pub fn tutorial_dismiss_rect() -> Rect {
     Rect::new(x + w - 26.0 * s, 40.0 * s, 22.0 * s, 22.0 * s)
 }
 
-/// The tutorial card: headline, lesson, live coach line, dismiss box,
-/// progress. Drawn over the world, under nothing — school outranks
-/// scenery.
+/// The tutorial card: headline, lesson, live coach line, dismiss box, and
+/// progress.
 pub fn draw_tutorial(
     t: &crate::tutorial::Tutorial,
     game: &crate::game::Game,

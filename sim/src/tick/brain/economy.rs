@@ -17,14 +17,19 @@ use chassis::grid::TilePos;
 use std::cmp::Reverse;
 
 /// The live meter read for weld and salvage billing, saturated one shy
-/// of [`crate::state::PROGRESS_ENVELOPE`] — the ceiling the snapshot
-/// validator enforces and the ramp products are proven to fit under.
-/// The step math prices one tick as `ramp * (p + 1) / ramp_ticks` in
-/// `u32`; unbounded, the product overflows once a torch has held one
-/// job a few million ticks. Saturated, the meter parks at the ceiling
-/// and the torch keeps billing and welding its marginal step forever.
+/// of [`crate::state::PROGRESS_ENVELOPE`], the ceiling the snapshot
+/// validator enforces. Saturated, the meter parks at the ceiling and the
+/// torch keeps billing and welding its marginal step forever.
 fn metered(progress: u32) -> u32 {
     progress.min(crate::state::PROGRESS_ENVELOPE - 1)
+}
+
+/// The hp a `ramp` spread evenly over `ticks` gains between meter readings
+/// `from` and `to`. The products run in `u64`: a long-held weld meter times
+/// a large hp ramp passes `u32`.
+fn ramp_step(ramp: u32, from: u32, to: u32, ticks: u32) -> u32 {
+    let at = |meter: u32| u64::from(ramp) * u64::from(meter) / u64::from(ticks);
+    u32::try_from(at(to) - at(from)).expect("a step never exceeds its ramp")
 }
 
 /// Advance every committed building upgrade exactly once on the simulation
@@ -35,13 +40,13 @@ pub(super) fn advance_upgrades(state: &mut State, builds: &mut Vec<PendingHpGain
     let sites: Vec<BuildingId> = state
         .buildings
         .iter()
-        .filter(|building| !building.built && building.tier > 0 && building.hp > 0)
+        .filter(|building| building.upgrading() && building.hp > 0)
         .map(|building| building.id)
         .collect();
 
     for site in sites {
         let building = state.building(site).expect("upgrade id came from state");
-        let (player, kind, progress) = (building.player, building.kind, building.progress);
+        let (player, kind) = (building.player, building.kind);
         let stats = building.stats();
         let build_ticks = stats
             .construction
@@ -49,13 +54,12 @@ pub(super) fn advance_upgrades(state: &mut State, builds: &mut Vec<PendingHpGain
             .build_ticks;
         let start_hp = stats.max_hp / 5;
         let ramp = stats.max_hp - start_hp;
-        let advanced = progress.saturating_add(1).min(build_ticks);
-        let step = (ramp * advanced / build_ticks) - (ramp * progress / build_ticks);
-
-        state
+        let (progress, advanced) = state
             .building_mut(site)
             .expect("upgrade id came from state")
-            .progress = advanced;
+            .add_construction_work(1, build_ticks)
+            .expect("an upgrading building runs its upgrade meter");
+        let step = ramp_step(ramp, progress, advanced, build_ticks);
         let completes = advanced >= build_ticks;
         if step > 0 || completes {
             builds.push(PendingHpGain {
@@ -84,11 +88,11 @@ pub(super) fn build(
 ) {
     let me = state.unit(id).expect("caller checked").player;
     // hp > 0 is defense in depth: with buffered damage nothing dies
-    // mid-brains anymore, but building on a corpse would resurrect it and
-    // swallow the destruction event, so the guard stays.
+    // mid-brains, but building on a corpse would resurrect it and swallow
+    // the destruction event.
     let Some(b) = state
         .building(site)
-        .filter(|b| b.player == me && !b.built && b.tier == 0 && b.hp > 0)
+        .filter(|b| b.player == me && b.under_construction() && b.hp > 0)
     else {
         // Finished, cancelled, or destroyed: the job is over either way.
         state.unit_mut(id).expect("caller checked").advance_queue();
@@ -96,32 +100,34 @@ pub(super) fn build(
     };
     let (anchor, kind) = (b.anchor, b.kind);
     let stats = b.stats();
-    let size = stats.size;
+    let size = kind.size();
     let build_ticks = stats
         .construction
         .expect("sites only exist for buildable kinds")
         .build_ticks;
     let unit = state.unit(id).expect("caller checked");
-    if !b.provisional && unit.work_stopped() && state.in_building_work_reach(unit, site) {
+    if !b.provisional() && unit.work_stopped() && state.in_building_work_reach(unit, site) {
         let start_hp = stats.max_hp / 5;
         let ramp = stats.max_hp - start_hp;
-        // An Excavator's crew-tick counts double: same ramp, half the
-        // wall clock, telescoping exactly like a second pair of hands.
+        // An Excavator's crew-tick counts double: same ramp, half the wall
+        // clock, telescoping like a second builder.
         let rate = state
             .unit(id)
             .expect("caller checked")
             .kind
             .stats()
             .build_rate;
-        let b = state.building_mut(site).expect("just seen");
-        let starts = b.progress == 0;
-        let advanced = (b.progress + rate).min(build_ticks);
-        let step = (ramp * advanced / build_ticks) - (ramp * b.progress / build_ticks);
-        b.progress = advanced;
+        let (progress, advanced) = state
+            .building_mut(site)
+            .expect("just seen")
+            .add_construction_work(rate, build_ticks)
+            .expect("a site past its blueprint runs its construction meter");
+        let starts = progress == 0;
+        let step = ramp_step(ramp, progress, advanced, build_ticks);
         // Both the hp gain and the completion are buffered and applied
         // after damage — see PendingHpGain. The builder learns the site is
         // done next tick, through the built-site branch above.
-        let completes = b.progress >= build_ticks;
+        let completes = advanced >= build_ticks;
         if starts {
             // Before the first work, a full-refund cancellation must preserve salvage.
             for dy in 0..size.1 {
@@ -170,7 +176,7 @@ pub(super) fn found(
         .buildings
         .iter()
         .find(|b| b.player == player && b.kind == kind && b.anchor == anchor && b.hp > 0)
-        .map(|b| (b.id, b.provisional));
+        .map(|b| (b.id, b.provisional()));
     let Some((site, provisional)) = site else {
         state.unit_mut(id).expect("caller checked").advance_queue();
         return;
@@ -181,7 +187,7 @@ pub(super) fn found(
         return;
     }
     let tile = state.unit(id).expect("caller checked").tile();
-    let size = kind.base_stats().size;
+    let size = kind.size();
     if state.building(site).expect("found site").contains(tile)
         || tile_adjacent_to_rect(tile, anchor, size)
     {
@@ -214,7 +220,7 @@ pub(super) fn repair(
     let me = state.unit(id).expect("caller checked").player;
     let Some(b) = state
         .building(building)
-        .filter(|b| b.player == me && b.built && b.hp > 0 && b.hp < b.stats().max_hp)
+        .filter(|b| b.player == me && b.built() && b.hp > 0 && b.hp < b.stats().max_hp)
     else {
         // Healed, destroyed, or never a patient: the job is over.
         state.unit_mut(id).expect("caller checked").advance_queue();
@@ -224,11 +230,9 @@ pub(super) fn repair(
     // The active tier's row: a Bulwark's weld ramp, ceiling, and billing
     // basis are the Bulwark's, not the base Turret's.
     let stats = kind.tier_stats(tier);
-    // The welding rate is the construction ramp — except the Foundry,
-    // which keeps its authored ramp and billing basis: repairing the
-    // victory token stays the tuned defensive lever it always was, even
-    // now that expansions make Foundries purchasable at a price that
-    // would otherwise quadruple the weld bill.
+    // The welding rate is the construction ramp, except for the Foundry,
+    // which uses its own ramp and billing basis so its construction price
+    // does not inflate the repair bill for the victory structure.
     let (ramp_ticks, basis) = if kind == crate::stats::BuildingKind::Foundry {
         (
             crate::stats::FOUNDRY_REPAIR_TICKS,
@@ -278,7 +282,7 @@ pub(super) fn repair(
         let unit = state.unit_mut(id).expect("caller checked");
         unit.path = None;
         unit.progress = p + 1;
-        let step = (ramp * (p + 1) / ramp_ticks) - (ramp * p / ramp_ticks);
+        let step = ramp_step(ramp, p, p + 1, ramp_ticks);
         if step > 0 {
             builds.push(PendingHpGain {
                 starts: false,
@@ -307,13 +311,11 @@ pub(super) fn repair(
 /// Weld a wounded own ground machine: chase it to body contact, then
 /// feed it hp along its training ramp, billed per hp at
 /// [`crate::stats::REPAIR_COST_PERMILLE`] of proportional cost through
-/// the same prepaid milli-scrap meter buildings use. The torch holds
-/// only while both bodies stand still inside
-/// body-aware tool reach: a walking patient is chased, not
-/// welded — field sustain never rides along with a retreat. Heals
-/// buffer like every hp gain and resolve after damage (fire wins
-/// ties); several welders stack, each billing its own torch time.
-/// The patient's own orders are never touched.
+/// the same prepaid milli-scrap meter buildings use. The torch holds only
+/// while both bodies stand still inside body-aware tool reach: a walking
+/// patient is chased, not welded. Heals buffer like every hp gain and
+/// resolve after damage; several welders stack, each billing its own torch
+/// time. The patient's own orders are never touched.
 pub(super) fn repair_unit(
     state: &mut State,
     id: UnitId,
@@ -385,10 +387,10 @@ pub(super) fn commit_unit_welds(
                 continue;
             };
             let me = unit.player;
-            if unit.drive_speed != Fx::ZERO || footprint_eviction_pending(state, weld.welder) {
-                // Phase 5, after weld resolution, will make this welder
-                // walk off newly claimed ground. It cannot light the
-                // torch and move in the same tick.
+            if unit.drive_speed() != Fx::ZERO || footprint_eviction_pending(state, weld.welder) {
+                // The movement pre-pass, after weld resolution, will make
+                // this welder walk off newly claimed ground. It cannot light
+                // the torch and move in the same tick.
                 stationary[slot] = false;
                 continue;
             }
@@ -402,7 +404,7 @@ pub(super) fn commit_unit_welds(
                 continue;
             };
             if t.path.is_none()
-                && t.drive_speed == Fx::ZERO
+                && t.drive_speed() == Fx::ZERO
                 && !matches!(t.order, Order::Found { .. })
                 && !footprint_eviction_pending(state, weld.patient)
                 && unit.in_repair_reach(t)
@@ -441,7 +443,7 @@ pub(super) fn commit_unit_welds(
         debug_assert!(unit.in_repair_reach(t));
         let t_kind = t.kind;
 
-        // The billing meter is the Harvester welder's, with the patient's
+        // The billing meter is the welder's, with the patient's
         // own numbers: ramp is full max_hp (machines have no one-fifth
         // foundation), the clock is its training time, the basis its
         // price. Same ceiling prepay, same survival of no-op reissues.
@@ -466,7 +468,7 @@ pub(super) fn commit_unit_welds(
         let unit = state.unit_mut(weld.welder).expect("just seen");
         unit.path = None;
         unit.progress = p + 1;
-        let step = (ramp * (p + 1) / ramp_ticks) - (ramp * p / ramp_ticks);
+        let step = ramp_step(ramp, p, p + 1, ramp_ticks);
         if step > 0 {
             heals.push(super::PendingUnitHeal {
                 unit: weld.patient,
@@ -479,9 +481,10 @@ pub(super) fn commit_unit_welds(
     }
 }
 
-/// Whether phase 5 will give this pathless body an escape path from a
-/// claimed building footprint. Weld settlement runs before that pre-pass,
-/// so it must predict the same move to uphold the both-bodies-still rule.
+/// Whether the movement pre-pass will give this pathless body an escape
+/// path from a claimed building footprint. Weld settlement runs before that
+/// pre-pass, so it must predict the same move to uphold the
+/// both-bodies-still rule.
 fn footprint_eviction_pending(state: &State, id: UnitId) -> bool {
     super::super::movement::claimed_ground_escape(state, id).is_some()
 }
@@ -556,7 +559,7 @@ pub(super) fn salvage(
 ) {
     let me = state.unit(id).expect("caller checked").player;
     let Some(b) = state.building(building).filter(|b| {
-        b.player == me && b.built && b.hp > 0 && b.kind != crate::stats::BuildingKind::Foundry
+        b.player == me && b.built() && b.hp > 0 && b.kind != crate::stats::BuildingKind::Foundry
     }) else {
         // Stripped bare, destroyed, or never salvageable: the job is
         // over either way — the program plays on.
@@ -579,7 +582,7 @@ pub(super) fn salvage(
         unit.path = None;
         let p = metered(unit.progress);
         unit.progress = p + 1;
-        let step = (ramp * (p + 1) / ramp_ticks) - (ramp * p / ramp_ticks);
+        let step = ramp_step(ramp, p, p + 1, ramp_ticks);
         if step > 0 {
             drains.push(super::PendingHpDrain { building, step });
         }
@@ -604,7 +607,7 @@ pub(super) fn harvest(
     danger: &GroundSalvageDanger,
     id: UnitId,
     node: TilePos,
-    anchor: Option<TilePos>,
+    anchor: TilePos,
     retiring: bool,
     events: &mut Vec<Event>,
 ) {
@@ -614,8 +617,7 @@ pub(super) fn harvest(
         state.unit_mut(id).expect("caller checked").clear_program();
         return;
     };
-    let anchor = anchor.unwrap_or(node);
-    if unit.unloading.is_some() {
+    if unit.unloading().is_some() {
         deliver(state, danger, id, events, retiring);
         return;
     }
@@ -624,7 +626,7 @@ pub(super) fn harvest(
         return;
     }
 
-    let (tile, carrying) = (unit.tile(), unit.carrying);
+    let (tile, carrying) = (unit.tile(), unit.carrying());
     // The clicked source is authoritative: danger governs autonomous
     // chaining, not an explicit player command. Once the work zone picks
     // a different source for itself, that source remains subject to the
@@ -661,7 +663,7 @@ pub(super) fn harvest(
         // scan may start the next one.
         let worker = state.unit_mut(id).expect("caller checked");
         worker.path = None;
-        worker.danger_retry_at = None;
+        worker.clear_danger_hold();
         if !worker.work_stopped() {
             return;
         }
@@ -696,28 +698,6 @@ struct KnownSource {
 
 type SourceScore = (i32, usize, Reverse<u32>, i32, u8, i32, i32);
 
-/// Existing routes re-check only this near segment each tick. A Harvester
-/// needs 64 ticks to traverse eight clear cardinal tiles, so this is
-/// ample deterministic warning without turning every worker tick into a
-/// full path-length by threat-count scan.
-const HARVEST_DANGER_LOOKAHEAD: usize = 8;
-
-/// The near slice of the lookahead that always reacts immediately: a
-/// threat inside the first three route tiles replans this tick, exactly
-/// as it always did. Only a flag beyond this zone — a rumor four to
-/// eight tiles out that a hovering enemy re-raises every tick — defers
-/// to the staggered replan window below.
-const HARVEST_DANGER_REACT_ZONE: usize = 3;
-
-/// A worker whose retained route fails the danger lookahead only in
-/// the FAR zone does not re-plan every tick while the threat lingers —
-/// that thrashed a full multi-candidate A* per worker per tick and
-/// jittered the fleet between near-equal detours. Far-zone replans
-/// stagger on this period, keyed by owner-local unit rank so a fleet never
-/// re-plans in unison without making cross-seat production ids a tactical
-/// input; near-zone threats never wait.
-const HARVEST_REPLAN_PERIOD: u64 = 4;
-
 /// Whether this is the tick on which `id` may re-plan a retained route
 /// the danger lookahead has flagged beyond the react zone.
 fn danger_replan_window(state: &State, id: UnitId) -> bool {
@@ -728,7 +708,7 @@ fn danger_replan_window(state: &State, id: UnitId) -> bool {
         state.units.iter().map(|unit| (unit.id, unit.player)),
     );
     (state.tick + u64::try_from(rank).expect("unit rank fits u64"))
-        .is_multiple_of(HARVEST_REPLAN_PERIOD)
+        .is_multiple_of(crate::stats::HARVEST_REPLAN_PERIOD)
 }
 
 /// Whether the retained route may be kept this tick: clear routes and
@@ -742,13 +722,15 @@ fn keep_flagged_route(
 ) -> bool {
     match first_flagged_waypoint(path, safe) {
         None => true,
-        Some(index) => index >= HARVEST_DANGER_REACT_ZONE && !danger_replan_window(state, id),
+        Some(index) => {
+            index >= crate::stats::HARVEST_DANGER_REACT_ZONE && !danger_replan_window(state, id)
+        }
     }
 }
 
 /// Index (relative to the walker's next waypoint) of the first
 /// lookahead tile `safe` rejects, or `None` for a clear near segment.
-/// The scan touches at most [`HARVEST_DANGER_LOOKAHEAD`] tiles however
+/// The scan touches at most [`crate::stats::HARVEST_DANGER_LOOKAHEAD`] tiles however
 /// long the route is.
 fn first_flagged_waypoint(
     path: &PathFollow,
@@ -757,7 +739,7 @@ fn first_flagged_waypoint(
     path.waypoints
         .iter()
         .skip(path.next as usize)
-        .take(HARVEST_DANGER_LOOKAHEAD)
+        .take(crate::stats::HARVEST_DANGER_LOOKAHEAD)
         .position(|waypoint| !safe(*waypoint))
 }
 
@@ -974,7 +956,10 @@ fn approach_authoritative_source(
                     .final_point
                     .is_none_or(|point| !crowding::claimed(state, id, point, true)))
         {
-            state.unit_mut(id).expect("caller checked").danger_retry_at = None;
+            state
+                .unit_mut(id)
+                .expect("caller checked")
+                .clear_danger_hold();
             return true;
         }
         // Only danger defers a search, and only after one already failed: a
@@ -985,13 +970,17 @@ fn approach_authoritative_source(
                 known_ground_passable(state, danger, player, waypoint)
             })
             .is_none();
-        if danger_only && unit.danger_retry_at.is_some_and(|retry| state.tick < retry) {
+        if danger_only
+            && unit
+                .danger_retry_at()
+                .is_some_and(|retry| state.tick < retry)
+        {
             return true;
         }
         let detour = authoritative_source_route(state, danger, id, source);
         let tick = state.tick;
         let worker = state.unit_mut(id).expect("caller checked");
-        worker.danger_retry_at = (detour.is_none() && danger_only)
+        worker.worker_mut().danger_retry_at = (detour.is_none() && danger_only)
             .then_some(tick + crate::stats::HARVEST_DANGER_RETRY_TICKS);
         if let Some(path) = detour {
             worker.path = Some(path);
@@ -1001,7 +990,10 @@ fn approach_authoritative_source(
         return true;
     }
 
-    state.unit_mut(id).expect("caller checked").danger_retry_at = None;
+    state
+        .unit_mut(id)
+        .expect("caller checked")
+        .clear_danger_hold();
     if let Some(path) = authoritative_source_route(state, danger, id, source) {
         state.unit_mut(id).expect("caller checked").path = Some(path);
         return true;
@@ -1059,7 +1051,7 @@ fn source_route_avoiding_danger(
         (1, 1),
         crate::geometry::work_approach_distance(unit.kind.stats().radius)
             + const { Fx::lit("0.06") },
-        unit.kind.stats().radius * crowding::compression(),
+        unit.kind.stats().radius * crate::stats::SAME_OWNER_COMPRESSION,
     )
     .into_iter()
     .map(|point| crowding::Position {
@@ -1197,22 +1189,13 @@ struct DropOffScan {
     flood_exhausted: bool,
 }
 
-/// Approach one rectangle using only the worker's shared battlefield
-/// knowledge. A bounded near-path check reacts to newly known danger
-/// without rescanning a long route every tick; a full deterministic A*
-/// runs only when that check fails or no path exists yet.
-/// Walks the worker toward the nearest safely-approachable drop-off.
-/// The per-foundry semantics of the old single-pass scan are exact:
-/// the retained path is honored until the first failed safe route
-/// clears it, and the danger-ignoring classification that decides
-/// waiting-versus-stalling runs only after every safe attempt failed.
-/// Splitting the passes lets one exhausted flood answer every
-/// remaining foundry — a fully sealed worker floods twice per tick,
-/// not twice per foundry. Returns false only when no drop-off is
-/// reachable at all: the caller's stall.
-/// Ticks between repeated `DangerHold` reports for one waiting worker.
-const DANGER_HOLD_REPORT_PERIOD: u64 = 100;
-
+/// Walks the worker toward the nearest safely approachable drop-off. The
+/// retained path is honored until the first failed safe route clears it,
+/// and the danger-ignoring classification that decides waiting versus
+/// stalling runs only after every safe attempt failed. Splitting the passes
+/// lets one exhausted flood answer every remaining foundry, so a fully
+/// sealed worker floods twice per tick, not twice per foundry. Returns
+/// false only when no drop-off is reachable at all: the caller's stall.
 fn try_drop_offs(
     state: &mut State,
     danger: &GroundSalvageDanger,
@@ -1221,7 +1204,11 @@ fn try_drop_offs(
     events: &mut Vec<Event>,
 ) -> bool {
     let unit = state.unit(id).expect("caller checked");
-    if unit.path.is_none() && unit.danger_retry_at.is_some_and(|retry| state.tick < retry) {
+    if unit.path.is_none()
+        && unit
+            .danger_retry_at()
+            .is_some_and(|retry| state.tick < retry)
+    {
         report_danger_hold(state, id, events);
         return true;
     }
@@ -1229,7 +1216,7 @@ fn try_drop_offs(
     let mut path_cleared = false;
     for &foundry_id in drop_offs {
         let foundry = state.building(foundry_id).expect("collected live drop-off");
-        let (anchor, size) = (foundry.anchor, foundry.stats().size);
+        let (anchor, size) = (foundry.anchor, foundry.kind.size());
         if !path_cleared {
             let unit = state.unit(id).expect("caller checked");
             let player = unit.player;
@@ -1249,7 +1236,10 @@ fn try_drop_offs(
                         && danger.route_safe_from(from, waypoint)
                 })
             {
-                state.unit_mut(id).expect("caller checked").danger_retry_at = None;
+                state
+                    .unit_mut(id)
+                    .expect("caller checked")
+                    .clear_danger_hold();
                 return true;
             }
         }
@@ -1257,7 +1247,7 @@ fn try_drop_offs(
         {
             let worker = state.unit_mut(id).expect("caller checked");
             worker.path = Some(path);
-            worker.danger_retry_at = None;
+            worker.clear_danger_hold();
             return true;
         }
         if !path_cleared {
@@ -1268,27 +1258,33 @@ fn try_drop_offs(
     let mut scan = DropOffScan::default();
     for &foundry_id in drop_offs {
         let foundry = state.building(foundry_id).expect("collected live drop-off");
-        let (anchor, size) = (foundry.anchor, foundry.stats().size);
+        let (anchor, size) = (foundry.anchor, foundry.kind.size());
         if known_rect_route(state, danger, id, anchor, size, false, Some(&mut scan)).is_some() {
             // Danger-blocked, not sealed: stand and wait for the window,
             // checking again only after the retry period.
             let tick = state.tick;
-            state.unit_mut(id).expect("caller checked").danger_retry_at =
-                Some(tick + crate::stats::HARVEST_DANGER_RETRY_TICKS);
+            state
+                .unit_mut(id)
+                .expect("caller checked")
+                .worker_mut()
+                .danger_retry_at = Some(tick + crate::stats::HARVEST_DANGER_RETRY_TICKS);
             report_danger_hold(state, id, events);
             return true;
         }
     }
-    state.unit_mut(id).expect("caller checked").danger_retry_at = None;
+    state
+        .unit_mut(id)
+        .expect("caller checked")
+        .clear_danger_hold();
     false
 }
 
-/// A danger hold waits visibly: a silent wait scored as an employed worker to
-/// every counter, the bot's recovery logic included.
+/// A danger hold waits visibly: a silent wait would count as an employed
+/// worker to every observer, including bot recovery logic.
 fn report_danger_hold(state: &State, id: UnitId, events: &mut Vec<Event>) {
     if state
         .current_tick()
-        .is_multiple_of(DANGER_HOLD_REPORT_PERIOD)
+        .is_multiple_of(crate::stats::DANGER_HOLD_REPORT_PERIOD)
     {
         let unit = state.unit(id).expect("caller checked");
         events.push(Event::OrderStalled {
@@ -1300,6 +1296,10 @@ fn report_danger_hold(state: &State, id: UnitId, events: &mut Vec<Event>) {
     }
 }
 
+/// Approach one rectangle using only the worker's shared battlefield
+/// knowledge. A bounded near-path check reacts to newly known danger
+/// without rescanning a long route every tick; a full deterministic A*
+/// runs only when that check fails or no path exists yet.
 fn known_rect_route(
     state: &State,
     danger: &GroundSalvageDanger,
@@ -1316,12 +1316,12 @@ fn known_rect_route(
     let building = state
         .buildings()
         .iter()
-        .find(|b| b.anchor == anchor && b.stats().size == size && b.player == player);
+        .find(|b| b.anchor == anchor && b.kind.size() == size && b.player == player);
     let mut candidates: Vec<_> = crate::geometry::work_positions(
         anchor,
         size,
         contact::clearance(unit),
-        unit.kind.stats().radius * crowding::compression(),
+        unit.kind.stats().radius * crate::stats::SAME_OWNER_COMPRESSION,
     )
     .into_iter()
     .filter_map(|entry| {
@@ -1397,7 +1397,7 @@ fn switch_source(state: &mut State, id: UnitId, node: TilePos, anchor: TilePos) 
     let unit = state.unit_mut(id).expect("caller checked");
     unit.order = Order::Harvest {
         node,
-        anchor: Some(anchor),
+        anchor,
         retiring: false,
     };
     unit.path = None;
@@ -1408,7 +1408,7 @@ fn begin_retirement(state: &mut State, id: UnitId, node: TilePos, anchor: TilePo
     let unit = state.unit_mut(id).expect("caller checked");
     unit.order = Order::Harvest {
         node,
-        anchor: Some(anchor),
+        anchor,
         retiring: true,
     };
     unit.path = None;
@@ -1427,7 +1427,7 @@ fn source_route_failed(
         switch_source(state, id, next.pos, anchor);
         return;
     }
-    let carrying = state.unit(id).expect("caller checked").carrying;
+    let carrying = state.unit(id).expect("caller checked").carrying();
     begin_retirement(state, id, node, anchor);
     if carrying > 0 {
         deliver(state, danger, id, events, true);
@@ -1436,8 +1436,8 @@ fn source_route_failed(
     }
 }
 
-/// Strip the wreck from beside it. Decay can beat the stripper to the
-/// last piece — the dry-source branch above handles the morning after.
+/// Strip the wreck from beside it. Decay can remove the last piece first;
+/// the dry-source branch above handles that.
 fn extract_wreck(state: &mut State, id: UnitId, node: TilePos, ticks_per_scrap: u32) {
     let unit = state.unit_mut(id).expect("caller checked");
     unit.path = None;
@@ -1447,7 +1447,11 @@ fn extract_wreck(state: &mut State, id: UnitId, node: TilePos, ticks_per_scrap: 
     }
     unit.progress = 0;
     if state.map.extract_wreck(node).is_some() {
-        state.unit_mut(id).expect("caller checked").carrying += 1;
+        state
+            .unit_mut(id)
+            .expect("caller checked")
+            .worker_mut()
+            .carrying += 1;
     }
 }
 
@@ -1466,7 +1470,7 @@ fn extract(
         return;
     }
     unit.progress = 0;
-    unit.carrying += 1;
+    unit.worker_mut().carrying += 1;
     if state.map.extract_scrap(node) == Some(0) {
         events.push(Event::NodeDepleted { pos: node });
     }
@@ -1482,10 +1486,13 @@ fn unload_cargo(
 ) -> bool {
     let unit = state.unit_mut(id).expect("caller checked");
     unit.path = None;
-    let release = unit.unloading.get_or_insert(crate::state::Unloading {
-        foundry,
-        elapsed: 0,
-    });
+    let release = unit
+        .worker_mut()
+        .unloading
+        .get_or_insert(crate::state::Unloading {
+            foundry,
+            elapsed: 0,
+        });
     if release.foundry != foundry {
         *release = crate::state::Unloading {
             foundry,
@@ -1502,10 +1509,10 @@ fn unload_cargo(
 
 fn deposit_cargo(state: &mut State, id: UnitId, foundry: BuildingId, events: &mut Vec<Event>) {
     let unit = state.unit(id).expect("caller checked");
-    let (me, carrying) = (unit.player, unit.carrying);
+    let (me, carrying) = (unit.player, unit.carrying());
     let unit = state.unit_mut(id).expect("caller checked");
-    unit.carrying = 0;
-    unit.unloading = None;
+    unit.worker_mut().carrying = 0;
+    unit.end_release();
     unit.progress = 0;
     unit.path = None;
     // Saturating: a hostile scenario can start a bank near u32::MAX.
@@ -1515,9 +1522,7 @@ fn deposit_cargo(state: &mut State, id: UnitId, foundry: BuildingId, events: &mu
     let credited = seat.scrap.saturating_add(carrying) - seat.scrap;
     seat.scrap += credited;
     if credited > 0 {
-        seat.recovery_allowance = 0;
-        seat.recovery_target = 0;
-        seat.recovery_ready = true;
+        seat.recovery = crate::state::Recovery::Ready;
     }
     events.push(Event::ScrapDeposited {
         unit: id,
@@ -1535,7 +1540,7 @@ fn finish_delivery(state: &mut State, id: UnitId, foundry: BuildingId) {
     }
     let building = state.building(foundry).expect("live drop-off");
     let center = unit.tile().center();
-    let edge = crate::geometry::footprint_contact(center, building.anchor, building.stats().size);
+    let edge = crate::geometry::footprint_contact(center, building.anchor, building.kind.size());
     let outward = center - edge;
     let goal = unit
         .tile()
@@ -1567,7 +1572,7 @@ pub(in crate::tick) fn return_cargo_destination(
                     danger,
                     id,
                     foundry.anchor,
-                    foundry.stats().size,
+                    foundry.kind.size(),
                     avoid_danger,
                     Some(&mut scan),
                 )
@@ -1588,14 +1593,14 @@ pub(super) fn return_cargo(
     events: &mut Vec<Event>,
 ) {
     let unit = state.unit(id).expect("caller checked");
-    if unit.carrying == 0 {
+    if unit.carrying() == 0 {
         state.unit_mut(id).expect("caller checked").advance_queue();
         return;
     }
     if let Some(building) = state.building(foundry).filter(|building| {
         building.player == unit.player
             && building.hp > 0
-            && building.built
+            && building.built()
             && building.kind.is_drop_off()
     }) {
         if state.in_building_work_reach(unit, foundry) {
@@ -1603,7 +1608,7 @@ pub(super) fn return_cargo(
             let unit = state.unit_mut(id).expect("caller checked");
             unit.path = None;
             if !unit.work_stopped() {
-                unit.unloading = None;
+                unit.end_release();
                 return;
             }
             if !unload_cargo(state, id, foundry, events) {
@@ -1617,7 +1622,7 @@ pub(super) fn return_cargo(
             }
             return;
         }
-        state.unit_mut(id).expect("caller checked").unloading = None;
+        state.unit_mut(id).expect("caller checked").end_release();
         if try_drop_offs(state, danger, id, &[foundry], events) {
             return;
         }
@@ -1646,7 +1651,7 @@ fn deliver(
     let unit = state.unit(id).expect("caller checked");
     let drop_offs = drop_offs_by_distance(state, id);
     let active = unit
-        .unloading
+        .unloading()
         .map(|release| release.foundry)
         .filter(|foundry| drop_offs.contains(foundry));
     let at_drop_off = active.or_else(|| {
@@ -1661,7 +1666,7 @@ fn deliver(
         let unit = state.unit_mut(id).expect("caller checked");
         unit.path = None;
         if !unit.work_stopped() {
-            unit.unloading = None;
+            unit.end_release();
             return;
         }
         if unload_cargo(state, id, foundry, events) && retiring {
@@ -1669,7 +1674,7 @@ fn deliver(
         }
         return;
     }
-    state.unit_mut(id).expect("caller checked").unloading = None;
+    state.unit_mut(id).expect("caller checked").end_release();
 
     if try_drop_offs(state, danger, id, &drop_offs, events) {
         return;
@@ -1692,7 +1697,7 @@ fn deliver(
 /// becoming idle or starting the next queued order. If no Foundry is
 /// reachable, the queue still advances once instead of being erased.
 fn retire(state: &mut State, danger: &GroundSalvageDanger, id: UnitId, events: &mut Vec<Event>) {
-    if state.unit(id).expect("caller checked").carrying > 0 {
+    if state.unit(id).expect("caller checked").carrying() > 0 {
         deliver(state, danger, id, events, true);
         return;
     }
@@ -1702,7 +1707,7 @@ fn retire(state: &mut State, danger: &GroundSalvageDanger, id: UnitId, events: &
         let foundry = state
             .building(*foundry_id)
             .expect("collected live drop-off");
-        tile_adjacent_to_rect(tile, foundry.anchor, foundry.stats().size)
+        tile_adjacent_to_rect(tile, foundry.anchor, foundry.kind.size())
     }) {
         finish_delivery(state, id, foundry);
         return;
@@ -1732,7 +1737,7 @@ fn drop_offs_by_distance(state: &State, id: UnitId) -> Vec<BuildingId> {
         .filter(|building| {
             building.player == unit.player
                 && building.hp > 0
-                && building.built
+                && building.built()
                 && building.kind.is_drop_off()
         })
         .map(|building| (unit.pos.dist_sq(building.center()), building.id))

@@ -36,7 +36,7 @@ fn save_fixture() -> TempReplay {
             .expect("each seat starts with a unit")
             .id
     };
-    let mut replay: GameReplay = Replay::new(SIM_VERSION, scenario);
+    let mut replay: GameReplay = Replay::new(SIM_VERSION, "test", scenario);
     replay.record(0, stop(0, unit(0)));
     replay.record(7, stop(1, unit(1)));
     replay.record(118, stop(1, unit(1)));
@@ -75,7 +75,7 @@ fn replay_inspect_emits_stable_json_snapshots_and_command_silence() {
     );
 
     let report: Value = serde_json::from_slice(&output.stdout).expect("stdout is JSON");
-    assert_eq!(report["schema_version"], 2);
+    assert_eq!(report["schema_version"], 1);
     assert_eq!(report["scenario"]["name"], "Skirmish Basin");
     assert_eq!(report["scenario"]["players"][1]["bot"], true);
     assert_eq!(

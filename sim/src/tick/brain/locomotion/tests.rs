@@ -32,16 +32,27 @@ fn indexed_arrival_matches_live_neighbors_and_domains() {
         // the position index. Queries must still read them from the world.
         for phase in 0..4 {
             for (slot, unit) in state.units.iter_mut().enumerate().skip(1) {
-                unit.landed = phase % 2 == 0 && unit.kind == UnitKind::Condor;
                 unit.order = if (slot + phase) % 3 == 0 {
                     Order::Run { goal: goal.into() }
                 } else {
                     Order::Idle
                 };
-                unit.drive_speed = if (slot + phase) % 5 == 0 {
+                let speed = if (slot + phase) % 5 == 0 {
                     Fx::ONE
                 } else {
                     Fx::ZERO
+                };
+                unit.motor = if phase % 2 == 0 && unit.kind == UnitKind::Condor {
+                    crate::state::Motor::Landed
+                } else if unit.kind.stats().domain == crate::stats::Domain::Ground {
+                    crate::state::Motor::Ground {
+                        speed,
+                        stall_ticks: 0,
+                    }
+                } else {
+                    crate::state::Motor::Airborne {
+                        motion: chassis::fx::Vec2Fx::ZERO,
+                    }
                 };
             }
             let unit = state.unit(mover).unwrap();
@@ -52,7 +63,7 @@ fn indexed_arrival_matches_live_neighbors_and_domains() {
                         && other.hp > 0
                         && other.domain() == unit.domain()
                         && other.path.is_none()
-                        && other.drive_speed == Fx::ZERO
+                        && other.drive_speed() == Fx::ZERO
                         && other.order == Order::Idle
                         && other.pos.dist_sq(goal.center()) <= near_sq
                         && unit.pos.dist(other.pos)
@@ -89,7 +100,8 @@ fn coasting_arrival_does_not_complete_a_neighbor_order() {
         });
     }
     state.units[0].pos = Vec2Fx::new(Fx::lit("12.01"), Fx::lit("8.5"));
-    state.units[0].drive_speed = state.units[0].kind.stats().speed;
+    let speed = state.units[0].kind.stats().speed;
+    state.units[0].set_drive_speed(speed);
     let gap = state.units[0].kind.stats().radius * 2 + Fx::lit("0.02");
     state.units[1].pos = state.units[0].pos - Vec2Fx::new(gap, Fx::ZERO);
     let leader = state.units[0].id;
@@ -101,13 +113,13 @@ fn coasting_arrival_does_not_complete_a_neighbor_order() {
     let mut reach = super::super::super::reach::Reach::new(&state);
     walk(&mut state, &index, &mut reach, leader, &mut events);
     assert!(state.units[0].path.is_none());
-    assert!(state.units[0].drive_speed > Fx::ZERO);
+    assert!(state.units[0].drive_speed() > Fx::ZERO);
     assert_ne!(state.units[1].tile(), goal);
     assert!(!touching_settled_arrival(&state, &index, follower, goal));
     walk(&mut state, &index, &mut reach, follower, &mut events);
     assert_eq!(state.units[1].order, Order::Run { goal: goal.into() });
 
-    state.units[0].drive_speed = Fx::ZERO;
+    state.units[0].set_drive_speed(Fx::ZERO);
     assert!(touching_settled_arrival(&state, &index, follower, goal));
     walk(&mut state, &index, &mut reach, follower, &mut events);
     assert_eq!(state.units[1].order, Order::Idle);
@@ -118,7 +130,6 @@ fn sandbox(map: &[&str], units: &[(crate::UnitKind, i32, i32)]) -> crate::State 
     crate::Scenario {
         mode: crate::scenario::ScenarioMode::Sandbox,
         name: "locomotion".into(),
-        seed: 5,
         map: map.iter().map(|row| (*row).to_owned()).collect(),
         players: vec![crate::scenario::PlayerSpec {
             name: "p0".into(),
@@ -144,93 +155,6 @@ fn sandbox(map: &[&str], units: &[(crate::UnitKind, i32, i32)]) -> crate::State 
     .expect("locomotion fixture builds")
 }
 
-/// The shape walking orders had when their goal was a bare tile.
-#[derive(serde::Serialize)]
-#[serde(tag = "order", rename_all = "snake_case")]
-enum LegacyOrder {
-    Run { goal: chassis::grid::TilePos },
-    Hunt { goal: chassis::grid::TilePos },
-    Advance { goal: chassis::grid::TilePos },
-    Unload { at: chassis::grid::TilePos },
-}
-
-#[test]
-fn a_reachable_routed_walk_serializes_exactly_like_the_legacy_tile_order() {
-    type Issue = fn(Vec<crate::UnitId>) -> Command;
-    use crate::{Command, Order, PlayerCommand, PlayerId, UnitKind};
-    use chassis::grid::TilePos;
-    let map = [".............."; 8];
-    let goal = TilePos::new(6, 4);
-    let commands: [(Issue, LegacyOrder); 3] = [
-        (
-            |units| Command::Run {
-                units,
-                goal: TilePos::new(6, 4),
-                queue: false,
-            },
-            LegacyOrder::Run { goal },
-        ),
-        (
-            |units| Command::Hunt {
-                units,
-                goal: TilePos::new(6, 4),
-                queue: false,
-            },
-            LegacyOrder::Hunt { goal },
-        ),
-        (
-            |units| Command::Advance {
-                units,
-                goal: TilePos::new(6, 4),
-                queue: false,
-            },
-            LegacyOrder::Advance { goal },
-        ),
-    ];
-    for (command, legacy) in commands {
-        let mut state = sandbox(&map, &[(UnitKind::Sentinel, 1, 1)]);
-        assert!(
-            state.vision(PlayerId(0)).explored(goal),
-            "premise: an explored click resolves at issue"
-        );
-        let walker = state.units()[0].id;
-        state.tick(&[PlayerCommand {
-            player: PlayerId(0),
-            command: command(vec![walker]),
-        }]);
-        let unit = state.unit(walker).unwrap();
-        assert!(unit.path.is_some(), "premise: the walk routed");
-        assert_eq!(unit.order.walk_goal().unwrap().endpoint, None);
-        assert_eq!(
-            chassis::hash::state_hash(&unit.order),
-            chassis::hash::state_hash(&legacy)
-        );
-        assert_eq!(
-            serde_json::to_value(unit.order).unwrap(),
-            serde_json::to_value(&legacy).unwrap()
-        );
-    }
-
-    let mut state = sandbox(&map, &[(UnitKind::Skyhook, 1, 1)]);
-    assert!(state.vision(PlayerId(0)).explored(goal));
-    let sling = state.units()[0].id;
-    state.tick(&[PlayerCommand {
-        player: PlayerId(0),
-        command: Command::Unload {
-            transport: sling,
-            at: goal,
-            queue: false,
-        },
-    }]);
-    let unit = state.unit(sling).unwrap();
-    assert!(unit.path.is_some(), "premise: the flight routed");
-    assert!(matches!(unit.order, Order::Unload { at } if at.endpoint.is_none()));
-    assert_eq!(
-        chassis::hash::state_hash(&unit.order),
-        chassis::hash::state_hash(&LegacyOrder::Unload { at: goal })
-    );
-}
-
 #[test]
 fn a_hovering_flier_sent_onto_a_raw_peak_stops_beside_it() {
     use crate::{Event, Order, StallReason, UnitKind};
@@ -248,7 +172,7 @@ fn a_hovering_flier_sent_onto_a_raw_peak_stops_beside_it() {
     for kind in [UnitKind::Wisp, UnitKind::Skyhook] {
         let mut state = sandbox(&map, &[(kind, 1, 1)]);
         let flier = state.units()[0].id;
-        // Commands snap peaks away; a forged or legacy order may not.
+        // Commands snap peaks away; a forged order may not.
         state.unit_mut(flier).unwrap().order = Order::Run { goal: peak.into() };
         let mut stalls = 0;
         for _ in 0..100 {

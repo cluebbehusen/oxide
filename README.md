@@ -38,7 +38,7 @@ Completed Repair Bays automatically spend scrap to heal nearby owned units and
 completed buildings. Units are served first when scrap is limited, and a
 building with active or queued salvage work is left to its wrecking crew.
 
-The important strategic layers are already present:
+The main strategic layers:
 
 - real fog of war, remembered buildings, radar contacts, and shared team sight;
 - ground, air, direct-fire, artillery, stealth, transport, and repair roles;
@@ -141,10 +141,9 @@ its own README with its purpose, main modules, and focused development commands.
   replay records, and durable writes. It contains no Oxide rules or rendering.
 - [`sim/`](sim/README.md) is `oxide-sim`, the pure headless game. It owns every
   rule; `State::tick(&[PlayerCommand])` is its only state transition.
-- [`bot/`](bot/README.md) owns the command-producing opponent. It reads
-  simulation-owned observations and keeps policy and planning outside the rules.
 - [`opponent/`](opponent/README.md) is `oxide-opponent`, the reactive,
-  best-effort opponent every bot seat runs.
+  best-effort opponent every bot seat runs. It reads simulation-owned,
+  fog-honest observations and keeps policy outside the rules.
 - [`protocol/`](protocol/README.md) defines the JSON-lines debug contract,
   hardware-neutral input events, state views, fog-honest views, and transport
   shared by live and windowless sessions.
@@ -175,10 +174,9 @@ The load-bearing rule is:
 > The same scenario and command log must produce a bit-identical state on every
 > run and every supported platform.
 
-Simulation code uses fixed-point arithmetic, explicitly ordered choices, and a
-seeded PCG32 stream. Humans, bots, replays, and the debug socket all submit the
-same tick-stamped commands. Rendering and audio observe the result; they never
-feed back into it.
+Simulation code uses fixed-point arithmetic and explicitly ordered choices.
+Humans, bots, replays, and the debug socket all submit the same tick-stamped
+commands. Rendering and audio observe the result; they never feed back into it.
 
 The implementation contracts are documented in
 [`docs/simulation-architecture.md`](docs/simulation-architecture.md) and
@@ -226,9 +224,8 @@ player-save import is not supported. Recorded-match playback remains separate.
 Recordings contain a starting scenario or world checkpoint and tick-stamped
 commands. Loading a player save starts a new recording segment at the saved
 tick. Finished matches remain watchable, but a segment contains only the history
-recorded since its origin. Saves currently require matching simulation,
-controller, and checkpoint revisions; cross-version migrations are not yet
-supported.
+recorded since its origin. Saves require matching simulation and checkpoint
+revisions; there is no cross-version migration.
 
 The embedded scenario preserves each opponent's exact difficulty, stance, and
 personality seed. New Match creates new hidden identities; Restart, Rematch,
@@ -242,8 +239,7 @@ different world.
 
 Oxide is playable and under active development. It has a broad RTS ruleset, many
 maps, a native desktop shell, deterministic saves and replays, and a deep
-automation harness. The current focus is making that existing game clearer,
-cleaner, and more enjoyable before adding more scale.
+automation harness.
 
 Built with [Macroquad](https://macroquad.rs/),
 [`fixed`](https://crates.io/crates/fixed), and

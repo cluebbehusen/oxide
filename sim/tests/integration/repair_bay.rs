@@ -42,7 +42,6 @@ fn arena(units: Vec<UnitSpec>, factions: [Faction; 2], scrap: u32, bay: bool) ->
     Scenario {
         mode: ScenarioMode::Match,
         name: "bay-arena".into(),
-        seed: 42,
         map: vec![
             "####################".into(),
             "#1.................#".into(),
@@ -169,9 +168,14 @@ fn forge_buildings(
             .find(|building| building["id"] == serde_json::json!(id))
             .expect("building id survives serialization");
         building["hp"] = serde_json::json!(hp);
-        building["built"] = serde_json::json!(built);
         building["tier"] = serde_json::json!(tier);
-        building["progress"] = serde_json::json!(i32::from(!*built));
+        building["phase"] = if *built {
+            serde_json::json!({"phase": "built"})
+        } else if *tier > 0 {
+            serde_json::json!({"phase": "upgrading", "progress": 1})
+        } else {
+            serde_json::json!({"phase": "site", "progress": 1})
+        };
     }
     serde_json::from_value(json).unwrap()
 }
@@ -227,7 +231,7 @@ fn wounded_ring_patient(kind: UnitKind, hp: u32, scrap: u32, overlap: bool) -> S
     let mut scenario = arena(
         vec![
             unit(0, kind, pos.x, pos.y),
-            // Make the captured package genuinely worker-sized. Artillery
+            // Make the captured package worker-sized. Artillery
             // cannot escort a replacement Harvester, so the wounded Bombard
             // alone must not count as the recovery screen.
             unit(0, UnitKind::Sentinel, 10, 9),
@@ -303,8 +307,8 @@ fn the_aura_heals_the_ring_to_whole_and_bills_the_welders_exact_price() {
 fn overlapping_bays_stack_the_heal_and_telescope_the_bill_once() {
     // Two bays whose auras both cover the patient's parking spot: the
     // heals stack (2 hp per pulse) and the bill must telescope across
-    // them as ONE meter — each bay pricing from start-of-tick hp
-    // double-charged (or skipped) the shared interval.
+    // them as one meter; each bay pricing from start-of-tick hp would
+    // double-charge (or skip) the shared interval.
     let mut scenario = arena(
         vec![
             unit(0, UnitKind::Harvester, FAR.x, FAR.y),
@@ -325,7 +329,7 @@ fn overlapping_bays_stack_the_heal_and_telescope_the_bill_once() {
         state
             .buildings()
             .iter()
-            .filter(|b| b.kind == BuildingKind::RepairBay && b.built)
+            .filter(|b| b.kind == BuildingKind::RepairBay && b.built())
             .count(),
         2,
         "the second bay must actually stand"
@@ -644,9 +648,9 @@ fn an_unbuilt_bay_is_inert() {
         },
     )]);
     run_until(&mut state, 500, |s, _| {
-        s.buildings()
-            .iter()
-            .any(|b| b.kind == BuildingKind::RepairBay && b.progress > 0)
+        s.buildings().iter().any(|b| {
+            b.kind == BuildingKind::RepairBay && b.construction_progress().unwrap_or(0) > 0
+        })
     });
     state.tick(&[cmd(
         0,
@@ -658,7 +662,7 @@ fn an_unbuilt_bay_is_inert() {
         state
             .buildings()
             .iter()
-            .any(|b| b.kind == BuildingKind::RepairBay && !b.built),
+            .any(|b| b.kind == BuildingKind::RepairBay && !b.built()),
         "test premise: the site stands unbuilt"
     );
     let hurt = wound(&mut state, patient, raider, 20);

@@ -12,7 +12,12 @@ use macroquad::prelude::{Vec2, vec2};
 use oxide_sim::Command;
 
 #[expect(clippy::too_many_lines, reason = "one arm per action")]
-pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: Action) {
+pub(super) fn dispatch_action(
+    game: &mut Game,
+    input: &mut InputState,
+    bindings: &crate::action::BindingMap,
+    action: Action,
+) {
     if input.construction_open()
         && matches!(
             action,
@@ -48,10 +53,9 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
         | Action::DeleteSave => {}
         Action::Slot(n) => digit_action(game, input, (n - 1) as usize),
         Action::AssignGroup(n) => {
-            // Groups 1-5, like the recall side; the classic layout never
-            // had more. Only own units enter a group — an inspected
-            // ally in a control group would dead-lock recalls under
-            // own-gating, so foreign picks drop at ASSIGN time.
+            // Only own units enter a group: a recalled selection holding an
+            // ally would refuse every command under own-gating, so foreign
+            // picks drop at assign time.
             let slot = (n - 1) as usize;
             if slot < input.groups.len() {
                 let own: Vec<_> = game
@@ -82,7 +86,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             if !game.presentation.selection.units.iter().any(|id| {
                 game.state
                     .unit(*id)
-                    .is_some_and(|unit| unit.kind.stats().harvest.is_some() && unit.carrying > 0)
+                    .is_some_and(|unit| unit.kind.stats().harvest.is_some() && unit.carrying() > 0)
             }) {
                 game.presentation.toast("No scrap carried");
                 return;
@@ -115,7 +119,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
         | Action::SetRally
         | Action::ClearRally
         | Action::Unload
-        | Action::Build(_) => super::activate_action_card(game, input, action),
+        | Action::Build(_) => super::activate_action_card(game, input, bindings, action),
         Action::BuildCategory(category) => {
             input.disarm_click_verbs();
             input.patrol_route = None;
@@ -126,7 +130,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             if game.net_role() == Some(crate::game::network::NetRole::Client) {
                 game.presentation.toast("Only the host can pause");
             } else {
-                game.presentation.paused = !game.presentation.paused;
+                game.clock.paused = !game.clock.paused;
             }
         }
         Action::ToggleBuildPalette => {
@@ -193,7 +197,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                     input.disarm_click_verbs();
                     input.patrol_route = Some(Vec::new());
                     game.presentation.toast(super::patrol_arm_toast(
-                        &input.bindings.label(Action::Patrol),
+                        &bindings.label(Action::Patrol),
                         crate::platform::TOUCH_ONLY,
                     ));
                 }

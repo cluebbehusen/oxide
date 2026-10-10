@@ -1,8 +1,7 @@
-//! Map-audit gates: every shipped scenario must keep its pace label,
-//! spawn fairness, artillery pressure, and mirrored authoring honest —
-//! the measuring stick from `driver map-audit` turned into a tripwire.
-//! Terrain on existing maps is frozen (hash fixtures move only by
-//! addition); these gates bind labels and future maps, not history.
+//! Map-audit gates: every shipped scenario must keep its pace label, spawn
+//! fairness, artillery pressure, and mirrored authoring, as measured by
+//! `driver map-audit`. Terrain on existing maps is frozen (hash fixtures
+//! move only by addition), so these gates bind labels and new maps.
 
 use chassis::grid::TilePos;
 use chassis::grid::as_index;
@@ -36,8 +35,6 @@ fn shipped() -> Vec<(String, Scenario)> {
 #[test]
 fn every_map_seats_a_human_and_live_opponents() {
     // Seat 0 is the human chair; every other seat must actually play.
-    // Continental Divide once shipped with both seats bot:false — an
-    // advertised 1v1 whose opponent never harvested, trained, or moved.
     for (name, scenario) in shipped() {
         assert_eq!(
             scenario.mode,
@@ -92,9 +89,9 @@ fn every_map_carries_complete_metadata() {
 #[test]
 fn routes_connect_and_pace_labels_hold() {
     // Route bands per pace label, in effective steps between Foundry
-    // doorsteps: ground BFS steps, or the air detour on island pairs
+    // doorsteps: weighted ground steps, or the air detour on island pairs
     // that no ground route serves (the sim's connectivity gate already
-    // guarantees SOME mover connects every pair). Disjoint on purpose:
+    // guarantees some mover connects every pair). Disjoint on purpose:
     // an overlapping band gates nothing.
     for (name, scenario) in shipped() {
         let report = audit(&scenario).expect("audit builds");
@@ -110,9 +107,8 @@ fn routes_connect_and_pace_labels_hold() {
             let effective = route
                 .effective_steps()
                 .unwrap_or_else(|| panic!("{name}: no mover routes the pair"));
-            // Bands in weighted tile-equivalents (the sim's own 14/10
-            // diagonal costs) — recalibrated when the audit stopped
-            // counting hops. Disjoint on purpose.
+            // Bands in weighted tile-equivalents (the sim's 14/10
+            // diagonal costs).
             let band = match pace.as_str() {
                 "quick" => 8..=28,
                 "standard" => 29..=52,
@@ -126,7 +122,7 @@ fn routes_connect_and_pace_labels_hold() {
             min_effective = min_effective.min(effective);
             if metric {
                 // A free-for-all ring spans near and far neighbors by
-                // construction; the pace label is the FIRST-contact
+                // construction; the pace label is the first-contact
                 // clock, so the floor binds every pair and the band
                 // binds the nearest one (checked after the loop).
                 assert!(
@@ -160,12 +156,10 @@ fn routes_connect_and_pace_labels_hold() {
 
 #[test]
 fn artillery_pressure_stays_bounded() {
-    // The caps preserve the same minimum-route floors the 0.10 caps
-    // enforced with the Bombard's 9.5 reach (quick >= ~14.6 steps,
-    // everything else >= 19): the 0.15 Avalanche stretched the longest
-    // reach to 14, which rescales the ratio, not the geometry the maps
-    // must keep. A tier-three siege piece on a knife map is a late
-    // commitment, not the opening problem the old cap policed.
+    // The caps encode minimum ground routes (about 14.6 steps on quick
+    // maps, 19 elsewhere) for the longest artillery reach; a change to
+    // that reach rescales the caps, not the maps. A tier-three siege piece
+    // on a quick map is a late commitment, not an opening threat.
     for (name, scenario) in shipped() {
         let report = audit(&scenario).expect("audit builds");
         let pace = scenario.meta.as_ref().unwrap().pace.clone();
@@ -209,10 +203,9 @@ fn spawns_are_fair_to_every_seat() {
                 seat.seat
             );
         }
-        // Scrap distance. Duels: the mirror seat measures identically,
-        // full stop. 4p: same-parity seats (the measured-equal pairs on
-        // the legacy 2v2s) hold strictly; across the parity split a
-        // one-tile lean is tolerated on frozen terrain — rebuilt maps
+        // Scrap distance. Duels: the mirror seat measures identically.
+        // 4p: same-parity seats hold strictly; across the parity split a
+        // one-tile lean is tolerated on frozen terrain, and rebuilt maps
         // should close it to zero.
         let gap = |a: usize, b: usize| (seats[a].nearest_scrap - seats[b].nearest_scrap).abs();
         match seats.len() {
@@ -226,8 +219,8 @@ fn spawns_are_fair_to_every_seat() {
                     gap(0, 1)
                 );
             }
-            // The 0.10 3v3/4v4 maps are built from identical lanes, so
-            // every seat measures scrap identically — hold them to it.
+            // Mirrored six- and eight-seat maps are built from identical
+            // lanes, so every seat measures scrap identically.
             6 | 8 => {
                 for i in 1..seats.len() {
                     assert!(
@@ -236,9 +229,9 @@ fn spawns_are_fair_to_every_seat() {
                     );
                 }
             }
-            // 0.15 seat counts beyond the legacy lanes: mirrored maps
-            // still hold room and clock exactly (asserted above); scrap
-            // holds within the cross-parity lean the 4p rule tolerates.
+            // Other seat counts: mirrored maps hold room and clock exactly
+            // (asserted above); scrap holds within the cross-parity lean
+            // the 4p rule tolerates.
             _ => {
                 for i in 1..seats.len() {
                     assert!(
@@ -333,9 +326,9 @@ fn every_map_offers_a_home_extractor_and_expansion_value() {
                 assert!(
                     !rects_overlap(
                         frame,
-                        BuildingKind::Extractor.base_stats().size,
+                        BuildingKind::Extractor.size(),
                         other,
-                        BuildingKind::Extractor.base_stats().size,
+                        BuildingKind::Extractor.size(),
                     ),
                     "{name}: Extractor frames at ({}, {}) and ({}, {}) overlap",
                     frame.x,
@@ -354,11 +347,7 @@ fn every_map_offers_a_home_extractor_and_expansion_value() {
         for &frame in frames {
             assert!(
                 state.units().iter().all(|unit| {
-                    !rect_contains(
-                        frame,
-                        BuildingKind::Extractor.base_stats().size,
-                        unit.tile(),
-                    )
+                    !rect_contains(frame, BuildingKind::Extractor.size(), unit.tile())
                 }),
                 "{name}: Extractor frame ({}, {}) overlaps a starting unit",
                 frame.x,
@@ -366,8 +355,8 @@ fn every_map_offers_a_home_extractor_and_expansion_value() {
             );
             assert!(
                 state.buildings().iter().all(|building| {
-                    !(0..BuildingKind::Extractor.base_stats().size.1).any(|dy| {
-                        (0..BuildingKind::Extractor.base_stats().size.0)
+                    !(0..BuildingKind::Extractor.size().1).any(|dy| {
+                        (0..BuildingKind::Extractor.size().0)
                             .any(|dx| building.contains(frame.offset(dx, dy)))
                     })
                 }),
@@ -408,7 +397,7 @@ fn every_map_offers_a_home_extractor_and_expansion_value() {
                             reachable_rect_perimeter(
                                 &map,
                                 *frame,
-                                BuildingKind::Extractor.base_stats().size,
+                                BuildingKind::Extractor.size(),
                                 &reachable,
                             )
                         }
@@ -453,7 +442,7 @@ fn every_map_offers_a_home_extractor_and_expansion_value() {
                             reachable_rect_perimeter(
                                 &map,
                                 *frame,
-                                BuildingKind::Extractor.base_stats().size,
+                                BuildingKind::Extractor.size(),
                                 &reachable,
                             ) && supportable_foundry_anchor(
                                 &map,
@@ -476,13 +465,15 @@ fn every_map_offers_a_home_extractor_and_expansion_value() {
         for &frame in frames {
             let ground_usable = foundries.iter().any(|(seat, foundry)| {
                 let reachable = reachable_builder_ground(&map, &state, *seat, Some(frame));
-                reachable_rect_perimeter(
-                    &map,
-                    frame,
-                    BuildingKind::Extractor.base_stats().size,
-                    &reachable,
-                ) && (extractor_foundry_distance(*foundry, frame) <= support_radius
-                    || supportable_foundry_anchor(&map, &state, frame, &reachable, support_radius)
+                reachable_rect_perimeter(&map, frame, BuildingKind::Extractor.size(), &reachable)
+                    && (extractor_foundry_distance(*foundry, frame) <= support_radius
+                        || supportable_foundry_anchor(
+                            &map,
+                            &state,
+                            frame,
+                            &reachable,
+                            support_radius,
+                        )
                         .is_some())
             });
             let transport_usable = air_reachability.iter().any(|air_reachable| {
@@ -490,7 +481,7 @@ fn every_map_offers_a_home_extractor_and_expansion_value() {
                     &map,
                     &state,
                     frame,
-                    BuildingKind::Extractor.base_stats().size,
+                    BuildingKind::Extractor.size(),
                     air_reachable,
                 ) && supportable_foundry_anchor_from_air(
                     &map,
@@ -603,8 +594,8 @@ fn reachable_ground_rect_perimeter(
 }
 
 fn extractor_foundry_distance(foundry: TilePos, extractor: TilePos) -> i32 {
-    let foundry_size = BuildingKind::Foundry.base_stats().size;
-    let extractor_size = BuildingKind::Extractor.base_stats().size;
+    let foundry_size = BuildingKind::Foundry.size();
+    let extractor_size = BuildingKind::Extractor.size();
     let axis = |a: i32, a_len: i32, b: i32, b_len: i32| {
         let a_far = a + a_len - 1;
         let b_far = b + b_len - 1;
@@ -653,12 +644,12 @@ fn reachable_builder_ground(
 ) -> Vec<bool> {
     let index = |tile: TilePos| as_index(tile.y * map.width() + tile.x);
     let blocked = |tile: TilePos| {
-        restored_frame.is_some_and(|frame| {
-            rect_contains(frame, BuildingKind::Extractor.base_stats().size, tile)
-        }) || state
-            .buildings()
-            .iter()
-            .any(|building| building.contains(tile))
+        restored_frame
+            .is_some_and(|frame| rect_contains(frame, BuildingKind::Extractor.size(), tile))
+            || state
+                .buildings()
+                .iter()
+                .any(|building| building.contains(tile))
     };
     let passable = |tile: TilePos| map.terrain_passable(tile) && !blocked(tile);
     let mut reachable = vec![false; as_index(map.width() * map.height())];
@@ -754,7 +745,7 @@ fn largest_supportable_cluster(
                                 map,
                                 state,
                                 **frame,
-                                BuildingKind::Extractor.base_stats().size,
+                                BuildingKind::Extractor.size(),
                                 air_reachable,
                             )
                     })
@@ -811,7 +802,7 @@ fn supportable_foundry_anchor_from_air(
 }
 
 fn foundry_doorstep_reached(map: &Map, anchor: TilePos, reachable: &[bool]) -> bool {
-    let foundry_size = BuildingKind::Foundry.base_stats().size;
+    let foundry_size = BuildingKind::Foundry.size();
     (anchor.y - 1..=anchor.y + foundry_size.1).any(|door_y| {
         (anchor.x - 1..=anchor.x + foundry_size.0).any(|door_x| {
             let inside = door_x >= anchor.x
@@ -834,7 +825,7 @@ fn foundry_ground_doorstep_reached(
     anchor: TilePos,
     reachable: &[bool],
 ) -> bool {
-    let foundry_size = BuildingKind::Foundry.base_stats().size;
+    let foundry_size = BuildingKind::Foundry.size();
     (anchor.y - 1..=anchor.y + foundry_size.1).any(|door_y| {
         (anchor.x - 1..=anchor.x + foundry_size.0).any(|door_x| {
             let tile = TilePos::new(door_x, door_y);
@@ -854,7 +845,7 @@ fn foundry_ground_doorstep_reached(
 }
 
 fn foundry_site_is_legal(map: &Map, state: &State, anchor: TilePos) -> bool {
-    let (width, height) = BuildingKind::Foundry.base_stats().size;
+    let (width, height) = BuildingKind::Foundry.size();
     (0..height).all(|dy| {
         (0..width).all(|dx| {
             let tile = anchor.offset(dx, dy);
@@ -883,7 +874,7 @@ fn rects_overlap(a: TilePos, a_size: (i32, i32), b: TilePos, b_size: (i32, i32))
 fn every_map_mirrors_its_paired_seats_entry_by_entry() {
     // The metric class opts out: its fairness is measured, not
     // mirrored (see `metric_fairness`).
-    // The authoring rule the 0.7 mirror bug broke: a paired seat's
+    // The authoring rule: a paired seat's
     // starting units must be the entry-by-entry 180-degree image of its
     // partner's, because ids are handed out in list order and every
     // id-order tie-break downstream inherits that order.
@@ -892,7 +883,7 @@ fn every_map_mirrors_its_paired_seats_entry_by_entry() {
     // Foundry anchor 180 degrees lands on exactly one other anchor, and
     // that relation is an involution. It reads {0<->1} on duels,
     // {0<->3, 1<->2} or {0<->2, 1<->3} on the 4p maps, and
-    // {i <-> n-1-i} on the 6p/8p lane stacks — one rule for all of them.
+    // {i <-> n-1-i} on the 6p/8p lane stacks.
     //
     // Kinds compare by Role, not by kind: a launch-time retint and any
     // future faction-varied starting unit must still read as a mirror.
@@ -924,7 +915,7 @@ fn every_map_mirrors_its_paired_seats_entry_by_entry() {
                 pos.y
             );
         }
-        let (ew, eh) = BuildingKind::Extractor.base_stats().size;
+        let (ew, eh) = BuildingKind::Extractor.size();
         for frame in map.extractor_frames() {
             let image = TilePos {
                 x: w - ew - frame.x,
@@ -940,7 +931,7 @@ fn every_map_mirrors_its_paired_seats_entry_by_entry() {
             );
         }
 
-        let (fw, fh) = BuildingKind::Foundry.base_stats().size;
+        let (fw, fh) = BuildingKind::Foundry.size();
         let anchor = |seat: PlayerId| {
             anchors.iter().find(|(p, _)| *p == seat).map_or_else(
                 || panic!("{name}: seat {} has no Foundry anchor", seat.0),
@@ -1040,7 +1031,7 @@ fn every_map_mirrors_its_paired_seats_entry_by_entry() {
                     a.kind, b.kind,
                     "{name}: seat {index}'s structure #{k} differs in kind from its mirror's"
                 );
-                let (bw, bh) = a.kind.base_stats().size;
+                let (bw, bh) = a.kind.size();
                 assert_eq!(
                     (b.x, b.y),
                     (w - bw - a.x, h - bh - a.y),

@@ -1,13 +1,13 @@
 //! Deterministic, machine-readable replay inspection.
 //!
-//! This is deliberately a read-only view over the same replay execution path
-//! as the rest of the driver. A snapshot at tick `N` is the state whose
+//! A read-only view over `oxide-kit`'s shared replay execution path. A
+//! snapshot at tick `N` is the state whose
 //! [`oxide_sim::State::current_tick`] is exactly `N`: commands stamped `N`
 //! have not executed yet.
 
-use crate::runner::GameReplay;
 use anyhow::Result;
 use chassis::replay::ReplayMeta;
+use oxide_kit::runner::GameReplay;
 use oxide_protocol::{FogView, StateFilter, StateView, hash_hex};
 use oxide_sim::scenario::BotConfig;
 use oxide_sim::{Command, Faction, GameResult, PlayerId, SIM_VERSION};
@@ -15,7 +15,7 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 
 /// Version of the serialized [`ReplayInspection`] contract.
-pub const REPLAY_INSPECTION_SCHEMA_VERSION: u32 = 2;
+pub const REPLAY_INSPECTION_SCHEMA_VERSION: u32 = 1;
 
 /// A stable machine-readable inspection of one replay or save.
 #[derive(Debug, Serialize)]
@@ -41,8 +41,6 @@ pub struct ReplayInspection {
 pub struct ScenarioSummary {
     /// Scenario display name.
     pub name: String,
-    /// Deterministic scenario seed.
-    pub seed: u64,
     /// Map width in tiles.
     pub map_width: i32,
     /// Map height in tiles.
@@ -64,8 +62,7 @@ pub struct ReplayPlayerSummary {
     pub team: u8,
     /// Whether the scenario assigns this seat to a built-in bot.
     pub bot: bool,
-    /// Authored bot configuration, or `None` for a human seat (or a
-    /// legacy replay recorded before configs were required).
+    /// Authored bot configuration, or `None` when the scenario records none.
     pub bot_config: Option<BotConfig>,
 }
 
@@ -254,7 +251,6 @@ fn scenario_summary(replay: &GameReplay, initial_state: &oxide_sim::State) -> Sc
         .collect();
     ScenarioSummary {
         name: replay.setup.name.clone(),
-        seed: replay.setup.seed,
         map_width: initial_state.map().width(),
         map_height: initial_state.map().height(),
         players,

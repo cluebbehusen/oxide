@@ -29,7 +29,6 @@ fn a_ground_chaser_stalls_when_no_standing_room_reaches_a_flyer_deep_in_rock() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "walled-flyer".into(),
-        seed: 42,
         map: vec![
             "#####################".into(),
             "#1..................#".into(),
@@ -123,7 +122,6 @@ fn a_fogged_flyer_footing_never_leaks_through_the_stall_reason() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "fogged-flyer".into(),
-        seed: 42,
         map: vec![
             "##########################".into(),
             "#1.......................#".into(),
@@ -331,10 +329,10 @@ fn a_sidearm_holds_fire_when_nothing_it_covers_is_in_range() {
 fn a_dead_attacker_draws_no_answer() {
     // A Lancer opens on a Bombard from 5.1 tiles — inside rail range
     // (5.5), outside the Bombard's aggro (5), so it stands idle and can
-    // only answer through retaliation. (The Bombard stars because it is
-    // the one chassis that survives a rail hit and answers ground —
-    // the 0.10 rail one-shots the 60-hp Sentinel.) The attacker is cut
-    // down the same tick by two allied Lancers, so its shot buffers but
+    // only answer through retaliation. (The Bombard is the victim because
+    // it survives a rail hit and answers ground; the rail one-shots the
+    // 60-hp Sentinel.) The attacker is cut down the same tick by two
+    // allied Lancers, so its shot buffers but
     // its body is gone before retaliation resolves. The corpse must
     // draw no answer: the victim eats the hit and stays idle. Both
     // Foundries sit far from the victim, or the idle Bombard would
@@ -343,7 +341,6 @@ fn a_dead_attacker_draws_no_answer() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "buffered-answer".into(),
-        seed: 42,
         map: vec![
             "################".into(),
             "#1.............#".into(),
@@ -381,7 +378,7 @@ fn a_dead_attacker_draws_no_answer() {
     }
     let report = state.tick(&[
         // Spend this brain turn completing a no-distance move. Otherwise
-        // the Bombard now legitimately acquires the visible rail at its
+        // the Bombard legitimately acquires the visible rail at its
         // full weapon range before resolution, which would not exercise
         // the corpse-retaliation branch this test owns.
         cmd(
@@ -436,13 +433,12 @@ fn a_surviving_shooter_is_answered_when_the_victims_own_target_falls() {
     // Attack-the-Scuttler when retaliation resolves, but that engagement
     // is over — without the re-target arm the busy-guard would let the
     // out-of-aggro shooter fire unanswered for another full cooldown.
-    // The answer must land on the surviving rail. (The Bombard stars
-    // because the 0.10 rail one-shots the Sentinel; shell arrival is
+    // The answer must land on the surviving rail. (The Bombard is the
+    // victim because the rail one-shots the Sentinel; shell arrival is
     // read from sim state, so the same-tick staging is exact.)
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "fell-in-resolution".into(),
-        seed: 42,
         map: vec![
             "########################".into(),
             "#1.....................#".into(),
@@ -608,7 +604,6 @@ fn radar_detects_at_the_ring_and_goes_quiet_one_tile_beyond() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "radar-edge".into(),
-        seed: 42,
         map: vec![
             "############################".into(),
             "#1.........................#".into(),
@@ -675,14 +670,13 @@ fn radar_detects_at_the_ring_and_goes_quiet_one_tile_beyond() {
 fn a_ground_chaser_flanks_to_a_firing_position_it_can_actually_shoot_from() {
     // A 7x7 rock block: the scan's first passable candidates are the ring-4
     // corners at 5.66 tiles — past the Flakhound's 5 — but the ring's edge
-    // tiles sit at 4.0-5.0 and are honest firing positions. The chaser must
-    // reject the tempting-but-useless corner, route to a tile it can shoot
-    // from, and take the kill. (Before range-aware selection this soft-
-    // locked: the chaser parked on the corner forever, out of range.)
+    // tiles sit at 4.0-5.0 and are real firing positions. The chaser must
+    // reject the out-of-range corner, route to a tile it can shoot from,
+    // and take the kill. Without range-aware selection the chaser would
+    // park on the corner forever, out of range.
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "flanked-flyer".into(),
-        seed: 42,
         map: vec![
             "################".into(),
             "#1.............#".into(),

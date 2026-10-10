@@ -90,7 +90,6 @@ fn ghost_memory_survives_unseen_demolition_until_revisited() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "ghost-lab".into(),
-        seed: 7,
         map: vec![
             "################".into(),
             "#1.............#".into(),
@@ -253,9 +252,9 @@ fn remembered_scrap_freezes_when_sight_is_lost() {
 
 #[test]
 fn hostile_coordinates_are_rejected_not_panicked() {
-    // Extreme i32 goals once overflowed the neighborhood scan's offset
-    // arithmetic (a debug-build panic from one malformed debug-socket
-    // command). Running this test in a debug profile IS the assertion.
+    // Extreme i32 goals could overflow the neighborhood scan's unchecked
+    // offset arithmetic and panic a debug build. Running this test in a
+    // debug profile is the assertion.
     let mut state = arena(vec![unit(0, UnitKind::Harvester, 4, 2)])
         .build()
         .unwrap();
@@ -315,7 +314,6 @@ fn eliminated_players_cannot_command_survivors() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "elimination".into(),
-        seed: 3,
         map: vec![
             "##############".into(),
             "#1...........#".into(),
@@ -405,9 +403,9 @@ fn destroying_the_last_foundry_wins_and_freezes() {
     assert_eq!(state.result(), Some(GameResult::Victory { team: 0 }));
     assert!(events.iter().any(|e| matches!(e, Event::GameOver { .. })));
 
-    // Frozen: ticks advance, nothing else changes. (State fields are
-    // private now, so compare the world piecewise instead of patching the
-    // tick counter and hashing.)
+    // Frozen: ticks advance, nothing else changes. State fields are
+    // private, so compare the world piecewise instead of patching the tick
+    // counter and hashing.
     let tick_before = state.current_tick();
     let units_before = state.units().to_vec();
     let buildings_before = state.buildings().to_vec();
@@ -468,8 +466,8 @@ fn rally_on_unexplored_scrap_does_not_probe_the_map() {
 #[test]
 fn rally_trusts_remembered_scrap_even_when_it_is_stale() {
     // Player 0 scouts the node, loses sight, and player 1 mines it dry.
-    // The rally still believes the memory: the newborn honestly walks out
-    // to harvest and will discover the truth on arrival.
+    // The rally still believes the memory: the newborn walks out to
+    // harvest and will discover the truth on arrival.
     let mut state = arena(vec![
         unit(0, UnitKind::Harvester, 8, 4), // scout, sees (11,4)
         unit(1, UnitKind::Harvester, 12, 5),
@@ -544,9 +542,9 @@ fn rally_trusts_remembered_scrap_even_when_it_is_stale() {
         })
         .unwrap();
     // The rally honored the memory and issued Harvest. (The harvest brain
-    // may already have retargeted a neighboring node — its depleted-node
-    // replacement scan is a separate, order-wide behavior — but under the
-    // old live-map rule the newborn would have gotten a plain Run.)
+    // may already have retargeted a neighboring node; its depleted-node
+    // replacement scan is a separate, order-wide behavior. Judged by the
+    // live map, the newborn would have gotten a plain Run.)
     assert!(
         matches!(state.unit(newborn).unwrap().order, Order::Harvest { .. }),
         "stale belief should be acted on honestly, not silently corrected"
@@ -583,7 +581,9 @@ fn losing_the_last_foundry_ends_the_match_despite_other_buildings() {
         },
     )]);
     run_until(&mut state, 700, |s, _| {
-        s.buildings().iter().any(|b| b.anchor == anchor && b.built)
+        s.buildings()
+            .iter()
+            .any(|b| b.anchor == anchor && b.built())
     });
     // Raze the foundry (hunt onto it; fire-at-will besieges).
     let attackers: Vec<UnitId> = state

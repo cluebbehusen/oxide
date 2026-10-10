@@ -73,9 +73,9 @@ pub struct PlayerView {
     pub name: String,
     /// Sprite tint.
     pub faction: Faction,
-    /// Normalized team id — the only way a debug client can tell allies
-    /// apart (factions repeat across teams) or map a victory's team back
-    /// to its seats.
+    /// Normalized team id. Factions repeat across teams, so this is how a
+    /// debug client tells allies apart and maps a victory's team back to
+    /// its seats.
     pub team: u8,
     /// Banked scrap.
     pub scrap: u32,
@@ -109,15 +109,13 @@ pub struct UnitView {
     pub hp: u32,
     /// Scrap on board.
     pub carrying: u32,
-    /// Current intent, as the sim's own tagged serialization. `None`
-    /// means intent is not knowable through this view — the fog view
-    /// redacts hostile programs; a player sees a machine, never its
-    /// mind. Omniscient captures always fill it.
+    /// Current intent, as the sim's own tagged serialization. `None` when
+    /// the fog view redacts a hostile unit's intent; omniscient captures
+    /// always fill it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub order: Option<Order>,
-    /// Orders waiting behind the active one, in execution order — agents
-    /// verify queues and patrol circuits from this, not just a count.
-    /// Empty whenever `order` is redacted.
+    /// Orders waiting behind the active one, in execution order. Empty
+    /// whenever `order` is redacted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queue: Vec<Order>,
     /// Whether the queue loops (a patrol circuit); `None` when intent
@@ -155,7 +153,7 @@ pub struct BuildingView {
     /// Rally tile `[x, y]`, if set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rally: Option<[i32; 2]>,
-    /// Player-designated defense target. Honest views expose this only for
+    /// Player-designated defense target. The fog view exposes this only for
     /// allied buildings; hostile targeting intent is redacted with rally
     /// and production state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -178,24 +176,24 @@ pub struct BuildingView {
     pub tier: u8,
 }
 
-/// The world as one seat honestly knows it — the fog-safe counterpart to
-/// the omniscient [`StateView`]. Everything here reads the sim's own
-/// [`oxide_sim::Vision`], so the view can never leak what fog hides: live
-/// entities appear only under current sight, memories carry no more than
-/// the seat last saw, and radar contacts are bare tiles.
+/// The world as one seat knows it: the fog-honest debug and agent
+/// counterpart to the omniscient [`StateView`]. It reads the sim's own
+/// [`oxide_sim::Vision`], the same source as the bots' fog-honest
+/// `ObservationData`, so it cannot leak what fog hides: live entities
+/// appear only under current sight, memories carry no more than the seat
+/// last saw, and radar contacts are bare tiles.
 ///
-/// Both servers (the shell and the headless session) build this through
-/// [`FogView::capture`], so live and headless answers cannot drift.
+/// Every debug session builds this through [`FogView::capture`], so live,
+/// playback, and headless answers cannot drift.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FogView {
-    /// Current tick. Deliberately no hash — a partial view has no
-    /// canonical fingerprint; exactness stays with [`StateView`].
+    /// Current tick. There is no hash: a partial view has no canonical
+    /// fingerprint, so exactness stays with [`StateView`].
     pub tick: u64,
     /// The seat this knowledge belongs to.
     pub player: u8,
-    /// The viewing seat's own economy and status. Opponent player rows are
-    /// deliberately absent: a fair client needs its bank and command
-    /// eligibility without learning any hostile economy.
+    /// The viewing seat's own economy and status. Other seats' player rows
+    /// are absent so no hostile economy leaks.
     pub own_player: Box<PlayerView>,
     /// One row per map row, one char per tile: `' '` never seen, `'.'`
     /// explored but currently dark, `'*'` visible right now.
@@ -203,20 +201,18 @@ pub struct FogView {
     /// Own and allied units always (team sight is standing); hostile
     /// units only while their tile is visible.
     pub units: Vec<UnitView>,
-    /// Own and allied buildings always; hostile buildings only while
-    /// some footprint tile is visible (their ghost record below mirrors
-    /// live state at the same time — that is the sim's refresh rule).
+    /// Own and allied buildings always; hostile buildings only while some
+    /// footprint tile is visible and the stealth rule reveals them. Their
+    /// ghost records mirror live state while seen.
     pub buildings: Vec<BuildingView>,
     /// Enemy buildings as last seen: frozen memories once sight is lost.
     pub ghosts: Vec<GhostView>,
-    /// Remembered scrap amounts on explored ground (nonzero only). Live
-    /// amounts on visible tiles, beliefs elsewhere — the sim remembers
-    /// them the same way.
+    /// Remembered scrap amounts on explored ground (nonzero only): live
+    /// amounts on visible tiles, beliefs elsewhere.
     pub scrap: Vec<RememberedTileView>,
     /// Remembered wreck salvage, same treatment as scrap.
     pub wrecks: Vec<RememberedTileView>,
-    /// Radar blips: bare tiles, no kind, no owner — detection without
-    /// identification, exactly what the Array's outer ring grants.
+    /// Radar blips: bare tiles with no kind or owner.
     pub contacts: Vec<[i32; 2]>,
     /// Continuously observed contacts; entity identity appears only in true sight.
     pub contact_tracks: Vec<oxide_sim::vision::ContactTrack>,
@@ -305,9 +301,9 @@ impl FogView {
                 .buildings()
                 .iter()
                 .filter(|b| {
-                    // Sight of the ground is not knowledge of a buried
-                    // charge: the stealth rule gates this view exactly
-                    // as it gates targeting and ghosts.
+                    // Seeing the ground does not reveal a buried charge:
+                    // the stealth rule gates this view as it gates
+                    // targeting and ghosts.
                     !state.hostile(player, b.player)
                         || (b.tiles().any(|t| vision.visible(t))
                             && state.building_apparent(player, b))
@@ -359,8 +355,8 @@ pub struct StatusView {
     pub speed: f64,
     /// Scenario display name.
     pub scenario: String,
-    /// Sim crate version.
-    pub sim_version: String,
+    /// [`oxide_sim::SIM_VERSION`] of the running sim.
+    pub sim_version: u32,
     /// Match outcome, if decided.
     pub result: Option<GameResult>,
     /// Commands recorded into the session replay so far.
@@ -409,15 +405,15 @@ pub struct UiView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hover: Option<usize>,
     /// Gameplay chrome geometry as [`top_bar_h`, `panel_top`, minimap x/y/w/h,
-    /// `panel_right`, orders x/y/w/h] in window pixels — the same
+    /// `panel_right`, orders x/y/w/h] in window pixels, from the same
     /// `LayoutModel` hit-testing reads, so an agent can aim clicks at (or
     /// away from) real chrome. The command band spans only to
     /// `panel_right`; `orders` is the queue dock on the left edge,
     /// zero-sized when absent. Menu modes report `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chrome: Option<[f32; 11]>,
-    /// Exact information and action rectangles [x, y, width, height].
-    /// The legacy chrome array describes only the enclosing bounds.
+    /// Exact information and action rectangles [x, y, width, height];
+    /// `chrome` describes only their enclosing bounds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub panel_regions: Option<[[f32; 4]; 2]>,
     /// The top bar's menu button [x, y, width, height]; a click or tap
@@ -501,17 +497,16 @@ fn unit_view(u: &Unit) -> UnitView {
         pos: [u.pos.x.to_num(), u.pos.y.to_num()],
         tile: [u.tile().x, u.tile().y],
         hp: u.hp,
-        carrying: u.carrying,
+        carrying: u.carrying(),
         order: Some(u.order),
         queue: u.queue.iter().copied().collect(),
         patrolling: Some(u.looping),
-        landed: u.landed,
+        landed: u.landed(),
     }
 }
 
-/// A hostile machine as the viewer actually sees it: body, position,
-/// wounds, and visible cargo — never its mind. Orders, queue, and the
-/// patrol flag are what fog exists to hide.
+/// A hostile unit as the viewer sees it: body, position, wounds, and
+/// visible cargo, but never its orders, queue, or patrol flag.
 fn unit_view_redacted(u: &Unit) -> UnitView {
     UnitView {
         order: None,
@@ -529,37 +524,39 @@ fn building_view(b: &Building) -> BuildingView {
         anchor: [b.anchor.x, b.anchor.y],
         hp: b.hp,
         queue: Some(b.queue.iter().copied().collect()),
-        ticks_remaining: b
-            .queue
-            .front()
-            .map(|kind| kind.stats().train_ticks.saturating_sub(b.progress)),
+        ticks_remaining: b.queue.front().map(|kind| {
+            kind.stats()
+                .train_ticks
+                .saturating_sub(b.training_progress())
+        }),
         rally: b.rally.map(|r| [r.x, r.y]),
         focus: b.focus,
-        built: b.built,
-        provisional: b.provisional,
-        progress: b.progress,
+        built: b.built(),
+        provisional: b.provisional(),
+        progress: b
+            .construction_progress()
+            .unwrap_or_else(|| b.training_progress()),
         tier: b.tier,
     }
 }
 
 /// A hostile building as the viewer sees it: hull, scaffold stage, and
-/// wounds — never its production queue or rally point.
+/// wounds, but never its production queue, rally point, or focus target.
 fn building_view_redacted(b: &Building) -> BuildingView {
     BuildingView {
         queue: None,
         ticks_remaining: None,
         rally: None,
         focus: None,
-        // A scaffold's stage is drawn on every screen; a BUILT
+        // A scaffold's stage is drawn on every screen; a built
         // producer's meter is training progress no enemy panel shows.
-        progress: if b.built { 0 } else { b.progress },
+        progress: b.construction_progress().unwrap_or(0),
         ..building_view(b)
     }
 }
 
 /// Terrain plus entity overlay: buildings print as `A` + player, units as
-/// `a` + player (units win when both would claim a tile — they're what
-/// moves).
+/// `a` + player; units win when both claim a tile.
 fn ascii_with_entities(state: &State) -> Vec<String> {
     let mut rows: Vec<Vec<char>> = state
         .map()

@@ -24,7 +24,9 @@ mod game;
 mod hints;
 mod input;
 mod layout;
+mod look;
 mod menu;
+mod mixer;
 mod netplay;
 mod numeric;
 mod panel;
@@ -125,8 +127,7 @@ struct Args {
     #[arg(long, default_value_t = 1.0, value_parser = parse_speed)]
     speed: f64,
 
-    /// Window size as `WIDTHxHEIGHT` (e.g. 800x600) — the UX matrix boots
-    /// the shell at every supported size.
+    /// Window size as `WIDTHxHEIGHT` (e.g. 800x600).
     #[arg(long, value_parser = parse_window)]
     window: Option<(u32, u32)>,
 
@@ -192,8 +193,7 @@ fn parse_window(s: &str) -> Result<(u32, u32), String> {
         return Err("window must be at least 640x400".to_string());
     }
     if w > 16_384 || h > 16_384 {
-        // The native config takes i32; 4294967295x400 once reached the
-        // backend as -1.
+        // The native config takes i32, so huge values must not reach it.
         return Err("window must be at most 16384x16384".to_string());
     }
     Ok((w, h))
@@ -224,8 +224,6 @@ fn window_conf() -> Conf {
         window_title: "Oxide".to_string(),
         window_width: width.fit::<i32>(),
         window_height: height.fit::<i32>(),
-        // Render at native pixel density — pre-atlas this was too many
-        // pixels to afford; post-atlas it's crisp text and art for free.
         high_dpi: !args.no_high_dpi,
         // Miniquad replaces the macOS Dock icon with its 64px image. Leave
         // the packaged app's full-resolution icns in place when available;

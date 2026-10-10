@@ -1,5 +1,5 @@
 use super::*;
-use oxide_sim::{Command, PlayerCommand, PlayerId};
+use oxide_sim::{Command, PlayerCommand, PlayerId, SIM_VERSION};
 
 fn segment() -> (GameReplay, State, State) {
     let scenario = Scenario::skirmish();
@@ -10,6 +10,7 @@ fn segment() -> (GameReplay, State, State) {
     let start = state.clone();
     let mut replay = GameReplay::with_origin(
         SIM_VERSION,
+        "test",
         scenario.clone(),
         WorldOrigin::capture(&scenario, &state).unwrap(),
     )
@@ -35,12 +36,10 @@ fn checkpoint_origin_replays_seeks_and_samples_only_its_suffix() {
     let (replay, start, end) = segment();
     let replay: GameReplay = serde_json::from_slice(&serde_json::to_vec(&replay).unwrap()).unwrap();
     assert_eq!(
-        crate::runner::run_replay(&replay, None, false)
-            .unwrap()
-            .hash(),
+        crate::runner::run_replay(&replay, None).unwrap().hash(),
         end.hash()
     );
-    assert!(crate::runner::run_replay(&replay, Some(36), false).is_err());
+    assert!(crate::runner::run_replay(&replay, Some(36)).is_err());
     let stats = crate::stats::compute(&replay, 3).unwrap();
     assert_eq!(stats.sample_ticks, [37, 40, 43, 46]);
     let partial = crate::stats::compute(&replay, 4).unwrap();
@@ -71,19 +70,9 @@ fn checkpoint_origin_validates_absolute_bounds_and_world_identity() {
     bad.meta.ticks = Some(36);
     assert!(bad.validate(None).is_err());
     let mut bad = replay.clone();
-    bad.setup.seed += 1;
+    bad.setup.name.push('!');
     assert!(bad.validate(None).is_err());
     let mut bad = replay.clone();
     bad.origin.as_mut().unwrap().state.tick(&[]);
     assert!(bad.validate(None).is_err());
-    for change in [0, 1] {
-        let mut bad = replay.clone();
-        let origin = bad.origin.as_mut().unwrap();
-        if change == 0 {
-            origin.version += 1;
-        } else {
-            origin.sim_version = "other".into();
-        }
-        assert!(bad.validate(None).is_err());
-    }
 }

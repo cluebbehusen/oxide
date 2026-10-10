@@ -49,8 +49,6 @@ pub struct LadderManifest {
     pub tick_limit: u64,
     /// Seed cells per map, comparison and stance.
     pub runs: u64,
-    /// Simulation seed of run zero; each run adds one.
-    pub scenario_seed_base: u64,
     /// Personality seed of run zero, shared by both seats; each run adds one.
     pub personality_seed_base: u64,
     /// Stances, applied to both seats.
@@ -87,12 +85,12 @@ impl LadderManifest {
             self.min_decided_pairs > 0,
             "the decided-pair minimum must be positive"
         );
-        for base in [self.scenario_seed_base, self.personality_seed_base] {
-            ensure!(
-                base.checked_add(self.runs - 1).is_some(),
-                "seed range overflows u64"
-            );
-        }
+        ensure!(
+            self.personality_seed_base
+                .checked_add(self.runs - 1)
+                .is_some(),
+            "seed range overflows u64"
+        );
         ensure!(!self.stances.is_empty(), "stances are empty");
         ensure!(!self.comparisons.is_empty(), "comparisons are empty");
         ensure!(!self.maps.is_empty(), "maps are empty");
@@ -196,7 +194,6 @@ pub fn expand(manifest: &LadderManifest, scenarios: &[Scenario]) -> Result<Vec<L
                     let seat = |difficulty| {
                         BotConfig::new(difficulty, stance, manifest.personality_seed_base + run)
                     };
-                    let seed = manifest.scenario_seed_base + run;
                     for (leg, rungs) in [
                         (
                             EvaluationLeg::Forward,
@@ -209,7 +206,7 @@ pub fn expand(manifest: &LadderManifest, scenarios: &[Scenario]) -> Result<Vec<L
                     ] {
                         legs.push(LadderLeg {
                             label: label.clone(),
-                            plan: seated_plan(source, seed, leg, rungs.into_iter().map(seat)),
+                            plan: seated_plan(source, leg, rungs.into_iter().map(seat)),
                         });
                     }
                 }
@@ -405,7 +402,7 @@ impl Tally {
         }
         if self.decided > 0 {
             self.share = Some(f64::from(self.higher_wins) / f64::from(self.decided));
-            self.wilson = Some(crate::sweep::wilson(self.higher_wins, self.decided));
+            self.wilson = Some(wilson(self.higher_wins, self.decided));
         }
     }
 }
@@ -432,8 +429,8 @@ pub struct ComparisonReport {
     pub stances: Vec<(BotStance, Tally)>,
     /// By map family, in family order.
     pub families: Vec<(MapFamily, Tally)>,
-    /// The higher rung's share of net worth, by pair; empty for rows
-    /// recorded before the ledger existed.
+    /// The higher rung's share of net worth, by pair; empty when the rows
+    /// carry no ledgers.
     pub worth: Vec<WorthShare>,
 }
 
@@ -763,6 +760,18 @@ fn line(out: &mut String, group: &str, tally: &Tally, report: &ComparisonReport)
         tally.decided,
         tally.legs
     );
+}
+
+/// The 95% Wilson score interval for `wins` of `n`, which stays inside
+/// 0..1 and remains accurate at small counts.
+fn wilson(wins: u32, n: u32) -> [f64; 2] {
+    const Z: f64 = 1.959_963_984_540_054;
+    let n = f64::from(n);
+    let p = f64::from(wins) / n;
+    let denominator = 1.0 + Z * Z / n;
+    let centre = (p + Z * Z / (2.0 * n)) / denominator;
+    let half = Z / denominator * (p * (1.0 - p) / n + Z * Z / (4.0 * n * n)).sqrt();
+    [(centre - half).max(0.0), (centre + half).min(1.0)]
 }
 
 #[cfg(test)]

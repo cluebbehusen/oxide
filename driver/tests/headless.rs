@@ -1,8 +1,9 @@
 //! Driver-level headless checks: the runner's record/replay loop is the
-//! same one the shell uses, so this proves the whole recording pipeline
+//! same one the shell uses, so these cover the whole recording pipeline
 //! without a window.
 
-use oxide_driver::{pool, runner};
+use oxide_driver::pool;
+use oxide_kit::runner;
 use oxide_sim::scenario::ScenarioMode;
 use oxide_sim::{PlayerCommand, Scenario, State};
 use std::path::{Path, PathBuf};
@@ -32,7 +33,7 @@ impl SoakTrace {
         Self {
             stem: stem.to_owned(),
             hashes: String::new(),
-            replay: chassis::replay::Replay::new(oxide_sim::SIM_VERSION, scenario.clone()),
+            replay: chassis::replay::Replay::new(oxide_sim::SIM_VERSION, "test", scenario.clone()),
         }
     }
 
@@ -102,9 +103,8 @@ fn play_and_check_integrity(
     assert_state_round_trip(&state)
 }
 
-/// The shipped maps, biggest file first: the 4v4s are the sweep's
-/// critical path and a last-scheduled Compass Grand would add its whole
-/// runtime to the tail.
+/// The shipped maps, biggest file first, so the slowest maps start early
+/// instead of extending the parallel run's tail.
 fn shipped_scenarios() -> Vec<PathBuf> {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scenarios");
     let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)
@@ -145,14 +145,14 @@ fn bot_skirmish() -> Scenario {
 
 #[test]
 fn recorded_scenario_run_reproduces_from_its_replay() {
-    // Exercise the runner recording path with a non-empty current-bot log.
+    // Exercise the runner recording path with a non-empty bot command log.
     use chassis::replay::Replay;
     use oxide_sim::SIM_VERSION;
 
     let scenario = bot_skirmish();
     let mut state = scenario.build().unwrap();
     let mut bots = oxide_kit::controller::seat_controllers(&scenario).unwrap();
-    let mut replay: oxide_kit::GameReplay = Replay::new(SIM_VERSION, scenario);
+    let mut replay: oxide_kit::GameReplay = Replay::new(SIM_VERSION, "test", scenario);
     for _ in 0..900 {
         let mut commands = Vec::new();
         for bot in &mut bots {
@@ -168,7 +168,7 @@ fn recorded_scenario_run_reproduces_from_its_replay() {
     assert_eq!(replay.meta.ticks, Some(900));
     assert!(!replay.commands.is_empty());
 
-    let replayed = runner::run_replay(&replay, None, false).unwrap();
+    let replayed = runner::run_replay(&replay, None).unwrap();
     assert_eq!(replayed.current_tick(), state.current_tick());
     assert_eq!(replayed.hash(), state.hash());
 }
@@ -223,7 +223,13 @@ fn assert_scenarios_preserve_state_integrity(paths: &[PathBuf]) {
 
 #[test]
 fn run_without_bots_is_quiet_but_valid() {
-    let outcome = runner::run_scenario(&Scenario::skirmish(), 100, false, true).unwrap();
+    let outcome = runner::run_scenario(
+        &Scenario::skirmish(),
+        100,
+        false,
+        Some(&oxide_kit::recovery::BuildIdentity::default()),
+    )
+    .unwrap();
     let replay = outcome.replay.unwrap();
     assert!(replay.commands.is_empty(), "nobody issued commands");
     assert_eq!(outcome.state.current_tick(), 100);
@@ -233,9 +239,9 @@ fn run_without_bots_is_quiet_but_valid() {
 fn forged_marathon_replays_are_refused() {
     use chassis::replay::Replay;
     use oxide_sim::{SIM_VERSION, Scenario};
-    let mut replay: oxide_kit::GameReplay = Replay::new(SIM_VERSION, Scenario::skirmish());
+    let mut replay: oxide_kit::GameReplay = Replay::new(SIM_VERSION, "test", Scenario::skirmish());
     replay.meta.ticks = Some(u64::MAX - 1);
-    let err = runner::run_replay(&replay, None, false).unwrap_err();
+    let err = runner::run_replay(&replay, None).unwrap_err();
     assert!(err.to_string().contains("--allow-long"), "{err}");
 }
 
@@ -273,7 +279,7 @@ fn run_scenario_surfaces_a_build_failure_with_context() {
         bot: false,
         bot_config: None,
     });
-    let Err(err) = runner::run_scenario(&scenario, 10, false, false) else {
+    let Err(err) = runner::run_scenario(&scenario, 10, false, None) else {
         panic!("an anchorless seat must fail the build");
     };
     assert!(err.to_string().contains("building scenario"), "{err}");
@@ -281,7 +287,7 @@ fn run_scenario_surfaces_a_build_failure_with_context() {
 
 #[test]
 fn an_unfought_match_reports_no_result() {
-    let outcome = runner::run_scenario(&Scenario::skirmish(), 300, false, false).unwrap();
+    let outcome = runner::run_scenario(&Scenario::skirmish(), 300, false, None).unwrap();
     assert!(
         outcome.state.result().is_none(),
         "nobody fought, so the match stays undecided"
@@ -295,9 +301,9 @@ fn a_decided_match_latches_its_result_and_keeps_ticking() {
 
     // A firing squad: seat 0's Sentinels sit inside aggro range of seat 1's
     // lone Foundry and grind it down with no orders at all; seat 1 has no
-    // army to answer. The win lands well before the tick budget, which lets
-    // us prove run_scenario keeps counting past the victory (frozen ticks
-    // included) instead of returning early.
+    // army to answer. The win lands well before the tick budget, so the test
+    // can check that run_scenario keeps counting past the victory (frozen
+    // ticks included) instead of returning early.
     let ground = ".".repeat(16);
     let mut anchored: Vec<char> = ground.chars().collect();
     anchored[1] = '1';
@@ -324,7 +330,6 @@ fn a_decided_match_latches_its_result_and_keeps_ticking() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "firing-squad".into(),
-        seed: 7,
         map,
         players: vec![
             PlayerSpec {
@@ -350,7 +355,7 @@ fn a_decided_match_latches_its_result_and_keeps_ticking() {
     };
 
     let budget = 3_000;
-    let outcome = runner::run_scenario(&scenario, budget, false, false).unwrap();
+    let outcome = runner::run_scenario(&scenario, budget, false, None).unwrap();
     assert_eq!(
         outcome.state.result(),
         Some(GameResult::Victory { team: 0 }),
@@ -364,30 +369,19 @@ fn a_decided_match_latches_its_result_and_keeps_ticking() {
 }
 
 #[test]
-fn a_version_mismatched_replay_is_refused_by_default() {
+fn a_version_mismatched_replay_is_refused() {
     use chassis::replay::Replay;
-    let replay: oxide_kit::GameReplay = Replay::new("0.0.0-not-this-sim", Scenario::skirmish());
-    let err = runner::run_replay(&replay, None, false).unwrap_err();
+    let replay: oxide_kit::GameReplay =
+        Replay::new(oxide_sim::SIM_VERSION + 1, "test", Scenario::skirmish());
+    let err = runner::run_replay(&replay, None).unwrap_err();
     assert!(err.to_string().contains("recorded on sim"), "{err}");
-}
-
-#[test]
-fn a_version_mismatched_replay_plays_when_the_mismatch_is_allowed() {
-    use chassis::replay::Replay;
-    let replay: oxide_kit::GameReplay = Replay::new("0.0.0-not-this-sim", Scenario::skirmish());
-    let state = runner::run_replay(&replay, None, true).unwrap();
-    assert_eq!(
-        state.current_tick(),
-        0,
-        "an empty replay loads to its opening state even across a version gap"
-    );
 }
 
 #[test]
 fn overriding_the_tick_count_below_the_commands_is_rejected() {
     use chassis::replay::Replay;
     use oxide_sim::{Command, PlayerCommand, PlayerId, SIM_VERSION, UnitId};
-    let mut replay: oxide_kit::GameReplay = Replay::new(SIM_VERSION, Scenario::skirmish());
+    let mut replay: oxide_kit::GameReplay = Replay::new(SIM_VERSION, "test", Scenario::skirmish());
     replay.record(
         100,
         PlayerCommand {
@@ -400,7 +394,7 @@ fn overriding_the_tick_count_below_the_commands_is_rejected() {
     replay.meta.ticks = Some(200);
     // The override stops playback at 50, stranding the tick-100 command; a
     // silent drop would desync a "resumed" session, so it must be an error.
-    let err = runner::run_replay(&replay, Some(50), false).unwrap_err();
+    let err = runner::run_replay(&replay, Some(50)).unwrap_err();
     assert!(err.to_string().contains("unconsumed"), "{err}");
 }
 

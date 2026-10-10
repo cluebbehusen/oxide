@@ -54,10 +54,9 @@ fn wheel_scroll_moves_the_window_and_only_the_window() {
     let entries = shelf();
     let mut b = Browser::new();
     let mut mouse = vec2(0.0, 0.0);
-    // Scroll far past the first section ACROSS SEPARATE FRAMES —
-    // the frame-start guard once snapped the window back to the
-    // selection between events, so a single-call test proved
-    // nothing. Browsing must not retarget Enter.
+    // Scroll far past the first section across separate frames, so a
+    // per-frame snap-back to the selection would show. Browsing must not
+    // retarget Enter.
     for _ in 0..8 {
         b.handle(&entries, &[RawEvent::Wheel { delta: -1.0 }], &mut mouse);
         b.handle(&entries, &[], &mut mouse);
@@ -113,8 +112,9 @@ fn the_wheel_stops_at_the_last_full_screenful() {
     let ui = crate::render::ui_scale();
     let full = b.layout(&entries, view, ui).cards.len();
     assert!(full >= 4, "precondition: the window shows several cards");
-    // Scroll far past the end: the wheel once clamped to the LAST
-    // line, parking the tail row alone at the top of empty screen.
+    // Scroll far past the end: the wheel must stop with the tail at the
+    // bottom, never parking the last row alone at the top of an empty
+    // screen.
     for _ in 0..60 {
         b.handle(&entries, &[RawEvent::Wheel { delta: -1.0 }], &mut mouse);
     }
@@ -210,8 +210,8 @@ fn a_resize_scrolls_the_window_back_to_the_selection() {
 fn a_small_window_at_max_scale_still_shows_cards() {
     let entries = shelf();
     let b = Browser::new();
-    // 640x400 at the 150% user scale used to reject every card
-    // row: headings drew, cards vanished, Enter still fired.
+    // 640x400 at the 150% user scale must still fit a card row, or
+    // headings draw while Enter fires a card nobody can see.
     let layout = b.layout(&entries, vec2(640.0, 400.0), 1.5);
     assert!(
         !layout.cards.is_empty(),
@@ -254,8 +254,8 @@ fn clicks_commit_on_release_inside_the_same_card() {
             y: cy,
         },
     ];
-    // The first click on a non-selected card SELECTS it — browsing
-    // by pointer must not misfire a launch.
+    // The first click on a non-selected card selects it; browsing by
+    // pointer must not misfire a launch.
     let out = b.handle(&entries, &click, &mut mouse);
     assert_eq!(out, Out::Stay, "the first click only selects");
     assert_eq!(b.selected, target);

@@ -249,7 +249,7 @@ fn projectile_launch_drives_bombard_and_bastion_reports() {
 
 #[test]
 fn bastion_report_is_a_single_hard_recoil_then_a_short_settle() {
-    let timing = building_attack_timing(BuildingKind::Bastion);
+    let timing = building_attack_timing(BuildingKind::Bastion).unwrap();
     assert_eq!(timing.report_ticks, 1.0);
     assert_eq!(timing.recover_ticks, 3.0);
     assert!(matches!(
@@ -477,7 +477,7 @@ fn harvesting_requires_real_work_and_cargo_is_a_continuous_fill() {
     let mut unit = base;
     unit.order = Order::Harvest {
         node,
-        anchor: Some(node),
+        anchor: node,
         retiring: false,
     };
     unit.pos = oxide_sim::geometry::work_approach_point(
@@ -486,7 +486,10 @@ fn harvesting_requires_real_work_and_cargo_is_a_continuous_fill() {
         (1, 1),
         unit.kind.stats().radius,
     );
-    unit.carrying = 5;
+    unit.worker
+        .as_mut()
+        .expect("a Harvester has harvest gear")
+        .carrying = 5;
     unit.progress = 1;
     let facts = UnitAnimationFacts::capture(&state, &unit, false);
     assert_eq!(
@@ -514,7 +517,7 @@ fn harvesting_requires_real_work_and_cargo_is_a_continuous_fill() {
 
     unit.order = Order::Harvest {
         node,
-        anchor: Some(node),
+        anchor: node,
         retiring: true,
     };
     assert_eq!(
@@ -580,7 +583,7 @@ fn excavator_construction_activates_unit_and_site_machinery() {
         if state
             .buildings()
             .iter()
-            .any(|b| b.anchor == anchor && b.progress > 0)
+            .any(|b| b.anchor == anchor && b.construction_progress().unwrap_or(0) > 0)
         {
             break;
         }
@@ -592,8 +595,8 @@ fn excavator_construction_activates_unit_and_site_machinery() {
         .iter()
         .find(|building| building.anchor == anchor)
         .expect("construction site exists");
-    assert!(!site.built);
-    assert!(site.progress > 0);
+    assert!(!site.built());
+    assert!(site.construction_progress().unwrap_or(0) > 0);
     let unit = state.unit(excavator).expect("Excavator survives");
     let mut controller = AnimationController::default();
     controller.observe_workers(&state);
@@ -706,37 +709,32 @@ fn construction_requires_the_assigned_harvester_at_the_site() {
         anchor: TilePos::new(10, 10),
         hp: 100,
         queue: VecDeque::new(),
-        progress: 20,
+        phase: BuildingPhase::Site { progress: 20 },
         rally: None,
         focus: None,
-        built: false,
-        provisional: false,
         tier: 0,
         cooldown: 0,
         salvage_drained: 0,
         salvage_credited: 0,
-        salvaged: false,
     };
     let mut builder = Unit {
-        air_motion: Vec2Fx::ZERO,
+        motor: oxide_sim::Motor::Ground {
+            speed: chassis::fx::Fx::ZERO,
+            stall_ticks: 0,
+        },
         id: UnitId(2),
         player: PlayerId(0),
         kind: UnitKind::Harvester,
         pos: oxide_sim::geometry::work_approach_point(
             site.anchor.offset(-1, 0),
             site.anchor,
-            site.stats().size,
+            site.kind.size(),
             UnitKind::Harvester.stats().radius,
         ),
         hp: UnitKind::Harvester.stats().max_hp,
-        carrying: 0,
-        unloading: None,
+        worker: Some(oxide_sim::Worker::default()),
         cooldowns: [0; MAX_WEAPONS],
-        brace_ticks: 0,
         turret_heading: None,
-        drive_speed: chassis::fx::Fx::ZERO,
-        stall_ticks: 0,
-        danger_retry_at: None,
         progress: 0,
         order: Order::Build { site: site.id },
         queue: VecDeque::new(),
@@ -746,12 +744,11 @@ fn construction_requires_the_assigned_harvester_at_the_site() {
         settled: 0,
         heading: 0,
         cargo: Vec::new(),
-        landed: false,
     };
-    assert!(builder.in_work_reach(site.anchor, site.stats().size));
+    assert!(builder.in_work_reach(site.anchor, site.kind.size()));
     assert!(matches!(builder.order, Order::Build { site: id } if id == site.id));
     builder.pos = TilePos::new(1, 1).center();
-    assert!(!builder.in_work_reach(site.anchor, site.stats().size));
+    assert!(!builder.in_work_reach(site.anchor, site.kind.size()));
 }
 
 #[test]
@@ -1155,4 +1152,23 @@ fn capture_and_retention_entrypoints_follow_the_current_world() {
     assert_eq!(controller.building_attacks.len(), 1);
     controller.retain_live(&state);
     assert!(controller.building_attacks.is_empty());
+}
+
+#[test]
+fn only_rotorcraft_spin_lift_rotors() {
+    for kind in UnitKind::ALL {
+        let stats = kind.stats();
+        let rotorcraft = stats.domain == oxide_sim::stats::Domain::Air
+            && stats.turn_rate == 0
+            && stats.cruise_turn_rate == 0;
+        assert_eq!(rotor_period(kind).is_some(), rotorcraft, "{kind:?}");
+    }
+}
+
+#[test]
+fn only_buildings_with_guns_report_and_recover() {
+    for kind in BuildingKind::ALL {
+        let armed = kind.tiers().iter().any(|stats| !stats.weapons.is_empty());
+        assert_eq!(building_attack_timing(kind).is_some(), armed, "{kind:?}");
+    }
 }

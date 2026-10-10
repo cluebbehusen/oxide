@@ -2,11 +2,14 @@ use super::*;
 use crate::game::Game;
 use oxide_sim::{BuildingId, BuildingKind, Target, UnitId, UnitKind};
 
+fn defense_report(kind: BuildingKind) -> crate::look::DefenseReport {
+    crate::look::defense(kind).unwrap().report.unwrap()
+}
+
 #[test]
 fn lethal_scuttler_bite_retains_the_visible_unit_surface() {
     let scenario = serde_json::from_value(serde_json::json!({
-        "name": "Lethal bite", "mode": "sandbox", "seed": 1,
-        "map": vec![".............................."; 22],
+        "name": "Lethal bite", "mode": "sandbox", "map": vec![".............................."; 22],
         "players": [
             {"name": "Local", "faction": "ferrous", "scrap": 0, "bot": false},
             {"name": "Target", "faction": "cupric", "scrap": 0, "bot": false}
@@ -53,8 +56,7 @@ fn lethal_scuttler_bite_retains_the_visible_unit_surface() {
 fn building_reports_keep_surface_facts_through_the_lethal_tick() {
     for lethal in [false, true] {
         let scenario = serde_json::from_value(serde_json::json!({
-            "name": "Building strike", "mode": "sandbox", "seed": 1,
-            "map": vec![".............................."; 22],
+            "name": "Building strike", "mode": "sandbox", "map": vec![".............................."; 22],
             "players": [
                 {"name": "Local", "faction": "ferrous", "scrap": 0, "bot": false},
                 {"name": "Target", "faction": "cupric", "scrap": 0, "bot": false}
@@ -583,7 +585,7 @@ fn scheduled_crash_uses_sim_time_and_restores_after_a_seek() {
     wire["aircraft_crashes"] = serde_json::json!([crash]);
     let state = serde_json::from_value(wire).unwrap();
     game.replace_state_after_jump(&state);
-    game.presentation.paused = true;
+    game.clock.paused = true;
     let age = game.presentation.fx[0].age_at(game.state.current_tick(), 0.0);
     assert!((age - 4.0 * crate::game::TICK_DT).abs() < 1.0e-6);
     game.update_fx(30.0);
@@ -757,6 +759,7 @@ fn projectile_impacts_sound_on_visible_and_hidden_ground_for_either_owner() {
                     shooter: Target::Unit(shooter.id),
                     launch: shooter.pos,
                     impact: at,
+                    launched_at: 0,
                     arrival: 0,
                     damage: 1,
                     targets: oxide_sim::stats::DomainMask::GROUND,
@@ -806,7 +809,7 @@ fn charge_detonation_plays_one_blast_and_preserves_other_building_losses() {
                 }));
             }
             let scenario = serde_json::from_value(serde_json::json!({
-                "name": "Charge explosion audio", "seed": 37, "map": map,
+                "name": "Charge explosion audio", "map": map,
                 "players": [
                     {"name": "Observer", "faction": "ferrous", "bot": false},
                     {"name": "Mine", "faction": "cupric", "bot": true},
@@ -868,7 +871,7 @@ fn charge_detonation_plays_one_blast_and_preserves_other_building_losses() {
                 .sounds_pending
                 .iter()
                 .copied()
-                .filter(|(kind, _)| kind.is_explosion())
+                .filter(|(kind, _)| crate::mixer::spec(*kind).explosion)
                 .collect();
             let mut expected = vec![(SoundKind::DemolitionBoom, Some(world_vec(tile.center())))];
             if collateral_charge {
@@ -922,13 +925,14 @@ fn hidden_demolition_and_building_loss_sound_without_revealing_identity() {
         Event::BuildingDestroyed {
             building: BuildingId(999),
             player,
+            tier: 0,
             pos: at,
         },
     ] {
         game.presentation.sounds_pending.clear();
         game.presentation.spawn_fx(&game.state, &[event]);
         assert_eq!(game.presentation.sounds_pending.len(), 1);
-        assert!(game.presentation.sounds_pending[0].0.is_explosion());
+        assert!(crate::mixer::spec(game.presentation.sounds_pending[0].0).explosion);
         assert_eq!(game.presentation.sounds_pending[0].1, Some(world_vec(at)));
         assert_eq!(game.state.hash(), hash);
         assert!(game.presentation.toasts.is_empty());
@@ -980,6 +984,7 @@ fn impact_metadata_is_consumed_in_landing_order() {
                 player: oxide_sim::PlayerId(0),
                 launch: at,
                 impact: at,
+                launched_at: 0,
                 arrival: 0,
                 damage: 1,
                 targets: oxide_sim::stats::DomainMask::GROUND,
@@ -1119,17 +1124,23 @@ fn defense_tracking_game() -> (crate::game::Game, BuildingId, UnitId) {
 
 #[test]
 fn every_weapon_family_uses_its_physical_report() {
-    assert_eq!(unit_shot_style(UnitKind::Scuttler, 0), ShotStyle::Contact);
-    assert_eq!(unit_shot_style(UnitKind::Lancer, 0), ShotStyle::Rail);
     assert_eq!(
-        unit_shot_style(UnitKind::Flakhound, 0),
+        unit_shot_style(UnitKind::Scuttler, 0).unwrap(),
+        ShotStyle::Contact
+    );
+    assert_eq!(
+        unit_shot_style(UnitKind::Lancer, 0).unwrap(),
+        ShotStyle::Rail
+    );
+    assert_eq!(
+        unit_shot_style(UnitKind::Flakhound, 0).unwrap(),
         ShotStyle::FlakBurst {
             yoke_delay: FlakYokeDelay::OneTick,
             rounds_per_yoke: 2,
         }
     );
     assert_eq!(
-        unit_shot_style(UnitKind::Stinger, 0),
+        unit_shot_style(UnitKind::Stinger, 0).unwrap(),
         ShotStyle::FlakBurst {
             yoke_delay: FlakYokeDelay::None,
             rounds_per_yoke: 1,
@@ -1138,41 +1149,53 @@ fn every_weapon_family_uses_its_physical_report() {
     // Both Sentinel slots speak through its one physical barrel;
     // the second is a weaker skyward poke, not a paired flak gun.
     assert_eq!(
-        unit_shot_style(UnitKind::Sentinel, 0),
+        unit_shot_style(UnitKind::Sentinel, 0).unwrap(),
         ShotStyle::Kinetic { heavy: false }
     );
     assert_eq!(
-        unit_shot_style(UnitKind::Sentinel, 1),
+        unit_shot_style(UnitKind::Sentinel, 1).unwrap(),
         ShotStyle::Kinetic { heavy: false }
     );
     assert_eq!(
-        unit_shot_style(UnitKind::Warden, 0),
+        unit_shot_style(UnitKind::Warden, 0).unwrap(),
         ShotStyle::Kinetic { heavy: true }
     );
-    assert_eq!(unit_shot_style(UnitKind::Breaker, 0), ShotStyle::Mortar);
     assert_eq!(
-        unit_shot_style(UnitKind::Buzzard, 0),
+        unit_shot_style(UnitKind::Breaker, 0).unwrap(),
+        ShotStyle::Mortar
+    );
+    assert_eq!(
+        unit_shot_style(UnitKind::Buzzard, 0).unwrap(),
         ShotStyle::Kinetic { heavy: true }
     );
-    assert_eq!(unit_shot_style(UnitKind::Darter, 0), ShotStyle::ForgeSpot);
-    assert_eq!(unit_shot_style(UnitKind::Talon, 0), ShotStyle::ForgeSpot);
-    assert_eq!(unit_shot_style(UnitKind::Wisp, 0), ShotStyle::ForgeSpot);
     assert_eq!(
-        defense_shot_style(BuildingKind::FlakTurret, 0),
+        unit_shot_style(UnitKind::Darter, 0).unwrap(),
+        ShotStyle::ForgeSpot
+    );
+    assert_eq!(
+        unit_shot_style(UnitKind::Talon, 0).unwrap(),
+        ShotStyle::ForgeSpot
+    );
+    assert_eq!(
+        unit_shot_style(UnitKind::Wisp, 0).unwrap(),
+        ShotStyle::ForgeSpot
+    );
+    assert_eq!(
+        defense_report(BuildingKind::FlakTurret).shot(0),
         ShotStyle::FlakBurst {
             yoke_delay: FlakYokeDelay::OneAndHalfTicks,
             rounds_per_yoke: 2,
         }
     );
     assert_eq!(
-        defense_shot_style(BuildingKind::FlakTurret, 1),
+        defense_report(BuildingKind::FlakTurret).shot(1),
         ShotStyle::FlakBurst {
             yoke_delay: FlakYokeDelay::OneAndHalfTicks,
             rounds_per_yoke: 3,
         }
     );
     assert_eq!(
-        defense_shot_style(BuildingKind::Turret, 0),
+        defense_report(BuildingKind::Turret).shot(0),
         ShotStyle::ForgeSpot
     );
 }
@@ -1376,7 +1399,12 @@ fn only_bombard_and_bastion_use_real_shell_entities() {
     ];
     let unit_shells: Vec<_> = units
         .into_iter()
-        .filter(|kind| kind.stats().weapons.iter().any(|weapon| weapon.projectile))
+        .filter(|kind| {
+            kind.stats()
+                .weapons
+                .iter()
+                .any(|weapon| weapon.projectile.is_some())
+        })
         .collect();
     assert_eq!(unit_shells, vec![UnitKind::Bombard]);
 
@@ -1396,7 +1424,7 @@ fn only_bombard_and_bastion_use_real_shell_entities() {
             kind.base_stats()
                 .weapons
                 .iter()
-                .any(|weapon| weapon.projectile)
+                .any(|weapon| weapon.projectile.is_some())
         })
         .collect();
     assert_eq!(building_shells, vec![BuildingKind::Bastion]);
@@ -1404,20 +1432,44 @@ fn only_bombard_and_bastion_use_real_shell_entities() {
 
 #[test]
 fn approved_combatants_use_their_own_reports() {
-    assert_eq!(unit_fire_sound(UnitKind::Sentinel), SoundKind::SentinelFire);
-    assert_eq!(unit_fire_sound(UnitKind::Scuttler), SoundKind::ScuttlerFire);
-    assert_eq!(unit_fire_sound(UnitKind::Lancer), SoundKind::LancerFire);
     assert_eq!(
-        unit_fire_sound(UnitKind::Flakhound),
+        unit_fire_sound(UnitKind::Sentinel).unwrap(),
+        SoundKind::SentinelFire
+    );
+    assert_eq!(
+        unit_fire_sound(UnitKind::Scuttler).unwrap(),
+        SoundKind::ScuttlerFire
+    );
+    assert_eq!(
+        unit_fire_sound(UnitKind::Lancer).unwrap(),
+        SoundKind::LancerFire
+    );
+    assert_eq!(
+        unit_fire_sound(UnitKind::Flakhound).unwrap(),
         SoundKind::FlakhoundFire
     );
-    assert_eq!(unit_fire_sound(UnitKind::Stinger), SoundKind::StingerFire);
-    assert_eq!(unit_fire_sound(UnitKind::Buzzard), SoundKind::BuzzardFire);
-    assert_eq!(unit_fire_sound(UnitKind::Darter), SoundKind::DarterFire);
-    assert_eq!(unit_fire_sound(UnitKind::Talon), SoundKind::TalonFire);
-    assert_eq!(unit_fire_sound(UnitKind::Wisp), SoundKind::WispFire);
     assert_eq!(
-        defense_fire_sound(BuildingKind::FlakTurret),
+        unit_fire_sound(UnitKind::Stinger).unwrap(),
+        SoundKind::StingerFire
+    );
+    assert_eq!(
+        unit_fire_sound(UnitKind::Buzzard).unwrap(),
+        SoundKind::BuzzardFire
+    );
+    assert_eq!(
+        unit_fire_sound(UnitKind::Darter).unwrap(),
+        SoundKind::DarterFire
+    );
+    assert_eq!(
+        unit_fire_sound(UnitKind::Talon).unwrap(),
+        SoundKind::TalonFire
+    );
+    assert_eq!(
+        unit_fire_sound(UnitKind::Wisp).unwrap(),
+        SoundKind::WispFire
+    );
+    assert_eq!(
+        defense_report(BuildingKind::FlakTurret).sound,
         SoundKind::FlakTurretFire
     );
     assert_eq!(
@@ -1432,35 +1484,86 @@ fn approved_combatants_use_their_own_reports() {
 
 #[test]
 fn generic_combatants_keep_the_generic_report() {
-    assert_eq!(unit_fire_sound(UnitKind::Harvester), SoundKind::Laser);
-    assert_eq!(defense_fire_sound(BuildingKind::Turret), SoundKind::Laser);
+    assert_eq!(
+        unit_fire_sound(UnitKind::Harvester),
+        None,
+        "an unarmed worker has no report"
+    );
+    assert_eq!(defense_report(BuildingKind::Turret).sound, SoundKind::Laser);
 }
 
 #[test]
 fn artillery_launch_audio_respects_sight_and_allegiance() {
     let bombard = Target::Unit(UnitId(4));
     assert_eq!(
-        shell_launch_audio(bombard, AllegianceCue::Hostile, true, true),
+        shell_launch_audio(
+            bombard,
+            Some(UnitKind::Bombard),
+            AllegianceCue::Hostile,
+            true,
+            true
+        ),
         Some((SoundKind::BombardFire, ShellSoundAnchor::Muzzle))
     );
     assert_eq!(
-        shell_launch_audio(bombard, AllegianceCue::Hostile, false, true),
+        shell_launch_audio(
+            bombard,
+            Some(UnitKind::Bombard),
+            AllegianceCue::Hostile,
+            false,
+            true
+        ),
         Some((SoundKind::ArtilleryLaunch, ShellSoundAnchor::Impact))
     );
     assert_eq!(
-        shell_launch_audio(bombard, AllegianceCue::Hostile, false, false),
+        shell_launch_audio(
+            bombard,
+            Some(UnitKind::Bombard),
+            AllegianceCue::Hostile,
+            false,
+            false
+        ),
         None
     );
     assert_eq!(
-        shell_launch_audio(bombard, AllegianceCue::Ally, false, true),
+        shell_launch_audio(
+            bombard,
+            Some(UnitKind::Bombard),
+            AllegianceCue::Ally,
+            false,
+            true
+        ),
         None,
         "a fogged allied shell must not sound like an incoming threat"
     );
     assert_eq!(
-        shell_launch_audio(bombard, AllegianceCue::Mine, false, false),
+        shell_launch_audio(
+            bombard,
+            Some(UnitKind::Bombard),
+            AllegianceCue::Mine,
+            false,
+            false
+        ),
         Some((SoundKind::BombardFire, ShellSoundAnchor::Muzzle)),
         "the local gun remains audible without revealing another seat"
     );
+}
+
+#[test]
+fn every_projectile_shooter_launches_with_its_own_report() {
+    let shooter = Target::Unit(UnitId(4));
+    for (kind, report) in [
+        (UnitKind::Bombard, SoundKind::BombardFire),
+        (UnitKind::Avalanche, SoundKind::AvalancheFire),
+        (UnitKind::Condor, SoundKind::BombRelease),
+        (UnitKind::Moth, SoundKind::BombRelease),
+    ] {
+        assert_eq!(
+            shell_launch_audio(shooter, Some(kind), AllegianceCue::Mine, true, true),
+            Some((report, ShellSoundAnchor::Muzzle)),
+            "{kind:?}"
+        );
+    }
 }
 
 #[test]
@@ -1473,11 +1576,14 @@ fn shot_visuals_begin_at_the_authored_muzzle_not_chassis_center() {
     );
     assert_eq!(visual_shot_origin(from, from, 0.38), from);
     let buzzard_muzzle = 38.0 / 128.0 * crate::render::unit_draw_scale(UnitKind::Buzzard);
-    assert_eq!(unit_muzzle_reach(UnitKind::Buzzard), buzzard_muzzle);
+    assert_eq!(
+        unit_muzzle_reach(UnitKind::Buzzard).unwrap(),
+        buzzard_muzzle
+    );
     let origin = unit_shot_origin(UnitKind::Buzzard, from, to);
     assert!((origin.x - (from.x + buzzard_muzzle)).abs() < 1e-5);
     assert!((origin.y - (from.y - 0.18)).abs() < 1e-5);
-    assert_eq!(unit_muzzle_reach(UnitKind::Darter), 0.32);
+    assert_eq!(unit_muzzle_reach(UnitKind::Darter).unwrap(), 0.32);
     for kind in [
         UnitKind::Darter,
         UnitKind::Talon,
@@ -1491,13 +1597,10 @@ fn shot_visuals_begin_at_the_authored_muzzle_not_chassis_center() {
         );
     }
     let warden_muzzle = 46.0 / 128.0 * crate::render::unit_draw_scale(UnitKind::Warden);
-    assert!((unit_muzzle_reach(UnitKind::Warden) - warden_muzzle).abs() < 0.002);
+    assert!((unit_muzzle_reach(UnitKind::Warden).unwrap() - warden_muzzle).abs() < 0.002);
     assert_eq!(
-        unit_muzzle_reach(UnitKind::Breaker),
+        unit_muzzle_reach(UnitKind::Breaker).unwrap(),
         40.0 / 128.0 * crate::render::unit_draw_scale(UnitKind::Breaker)
-    );
-    assert!(
-        defense_muzzle_reach(BuildingKind::Bastion) > defense_muzzle_reach(BuildingKind::Turret)
     );
 }
 
@@ -1722,8 +1825,7 @@ fn ranged_reports_retain_unit_contacts_through_lethal_hits() {
         UnitKind::Breaker,
     ] {
         let scenario = serde_json::from_value(serde_json::json!({
-            "name":"Unit impacts", "mode":"sandbox", "seed":42,
-            "map":vec![".............................."; 22],
+            "name":"Unit impacts", "mode":"sandbox", "map":vec![".............................."; 22],
             "players":[
                 {"name":"Local","faction":"ferrous","scrap":0,"bot":false},
                 {"name":"Target","faction":"cupric","scrap":0,"bot":false}
@@ -1768,8 +1870,7 @@ fn ranged_reports_retain_unit_contacts_through_lethal_hits() {
 #[test]
 fn bomb_contacts_preserve_ground_spread_and_use_simulation_time() {
     let scenario = serde_json::from_value(serde_json::json!({
-        "name":"Bomb contacts", "mode":"sandbox", "seed":42,
-        "map":vec!["...................................."; 24],
+        "name":"Bomb contacts", "mode":"sandbox", "map":vec!["...................................."; 24],
         "players":[
             {"name":"Local","faction":"ferrous","scrap":0,"bot":false},
             {"name":"Target","faction":"cupric","scrap":0,"bot":false}
@@ -1850,8 +1951,7 @@ fn checkpoint_projectiles_recover_unit_contacts_without_launch_history() {
         UnitKind::Moth,
     ] {
         let scenario = serde_json::from_value(serde_json::json!({
-            "name":"Restored contacts", "mode":"sandbox", "seed":42,
-            "map":vec!["...................................."; 24],
+            "name":"Restored contacts", "mode":"sandbox", "map":vec!["...................................."; 24],
             "players":[{"name":"Local","faction":"ferrous","scrap":0,"bot":false},
                 {"name":"Target","faction":"cupric","scrap":0,"bot":false}],
             "units":[{"player":0,"kind":kind,"x":12,"y":11},
@@ -1917,8 +2017,7 @@ fn checkpoint_projectiles_recover_unit_contacts_without_launch_history() {
 #[test]
 fn lethal_hit_retains_the_moving_body_frame() {
     let scenario = serde_json::from_value(serde_json::json!({
-        "name":"Moving lethal contact", "mode":"sandbox", "seed":42,
-        "map":vec!["....................................";24],
+        "name":"Moving lethal contact", "mode":"sandbox", "map":vec!["....................................";24],
         "players":[{"name":"Local","faction":"ferrous","scrap":0,"bot":false},
             {"name":"Target","faction":"cupric","scrap":0,"bot":false}],
         "units":[{"player":0,"kind":"lancer","x":10,"y":10},

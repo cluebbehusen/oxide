@@ -1,25 +1,23 @@
 //! The windowless session server: the full debug protocol with no GPU,
 //! no window, and no wall clock.
 //!
-//! One [`Session`] holds a match open the way the shell's `Game` does —
-//! sim state, seat bots, an always-on recorder, and a staging vec for
-//! socket commands — but its advance loop is the headless runner's
-//! composition and its screenshots come from the CPU renderer. It serves
-//! the same [`oxide_protocol`] vocabulary over the same framed transport
-//! ([`oxide_protocol::framing`]), so every `driver live` verb works
-//! against it unchanged; requests that need a window (camera, UI, input
-//! injection, the overlay) or a wall clock (pause, resume, speed) are
-//! refused in words rather than faked.
+//! One [`Session`] holds a match open the way the shell's `Game` does (sim
+//! state, seat bots, an always-on recorder, and staged socket commands),
+//! but its screenshots come from the CPU renderer. It serves the same
+//! [`oxide_protocol`] vocabulary over the same framed transport
+//! ([`oxide_protocol::framing`]), so every `driver live` verb works against
+//! it unchanged; requests that need a window (camera, UI, input injection,
+//! the overlay) or a wall clock (pause, resume, speed) are refused with a
+//! reason rather than faked.
 //!
-//! Parity with the live shell is the product, not a hope:
-//! `driver/tests/session_parity.rs` drives the same script through both
-//! servers and asserts hash, event, and status identity, and the
-//! headless half of that suite runs in CI.
+//! `driver/tests/session_parity.rs` drives the same script through this
+//! server and the live shell and asserts hash, event, and status identity;
+//! its headless half runs in CI.
 
-use crate::runner::{self, GameReplay};
 use anyhow::{Context, Result};
 use chassis::replay::Replay;
 use oxide_kit::controller::{SeatController, record_events, seat_controllers};
+use oxide_kit::runner::{self, GameReplay};
 use oxide_protocol::framing::{IncomingRequest, Limits, incoming};
 use oxide_protocol::{
     AdvancedView, DebugSession, PresentedView, Reply, Request, ResponseEnvelope, SavedView,
@@ -36,44 +34,9 @@ pub struct Session {
     state: State,
     bots: Vec<SeatController>,
     recorder: GameReplay,
-    /// Commands staged for the next tick — the socket's funnel, exactly
-    /// like a paused shell staging for the *next* tick.
+    /// Socket commands staged for the next tick, as a paused shell stages
+    /// them.
     pending: Vec<PlayerCommand>,
-}
-
-impl serde::Serialize for Session {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use oxide_kit::checkpoint::{RecordedCheckpoint, SessionCheckpoint};
-        let session = SessionCheckpoint::capture(
-            &self.scenario,
-            &self.state,
-            &self.bots,
-            &self.pending,
-            None,
-        )
-        .and_then(|session| RecordedCheckpoint::capture(session, &self.recorder))
-        .map_err(serde::ser::Error::custom)?;
-        session.serialize(serializer)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for Session {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let checkpoint = oxide_kit::checkpoint::RecordedCheckpoint::deserialize(deserializer)?;
-        let (session, recorder) = checkpoint.restore().map_err(serde::de::Error::custom)?;
-        if session.stats.is_some() {
-            return Err(serde::de::Error::custom(
-                "the headless session does not track live statistics",
-            ));
-        }
-        Ok(Self {
-            scenario: session.scenario,
-            state: session.state,
-            bots: session.bots,
-            recorder,
-            pending: session.pending,
-        })
-    }
 }
 
 impl Session {
@@ -81,7 +44,11 @@ impl Session {
     pub fn new(scenario: Scenario) -> Result<Self> {
         let state = scenario.build().context("building scenario")?;
         let bots = seat_controllers(&scenario).context("building public bot map briefing")?;
-        let recorder = Replay::new(SIM_VERSION, scenario.clone());
+        let recorder = Replay::new(
+            SIM_VERSION,
+            crate::build_identity().label(),
+            scenario.clone(),
+        );
         Ok(Self {
             scenario,
             state,
@@ -91,10 +58,10 @@ impl Session {
         })
     }
 
-    /// Resumes a session from a recorded replay, exactly as the shell
-    /// does: validate (cross-version saves refused — resuming one would
-    /// keep recording onto a log that can no longer reproduce), rebuild
-    /// the scenario, re-execute every recorded tick, keep recording.
+    /// Resumes a session from a scenario-origin replay as the shell does:
+    /// validate it, rebuild the scenario, re-execute every recorded tick,
+    /// and keep recording. A replay from another sim version is refused,
+    /// since commands recorded onto it could not reproduce.
     pub fn resume(replay: GameReplay) -> Result<Self> {
         replay
             .validate(Some(SIM_VERSION))
@@ -111,19 +78,16 @@ impl Session {
                 .last()
                 .map_or(0, |c| c.tick.saturating_add(1))
         });
-        // Same load bound as the shell: a structurally valid file can
-        // still claim an absurd duration, and parity means refusing it
-        // at the same line the shell does.
+        // The shell's load bound: a structurally valid file can still
+        // claim an absurd duration.
         anyhow::ensure!(
             total <= runner::MAX_REPLAY_TICKS,
             "replay spans {total} ticks, beyond the {}-tick load limit",
             runner::MAX_REPLAY_TICKS
         );
-        // Bots may carry memory across ticks, so the fast-forward lets
-        // them *watch* the session back: act() runs against every tick
-        // and its outputs are discarded — the recorded commands are the
-        // truth. The resumed session then continues exactly as the
-        // unsaved one would have.
+        // Bots carry memory across ticks, so they observe every replayed
+        // tick; their commands are discarded because the record is
+        // authoritative.
         let mut bots =
             seat_controllers(&scenario).context("building replay public bot map briefing")?;
         let mut cursor = replay.cursor();
@@ -157,9 +121,9 @@ impl Session {
         &self.state
     }
 
-    /// One tick, the shell's `Game::do_tick` composition exactly: staged
-    /// commands first, then bot commands, everything recorded, then the
-    /// sim steps. Any deviation here is a parity bug by definition.
+    /// One tick in the shell's `Game::do_tick` order: staged commands, then
+    /// bot commands, all recorded, then the sim steps. Any other order
+    /// breaks parity with the shell.
     fn step(&mut self) -> Vec<Event> {
         let mut commands = std::mem::take(&mut self.pending);
         for bot in &mut self.bots {
@@ -174,10 +138,9 @@ impl Session {
         report.events
     }
 
-    /// Answers one request. The shared surface (state reads, the driven
-    /// clock) goes through the one protocol dispatcher; every remaining
-    /// method is either implemented here or refused with the reason —
-    /// never silently acknowledged.
+    /// Answers one request. Shared requests (state reads, the driven
+    /// clock) go through the protocol dispatcher; every other method is
+    /// implemented here or refused with a reason.
     pub fn handle(&mut self, request: Request) -> Result<Reply, String> {
         if let Some(outcome) = dispatch_shared(self, &request) {
             return outcome;
@@ -231,9 +194,8 @@ impl Session {
                     Err(err) => Err(format!("saving replay: {err}")),
                 }
             }
-            // No window exists: refusing beats pretending. Each message
-            // names what is missing and, where one exists, the headless
-            // way to get the same information.
+            // Each refusal names what is missing and, where one exists, the
+            // headless way to get the same information.
             Request::QueryCamera => Err(
                 "the headless session has no window or camera; its screenshots \
                  render the whole map"
@@ -256,11 +218,9 @@ impl Session {
                  already omniscient"
                     .to_string(),
             ),
-            // The shared surface was answered above (the clock family
-            // refused from inside the clock methods); listing it keeps
-            // this match exhaustive, so a new protocol request forces a
-            // decision about which side of the capability split it
-            // lives on.
+            // Shared requests were answered above. Listing them keeps this
+            // match exhaustive, so a new protocol request forces a decision
+            // about which side answers it.
             Request::Status
             | Request::QueryState { .. }
             | Request::QueryFogView { .. }
@@ -276,7 +236,7 @@ impl Session {
     }
 
     fn screenshot(&self, path: &str) -> Result<Reply> {
-        let pixmap = crate::render::render_state(&self.state);
+        let pixmap = oxide_kit::render::render_state(&self.state);
         if let Some(parent) = std::path::Path::new(path).parent()
             && !parent.as_os_str().is_empty()
         {
@@ -289,9 +249,8 @@ impl Session {
             path: path.to_string(),
             width: pixmap.width(),
             height: pixmap.height(),
-            // The schematic tiny-skia render, NOT what the shell draws —
-            // said on the wire so an agent never judges visual polish
-            // from the wrong renderer.
+            // The schematic CPU render, not what the shell draws; reported
+            // so a client never judges visual polish from it.
             renderer: "cpu".to_string(),
         }))
     }
@@ -300,23 +259,19 @@ impl Session {
 const NO_CLOCK: &str = "the headless session has no wall clock; sim time moves only through \
      advance_ticks and present_ticks";
 
-/// The clockless third of the debug-session family: always in driven
-/// mode, so the pause family is refused from inside the clock methods.
-/// With no shell there are no transient effects to age — `present`
-/// degenerates to "advance and return the events", deliberately the
-/// same sim result as the shell's presented step, which is what the
-/// parity suite pins.
+/// The clockless debug session: always in driven mode, so pause and speed
+/// are refused. With no transient effects to age, `present` advances and
+/// returns the events, the same sim result as the shell's presented step.
 impl DebugSession for Session {
     fn status(&self) -> StatusView {
         StatusView {
             tick: self.state.current_tick(),
-            // No wall clock exists here: sim time moves only on request,
-            // which reads as permanently paused — the same stance a
-            // driven-mode shell reports.
+            // Sim time moves only on request, which reports as paused, as a
+            // driven-mode shell does.
             paused: true,
             speed: 1.0,
             scenario: self.scenario.name.clone(),
-            sim_version: SIM_VERSION.to_string(),
+            sim_version: SIM_VERSION,
             result: self.state.result(),
             recorded_commands: self.recorder.commands.len(),
         }
@@ -359,7 +314,7 @@ impl DebugSession for Session {
     }
 }
 
-/// Binds, announces, and answers until the process ends — the
+/// Binds, announces, and answers until the process ends: the
 /// `oxide-driver session` subcommand.
 pub fn serve(port: u16, scenario: &str, idle_timeout: Duration) -> Result<()> {
     let scenario = runner::load_scenario(scenario)?;
@@ -378,10 +333,10 @@ pub fn serve(port: u16, scenario: &str, idle_timeout: Duration) -> Result<()> {
     Ok(())
 }
 
-/// The answering loop over an already-bound listener — tests bind port 0
-/// and drive this on a thread. Single-threaded on purpose: requests from
-/// every connection funnel through one channel, so each response reflects
-/// a settled world, exactly as the shell answers between frames.
+/// The answering loop over an already-bound listener; tests bind port 0
+/// and drive it on a thread. Requests from every connection funnel through
+/// one channel, so each response reflects a settled world, as the shell
+/// answers between frames.
 pub fn serve_listener(listener: TcpListener, limits: Limits, mut session: Session) {
     let rx = incoming(listener, limits);
     for IncomingRequest { id, request, reply } in rx {

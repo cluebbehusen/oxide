@@ -1,13 +1,12 @@
 //! Deterministic random numbers.
 //!
-//! A hand-rolled PCG32 (XSH-RR 64/32, O'Neill 2014). Hand-rolled not out of
-//! pride but for stability: the algorithm is frozen here, in ~30 lines we
-//! control, so no dependency upgrade can ever silently change the stream and
-//! invalidate every replay. A test cross-checks it against `rand_pcg`'s
-//! reference implementation.
+//! A hand-rolled PCG32 (XSH-RR 64/32, O'Neill 2014). Keeping the algorithm
+//! here means no dependency upgrade can change the stream and invalidate
+//! replays. A test cross-checks it against `rand_pcg`'s reference
+//! implementation.
 //!
-//! The generator state is plain serializable data — snapshot a sim mid-run,
-//! restore it, and the stream continues bit-for-bit.
+//! The generator state is plain serializable data, so a restored snapshot
+//! continues the stream bit-for-bit.
 
 use serde::{Deserialize, Serialize};
 

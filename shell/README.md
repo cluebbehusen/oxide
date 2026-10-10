@@ -12,21 +12,30 @@ crate-level rustdoc.
 ## Main pieces
 
 - `main` handles CLI arguments, window configuration, and startup.
-- `app` owns frame orchestration and debug requests; `app/screen_flow` owns
-  cross-screen transitions and draws one active screen.
-- `screens/wizard` owns New Match seat, team, faction, and opponent choices;
-  `bot_label` keeps configured opponent names consistent across the wizard, HUD,
-  and result report. Every bot seat of a new match runs `oxide-opponent`;
-  rematches, saves and replays keep their recorded configuration.
-- `game` owns one live session, its recorder, and bots. `game::Presentation`
-  holds camera, interpolation, effects, and UI state; rendering borrows the
-  active live or replay world through `game::Scene`. Its checkpoint adapter
-  restores the shared session, tutorial progress, concession report, and
-  decorative boundary exploration. Restoration opens paused and rebuilds
-  transient presentation at the current viewport.
+- `app` owns frame orchestration and the one install path for a new match;
+  `app/screen` answers every per-screen question; `app/screen_flow` owns
+  cross-screen transitions, settles each one through its enter and exit steps,
+  delivers notices, and draws one active screen. `app/debug` answers debug
+  requests, `app/ui_view` reports what the window shows, and `app/audio` feeds
+  the visible session's sounds to the mixer.
+- `screens/wizard` owns New Match seat, team, faction, and opponent choices, and
+  `screens/wizard/launch` turns a finished draft into a match; `bot_label` keeps
+  configured opponent names consistent across the wizard, HUD, and result
+  report. Every bot seat of a new match runs `oxide-opponent`; rematches, saves
+  and replays keep their recorded configuration.
+- `game` owns one live session, its recorder, bots, and `game::Clock` (pause,
+  speed, and tick debt). `game::Presentation` holds camera, interpolation,
+  effects, and UI state; rendering borrows the active live or replay world and
+  its clock through `game::Scene`. Its checkpoint adapter restores the shared
+  session, tutorial progress, concession report, and decorative boundary
+  exploration. Restoration opens paused and rebuilds transient presentation at
+  the current viewport.
 - `input` and `action` form the single hardware and injected-input funnel.
-  `press` and `button` give full-screen surfaces one press gesture and button
-  style; `viewer_touch` pans and pinches the read-only viewers.
+  `press` is the press-then-release-in-place gesture that menus and screen
+  buttons share, and `button` draws the shared action and BACK buttons; the map
+  browser's scrolling card grid tracks its own taps. `camera::controls` holds
+  the camera hands every view shares; `viewer_touch` pans and pinches the
+  read-only viewers. Key bindings live only in the configuration.
 - `platform` states whether the build is touch-only (iOS).
 - `building_actions` derives single and grouped building controls from their
   capabilities, using projected pending orders for eligibility and spending.
@@ -37,8 +46,12 @@ crate-level rustdoc.
   feedback, and share hit-test geometry.
 - `entity_lod` derives filtered entity textures for world rendering and UI
   portraits; `strategic_markers` draws role and allegiance cues at distant zoom.
+- `look` declares each unit and defense kind's presentation in one exhaustive
+  match.
 - `assets`, `typography`, `audio_mix`, and `soundtrack` own presentation
-  resources.
+  resources. `mixer` plays clips and holds the one table of what the shell
+  decides per sound kind: its clip, bus, mix weight, and whether it is a blast
+  or raises combat music.
 - `debug_server` connects the frame loop to `oxide-protocol`.
 - `netplay` gathers LAN machines in a lobby and carries a running match between
   them over `oxide-net`; `screens/lobby` asks for a host address and shows the

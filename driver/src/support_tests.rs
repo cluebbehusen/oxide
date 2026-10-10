@@ -16,7 +16,7 @@ pub(crate) fn replay_fixture() -> GameReplay {
             .expect("each skirmish seat starts with a unit")
             .id
     };
-    let mut replay = Replay::new(SIM_VERSION, scenario);
+    let mut replay = Replay::new(SIM_VERSION, "test", scenario);
     replay.record(0, stop(0, unit(0)));
     replay.record(3, stop(1, unit(1)));
     replay.record(5, stop(0, unit(0)));

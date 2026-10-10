@@ -2,7 +2,7 @@
 //! from a real automation-mode shell and compared against per-machine
 //! references on a tolerance metric.
 //!
-//! Pixel goldens don't survive GPU or font churn, so this is a LOCAL
+//! Pixel goldens do not survive GPU or font changes, so this is a local
 //! gate, never a CI one: references live in a gitignored directory,
 //! belong to this machine, and re-bless with `--bless` after any
 //! intended visual change. A compare run never adopts a missing
@@ -58,16 +58,9 @@ fn scratch_home() -> Result<ScratchHome> {
             Err(error) => return Err(error.into()),
         }
     };
-    let config = serde_json::json!({
-        "version": 1,
-        "bindings": { "bindings": [] },
-        "volumes": { "master": 0.0, "effects": 0.0, "ui": 0.0, "music": 0.0 },
-        "ui_scale": 1.0,
-        "camera": { "pan_speed": 1.0, "edge_pan": false, "zoom_inverted": false },
-        "window": [1280, 800],
-        "reduced_motion": true,
-        "colorblind": false
-    });
+    let mut config: serde_json::Value =
+        serde_json::from_str(include_str!("quiet_config.json")).expect("static json");
+    config["reduced_motion"] = true.into();
     let text = serde_json::to_string_pretty(&config).expect("static json");
     for dir in [
         home.0.join("Library/Application Support/Oxide"),
@@ -260,7 +253,7 @@ fn walk(client: &mut Client, bless: bool, dir: &Path, threshold: f64) -> Result<
         failed: Vec::new(),
     };
 
-    // The menu face of the game.
+    // Menu screens.
     suite.shot("home", "home")?;
     auto::activate_labeled(suite.client, "settings")?;
     suite.shot("settings", "settings")?;
@@ -272,7 +265,7 @@ fn walk(client: &mut Client, bless: bool, dir: &Path, threshold: f64) -> Result<
     suite.shot("replay-shelf", "replays")?;
     auto::press_key(suite.client, Key::Escape)?;
 
-    // The wizard.
+    // The new-match wizard.
     auto::activate_labeled(suite.client, "play")?;
     suite.shot("wizard-map", "main_menu")?;
     // The team-map setup screen (seat cards + the who-is-where map):
@@ -330,9 +323,9 @@ fn walk(client: &mut Client, bless: bool, dir: &Path, threshold: f64) -> Result<
 
     // Settings over the paused match (the pause payload waits), then a
     // refused rebind: the screen-owned notice names the chord's holder
-    // above the veil. Last on purpose — the notice's glyph sizes enter
-    // the font atlas here, and drawing them earlier re-rasterized the
-    // text of every capture that followed.
+    // above the veil. Last because the notice's glyph sizes enter the
+    // font atlas here, and drawing them earlier re-rasterizes the text of
+    // every later capture.
     auto::activate_labeled(suite.client, "settings")?;
     auto::activate_labeled(suite.client, "controls")?;
     auto::press_key(suite.client, Key::Enter)?;

@@ -154,7 +154,7 @@ impl Match {
 
     /// Pauses the host and lets the client execute what is in flight.
     fn drain(&mut self) {
-        self.host.0.presentation.paused = true;
+        self.host.0.clock.paused = true;
         wait(|| {
             assert_eq!(self.step(), (None, None));
             (self.client.0.state.current_tick() == self.host.0.state.current_tick()).then_some(())
@@ -340,6 +340,54 @@ fn a_mismatched_build_is_refused_and_its_seat_stays_open() {
     assert_eq!(client.status(), reason);
     assert!(host.status().ends_with("1 of 2 players here"));
     assert!(host.failure().is_none());
+}
+
+#[test]
+fn a_silent_connection_is_closed_after_the_greeting_timeout() {
+    let mut host = HostLobby::new("127.0.0.1:0", duel(), HOST, COMMIT).unwrap();
+    let silent = std::net::TcpStream::connect(&host.address).unwrap();
+    wait(|| {
+        assert!(host.poll(Duration::ZERO, viewport()).is_none());
+        (!host.greeting.is_empty()).then_some(())
+    });
+    assert!(host.poll(GREETING_TIMEOUT, viewport()).is_none());
+    assert!(host.greeting.is_empty());
+    drop(silent);
+}
+
+#[test]
+fn connections_past_the_greeting_cap_wait_to_be_accepted() {
+    use std::io::BufRead as _;
+    let mut host = HostLobby::new("127.0.0.1:0", duel(), HOST, COMMIT).unwrap();
+    let silent: Vec<_> = (0..MAX_GREETING)
+        .map(|_| std::net::TcpStream::connect(&host.address).unwrap())
+        .collect();
+    wait(|| {
+        assert!(host.poll(Duration::ZERO, viewport()).is_none());
+        (host.greeting.len() == MAX_GREETING).then_some(())
+    });
+    let waiting = std::net::TcpStream::connect(&host.address).unwrap();
+    for _ in 0..10 {
+        assert!(host.poll(Duration::ZERO, viewport()).is_none());
+    }
+    assert_eq!(host.greeting.len(), MAX_GREETING);
+
+    // The full slots time out, and only then is the waiting peer accepted
+    // and greeted.
+    assert!(host.poll(GREETING_TIMEOUT, viewport()).is_none());
+    wait(|| {
+        assert!(host.poll(GREETING_TIMEOUT, viewport()).is_none());
+        (host.greeting.len() == 1).then_some(())
+    });
+    waiting
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut hello = String::new();
+    std::io::BufReader::new(&waiting)
+        .read_line(&mut hello)
+        .unwrap();
+    assert_eq!(hello.trim_end(), LobbyMessage::hello(COMMIT).encode());
+    drop(silent);
 }
 
 #[test]

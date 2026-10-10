@@ -39,13 +39,13 @@ fn is_entity_source(name: &str) -> bool {
                 .iter()
                 .map(|&k| crate::assets::building_stem(k)),
         )
-        .chain([
-            "flak_mount",
-            "scrap",
-            "wreck_pile",
-            "extractor_frame",
-            "scout_radar",
-        ])
+        .chain(
+            oxide_sim::BuildingKind::ALL
+                .iter()
+                .filter_map(|&k| crate::look::defense(k))
+                .map(|defense| defense.mount),
+        )
+        .chain(["scrap", "wreck_pile", "extractor_frame", "scout_radar"])
         .any(|stem| {
             name == stem
                 || name
@@ -70,7 +70,8 @@ fn entity_sources(manifest: &HashMap<String, [f32; 4]>) -> BTreeSet<Source> {
                 return true;
             };
             // Layered units draw their hull and mount; only the complete idle
-            // sprite remains in use for portraits. Keep full poses for old atlases.
+            // sprite is used, for portraits. Units without rig layers keep
+            // their full poses.
             !manifest.contains_key(&format!("rig_{stem}_hull_{faction}"))
         })
         .map(|(_, row)| row.map(numeric::to_u32))

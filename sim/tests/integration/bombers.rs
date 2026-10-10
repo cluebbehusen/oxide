@@ -1,5 +1,5 @@
-//! The 0.15 strike wing: attack runs, the Moth's stick, the Crucible
-//! gates, and the tier-three heavies.
+//! The strike wing: attack runs, the Moth's stick, the Crucible gates,
+//! and the tier-three heavies.
 
 use crate::common;
 use common::{cmd, players, unit};
@@ -13,7 +13,6 @@ fn arena(scrap: u32, units: Vec<UnitSpec>, buildings: Vec<BuildingSpec>) -> Scen
     Scenario {
         mode: ScenarioMode::Match,
         name: "strike-arena".into(),
-        seed: 11,
         map: vec![
             "########################".into(),
             "#1.....................#".into(),
@@ -37,7 +36,6 @@ fn peak_strike_arena() -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "peak-strike-arena".into(),
-        seed: 11,
         map: vec![
             "########################".into(),
             "#1.....................#".into(),
@@ -458,7 +456,6 @@ fn edge_arena(units: Vec<UnitSpec>, buildings: Vec<BuildingSpec>) -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "edge-arena".into(),
-        seed: 11,
         map: vec![
             "########################".into(),
             "#1.....................#".into(),
@@ -554,7 +551,7 @@ fn fly_and_watch(
             state.current_tick()
         );
         // Resting on the ground is not hanging in the air.
-        if unit.landed {
+        if unit.landed() {
             still_streak = 0;
             last_pos = unit.pos;
             continue;
@@ -795,13 +792,13 @@ fn an_idle_bomber_orbits_then_lands_itself() {
     // Then it sets itself down nearby.
     for _ in 0..600 {
         state.tick(&[]);
-        if state.unit(condor).unwrap().landed {
+        if state.unit(condor).unwrap().landed() {
             break;
         }
     }
     let parked = state.unit(condor).unwrap();
     assert!(
-        parked.landed,
+        parked.landed(),
         "an idle airframe lands itself once the orbit runs out"
     );
     assert!(

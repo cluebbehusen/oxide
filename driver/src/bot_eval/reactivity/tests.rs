@@ -27,7 +27,6 @@ fn field(
     Scenario {
         mode: ScenarioMode::Match,
         name: "reactivity".into(),
-        seed: 3,
         map,
         players: factions
             .into_iter()
@@ -186,6 +185,18 @@ fn a_pressed_foundry_is_answered_by_a_hit_lapses_when_the_enemy_leaves_or_is_mis
         (1, 0, 1, 0),
         "one pressing is one case"
     );
+}
+
+#[test]
+fn a_sapper_pressing_a_foundry_opens_a_ground_defense_case() {
+    let state = built(&field(
+        &[(1, UnitKind::Sapper, 6, 3), (0, UnitKind::Sentinel, 2, 6)],
+        &[],
+        false,
+    ));
+    let mut detectors = ReactivityDetectors::new([true, false]);
+    run(&mut detectors, &state, 0..12);
+    assert_eq!(found(detectors, 0).ground_defense.arose, 1);
 }
 
 #[test]
@@ -393,6 +404,7 @@ fn a_destroyed_extractor_wants_another_on_its_site() {
     let lost = Event::BuildingDestroyed {
         building: building_of(&standing, 0, BuildingKind::Extractor),
         player: PlayerId(0),
+        tier: 0,
         pos: Vec2Fx::ZERO,
     };
 

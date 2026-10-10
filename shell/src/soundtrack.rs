@@ -172,5 +172,21 @@ impl Soundtrack {
     }
 }
 
+/// The score for a match in `game`'s state, from its bound seat's side.
+pub(crate) fn match_scene(game: &crate::game::Scene<'_>, paused: bool) -> Scene {
+    match game.state.result() {
+        Some(oxide_sim::GameResult::Draw) => Scene::Result,
+        Some(oxide_sim::GameResult::Victory { team })
+            if !game.state.player(game.presentation.human).resigned
+                && game.state.player(game.presentation.human).team == team =>
+        {
+            Scene::Victory
+        }
+        Some(oxide_sim::GameResult::Victory { .. }) => Scene::Defeat,
+        None if paused => Scene::Pause,
+        None => Scene::Match,
+    }
+}
+
 #[cfg(test)]
 mod tests;

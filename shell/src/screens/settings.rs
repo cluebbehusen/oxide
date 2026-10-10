@@ -1,8 +1,7 @@
-//! Settings and the Controls remap screen — one screen object with two
-//! faces. Windowless update: config edits and binding capture happen
-//! here (pure state), while persistence and drawing stay with the
-//! caller, which is what lets the 0.9 modifier-capture regression
-//! finally live under a headless test.
+//! Settings and the Controls remap screen: one screen object with two
+//! faces. Config edits and binding capture are pure state updated here;
+//! persistence and drawing stay with the caller, so binding capture runs
+//! under headless tests.
 
 use crate::action::{Action, BindingMap, Chord};
 use crate::config::Config;
@@ -40,9 +39,8 @@ pub enum Out {
 }
 
 /// A screen-owned status line, drawn by [`SettingsScreen::draw`] above
-/// the caller's veil — a toast routed through the game HUD dies under
-/// it. Persists until the next action, so it needs no wall clock and
-/// the screen stays headless-testable.
+/// the caller's veil, where a HUD toast would be hidden. It persists
+/// until the next action, so it needs no wall clock.
 pub struct Notice {
     /// The message.
     pub text: String,
@@ -100,7 +98,10 @@ fn control_sections() -> Vec<(&'static str, Vec<Action>)> {
             "Buildings",
             vec![ToggleBuildPalette, Upgrade, SetRally, ClearRally],
         ),
-        ("Production", (0..6).map(TrainSlot).collect()),
+        (
+            "Production",
+            (0..crate::action::TRAIN_SLOTS).map(TrainSlot).collect(),
+        ),
         (
             "Construction categories",
             (0..4).map(BuildCategory).collect(),
@@ -456,9 +457,9 @@ impl SettingsScreen {
         }
     }
 
-    /// Applies a frame's events. `live` is the in-play binding map,
-    /// kept in lockstep with the config's; `ctrl0`/`shift0` are the
-    /// frame-start modifier truth a chord capture replays from.
+    /// Applies a frame's events, editing the config's binding map, the
+    /// only one; `ctrl0`/`shift0` are the frame-start modifier truth a
+    /// chord capture replays from.
     #[allow(clippy::too_many_arguments)]
     pub fn update(
         &mut self,
@@ -466,7 +467,6 @@ impl SettingsScreen {
         mouse: &mut Vec2,
         sounds: &mut Vec<(SoundKind, Option<Vec2>)>,
         config: &mut Config,
-        live: &mut BindingMap,
         ctrl0: bool,
         shift0: bool,
     ) -> Update {
@@ -500,8 +500,7 @@ impl SettingsScreen {
                 } else if let Some(index) = self.menu.handle(events, mouse) {
                     let row = rows(crate::platform::TOUCH_ONLY)[index];
                     sounds.push((SoundKind::Click, None));
-                    // Any activation is "the next action": the standing
-                    // notice has had its say.
+                    // Any activation clears the standing notice.
                     self.notice = None;
                     if cycle_setting(config, row) {
                         // Apply live, persist, keep the cursor on the
@@ -515,9 +514,7 @@ impl SettingsScreen {
                         // profile (custom rebinds included — Controls'
                         // Reset row walks back to Classic).
                         config.bindings = BindingMap::left_handed();
-                        config.unbound.clear();
                         update.dirty = true;
-                        *live = config.bindings.clone();
                         self.notice = Some(Notice {
                             text: "left-handed profile applied".to_string(),
                             danger: false,
@@ -537,12 +534,12 @@ impl SettingsScreen {
             Face::Controls {
                 rebinding: Some(row),
             } => {
-                // Armed: the next key IS the answer — raw, before any
-                // binding resolution, or the old meaning would fire.
-                // The frame's edges replay in order from the frame-
-                // start baseline, and the modifiers are read AT the
-                // main key's press: batch-final flags would miss a
-                // chord whose Ctrl came back up later the same frame.
+                // Armed: the next key is the answer, read raw before any
+                // binding resolution so its current meaning does not fire.
+                // The frame's edges replay in order from the frame-start
+                // baseline, and the modifiers are read at the main key's
+                // press: batch-final flags would miss a chord whose Ctrl
+                // came back up later the same frame.
                 let mut walk_ctrl = ctrl0;
                 let mut walk_shift = shift0;
                 let mut pressed: Option<(Key, bool, bool)> = None;
@@ -574,10 +571,7 @@ impl SettingsScreen {
                             .bindings
                             .rebind_slot(target, self.binding_slot, chord)
                         {
-                            // Bound again: the unbind tombstone lifts.
-                            config.unbound.retain(|a| *a != target);
                             update.dirty = true;
-                            *live = config.bindings.clone();
                             self.goto_controls(config, row);
                         } else {
                             // Refused: name the holder, so the player
@@ -625,18 +619,11 @@ impl SettingsScreen {
                         .get(self.menu.selected)
                         .is_some_and(Option::is_some)
                 {
-                    // X on a row unbinds it — outside capture mode, so
-                    // the key is free to mean this. The tombstone
-                    // records the CHOICE: without it, the next load's
-                    // new-verb migration would read the missing row as
-                    // an old config and restore the classic chord.
+                    // X on a row unbinds it (outside capture mode, so the
+                    // key is free to mean this).
                     let target = control_rows()[self.menu.selected].expect("action row");
                     config.bindings.unbind_slot(target, self.binding_slot);
-                    if !config.unbound.contains(&target) {
-                        config.unbound.push(target);
-                    }
                     update.dirty = true;
-                    *live = config.bindings.clone();
                     let row = self.menu.selected;
                     self.goto_controls(config, row);
                 } else if let Some(row) = self.menu.handle(events, mouse) {
@@ -659,11 +646,9 @@ impl SettingsScreen {
                             rebinding: Some(row),
                         };
                     } else if row == control_rows().len() {
-                        // Reset to defaults — tombstones included.
+                        // Reset to defaults.
                         config.bindings = BindingMap::classic();
-                        config.unbound.clear();
                         update.dirty = true;
-                        *live = config.bindings.clone();
                         self.goto_controls(config, row);
                     }
                 }

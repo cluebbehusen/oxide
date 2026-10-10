@@ -37,7 +37,6 @@ fn field(chasm: bool, members: &[(UnitKind, i32, i32)], enemy: (UnitKind, i32, i
     Scenario {
         mode: ScenarioMode::Match,
         name: "focus".into(),
-        seed: 1,
         map,
         players: [Faction::Ferrous, Faction::Cupric]
             .into_iter()
@@ -112,6 +111,22 @@ fn nothing_focuses_an_enemy_behind_terrain_that_stops_its_shot() {
     let far = (UnitKind::Sentinel, 14, 4);
     assert_eq!(behind("#", gun, far), 1, "shells arc over rock");
     assert_eq!(behind("^", gun, far), 0, "but not over a peak");
+}
+
+#[test]
+fn a_sapper_beside_a_ground_member_threatens_it() {
+    let scenario = field(
+        false,
+        &[(UnitKind::Sentinel, 4, 4)],
+        (UnitKind::Sapper, 5, 4),
+    );
+    let state = scenario.build().unwrap();
+    let observation = ObservationData::fog_honest(&state, PlayerId(0));
+    let members: Vec<&UnitObs> = observation.my_units.iter().collect();
+    let [sapper] = &observation.enemy_units[..] else {
+        panic!("premise: the Sapper is in sight");
+    };
+    assert!(threatens(sapper, &members));
 }
 
 #[test]

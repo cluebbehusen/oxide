@@ -19,7 +19,7 @@ fn replay_roundtrip_executes_and_reproduces_advance() {
             queue: false,
         },
     );
-    let mut replay = Replay::<_, _, ()>::new(SIM_VERSION, scenario);
+    let mut replay = Replay::<_, _, ()>::new(SIM_VERSION, "test", scenario);
     replay.record(live.current_tick(), advance.clone());
     live.tick(&[advance]);
     assert_eq!(
@@ -67,9 +67,9 @@ fn replay_roundtrip_executes_and_reproduces_advance() {
 
 #[test]
 fn serde_roundtrip_preserves_queued_programs() {
-    // Non-empty queues serialize through skip-if-default fields — a shape
-    // no 0.4 state ever had. A mid-patrol snapshot must survive losslessly
-    // and keep ticking identically.
+    // Non-empty queues serialize through skip-if-default fields. A
+    // mid-patrol snapshot must survive losslessly and keep ticking
+    // identically.
     use chassis::grid::TilePos;
     use oxide_sim::{Command, PlayerCommand, PlayerId};
     let mut state = Scenario::skirmish().build().unwrap();

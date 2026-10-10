@@ -21,7 +21,7 @@ use oxide_sim::stats::{
     BuildingKind, CHARGE_ARRAY_DETECT_RADIUS, CHARGE_BASE_ARRAY_DETECT_RADIUS, CHARGE_BLAST_RADIUS,
     CRUCIBLE_SMELT_PERIOD, CRUCIBLE_SMELT_RADIUS, EXTRACTOR_REMOTE_YIELD,
     EXTRACTOR_SUPPORTED_YIELD, FOUNDRY_DRIP_PERIOD, FOUNDRY_DRIP_START_TICK, RECLAIMER_PERIOD,
-    REFINERY_PERIOD, SAPPER_BLAST_RADIUS, UnitKind,
+    REFINERY_PERIOD, UnitKind,
 };
 use oxide_sim::{
     BuildingId, Event, ExtractorIncome, State, Target, TickReport, UnitId, UnitRepairSource,
@@ -260,7 +260,7 @@ pub struct SeatLedger {
     /// starts from a saved world.
     #[serde(default)]
     pub start: u64,
-    /// Tick the ledger ended; zero in rows recorded before it was kept.
+    /// Tick the ledger ended; zero when a serialized row omits it.
     #[serde(default)]
     pub end: u64,
     /// Net worth at `end`.
@@ -307,15 +307,6 @@ pub struct ImpactLedger {
     smelting: Vec<Key>,
 }
 
-fn building_value(kind: BuildingKind, tier: u8) -> u64 {
-    kind.tiers()
-        .iter()
-        .take(usize::from(tier) + 1)
-        .filter_map(|stats| stats.construction.as_ref())
-        .map(|construction| u64::from(construction.cost))
-        .sum()
-}
-
 fn snapshot(state: &State) -> Vec<Body> {
     let team = |player: oxide_sim::PlayerId| state.players()[usize::from(player.0)].team;
     let mut bodies: Vec<Body> = state
@@ -350,8 +341,8 @@ fn snapshot(state: &State) -> Vec<Body> {
                 let stats = rider.kind.stats();
                 Body {
                     key: Key::Unit(rider.id),
-                    owner: rider.player.0,
-                    team: team(rider.player),
+                    owner: carrier.player.0,
+                    team: team(carrier.player),
                     hp: rider.hp,
                     max_hp: stats.max_hp,
                     value: u64::from(stats.cost),
@@ -380,14 +371,14 @@ fn snapshot(state: &State) -> Vec<Body> {
             team: team(building.player),
             hp: building.hp,
             max_hp: stats.max_hp,
-            value: building_value(building.kind, building.tier),
+            value: u64::from(building.kind.invested_cost(building.tier)),
             tile: TilePos::containing(building.center()),
             vision: stats.vision,
             class: Class::Building,
             unit: None,
-            building: Some((building.kind, building.tier, building.built)),
+            building: Some((building.kind, building.tier, building.built())),
             carrier: None,
-            progress: building.progress,
+            progress: building.construction_progress().unwrap_or(0),
             build_ticks: stats
                 .construction
                 .as_ref()
@@ -429,10 +420,10 @@ fn smelters(state: &State) -> Vec<Key> {
     let mut taken: BTreeMap<(i32, i32), u32> = BTreeMap::new();
     let mut smelting = Vec::new();
     for building in state.buildings() {
-        if !building.built || building.hp == 0 || building.kind != BuildingKind::Crucible {
+        if !building.built() || building.hp == 0 || building.kind != BuildingKind::Crucible {
             continue;
         }
-        let (w, h) = building.kind.base_stats().size;
+        let (w, h) = building.kind.size();
         let anchor = building.anchor;
         let mut fuel = None;
         for y in (anchor.y - reach)..(anchor.y + h + reach) {
@@ -651,10 +642,10 @@ impl ImpactLedger {
                 Event::AttackHit {
                     attacker,
                     attacker_kind,
+                    weapon,
                     target,
                     attacker_pos,
                     target_pos,
-                    ..
                 } => {
                     let Some(source) = self.source(
                         Key::Unit(*attacker),
@@ -663,30 +654,39 @@ impl ImpactLedger {
                         continue;
                     };
                     let at = TilePos::containing(*target_pos);
-                    if *attacker_kind == UnitKind::Sapper {
-                        sources
-                            .splash
-                            .push((at, tiles(SAPPER_BLAST_RADIUS), source));
+                    let stats = attacker_kind.stats();
+                    let splash = match stats.demolition {
+                        Some(demolition) => Some(demolition.blast_radius),
+                        None => stats.weapons.get(*weapon).and_then(|weapon| weapon.splash),
+                    };
+                    if let Some(radius) = splash {
+                        sources.splash.push((at, tiles(radius), source));
                     }
                     aim(&mut sources, *target, at, source);
                 }
                 Event::TurretFired {
                     turret,
+                    kind,
+                    tier,
                     target,
                     turret_pos,
                     target_pos,
-                    ..
                 } => {
                     if let Some(source) = self.source(
                         Key::Building(*turret),
                         Some(TilePos::containing(*turret_pos)),
                     ) {
-                        aim(
-                            &mut sources,
-                            *target,
-                            TilePos::containing(*target_pos),
-                            source,
-                        );
+                        let at = TilePos::containing(*target_pos);
+                        // A building fires its first weapon and nothing else.
+                        if let Some(radius) = kind
+                            .tiers()
+                            .get(usize::from(*tier))
+                            .and_then(|stats| stats.weapons.first())
+                            .and_then(|weapon| weapon.splash)
+                        {
+                            sources.splash.push((at, tiles(radius), source));
+                        }
+                        aim(&mut sources, *target, at, source);
                     }
                 }
                 Event::ShellLaunched {
@@ -728,7 +728,7 @@ impl ImpactLedger {
                     }
                 }
                 Event::AircraftImpacted { crash } => {
-                    if let Some(profile) = crash.kind.crash_profile() {
+                    if let Some(profile) = crash.kind.stats().crash {
                         sources.splash.push((
                             TilePos::containing(crash.impact),
                             tiles(profile.radius),
@@ -1047,7 +1047,7 @@ impl ImpactLedger {
         }
         for building in state.buildings() {
             if building.kind != BuildingKind::Extractor
-                || !building.built
+                || !building.built()
                 || building.hp == 0
                 || state.player(building.player).resigned
             {
@@ -1410,8 +1410,8 @@ impl LedgerPool {
 }
 
 /// A seat's net worth at `tick`: its final worth once the ledger has ended,
-/// else the last sample at or before it; `None` before the first. Rows that
-/// predate the final worth carry their last sample forward instead.
+/// else the last sample at or before it; `None` before the first. A row with
+/// no recorded end carries its last sample forward instead.
 pub fn worth_at(ledger: &SeatLedger, tick: u64) -> Option<u64> {
     if ledger.end > 0 && tick >= ledger.end {
         return Some(ledger.final_worth);

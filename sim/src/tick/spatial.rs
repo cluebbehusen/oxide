@@ -1,14 +1,12 @@
-//! A per-tick spatial index over living units — scratch for the tick
-//! pipeline, never a field on [`State`](crate::State): `State`
-//! serializes and hashes, so a cached index stored there would either
-//! move every hash or poison the derived equality with a skipped field.
+//! A per-tick spatial index over living units: scratch for the tick
+//! pipeline, never a field on [`State`](crate::State). `State` serializes
+//! and hashes, so a cached index stored there would either move every hash
+//! or break derived equality with a skipped field.
 //!
-//! Entries are `(tile, slot)` pairs in `(y, x, slot)` order — exactly the
-//! order the collision resolver's bucket list has always used — plus an
-//! offset table over the occupied rectangle, so a neighborhood query
-//! slices each row once and walks it contiguously. Every window walk yields
-//! candidates in the same deterministic order the full scans produced;
-//! whoever consumes the index inherits that order, not a new one.
+//! Entries are `(tile, slot)` pairs in `(y, x, slot)` order, plus an offset
+//! table over the occupied rectangle, so a neighborhood query slices each
+//! row once and walks it contiguously. Window walks yield candidates in
+//! that deterministic order, which consumers inherit.
 
 use crate::State;
 use crate::state::{Building, Unit};
@@ -215,7 +213,7 @@ impl UnitIndex {
                 team_bits[state.units[slot].player.0 as usize];
         }
         for building in state.buildings() {
-            let (width, height) = building.stats().size;
+            let (width, height) = building.kind.size();
             let (low_column, low_row) = presence.cell(building.anchor);
             let (high_column, high_row) =
                 presence.cell(building.anchor.offset(width - 1, height - 1));

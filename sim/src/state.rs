@@ -22,11 +22,10 @@ pub use targeting::AttackView;
 
 use crate::ids::{BuildingId, PlayerId, Target, UnitId};
 use crate::map::{MAX_MAP_EDGE, Map};
-use crate::stats::{BuildingKind, UnitKind};
+use crate::stats::{BuildingKind, ProjectileKind, UnitKind};
 use chassis::Tick;
 use chassis::fx::{Fx, Vec2Fx};
 use chassis::grid::{TilePos, cell_count};
-use chassis::rng::Pcg32;
 use serde::{Deserialize, Serialize};
 
 /// A seat's allegiance: which roster it runs, and its sprite tint.
@@ -39,8 +38,31 @@ pub enum Faction {
     Cupric,
 }
 
+/// Whether a seat whose economy is stranded may begin a recovery cycle, or
+/// the package the current cycle captured.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "recovery", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Recovery {
+    /// A new cycle may begin. A real Harvester deposit returns here;
+    /// merely training, cancelling, or losing a worker does not.
+    #[default]
+    Ready,
+    /// A cycle is under way.
+    Active {
+        /// Bank target captured when the cycle began. It is fixed for the
+        /// cycle so selling, queueing, or losing a screen cannot expand
+        /// the entitlement after the fact.
+        target: u16,
+        /// Emergency scrap still available. The allowance is finite:
+        /// spending the credited package cannot make the Foundry mint it a
+        /// second time.
+        allowance: u16,
+    },
+}
+
 /// A participant in the match.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Player {
     /// Display name.
     pub name: String,
@@ -51,34 +73,16 @@ pub struct Player {
     pub team: u8,
     /// Scrap in the bank.
     pub scrap: u32,
-    /// Emergency scrap still available in the current stranded-economy
-    /// cycle. The allowance is finite: spending the credited package
-    /// cannot make the Foundry mint it a second time.
+    /// The seat's stranded-economy recovery cycle.
     #[serde(default, skip_serializing_if = "crate::is_default")]
-    pub recovery_allowance: u16,
-    /// Bank target captured when the current recovery cycle began. It is
-    /// fixed for the cycle so selling, queueing, or losing a screen cannot
-    /// expand the entitlement after the fact.
-    #[serde(default, skip_serializing_if = "crate::is_default")]
-    pub recovery_target: u16,
-    /// Whether one new recovery cycle may begin. A real Harvester deposit
-    /// re-arms it; merely training, cancelling, or losing a worker does not.
-    #[serde(
-        default = "default_true",
-        skip_serializing_if = "core::clone::Clone::clone"
-    )]
-    pub recovery_ready: bool,
+    pub recovery: Recovery,
     /// Whether this seat conceded ([`crate::Command::Surrender`]): its
     /// Foundries no longer keep its team in the match and its commands
     /// reject, while its machines play out their brains as remnants.
-    /// Defaulted so records that predate the field deserialize.
-    #[serde(default)]
     pub resigned: bool,
     /// The tick this seat first stopped counting — resigned, or holding
     /// no Foundry at all — recorded once and never cleared. The FFA
     /// scoreboard's placement key: later elimination places higher.
-    /// Defaulted so records that predate the field deserialize.
-    #[serde(default)]
     pub eliminated_at: Option<crate::Tick>,
 }
 
@@ -114,9 +118,8 @@ pub enum Order {
         /// The node or wreck tile currently being worked.
         node: TilePos,
         /// The source the player clicked: the fixed center of the work
-        /// zone. `None` is the legacy state shape and means `node`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        anchor: Option<TilePos>,
+        /// zone.
+        anchor: TilePos,
         /// The zone was observed exhausted or unsafe. Sticky until the
         /// Harvester deposits its cargo, reaches a built Foundry, and
         /// advances its queued program.
@@ -131,9 +134,8 @@ pub enum Order {
         /// engagements may only fire while radar remains in reach.
         #[serde(default, skip_serializing_if = "core::ops::Not::not")]
         pursue: bool,
-        /// Where to resume hunting once the victim is gone. `None`
-        /// for a plain attack order (absent in old replays, hence the
-        /// default).
+        /// Where to resume hunting once the victim is gone. `None` for a
+        /// plain attack order.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resume: Option<Goal>,
     },
@@ -143,7 +145,7 @@ pub enum Order {
         site: crate::ids::BuildingId,
     },
     /// Walk adjacent to a damaged own built building and weld it back
-    /// toward full (harvesters only; billed per hp welded).
+    /// toward full (welders only; billed per hp welded).
     Repair {
         /// The patient.
         building: crate::ids::BuildingId,
@@ -173,7 +175,7 @@ pub enum Order {
         anchor: TilePos,
     },
     /// Chase a wounded own ground unit and weld it back toward full
-    /// (harvesters only; billed per hp against the patient's cost).
+    /// (welders only; billed per hp against the patient's cost).
     /// The weld ticks only while welder and patient both stand still
     /// within their combined hull radii plus [`crate::stats::WORK_REACH`].
     RepairUnit {
@@ -198,6 +200,11 @@ pub enum Order {
     Unload {
         /// The drop point.
         at: Goal,
+        /// Whether the drop ring scans half-turned, in the frame of the
+        /// transport's approach when the order was issued, so mirrored
+        /// drops set riders on mirrored tiles.
+        #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+        reverse: bool,
     },
     /// Fly a run-in onto a ground tile and set the airframe down on its
     /// center.
@@ -223,7 +230,7 @@ impl Order {
     pub(crate) fn walk_goal(&self) -> Option<Goal> {
         match *self {
             Order::Run { goal } | Order::Hunt { goal } | Order::Advance { goal } => Some(goal),
-            Order::Unload { at } => Some(at),
+            Order::Unload { at, .. } => Some(at),
             _ => None,
         }
     }
@@ -232,7 +239,7 @@ impl Order {
     pub(crate) fn walk_goal_mut(&mut self) -> Option<&mut Goal> {
         match self {
             Order::Run { goal } | Order::Hunt { goal } | Order::Advance { goal } => Some(goal),
-            Order::Unload { at } => Some(at),
+            Order::Unload { at, .. } => Some(at),
             _ => None,
         }
     }
@@ -246,17 +253,21 @@ impl Order {
             (Order::Run { goal: a }, Order::Run { goal: b })
             | (Order::Hunt { goal: a }, Order::Hunt { goal: b })
             | (Order::Advance { goal: a }, Order::Advance { goal: b })
-            | (Order::Unload { at: a }, Order::Unload { at: b }) => a.tile() == b.tile(),
+            | (Order::Unload { at: a, .. }, Order::Unload { at: b, .. }) => a.tile() == b.tile(),
             _ => self == other,
         }
     }
 
     /// Continues this order as the matching re-issue `other`: a walk takes
     /// the new aim and keeps its endpoint only while its target is
-    /// unchanged. Callers check [`Order::reissue_matches`] first.
+    /// unchanged, and an unload takes the new drop frame. Callers check
+    /// [`Order::reissue_matches`] first.
     pub(crate) fn reissue(&mut self, other: Order) {
         if let (Some(goal), Some(new)) = (self.walk_goal_mut(), other.walk_goal()) {
             goal.adopt(new);
+        }
+        if let (Order::Unload { reverse, .. }, Order::Unload { reverse: new, .. }) = (self, other) {
+            *reverse = new;
         }
     }
 }
@@ -273,13 +284,12 @@ pub struct Leash {
     /// The station to walk back to when the fight ends or the tether
     /// runs out.
     pub anchor: TilePos,
-    /// The warm-blood window: chase ticks the guard may spend BEYOND
-    /// the radius, granted only by a joined fight — refreshed to
-    /// [`crate::stats::LEASH_PATIENCE`] every time the guard reaches
-    /// its firing stance or answers a hit, spent only while chasing
-    /// past the radius. A bait that never comes in reach never grants
-    /// any: its chaser breaks at the radius line exactly. Inside the
-    /// radius the guard fights freely — that ground is its zone.
+    /// Chase ticks the guard may spend beyond the radius, granted only by
+    /// a joined fight: refreshed to [`crate::stats::LEASH_PATIENCE`] every
+    /// time the guard reaches its firing stance or answers a hit, and spent
+    /// only while chasing past the radius. Bait that never comes in reach
+    /// grants none, so its chaser breaks at the radius line. Inside the
+    /// radius the guard fights freely.
     #[serde(default, skip_serializing_if = "crate::is_default")]
     pub patience: u16,
     /// Ticks left standing at the post before the guard looks for the
@@ -303,6 +313,23 @@ pub struct PathFollow {
     pub next: u32,
 }
 
+/// What a harvesting machine has aboard and how its delivery stands.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Worker {
+    /// Scrap on board.
+    #[serde(default, skip_serializing_if = "crate::is_default")]
+    pub carrying: u32,
+    /// Cargo release in progress, separate from extraction and welding
+    /// meters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unloading: Option<Unloading>,
+    /// While held by danger, the tick from which it searches again. See
+    /// [`crate::stats::HARVEST_DANGER_RETRY_TICKS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub danger_retry_at: Option<crate::Tick>,
+}
+
 /// An uninterrupted cargo release at a completed Foundry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Unloading {
@@ -323,22 +350,17 @@ pub struct Unit {
     pub kind: UnitKind,
     /// World position (tile units).
     pub pos: Vec2Fx,
-    /// Last airborne displacement per tick, retained for crash momentum.
-    #[serde(default, skip_serializing_if = "is_zero_motion")]
-    pub air_motion: Vec2Fx,
+    /// How the body moves, by its kind's movement class.
+    pub motor: Motor,
     /// Current hit points.
     pub hp: u32,
-    /// Scrap on board (harvesters only).
-    pub carrying: u32,
-    /// Cargo release in progress, separate from extraction and welding meters.
+    /// The harvest gear's load and delivery, for exactly the kinds that
+    /// harvest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub unloading: Option<Unloading>,
+    pub worker: Option<Worker>,
     /// Ticks until each weapon may fire again, indexed like
     /// `kind.stats().weapons` (unused slots stay zero).
     pub cooldowns: [u32; crate::stats::MAX_WEAPONS],
-    /// Bombard spade deployment, from stowed zero to fully planted.
-    #[serde(default, skip_serializing_if = "crate::is_default")]
-    pub brace_ticks: u8,
     /// Order-specific counter (extraction progress).
     pub progress: u32,
     /// Current intent.
@@ -353,16 +375,14 @@ pub struct Unit {
     pub looping: bool,
     /// Current walk, if any.
     pub path: Option<PathFollow>,
-    /// The tether of a self-acquired fight, if one is live (absent in
-    /// old replays, hence the default).
+    /// The tether of a self-acquired fight, if one is live.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub leash: Option<Leash>,
-    /// Ticks spent standing idle with nothing to fight — a unit is a
-    /// STATIONED guard (its acquisitions tether) only past
-    /// [`crate::stats::LEASH_STATION_TICKS`]. A unit cycling through
-    /// idle mid-battle re-acquires unleashed, which is what keeps the
-    /// tether from deciding army fights; leashing every idle machine
-    /// once collapsed the scripted tier ladder to a seat-parity coin.
+    /// Ticks spent standing idle with nothing to fight. A unit is a
+    /// stationed guard (its acquisitions tether) only past
+    /// [`crate::stats::LEASH_STATION_TICKS`]. A unit cycling through idle
+    /// mid-battle re-acquires unleashed, which keeps the tether from
+    /// deciding army fights.
     #[serde(default, skip_serializing_if = "crate::is_default")]
     pub settled: u16,
     /// Compass step (of 256, see [`chassis::compass`]) this body faces,
@@ -370,53 +390,293 @@ pub struct Unit {
     /// steer by it. Every `u8` is a valid compass heading.
     #[serde(default, skip_serializing_if = "crate::is_default")]
     pub heading: u8,
-    /// Ground motor speed; overlap corrections do not contribute to it.
-    #[serde(default, skip_serializing_if = "crate::is_default")]
-    pub drive_speed: Fx,
-    /// Running ticks in which contact cancelled most of this body's intended
-    /// progress along its route; reaching [`crate::stats::STALL_REPLAN_TICKS`]
-    /// drops the route for a fresh plan.
-    #[serde(default, skip_serializing_if = "crate::is_default")]
-    pub stall_ticks: u8,
-    /// While this Harvester is held by danger, the tick from which it searches
-    /// again. See [`crate::stats::HARVEST_DANGER_RETRY_TICKS`].
-    #[serde(
-        default,
-        alias = "detour_retry_at",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub danger_retry_at: Option<crate::Tick>,
     /// Independent ground gun bearing; absent mounts follow the hull initially.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turret_heading: Option<u8>,
-    /// Machines riding aboard this transport. Cargo lives OUTSIDE the
-    /// world's unit list: nothing can see, target, collide with, or
-    /// command a carried machine, and it contributes no vision. It
-    /// keeps its id (ids are never reused) and dies with the carrier.
+    /// Machines riding aboard this transport.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub cargo: Vec<Unit>,
-    /// Parked on the ground at its tile center. Only turn-limited kinds
-    /// land; a landed body is physically a ground body (see
-    /// [`Unit::domain`]) until an order lifts it off again.
-    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
-    pub landed: bool,
+    pub cargo: Vec<Rider>,
 }
 
 fn is_zero_motion(motion: &Vec2Fx) -> bool {
     *motion == Vec2Fx::ZERO
 }
 
+/// How a body moves. Ground kinds drive or, for a Bombard, stand braced;
+/// aircraft fly, and the turn-limited ones may park.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "motor", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Motor {
+    /// A ground chassis under its own power.
+    Ground {
+        /// Motor speed; overlap corrections do not contribute to it.
+        #[serde(default, skip_serializing_if = "crate::is_default")]
+        speed: Fx,
+        /// Running ticks in which contact cancelled most of this body's
+        /// intended progress along its route; reaching
+        /// [`crate::stats::STALL_REPLAN_TICKS`] drops the route for a fresh
+        /// plan.
+        #[serde(default, skip_serializing_if = "crate::is_default")]
+        stall_ticks: u8,
+    },
+    /// A Bombard's spades deploying or planted: it stands still until they
+    /// stow.
+    Braced {
+        /// Deployment, up to fully planted.
+        ticks: core::num::NonZeroU8,
+    },
+    /// An aircraft in flight.
+    Airborne {
+        /// Last airborne displacement per tick, retained for crash
+        /// momentum.
+        #[serde(default, skip_serializing_if = "is_zero_motion")]
+        motion: Vec2Fx,
+    },
+    /// A turn-limited aircraft parked on the ground at its tile center. It
+    /// is physically a ground body (see [`Unit::domain`]) until an order
+    /// lifts it off again.
+    Landed,
+}
+
+impl Motor {
+    /// A body of `kind` standing still.
+    fn at_rest(kind: UnitKind) -> Self {
+        match kind.stats().domain {
+            crate::stats::Domain::Ground => Self::Ground {
+                speed: Fx::ZERO,
+                stall_ticks: 0,
+            },
+            crate::stats::Domain::Air => Self::Airborne {
+                motion: Vec2Fx::ZERO,
+            },
+        }
+    }
+
+    /// Whether a body of `kind` may move this way.
+    fn fits(self, kind: UnitKind) -> bool {
+        let stats = kind.stats();
+        match self {
+            Self::Ground { .. } => stats.domain == crate::stats::Domain::Ground,
+            Self::Braced { .. } => stats.brace.is_some(),
+            Self::Airborne { .. } => stats.domain == crate::stats::Domain::Air,
+            Self::Landed => stats.turn_rate > 0,
+        }
+    }
+}
+
+/// A machine riding aboard a transport. Cargo lives OUTSIDE the world's
+/// unit list: nothing can see, target, collide with, or command a carried
+/// machine, and it contributes no vision. It keeps its id (ids are never
+/// reused), its owner is its carrier's, and it dies with the carrier.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Rider {
+    /// The id it had walking and will have again.
+    pub id: UnitId,
+    /// What kind of machine this is.
+    pub kind: UnitKind,
+    /// Current hit points.
+    pub hp: u32,
+    /// Scrap it carried aboard.
+    #[serde(default, skip_serializing_if = "crate::is_default")]
+    pub carrying: u32,
+    /// Weapon cooldowns, frozen while carried.
+    pub cooldowns: [u32; crate::stats::MAX_WEAPONS],
+    /// The heading it boarded with.
+    #[serde(default, skip_serializing_if = "crate::is_default")]
+    pub heading: u8,
+    /// Its independent gun bearing, if it had one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turret_heading: Option<u8>,
+}
+
+impl Rider {
+    /// Takes a walking unit aboard. Everything a carried machine cannot
+    /// keep (its orders, route, tether, motor, and work) is left behind.
+    pub(crate) fn board(unit: &Unit) -> Self {
+        let Unit {
+            id,
+            kind,
+            hp,
+            cooldowns,
+            heading,
+            turret_heading,
+            ..
+        } = *unit;
+        Self {
+            id,
+            kind,
+            hp,
+            carrying: unit.carrying(),
+            cooldowns,
+            heading,
+            turret_heading,
+        }
+    }
+
+    /// Sets the rider down at `pos` as an idle machine at rest.
+    pub(crate) fn disembark(self, player: PlayerId, pos: Vec2Fx) -> Unit {
+        let mut unit = Unit {
+            hp: self.hp,
+            cooldowns: self.cooldowns,
+            turret_heading: self.turret_heading,
+            ..Unit::at_rest(self.id, player, self.kind, pos, self.heading)
+        };
+        if let Some(worker) = &mut unit.worker {
+            worker.carrying = self.carrying;
+        }
+        unit
+    }
+}
+
 impl Unit {
+    /// Scrap on board; none for a machine that cannot harvest.
+    pub fn carrying(&self) -> u32 {
+        self.worker.map_or(0, |worker| worker.carrying)
+    }
+
+    /// The cargo release under way, if any.
+    pub fn unloading(&self) -> Option<Unloading> {
+        self.worker.and_then(|worker| worker.unloading)
+    }
+
+    /// The tick a danger-held harvester searches again, if it is held.
+    pub fn danger_retry_at(&self) -> Option<crate::Tick> {
+        self.worker.and_then(|worker| worker.danger_retry_at)
+    }
+
+    /// The harvest gear of a machine whose work needs it.
+    pub(crate) fn worker_mut(&mut self) -> &mut Worker {
+        self.worker
+            .as_mut()
+            .expect("only machines with harvest gear do harvest work")
+    }
+
+    /// Abandons any cargo release under way.
+    pub(crate) fn end_release(&mut self) {
+        if let Some(worker) = &mut self.worker {
+            worker.unloading = None;
+        }
+    }
+
+    /// Lets a danger-held harvester search again at once.
+    pub(crate) fn clear_danger_hold(&mut self) {
+        if let Some(worker) = &mut self.worker {
+            worker.danger_retry_at = None;
+        }
+    }
+
+    /// A healthy, idle machine standing at `pos` with nothing aboard.
+    fn at_rest(id: UnitId, player: PlayerId, kind: UnitKind, pos: Vec2Fx, heading: u8) -> Self {
+        Self {
+            id,
+            player,
+            kind,
+            pos,
+            motor: Motor::at_rest(kind),
+            hp: kind.stats().max_hp,
+            worker: kind.stats().harvest.map(|_| Worker::default()),
+            cooldowns: [0; crate::stats::MAX_WEAPONS],
+            turret_heading: None,
+            progress: 0,
+            order: Order::Idle,
+            queue: std::collections::VecDeque::new(),
+            looping: false,
+            path: None,
+            leash: None,
+            settled: 0,
+            heading,
+            cargo: Vec::new(),
+        }
+    }
+
     /// Compass bearing used to aim this unit's primary weapon.
     pub fn weapon_heading(&self) -> u8 {
         self.turret_heading.unwrap_or(self.heading)
     }
 
     pub(crate) fn retract_braces(&mut self) {
-        if self.kind == UnitKind::Bombard
-            && self.cooldowns[0] <= self.kind.stats().weapons[0].cooldown_ticks - 8
+        let stats = self.kind.stats();
+        if let Some(brace) = stats.brace
+            && self.cooldowns[0] <= stats.weapons[0].cooldown_ticks - brace.recoil_ticks
         {
-            self.brace_ticks = self.brace_ticks.saturating_sub(3);
+            self.set_braces(self.braces().saturating_sub(brace.retract_per_tick));
+        }
+    }
+
+    /// Ground motor speed; zero for a body not driving.
+    pub fn drive_speed(&self) -> Fx {
+        match self.motor {
+            Motor::Ground { speed, .. } => speed,
+            Motor::Braced { .. } | Motor::Airborne { .. } | Motor::Landed => Fx::ZERO,
+        }
+    }
+
+    /// Sets a driving body's motor speed.
+    pub(crate) fn set_drive_speed(&mut self, value: Fx) {
+        debug_assert!(matches!(self.motor, Motor::Ground { .. }));
+        if let Motor::Ground { speed, .. } = &mut self.motor {
+            *speed = value;
+        }
+    }
+
+    /// Spade deployment, from stowed zero to fully planted.
+    pub fn braces(&self) -> u8 {
+        match self.motor {
+            Motor::Braced { ticks } => ticks.get(),
+            Motor::Ground { .. } | Motor::Airborne { .. } | Motor::Landed => 0,
+        }
+    }
+
+    /// Deploys or stows a standing Bombard's spades. Stowing them returns
+    /// it to its motor at rest; deploying drops any stall count, which a
+    /// body standing braced never keeps.
+    pub(crate) fn set_braces(&mut self, ticks: u8) {
+        match core::num::NonZeroU8::new(ticks) {
+            Some(ticks) => {
+                debug_assert_eq!(self.drive_speed(), Fx::ZERO, "only a stopped body braces");
+                self.motor = Motor::Braced { ticks };
+            }
+            None if matches!(self.motor, Motor::Braced { .. }) => {
+                self.motor = Motor::at_rest(self.kind);
+            }
+            None => {}
+        }
+    }
+
+    /// Whether this airframe is parked on the ground.
+    pub fn landed(&self) -> bool {
+        self.motor == Motor::Landed
+    }
+
+    /// Parks a turn-limited airframe where it stands.
+    pub(crate) fn touch_down(&mut self) {
+        self.motor = Motor::Landed;
+    }
+
+    /// Lifts a parked airframe back into the air; any other body is left
+    /// as it is.
+    pub(crate) fn lift_off(&mut self) {
+        if self.landed() {
+            self.motor = Motor::Airborne {
+                motion: Vec2Fx::ZERO,
+            };
+        }
+    }
+
+    /// The last airborne displacement per tick, kept for crash momentum.
+    pub fn air_motion(&self) -> Vec2Fx {
+        match self.motor {
+            Motor::Airborne { motion } => motion,
+            Motor::Ground { .. } | Motor::Braced { .. } | Motor::Landed => Vec2Fx::ZERO,
+        }
+    }
+
+    /// Running ticks of contact-cancelled progress along the route.
+    pub fn stall_ticks(&self) -> u8 {
+        match self.motor {
+            Motor::Ground { stall_ticks, .. } => stall_ticks,
+            Motor::Braced { .. } | Motor::Airborne { .. } | Motor::Landed => 0,
         }
     }
 
@@ -446,14 +706,14 @@ impl Unit {
 
     /// Whether ground work may advance without the motor moving this body.
     pub fn work_stopped(&self) -> bool {
-        self.path.is_none() && self.drive_speed == Fx::ZERO
+        self.path.is_none() && self.drive_speed() == Fx::ZERO
     }
 
     /// The movement layer this body occupies right now: a landed airframe
     /// is a ground body for targeting, collision, charges, and footprints,
     /// whatever its kind flies as.
     pub fn domain(&self) -> crate::stats::Domain {
-        if self.landed {
+        if self.landed() {
             crate::stats::Domain::Ground
         } else {
             self.kind.stats().domain
@@ -488,7 +748,7 @@ impl Unit {
         }
         self.path = None;
         self.progress = 0;
-        self.unloading = None;
+        self.end_release();
     }
 
     /// Drops the active order without rotating it into a looping program:
@@ -500,7 +760,7 @@ impl Unit {
         }
         self.path = None;
         self.progress = 0;
-        self.unloading = None;
+        self.end_release();
     }
 
     /// Completes an engagement without recycling its target into a patrol.
@@ -518,7 +778,7 @@ impl Unit {
         };
         self.path = None;
         self.progress = 0;
-        self.unloading = None;
+        self.end_release();
     }
 
     /// Abandons the whole program. Overrides use it, and so do the stalls a
@@ -530,12 +790,43 @@ impl Unit {
         self.looping = false;
         self.path = None;
         self.progress = 0;
-        self.unloading = None;
+        self.end_release();
     }
+}
+
+/// Where a building stands in its life, with the meter that phase runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "phase", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BuildingPhase {
+    /// A paid blueprint awaiting full footprint visibility. It has no
+    /// physical occupancy and cannot take damage or receive construction
+    /// work.
+    Provisional,
+    /// A verified construction site: it blocks ground and takes damage but
+    /// doesn't see, fight, or produce.
+    Site {
+        /// Ticks of construction work done.
+        #[serde(default, skip_serializing_if = "crate::is_default")]
+        progress: u32,
+    },
+    /// Climbing to its `tier`, whose stats already apply, out of service
+    /// like a site until the upgrade completes.
+    Upgrading {
+        /// Ticks of upgrade work done.
+        #[serde(default, skip_serializing_if = "crate::is_default")]
+        progress: u32,
+    },
+    /// Complete and in service.
+    Built {
+        /// Ticks of training on the front of the queue.
+        #[serde(default, skip_serializing_if = "crate::is_default")]
+        training: u32,
+    },
 }
 
 /// A static entity occupying a rectangle of tiles.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Building {
     /// Stable id; `buildings` is sorted by it.
     pub id: BuildingId,
@@ -549,8 +840,8 @@ pub struct Building {
     pub hp: u32,
     /// Units waiting to be produced, front first.
     pub queue: std::collections::VecDeque<UnitKind>,
-    /// Ticks of progress on `queue[0]`.
-    pub progress: u32,
+    /// Construction, upgrade, or service, with that phase's meter.
+    pub phase: BuildingPhase,
     /// Where finished units report: harvesters mine a rallied scrap node,
     /// combat units hunt there, everyone else walks. `None` means
     /// stand at the doorstep.
@@ -562,39 +853,23 @@ pub struct Building {
     /// not erase it or suppress ordinary fallback acquisition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focus: Option<crate::AttackTarget>,
-    /// Whether construction has finished. Verified sites block ground and
-    /// take damage but don't see, fight, or produce.
-    #[serde(
-        default = "default_true",
-        skip_serializing_if = "core::clone::Clone::clone"
-    )]
-    pub built: bool,
-    /// Paid blueprint awaiting full footprint visibility. It has no physical
-    /// occupancy and cannot take damage or receive construction work.
-    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
-    pub provisional: bool,
     /// Position on the kind's upgrade ladder (zero = base). An accepted
-    /// [`crate::Command::UpgradeBuilding`] advances it immediately while
-    /// setting `built` false; every stats read follows the committed tier
-    /// through [`Building::stats`].
+    /// [`crate::Command::UpgradeBuilding`] advances it immediately and
+    /// starts [`BuildingPhase::Upgrading`]; every stats read follows the
+    /// committed tier through [`Building::stats`].
     #[serde(default, skip_serializing_if = "crate::is_default")]
     pub tier: u8,
     /// Ticks until this building may fire again (turrets).
     #[serde(default, skip_serializing_if = "crate::is_default")]
     pub cooldown: u32,
-    /// Total hp drained from this building by salvage work — the
-    /// cumulative ledger refund crediting reads, so truncation never
-    /// drifts across intervals. (Skipped at zero: a building never
-    /// salvaged serializes exactly as it did before the field existed.)
+    /// Total hp drained from this building by salvage work: the cumulative
+    /// ledger refund crediting reads, so truncation never drifts across
+    /// intervals. Omitted from serialization when zero.
     #[serde(default, skip_serializing_if = "crate::is_default")]
     pub salvage_drained: u32,
     /// Scrap already credited against `salvage_drained`'s target.
     #[serde(default, skip_serializing_if = "crate::is_default")]
     pub salvage_credited: u32,
-    /// Set when salvage — not fire — took the last hp: cleanup removes
-    /// the building without wreck or a destruction event.
-    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
-    pub salvaged: bool,
 }
 
 /// The recurring-income state of a completed, living Extractor.
@@ -628,10 +903,6 @@ impl ExtractorIncome {
     }
 }
 
-fn default_true() -> bool {
-    true
-}
-
 impl Building {
     /// This building's stats at its current tier — the accessor every
     /// live read goes through; [`crate::stats::BuildingKind::base_stats`]
@@ -640,16 +911,109 @@ impl Building {
         self.kind.tier_stats(self.tier)
     }
 
+    /// Whether the building is complete and in service: only a built
+    /// building sees, fights, trains, or works.
+    pub fn built(&self) -> bool {
+        matches!(self.phase, BuildingPhase::Built { .. })
+    }
+
+    /// Whether this is a paid blueprint still awaiting its ground.
+    pub fn provisional(&self) -> bool {
+        self.phase == BuildingPhase::Provisional
+    }
+
+    /// Whether an upgrade is under way.
+    pub fn upgrading(&self) -> bool {
+        matches!(self.phase, BuildingPhase::Upgrading { .. })
+    }
+
+    /// Whether the building was paid for but never finished: a provisional
+    /// blueprint or a site. An upgrading building is not: it already stood
+    /// complete at its previous rung.
+    pub fn under_construction(&self) -> bool {
+        matches!(
+            self.phase,
+            BuildingPhase::Provisional | BuildingPhase::Site { .. }
+        )
+    }
+
+    /// Whether construction has not begun, so cancelling refunds in full.
+    pub fn unstarted(&self) -> bool {
+        matches!(
+            self.phase,
+            BuildingPhase::Provisional | BuildingPhase::Site { progress: 0 }
+        )
+    }
+
+    /// Ticks of construction or upgrade work done; none once built.
+    pub fn construction_progress(&self) -> Option<u32> {
+        match self.phase {
+            BuildingPhase::Site { progress } | BuildingPhase::Upgrading { progress } => {
+                Some(progress)
+            }
+            BuildingPhase::Provisional => Some(0),
+            BuildingPhase::Built { .. } => None,
+        }
+    }
+
+    /// Ticks of training on the front of the queue; zero unless built.
+    pub fn training_progress(&self) -> u32 {
+        match self.phase {
+            BuildingPhase::Built { training } => training,
+            BuildingPhase::Provisional
+            | BuildingPhase::Site { .. }
+            | BuildingPhase::Upgrading { .. } => 0,
+        }
+    }
+
+    /// Adds `work` ticks to a site's or an upgrade's meter, capped at the
+    /// rung's `build_ticks`, and returns the meter before and after; none
+    /// for a building that runs no such meter.
+    pub(crate) fn add_construction_work(
+        &mut self,
+        work: u32,
+        build_ticks: u32,
+    ) -> Option<(u32, u32)> {
+        match &mut self.phase {
+            BuildingPhase::Site { progress } | BuildingPhase::Upgrading { progress } => {
+                let before = *progress;
+                *progress = before.saturating_add(work).min(build_ticks);
+                Some((before, *progress))
+            }
+            BuildingPhase::Provisional | BuildingPhase::Built { .. } => None,
+        }
+    }
+
+    /// Turns a provisional blueprint whose ground checked out into a site.
+    pub(crate) fn activate(&mut self) {
+        debug_assert!(self.provisional());
+        self.phase = BuildingPhase::Site { progress: 0 };
+    }
+
+    /// Finishes construction or an upgrade.
+    pub(crate) fn complete(&mut self) {
+        debug_assert!(self.under_construction() || self.upgrading());
+        self.phase = BuildingPhase::Built { training: 0 };
+    }
+
+    /// Commits the next rung, whose stats apply at once, and starts the
+    /// upgrade clock.
+    pub(crate) fn begin_upgrade(&mut self) {
+        debug_assert!(self.built());
+        self.tier += 1;
+        self.phase = BuildingPhase::Upgrading { progress: 0 };
+    }
+
     /// Iterates the footprint tiles row-major.
     pub fn tiles(&self) -> impl Iterator<Item = TilePos> + use<> {
-        let (w, h) = self.stats().size;
+        let (w, h) = self.kind.size();
         let anchor = self.anchor;
         (0..h).flat_map(move |dy| (0..w).map(move |dx| anchor.offset(dx, dy)))
     }
 
     /// Whether `pos` lies inside the footprint.
     pub fn contains(&self, pos: TilePos) -> bool {
-        let (w, h) = self.stats().size;
+        let (w, h) = self.kind.size();
         pos.x >= self.anchor.x
             && pos.y >= self.anchor.y
             && pos.x < self.anchor.x + w
@@ -658,13 +1022,13 @@ impl Building {
 
     /// Center of the footprint in world coordinates.
     pub fn center(&self) -> Vec2Fx {
-        crate::geometry::footprint_center(self.anchor, self.stats().size)
+        crate::geometry::footprint_center(self.anchor, self.kind.size())
     }
 
     /// The point of the footprint rectangle closest to `from` — what range
     /// checks measure against, so big buildings don't get phantom reach.
     pub fn closest_point_to(&self, from: Vec2Fx) -> Vec2Fx {
-        let (w, h) = self.stats().size;
+        let (w, h) = self.kind.size();
         let min = self.anchor.center() - Vec2Fx::new(chassis::fx::HALF, chassis::fx::HALF);
         let max = min + Vec2Fx::new(chassis::fx::Fx::from_num(w), chassis::fx::Fx::from_num(h));
         Vec2Fx::new(from.x.clamp(min.x, max.x), from.y.clamp(min.y, max.y))
@@ -674,16 +1038,13 @@ impl Building {
 /// The whole world. See module docs for invariants.
 ///
 /// Every field is crate-private: the only way anything outside the sim can
-/// change a `State` is [`State::tick`] with tick-stamped commands. That is
-/// the architecture's core promise, and here the compiler enforces it
-/// rather than a comment. Read access goes through the accessor methods
-/// below.
+/// change a `State` is [`State::tick`] with tick-stamped commands. Read
+/// access goes through the accessor methods below.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct State {
     #[serde(default, skip_serializing_if = "crate::is_default")]
     pub(crate) mode: crate::scenario::ScenarioMode,
     pub(crate) tick: Tick,
-    pub(crate) rng: Pcg32,
     pub(crate) map: Map,
     pub(crate) players: Vec<Player>,
     pub(crate) vision: Vec<crate::vision::Vision>,
@@ -696,12 +1057,9 @@ pub struct State {
     next_unit_id: u32,
     next_building_id: u32,
     /// Derived: one flag per tile, set while a non-stealthy building
-    /// covers it. Never serialized — rebuilt on assembly and load, and
-    /// maintained at the placement/removal funnels — so wire bytes and
-    /// state hashes are exactly what they were before the cache
-    /// existed. Route searches ask "is this tile blocked" thousands of
-    /// times per tick; the linear building scan this replaces was the
-    /// hottest pair of functions in match profiles.
+    /// covers it. Never serialized or hashed; rebuilt on assembly and load,
+    /// and maintained at the placement and removal funnels. Route searches
+    /// ask whether a tile is blocked thousands of times per tick.
     #[serde(skip)]
     pub(crate) building_occupancy: Vec<u8>,
 }
@@ -812,7 +1170,7 @@ impl<'a> GroundTerrain<'a> {
 impl State {
     /// Assembles a state from parts; [`crate::Scenario::build`] is the public
     /// entry point.
-    pub(crate) fn assemble(map: Map, players: Vec<Player>, seed: u64) -> Self {
+    pub(crate) fn assemble(map: Map, players: Vec<Player>) -> Self {
         let (map_width, map_height) = (map.width().max(0), map.height().max(0));
         let vision = players
             .iter()
@@ -821,7 +1179,6 @@ impl State {
         Self {
             mode: crate::scenario::ScenarioMode::Match,
             tick: 0,
-            rng: Pcg32::new(seed, 0),
             map,
             players,
             vision,
@@ -861,60 +1218,52 @@ impl State {
             && (self.mode == crate::scenario::ScenarioMode::Sandbox
                 || self.buildings.iter().any(|building| {
                     building.player == player
-                        && !building.provisional
+                        && !building.provisional()
                         && building.kind == crate::stats::BuildingKind::Foundry
                 }))
     }
 
-    /// Whether an active seat can currently receive recurring automatic
-    /// scrap that it can spend. This includes a completed Reclaimer, the
-    /// late Foundry baseline once its start boundary is reached, and the
-    /// faster Foundry recovery for a stranded harvest line, up to the
-    /// public screen-plus-worker reserve.
-    ///
-    /// A resigned seat or one without a completed Foundry cannot turn
-    /// autonomous remnant income into a recovered economy, so neither is
-    /// reported as active here.
-    pub fn recovery_income_active(&self, player: PlayerId) -> bool {
-        if self.player(player).resigned
-            || !self.buildings.iter().any(|building| {
-                building.player == player
-                    && building.hp > 0
-                    && building.built
-                    && building.kind == BuildingKind::Foundry
-            })
-        {
-            return false;
-        }
-
-        // The Foundry drip is the always-on floor: any seat that passed
-        // the completed-Foundry check above has passive income coming,
-        // at worst after the drip's warm-up.
-        true
-    }
-
-    /// Whether a living Foundry owns neither a live Harvester nor a prepaid
-    /// one in a live production queue.
+    /// Whether a living Foundry owns no machine that can harvest: none in the
+    /// world, none riding a transport, and none prepaid in a live production
+    /// queue.
     pub(crate) fn harvester_recovery_needed(&self, player: PlayerId) -> bool {
+        let harvests = |kind: UnitKind| kind.stats().harvest.is_some();
         !self.player(player).resigned
             && self.buildings.iter().any(|building| {
                 building.player == player
                     && building.hp > 0
-                    && building.built
+                    && building.built()
                     && building.kind == BuildingKind::Foundry
             })
             && !self.units.iter().any(|unit| {
-                unit.player == player && unit.hp > 0 && unit.kind == UnitKind::Harvester
+                unit.player == player
+                    && ((unit.hp > 0 && harvests(unit.kind))
+                        || unit
+                            .cargo
+                            .iter()
+                            .any(|rider| rider.hp > 0 && harvests(rider.kind)))
             })
             && !self.buildings.iter().any(|building| {
                 building.player == player
                     && building.hp > 0
-                    && building.built
-                    && building
-                        .queue
-                        .iter()
-                        .any(|kind| *kind == UnitKind::Harvester)
+                    && building.built()
+                    && building.queue.iter().any(|kind| harvests(*kind))
             })
+    }
+
+    /// Scrap an automatic Repair Bay leaves in a stranded seat's bank: the
+    /// package its current recovery cycle captured, or the one a new cycle
+    /// would capture. Like a voluntary purchase, the aura must not spend
+    /// the package, but reserving the universal maximum instead would
+    /// strand the army the bay exists to sustain.
+    pub(crate) fn recovery_reserve(&self, player: PlayerId) -> u32 {
+        if !self.harvester_recovery_needed(player) {
+            return 0;
+        }
+        match self.player(player).recovery {
+            Recovery::Ready => self.recovery_package_target(player),
+            Recovery::Active { target, .. } => u32::from(target),
+        }
     }
 
     /// Bank target for a newly stranded economy. A surviving paid ground
@@ -970,7 +1319,7 @@ impl State {
     /// supporting Foundries never stack and unfinished sites confer nothing.
     pub fn extractor_income(&self, id: BuildingId) -> Option<ExtractorIncome> {
         let extractor = self.building(id)?;
-        if extractor.kind != BuildingKind::Extractor || !extractor.built || extractor.hp == 0 {
+        if extractor.kind != BuildingKind::Extractor || !extractor.built() || extractor.hp == 0 {
             return None;
         }
 
@@ -996,10 +1345,10 @@ impl State {
             return false;
         };
         extractor.kind == BuildingKind::Extractor
-            && extractor.built
+            && extractor.built()
             && extractor.hp > 0
             && foundry.kind == BuildingKind::Foundry
-            && foundry.built
+            && foundry.built()
             && foundry.hp > 0
             && foundry.player == extractor.player
             && footprint_distance(extractor, foundry) <= crate::stats::EXTRACTOR_SUPPORT_RADIUS
@@ -1047,14 +1396,15 @@ impl State {
     ///   map.
     /// - Entity lists: strictly sorted by id, both id counters ahead of
     ///   every live id.
-    /// - Units: owner in the table, hp inside `(0, max_hp]`, meters and
-    ///   per-weapon cooldowns bounded, queue within
+    /// - Units: owner in the table, a motor, harvest gear, turret bearing
+    ///   and cargo hold only where the kind has them, hp inside
+    ///   `(0, max_hp]`, meters and per-weapon cooldowns bounded, queue within
     ///   [`crate::stats::ORDER_QUEUE_CAP`], every coordinate inside the
     ///   envelope, every anchored Harvest source inside its work zone,
     ///   every entity named by an order actually minted.
-    /// - Buildings: the same, plus a queue this kind can produce for this
-    ///   seat's faction, a coherent salvage ledger, and no live salvage
-    ///   marker.
+    /// - Buildings: the same, plus a phase that fits the tier, a queue
+    ///   only once built and only of what this kind produces for this
+    ///   seat's faction, and a coherent salvage ledger.
     /// - Shells: coordinates inside the envelope, shooter minted.
     /// - Vision: ghost owners in the table and hostile to the viewer;
     ///   ghosts, contacts, and recent allied impact sites inside their
@@ -1071,15 +1421,129 @@ impl State {
     /// body the separation phase shoved a fraction of a tile past the
     /// border is a state the sim really does produce.
     ///
-    /// Every field added to [`State`] or its nested types owes a row here
-    /// and a fixture in `sim/tests/integration/state_integrity.rs`.
+    /// Every struct is destructured field by field, so a new field does not
+    /// compile until its checks are decided; give each new check a fixture
+    /// in `sim/tests/integration/state_integrity.rs`.
     ///
     /// Public for tooling that wants to re-check a state it mutated by
     /// hand; the sim itself never calls it inside [`State::tick`].
-    #[expect(clippy::too_many_lines, reason = "one check per serialized invariant")]
     pub fn validate_invariants(&self) -> Result<(), StateIntegrityError> {
         use StateIntegrityError as E;
+        // Destructured so a new field cannot compile until its checks are
+        // decided here or in the per-entity validators below.
+        let Self {
+            mode: _,
+            tick,
+            map,
+            players,
+            vision,
+            units,
+            buildings,
+            shells,
+            aircraft_crashes,
+            result: _,
+            next_unit_id,
+            next_building_id,
+            building_occupancy: _,
+        } = self;
 
+        self.validate_players()?;
+
+        // Nested grids: derived Deserialize accepts any cell count, and a
+        // short one panics deep inside vision refresh instead of here.
+        if !map.is_consistent() {
+            return Err(E::MalformedMapGrid);
+        }
+        let (w, h) = (map.width(), map.height());
+        // The parse-time bound, re-applied: the neighborhood scans add
+        // unchecked radii to the map dimensions.
+        if w > i32::from(MAX_MAP_EDGE) || h > i32::from(MAX_MAP_EDGE) {
+            return Err(E::MapTooLarge {
+                width: w,
+                height: h,
+            });
+        }
+        if vision.len() != players.len() {
+            return Err(E::VisionTableMismatch);
+        }
+        if vision.iter().any(|v| !v.is_consistent(w, h)) {
+            return Err(E::MalformedVisionGrid);
+        }
+
+        if !units.windows(2).all(|a| a[0].id < a[1].id) {
+            return Err(E::UnsortedUnits);
+        }
+        if !buildings.windows(2).all(|a| a[0].id < a[1].id) {
+            return Err(E::UnsortedBuildings);
+        }
+        if let Some(u) = units.last()
+            && u.id.0 >= *next_unit_id
+        {
+            return Err(E::StaleUnitCounter);
+        }
+        if let Some(b) = buildings.last()
+            && b.id.0 >= *next_building_id
+        {
+            return Err(E::StaleBuildingCounter);
+        }
+        // The counters and the clock increment unchecked in the tick
+        // pipeline; a forged extreme is a next-step panic (debug) or a
+        // wrap that aliases live ids (release).
+        if *tick > TICK_ENVELOPE {
+            return Err(E::TickBeyondEnvelope);
+        }
+        if *next_unit_id > ID_COUNTER_ENVELOPE || *next_building_id > ID_COUNTER_ENVELOPE {
+            return Err(E::IdCounterBeyondEnvelope);
+        }
+
+        for u in units {
+            self.validate_unit(u)?;
+            for rider in &u.cargo {
+                self.validate_rider(u, rider)?;
+            }
+        }
+        // Two parked bodies inside their combined radius could never have
+        // met: a touchdown needs that clearance and nothing moves a parked
+        // body afterwards.
+        for (i, a) in units.iter().enumerate() {
+            if !a.landed() {
+                continue;
+            }
+            for b in units[i + 1..].iter().filter(|b| b.landed()) {
+                let clearance = a.kind.stats().radius + b.kind.stats().radius;
+                if a.pos.dist_sq(b.pos) < clearance * clearance {
+                    return Err(E::LandedOverlap(a.id, b.id));
+                }
+            }
+        }
+        // Every id in the world — walking or riding — is minted once.
+        let mut ids: Vec<u32> = units
+            .iter()
+            .flat_map(|u| std::iter::once(u.id.0).chain(u.cargo.iter().map(|r| r.id.0)))
+            .collect();
+        ids.sort_unstable();
+        if ids.windows(2).any(|w| w[0] == w[1]) {
+            return Err(E::AliasedCargoId);
+        }
+
+        for b in buildings {
+            self.validate_building(b)?;
+        }
+        self.validate_footprints()?;
+        for (i, crash) in aircraft_crashes.iter().enumerate() {
+            self.validate_crash(i, crash)?;
+        }
+        for (i, shell) in shells.iter().enumerate() {
+            self.validate_shell(i, shell)?;
+        }
+        for (i, view) in vision.iter().enumerate() {
+            self.validate_vision(PlayerId::from_index(i), view)?;
+        }
+        Ok(())
+    }
+
+    fn validate_players(&self) -> Result<(), StateIntegrityError> {
+        use StateIntegrityError as E;
         if self.players.is_empty() {
             return Err(E::NoPlayers);
         }
@@ -1088,24 +1552,37 @@ impl State {
         if self.players.len() > usize::from(u8::MAX) + 1 {
             return Err(E::TooManyPlayers);
         }
-        let players = self.players.len();
-        // Teams normalize to dense ids at scenario build, so a team index
-        // is always a seat index too.
-        if let Some(i) = self
-            .players
-            .iter()
-            .position(|p| usize::from(p.team) >= players)
-        {
-            return Err(E::ForeignTeam(PlayerId::from_index(i)));
-        }
-        if let Some(i) = self.players.iter().position(|player| {
-            u32::from(player.recovery_allowance) > crate::stats::FOUNDRY_RECOVERY_RESERVE
-                || u32::from(player.recovery_target) > crate::stats::FOUNDRY_RECOVERY_RESERVE
-                || player.recovery_allowance > player.recovery_target
-                || (player.recovery_ready
-                    && (player.recovery_allowance != 0 || player.recovery_target != 0))
-        }) {
-            return Err(E::InvalidRecoveryLedger(PlayerId::from_index(i)));
+        for (index, player) in self.players.iter().enumerate() {
+            let Player {
+                name: _,
+                faction: _,
+                team,
+                scrap: _,
+                recovery,
+                resigned: _,
+                eliminated_at,
+            } = player;
+            let seat = PlayerId::from_index(index);
+            // Teams normalize to dense ids at scenario build, so a team
+            // index is always a seat index too.
+            if usize::from(*team) >= self.players.len() {
+                return Err(E::ForeignTeam(seat));
+            }
+            if let Recovery::Active { target, allowance } = recovery
+                && (u32::from(*target) > crate::stats::FOUNDRY_RECOVERY_RESERVE
+                    || allowance > target)
+            {
+                return Err(E::InvalidRecoveryLedger(seat));
+            }
+            if eliminated_at.is_some_and(|at| at > TICK_ENVELOPE) {
+                return Err(E::EliminationBeyondEnvelope(seat));
+            }
+            // Victory treats the stamp as immutable history, so a stamp
+            // later than the present would flow to placement and views
+            // as an elimination that never happened.
+            if eliminated_at.is_some_and(|at| at > self.tick) {
+                return Err(E::EliminationInTheFuture(seat));
+            }
         }
         if self.mode == crate::scenario::ScenarioMode::Sandbox
             && (self.result.is_some()
@@ -1121,565 +1598,535 @@ impl State {
         {
             return Err(E::UnknownVictoryTeam(team));
         }
+        Ok(())
+    }
 
-        // Nested grids: derived Deserialize accepts any cell count, and a
-        // short one panics deep inside vision refresh instead of here.
-        if !self.map.is_consistent() {
-            return Err(E::MalformedMapGrid);
+    fn validate_unit(&self, u: &Unit) -> Result<(), StateIntegrityError> {
+        use StateIntegrityError as E;
+        let Unit {
+            id,
+            player,
+            kind,
+            // `pos`, airborne motion, and the envelope of every order,
+            // leash, and path are checked by the whole-unit helpers below.
+            pos,
+            motor,
+            hp,
+            worker,
+            cooldowns,
+            progress,
+            order,
+            queue,
+            looping: _,
+            path,
+            leash,
+            settled: _,
+            heading,
+            turret_heading,
+            cargo,
+        } = u;
+        let id = *id;
+        if usize::from(player.0) >= self.players.len() {
+            return Err(E::ForeignUnitOwner(id));
         }
-        let (w, h) = (self.map.width(), self.map.height());
-        // The parse-time bound, re-applied: the neighborhood scans add
-        // unchecked radii to the map dimensions.
-        if w > i32::from(MAX_MAP_EDGE) || h > i32::from(MAX_MAP_EDGE) {
-            return Err(E::MapTooLarge {
-                width: w,
-                height: h,
-            });
+        let stats = kind.stats();
+        if !valid_air_motion(u) {
+            return Err(E::InvalidAirMotion(id));
         }
-        if self.vision.len() != players {
-            return Err(E::VisionTableMismatch);
+        if *hp == 0 || *hp > stats.max_hp {
+            return Err(E::UnitHpOutOfRange(id));
         }
-        if self.vision.iter().any(|v| !v.is_consistent(w, h)) {
-            return Err(E::MalformedVisionGrid);
-        }
-
-        if !self.units.windows(2).all(|a| a[0].id < a[1].id) {
-            return Err(E::UnsortedUnits);
-        }
-        if !self.buildings.windows(2).all(|a| a[0].id < a[1].id) {
-            return Err(E::UnsortedBuildings);
-        }
-        if let Some(u) = self.units.last()
-            && u.id.0 >= self.next_unit_id
+        if worker.is_some() != stats.harvest.is_some()
+            || !motor.fits(*kind)
+            || (turret_heading.is_some() && !kind.has_ground_turret())
+            || (!cargo.is_empty() && stats.transport_capacity == 0)
         {
+            return Err(E::UnitPartMismatch(id));
+        }
+        let Worker {
+            carrying,
+            unloading,
+            danger_retry_at,
+        } = worker.unwrap_or_default();
+        if carrying > stats.harvest.map_or(0, |harvest| harvest.capacity) {
+            return Err(E::ScrapBeyondCapacity(id));
+        }
+        if let Some(release) = unloading
+            && (carrying == 0
+                || release.elapsed == 0
+                || release.elapsed >= crate::stats::UNLOAD_TICKS
+                || !matches!(order, Order::Harvest { .. } | Order::ReturnCargo { .. })
+                || matches!(order, Order::ReturnCargo { foundry, .. } if *foundry != release.foundry)
+                || !self.minted(Target::Building(release.foundry))
+                || self
+                    .building(release.foundry)
+                    .is_some_and(|b| b.player != *player || !b.kind.is_drop_off() || !b.built()))
+        {
+            return Err(E::InvalidUnloading(id));
+        }
+        if let Some(path) = path
+            && let Some(point) = path.final_point
+            && (!point_inside_envelope(point)
+                || (point.x - path.goal.center().x).abs() > const { Fx::lit("1.5") }
+                || (point.y - path.goal.center().y).abs() > const { Fx::lit("1.5") }
+                || self.map.tile(path.goal).is_none()
+                || path.waypoints.last() != Some(&path.goal)
+                || path.next as usize >= path.waypoints.len()
+                || (u.domain() != crate::stats::Domain::Ground && stats.turn_rate > 0))
+        {
+            return Err(E::InvalidWorkEndpoint(id));
+        }
+        if *progress > PROGRESS_ENVELOPE {
+            return Err(E::UnitProgressOutOfRange(id));
+        }
+        // Slot i belongs to weapon i; slots past the roster stay zero for
+        // the machine's whole life.
+        if cooldowns_out_of_range(*cooldowns, stats) {
+            return Err(E::UnitCooldownOutOfRange(id));
+        }
+        if queue.len() > crate::stats::ORDER_QUEUE_CAP {
+            return Err(E::OverlongUnitQueue(id));
+        }
+        match *motor {
+            Motor::Ground { speed, stall_ticks } => {
+                if speed < Fx::ZERO || speed > stats.speed {
+                    return Err(E::InvalidGroundSpeed(id));
+                }
+                if stall_ticks >= crate::stats::STALL_REPLAN_TICKS
+                    || (stall_ticks != 0 && path.is_none())
+                {
+                    return Err(E::InvalidStallTicks(id));
+                }
+            }
+            Motor::Braced { ticks } => {
+                if ticks.get() > stats.brace.map_or(0, |brace| brace.deploy_ticks) {
+                    return Err(E::InvalidUnitBraces(id));
+                }
+            }
+            Motor::Airborne { .. } | Motor::Landed => {}
+        }
+        if danger_retry_at.is_some_and(|tick| {
+            tick > self
+                .tick
+                .saturating_add(crate::stats::HARVEST_DANGER_RETRY_TICKS)
+        }) {
+            return Err(E::InvalidDangerRetry(id));
+        }
+        if leash.is_some_and(|leash| {
+            leash.patience > crate::stats::LEASH_PATIENCE
+                || leash.cooldown > crate::stats::LEASH_REACQUIRE_COOLDOWN
+        }) {
+            return Err(E::InvalidLeashClock(id));
+        }
+        if !unit_inside_envelope(u) {
+            return Err(E::UnitOutsideEnvelope(id));
+        }
+        let orders = || std::iter::once(order).chain(queue);
+        if !orders().all(order_goals_canonical) {
+            return Err(E::NonCanonicalGoal(id));
+        }
+        if *motor == Motor::Landed {
+            let touchdown = crate::stats::LANDING_TOUCHDOWN;
+            if pos.dist_sq(u.tile().center()) > touchdown * touchdown {
+                return Err(E::LandedOffCenter(id));
+            }
+            if path.is_some() {
+                return Err(E::LandedWithPath(id));
+            }
+            if !crate::tick::flight::escapable(&self.map, *pos, *heading, stats.turn_radius()) {
+                return Err(E::LandedUnescapable(id));
+            }
+            // Terrain only: a friendly site may claim the tile under a
+            // parked airframe between ticks, and eviction resolves it on
+            // the next.
+            if self
+                .map
+                .tile(u.tile())
+                .is_none_or(|t| t.terrain.blocks_ground())
+            {
+                return Err(E::LandedOnUnstandableGround(id));
+            }
+        }
+        if orders().any(|order| !harvest_order_inside_zone(order)) {
+            return Err(E::HarvestSourceOutsideZone(id));
+        }
+        if orders().any(|order| {
+            matches!(order, Order::ReturnCargo { foundry, repair } if
+                stats.harvest.is_none() || (*repair && !stats.welder)
+                || self.building(*foundry).is_some_and(|building|
+                    building.player != *player || !building.kind.is_drop_off()))
+        }) {
+            return Err(E::InvalidReturnCargo(id));
+        }
+        if orders()
+            .filter_map(order_reference)
+            .any(|target| !self.minted(target))
+        {
+            return Err(E::UnmintedOrderTarget(id));
+        }
+        if orders().any(|order| {
+            matches!(order, Order::Attack { target, .. } if !self.valid_attack_reference(*player, *target))
+        }) {
+            return Err(E::UnmintedOrderTarget(id));
+        }
+        // Cargo is a trusted enclave: nothing in the tick pipeline
+        // re-examines a rider until it is set down, so a forged save must
+        // not smuggle in anything the sling could never have taken — the
+        // wrong carrier, the wrong rider kind, an overfull hold, or an
+        // aliased id.
+        let hold: u32 = cargo
+            .iter()
+            .map(|r| u32::from(r.kind.stats().transport_size))
+            .sum();
+        if hold > u32::from(stats.transport_capacity) {
+            return Err(E::CargoBeyondCapacity(id));
+        }
+        Ok(())
+    }
+
+    fn validate_rider(&self, carrier: &Unit, rider: &Rider) -> Result<(), StateIntegrityError> {
+        use StateIntegrityError as E;
+        let Rider {
+            id,
+            kind,
+            hp,
+            carrying,
+            cooldowns,
+            heading: _,
+            turret_heading,
+        } = rider;
+        let rstats = kind.stats();
+        if rstats.transport_size == 0 {
+            return Err(E::UncarriableCargo(carrier.id));
+        }
+        if *hp == 0 || *hp > rstats.max_hp {
+            return Err(E::CargoHpOutOfRange(carrier.id));
+        }
+        if *carrying > rstats.harvest.map_or(0, |harvest| harvest.capacity) {
+            return Err(E::ScrapBeyondCapacity(*id));
+        }
+        if turret_heading.is_some() && !kind.has_ground_turret() {
+            return Err(E::UnitPartMismatch(*id));
+        }
+        // Cooldowns are the one scalar boarding does NOT reset — a machine
+        // slung mid-cooldown keeps it frozen — so the bound is the walking
+        // unit's weapon table, and a smuggled oversize would silence a
+        // weapon for its life.
+        if cooldowns_out_of_range(*cooldowns, rstats) {
+            return Err(E::CargoCooldownOutOfRange(carrier.id));
+        }
+        if id.0 >= self.next_unit_id {
             return Err(E::StaleUnitCounter);
         }
-        if let Some(b) = self.buildings.last()
-            && b.id.0 >= self.next_building_id
-        {
-            return Err(E::StaleBuildingCounter);
-        }
-        // The counters and the clock increment unchecked in the tick
-        // pipeline; a forged extreme is a next-step panic (debug) or a
-        // wrap that aliases live ids (release).
-        if self.tick > TICK_ENVELOPE {
-            return Err(E::TickBeyondEnvelope);
-        }
-        for (index, player) in self.players.iter().enumerate() {
-            if player.eliminated_at.is_some_and(|at| at > TICK_ENVELOPE) {
-                return Err(E::EliminationBeyondEnvelope(
-                    crate::ids::PlayerId::from_index(index),
-                ));
-            }
-            // Victory treats the stamp as immutable history, so a stamp
-            // later than the present would flow to placement and views
-            // as an elimination that never happened.
-            if player.eliminated_at.is_some_and(|at| at > self.tick) {
-                return Err(E::EliminationInTheFuture(crate::ids::PlayerId::from_index(
-                    index,
-                )));
-            }
-        }
-        if self.next_unit_id > ID_COUNTER_ENVELOPE || self.next_building_id > ID_COUNTER_ENVELOPE {
-            return Err(E::IdCounterBeyondEnvelope);
-        }
+        Ok(())
+    }
 
-        for u in &self.units {
-            if usize::from(u.player.0) >= players {
-                return Err(E::ForeignUnitOwner(u.id));
-            }
-            let stats = u.kind.stats();
-            if !valid_air_motion(u) {
-                return Err(E::InvalidAirMotion(u.id));
-            }
-            if u.hp == 0 || u.hp > stats.max_hp {
-                return Err(E::UnitHpOutOfRange(u.id));
-            }
-            if u.carrying > stats.harvest.map_or(0, |harvest| harvest.capacity) {
-                return Err(E::ScrapBeyondCapacity(u.id));
-            }
-            if let Some(release) = u.unloading
-                && (u.carrying == 0
-                    || release.elapsed == 0
-                    || release.elapsed >= crate::stats::UNLOAD_TICKS
-                    || !matches!(u.order, Order::Harvest { .. } | Order::ReturnCargo { .. })
-                    || matches!(u.order, Order::ReturnCargo { foundry, .. } if foundry != release.foundry)
-                    || !self.minted(Target::Building(release.foundry))
-                    || self
-                        .building(release.foundry)
-                        .is_some_and(|b| b.player != u.player || !b.kind.is_drop_off() || !b.built))
-            {
-                return Err(E::InvalidUnloading(u.id));
-            }
-            if let Some(path) = &u.path
-                && let Some(point) = path.final_point
-                && (!point_inside_envelope(point)
-                    || (point.x - path.goal.center().x).abs() > const { Fx::lit("1.5") }
-                    || (point.y - path.goal.center().y).abs() > const { Fx::lit("1.5") }
-                    || self.map.tile(path.goal).is_none()
-                    || path.waypoints.last() != Some(&path.goal)
-                    || path.next as usize >= path.waypoints.len()
-                    || (u.domain() != crate::stats::Domain::Ground && u.kind.stats().turn_rate > 0))
-            {
-                return Err(E::InvalidWorkEndpoint(u.id));
-            }
-            if u.progress > PROGRESS_ENVELOPE {
-                return Err(E::UnitProgressOutOfRange(u.id));
-            }
-            // Slot i belongs to weapon i; slots past the roster stay zero
-            // for the machine's whole life.
-            if u.cooldowns.iter().enumerate().any(|(i, cd)| {
-                *cd > stats
-                    .weapons
-                    .get(i)
-                    .map_or(0, |weapon| weapon.cooldown_ticks)
-            }) {
-                return Err(E::UnitCooldownOutOfRange(u.id));
-            }
-            if u.queue.len() > crate::stats::ORDER_QUEUE_CAP {
-                return Err(E::OverlongUnitQueue(u.id));
-            }
-            if u.brace_ticks > crate::stats::BOMBARD_BRACE_TICKS
-                || (u.brace_ticks != 0 && u.kind != UnitKind::Bombard)
-            {
-                return Err(E::InvalidUnitBraces(u.id));
-            }
-            if u.drive_speed < Fx::ZERO
-                || u.drive_speed > stats.speed
-                || (u.drive_speed != Fx::ZERO
-                    && (stats.domain != crate::stats::Domain::Ground || u.brace_ticks != 0))
-            {
-                return Err(E::InvalidGroundSpeed(u.id));
-            }
-            if u.stall_ticks >= crate::stats::STALL_REPLAN_TICKS
-                || (u.stall_ticks != 0
-                    && (stats.domain != crate::stats::Domain::Ground || u.path.is_none()))
-            {
-                return Err(E::InvalidStallTicks(u.id));
-            }
-            if u.danger_retry_at.is_some_and(|tick| {
-                tick > self
-                    .tick
-                    .saturating_add(crate::stats::HARVEST_DANGER_RETRY_TICKS)
-            }) {
-                return Err(E::InvalidDangerRetry(u.id));
-            }
-            if u.turret_heading.is_some() && !u.kind.has_ground_turret() {
-                return Err(E::InvalidTurretHeading(u.id));
-            }
-            if u.leash.is_some_and(|leash| {
-                leash.patience > crate::stats::LEASH_PATIENCE
-                    || leash.cooldown > crate::stats::LEASH_REACQUIRE_COOLDOWN
-            }) {
-                return Err(E::InvalidLeashClock(u.id));
-            }
-            if !unit_inside_envelope(u) {
-                return Err(E::UnitOutsideEnvelope(u.id));
-            }
-            if !std::iter::once(&u.order)
-                .chain(&u.queue)
-                .all(order_goals_canonical)
-            {
-                return Err(E::NonCanonicalGoal(u.id));
-            }
-            if u.landed {
-                if stats.turn_rate == 0 {
-                    return Err(E::LandedNonAircraft(u.id));
-                }
-                let touchdown = crate::stats::LANDING_TOUCHDOWN;
-                if u.pos.dist_sq(u.tile().center()) > touchdown * touchdown {
-                    return Err(E::LandedOffCenter(u.id));
-                }
-                if u.path.is_some() {
-                    return Err(E::LandedWithPath(u.id));
-                }
-                if !crate::tick::flight::escapable(&self.map, u.pos, u.heading, stats.turn_radius())
-                {
-                    return Err(E::LandedUnescapable(u.id));
-                }
-                // Terrain only: a friendly site may claim the tile under a
-                // parked airframe between ticks, and eviction resolves it
-                // on the next.
-                if self
-                    .map
-                    .tile(u.tile())
-                    .is_none_or(|t| t.terrain.blocks_ground())
-                {
-                    return Err(E::LandedOnUnstandableGround(u.id));
-                }
-            }
-            if std::iter::once(&u.order)
-                .chain(&u.queue)
-                .any(|order| !harvest_order_inside_zone(order))
-            {
-                return Err(E::HarvestSourceOutsideZone(u.id));
-            }
-            if std::iter::once(&u.order).chain(&u.queue).any(|order| {
-                matches!(order, Order::ReturnCargo { foundry, repair } if
-                    stats.harvest.is_none() || (*repair && !stats.welder)
-                    || self.building(*foundry).is_some_and(|building|
-                        building.player != u.player || !building.kind.is_drop_off()))
-            }) {
-                return Err(E::InvalidReturnCargo(u.id));
-            }
-            for target in std::iter::once(&u.order)
-                .chain(&u.queue)
-                .filter_map(order_reference)
-            {
-                if !self.minted(target) {
-                    return Err(E::UnmintedOrderTarget(u.id));
-                }
-            }
-            if std::iter::once(&u.order).chain(&u.queue).any(|order| {
-                matches!(order, Order::Attack { target, .. } if !self.valid_attack_reference(u.player, *target))
-            }) {
-                return Err(E::UnmintedOrderTarget(u.id));
-            }
-            // Cargo is a trusted enclave: nothing in the tick pipeline
-            // re-examines a rider until it is set down, so a forged
-            // save must not smuggle in anything the sling could never
-            // have taken — the wrong carrier, the wrong rider kind, an
-            // overfull hold, live orders, or an aliased id.
-            let stats = u.kind.stats();
-            if !u.cargo.is_empty() && stats.transport_capacity == 0 {
-                return Err(E::CargoOnNonTransport(u.id));
-            }
-            let hold: u32 = u
-                .cargo
-                .iter()
-                .map(|r| u32::from(r.kind.stats().transport_size))
-                .sum();
-            if hold > u32::from(stats.transport_capacity) {
-                return Err(E::CargoBeyondCapacity(u.id));
-            }
-            for rider in &u.cargo {
-                let rstats = rider.kind.stats();
-                if !valid_air_motion(rider) {
-                    return Err(E::InvalidAirMotion(rider.id));
-                }
-                if rstats.transport_size == 0 {
-                    return Err(E::UncarriableCargo(u.id));
-                }
-                if rider.hp == 0 || rider.hp > rstats.max_hp {
-                    return Err(E::CargoHpOutOfRange(u.id));
-                }
-                if rider.carrying > rstats.harvest.map_or(0, |harvest| harvest.capacity) {
-                    return Err(E::ScrapBeyondCapacity(rider.id));
-                }
-                if rider.player != u.player {
-                    return Err(E::CargoOwnerMismatch(u.id));
-                }
-                // Dormancy is exactly what boarding normalizes: order,
-                // queue, looping, path, leash, settled, and cargo all
-                // reset at the sling door, so any survivor is forged.
-                if rider.order != Order::Idle
-                    || !rider.queue.is_empty()
-                    || rider.looping
-                    || rider.path.is_some()
-                    || rider.unloading.is_some()
-                    || rider.leash.is_some()
-                    || rider.settled != 0
-                    || rider.brace_ticks != 0
-                    || rider.drive_speed != Fx::ZERO
-                    || rider.stall_ticks != 0
-                    || rider.danger_retry_at.is_some()
-                    || rider.landed
-                    || !rider.cargo.is_empty()
-                {
-                    return Err(E::CargoNotDormant(u.id));
-                }
-                if rider.turret_heading.is_some() && !rider.kind.has_ground_turret() {
-                    return Err(E::InvalidTurretHeading(rider.id));
-                }
-                // Boarding zeroes the progress meter too; any nonzero
-                // value is unreachable, not merely oversized.
-                if rider.progress != 0 {
-                    return Err(E::CargoProgressOutOfRange(u.id));
-                }
-                // Cooldowns are the one scalar boarding does NOT reset —
-                // a machine slung mid-cooldown keeps it frozen — so the
-                // bound is the walking unit's weapon table, and a
-                // smuggled oversize would silence a weapon for its life.
-                if rider.cooldowns.iter().enumerate().any(|(i, cd)| {
-                    *cd > rstats
-                        .weapons
-                        .get(i)
-                        .map_or(0, |weapon| weapon.cooldown_ticks)
-                }) {
-                    return Err(E::CargoCooldownOutOfRange(u.id));
-                }
-                if rider.id.0 >= self.next_unit_id {
-                    return Err(E::StaleUnitCounter);
-                }
-            }
+    fn validate_building(&self, b: &Building) -> Result<(), StateIntegrityError> {
+        use StateIntegrityError as E;
+        let Building {
+            id,
+            player,
+            kind,
+            anchor,
+            hp,
+            queue,
+            phase,
+            rally,
+            focus,
+            tier,
+            cooldown,
+            salvage_drained,
+            salvage_credited,
+        } = b;
+        let id = *id;
+        if usize::from(player.0) >= self.players.len() {
+            return Err(E::ForeignBuildingOwner(id));
         }
-        // Two parked bodies inside their combined radius could never have
-        // met: a touchdown needs that clearance and nothing moves a parked
-        // body afterwards.
-        for (i, a) in self.units.iter().enumerate() {
-            if !a.landed {
-                continue;
-            }
-            for b in self.units[i + 1..].iter().filter(|b| b.landed) {
-                let clearance = a.kind.stats().radius + b.kind.stats().radius;
-                if a.pos.dist_sq(b.pos) < clearance * clearance {
-                    return Err(E::LandedOverlap(a.id, b.id));
-                }
-            }
+        if usize::from(*tier) >= kind.tiers().len() {
+            return Err(E::TierBeyondLadder(id));
         }
-        // Every id in the world — walking or riding — is minted once.
-        {
-            let mut ids: Vec<u32> = self
-                .units
-                .iter()
-                .flat_map(|u| std::iter::once(u.id.0).chain(u.cargo.iter().map(|r| r.id.0)))
-                .collect();
-            ids.sort_unstable();
-            if ids.windows(2).any(|w| w[0] == w[1]) {
-                return Err(E::AliasedCargoId);
-            }
+        // Construction starts at the base rung; an upgrade climbs above it.
+        let phase_fits_tier = match phase {
+            BuildingPhase::Provisional | BuildingPhase::Site { .. } => *tier == 0,
+            BuildingPhase::Upgrading { .. } => *tier > 0,
+            BuildingPhase::Built { .. } => true,
+        };
+        if !phase_fits_tier {
+            return Err(E::InvalidBuildingPhase(id));
         }
-
-        for b in &self.buildings {
-            if usize::from(b.player.0) >= players {
-                return Err(E::ForeignBuildingOwner(b.id));
-            }
-            if usize::from(b.tier) >= b.kind.tiers().len() {
-                return Err(E::TierBeyondLadder(b.id));
-            }
-            let stats = b.stats();
-            if b.provisional
-                && (b.built
-                    || b.tier != 0
-                    || b.progress != 0
-                    || b.hp != stats.max_hp / 5
-                    || stats.construction.is_none()
-                    || !b.queue.is_empty()
-                    || b.rally.is_some()
-                    || b.focus.is_some()
-                    || b.cooldown != 0
-                    || b.salvage_drained != 0
-                    || b.salvage_credited != 0
-                    || b.salvaged
-                    || !self
-                        .units
-                        .iter()
-                        .any(|unit| crate::tick::construction::committed(unit, b)))
-            {
-                return Err(E::InvalidProvisionalSite(b.id));
-            }
-            if b.hp == 0 || b.hp > stats.max_hp {
-                return Err(E::BuildingHpOutOfRange(b.id));
-            }
-            if b.progress > PROGRESS_ENVELOPE {
-                return Err(E::BuildingProgressOutOfRange(b.id));
-            }
-            if !b.built
-                && b.tier > 0
-                && stats
-                    .construction
-                    .is_none_or(|construction| b.progress > construction.build_ticks)
-            {
-                return Err(E::UpgradeProgressOutOfRange(b.id));
-            }
-            // A building fires its first weapon and nothing else.
-            if b.cooldown
-                > stats
-                    .weapons
-                    .first()
-                    .map_or(0, |weapon| weapon.cooldown_ticks)
-            {
-                return Err(E::BuildingCooldownOutOfRange(b.id));
-            }
-            if let Some(target) = b.focus {
-                if !self.valid_attack_reference(b.player, target) {
-                    return Err(E::UnmintedBuildingFocus(b.id));
-                }
-                let current_domain = match target.entity() {
-                    Some(entity) => self
-                        .visible_hostile_target_domain(b.player, entity)
-                        .map(Some),
-                    None => self.attack_view(b.player, target).map(|view| view.domain),
-                };
-                let live_entity = target.entity().is_some_and(|entity| match entity {
-                    Target::Unit(id) => self.unit(id).is_some(),
-                    Target::Building(id) => self.building(id).is_some(),
-                });
-                if !b.built
-                    || stats.weapons.is_empty()
-                    || ((live_entity || target.entity().is_none()) && current_domain.is_none())
-                    || current_domain.is_some_and(|domain| {
-                        domain.is_some_and(|domain| !stats.weapons[0].targets.covers(domain))
-                    })
-                {
-                    return Err(E::InvalidBuildingFocus(b.id));
-                }
-            }
-            if b.queue.len() > crate::stats::QUEUE_CAP {
-                return Err(E::OverlongBuildingQueue(b.id));
-            }
-            let faction = self.players[usize::from(b.player.0)].faction;
-            if b.queue.iter().any(|kind| {
-                !stats.produces.contains(kind) || kind.faction().is_some_and(|f| f != faction)
-            }) {
-                return Err(E::UnproducibleQueueEntry(b.id));
-            }
-            // The footprint needs no separate check: sizes are single
-            // digits, so an anchor inside the envelope keeps `anchor + size`
-            // inside it too.
-            if !tile_inside_envelope(b.anchor) || !b.rally.is_none_or(tile_inside_envelope) {
-                return Err(E::BuildingOutsideEnvelope(b.id));
-            }
-            if !salvage_ledger_coherent(b) {
-                return Err(E::IncoherentSalvageLedger(b.id));
-            }
-            if b.salvaged {
-                return Err(E::LiveBuildingMarkedSalvaged(b.id));
-            }
-        }
-
-        for (i, crash) in self.aircraft_crashes.iter().enumerate() {
-            let live = self.units.iter().any(|unit| {
-                unit.id == crash.unit || unit.cargo.iter().any(|rider| rider.id == crash.unit)
-            });
-            if usize::from(crash.player.0) >= players
-                || crash.unit.0 >= self.next_unit_id
-                || live
-                || crash.kind.crash_profile().is_none()
-                || !point_inside_envelope(crash.launch)
-                || !point_inside_envelope(crash.impact)
-                || crash.started >= self.tick
-                || crash.arrival < self.tick
-                || crash.arrival.checked_sub(crash.started)
-                    != Some(crate::stats::AIRCRAFT_CRASH_TICKS)
-                || self.result.is_some()
-                || (i > 0
-                    && (
-                        self.aircraft_crashes[i - 1].started,
-                        self.aircraft_crashes[i - 1].unit,
-                    ) >= (crash.started, crash.unit))
-                || self.aircraft_crashes[..i]
+        let stats = b.stats();
+        if *phase == BuildingPhase::Provisional
+            && (*hp != stats.max_hp / 5
+                || stats.construction.is_none()
+                || rally.is_some()
+                || focus.is_some()
+                || *cooldown != 0
+                || *salvage_drained != 0
+                || *salvage_credited != 0
+                || !self
+                    .units
                     .iter()
-                    .any(|other| other.unit == crash.unit)
-            {
-                return Err(E::InvalidAircraftCrash(i));
-            }
-            let reach = crash.kind.stats().speed * Fx::from_num(crate::stats::AIRCRAFT_CRASH_TICKS);
-            if crash.launch.dist_sq(crash.impact) > reach * reach {
-                return Err(E::InvalidAircraftCrash(i));
-            }
+                    .any(|unit| crate::tick::construction::committed(unit, b)))
+        {
+            return Err(E::InvalidProvisionalSite(id));
         }
-
-        for (i, s) in self.shells.iter().enumerate() {
-            // Shells carry a seat too: hostile() indexes the player table
-            // on impact, so a foreign owner would panic ticks after
-            // acceptance.
-            if usize::from(s.player.0) >= players {
-                return Err(E::ForeignShellOwner(i));
+        if *hp == 0 || *hp > stats.max_hp {
+            return Err(E::BuildingHpOutOfRange(id));
+        }
+        let meter_overrun = match *phase {
+            BuildingPhase::Provisional => false,
+            BuildingPhase::Site { progress } | BuildingPhase::Upgrading { progress } => stats
+                .construction
+                .is_none_or(|construction| progress > construction.build_ticks),
+            BuildingPhase::Built { training } => training > PROGRESS_ENVELOPE,
+        };
+        if meter_overrun {
+            return Err(E::BuildingProgressOutOfRange(id));
+        }
+        // A building fires its first weapon and nothing else.
+        if *cooldown
+            > stats
+                .weapons
+                .first()
+                .map_or(0, |weapon| weapon.cooldown_ticks)
+        {
+            return Err(E::BuildingCooldownOutOfRange(id));
+        }
+        if let Some(target) = *focus {
+            if !self.valid_attack_reference(*player, target) {
+                return Err(E::UnmintedBuildingFocus(id));
             }
-            if !point_inside_envelope(s.launch)
-                || !point_inside_envelope(s.impact)
-                || s.splash
-                    .is_some_and(|r| r < Fx::ZERO || r > Fx::from_num(COORD_ENVELOPE))
-            {
-                return Err(E::ShellOutsideEnvelope(i));
-            }
-            if !self.minted(s.shooter) {
-                return Err(E::UnmintedShellShooter(i));
-            }
-            let expected = match s.shooter {
-                Target::Unit(id) => self
-                    .unit(id)
-                    .or_else(|| {
-                        self.units
-                            .iter()
-                            .flat_map(|carrier| &carrier.cargo)
-                            .find(|rider| rider.id == id)
-                    })
-                    .map(|unit| ProjectileKind::for_unit(unit.kind)),
-                Target::Building(_) => Some(ProjectileKind::Shell),
+            let current_domain = match target.entity() {
+                Some(entity) => self
+                    .visible_hostile_target_domain(*player, entity)
+                    .map(Some),
+                None => self.attack_view(*player, target).map(|view| view.domain),
             };
-            if expected.is_some_and(|kind| kind != s.kind) {
-                return Err(E::ShellKindMismatch(i));
+            let live_entity = target.entity().is_some_and(|entity| match entity {
+                Target::Unit(id) => self.unit(id).is_some(),
+                Target::Building(id) => self.building(id).is_some(),
+            });
+            if !b.built()
+                || stats.weapons.is_empty()
+                || ((live_entity || target.entity().is_none()) && current_domain.is_none())
+                || current_domain.is_some_and(|domain| {
+                    domain.is_some_and(|domain| !stats.weapons[0].targets.covers(domain))
+                })
+            {
+                return Err(E::InvalidBuildingFocus(id));
             }
         }
+        if queue.len() > crate::stats::QUEUE_CAP {
+            return Err(E::OverlongBuildingQueue(id));
+        }
+        let faction = self.players[usize::from(player.0)].faction;
+        // Training needs a complete building, and an upgrade keeps the queue
+        // only of a kind that trains nothing.
+        if (!queue.is_empty() && !b.built())
+            || queue.iter().any(|kind| {
+                !stats.produces.contains(kind) || kind.faction().is_some_and(|f| f != faction)
+            })
+        {
+            return Err(E::UnproducibleQueueEntry(id));
+        }
+        // The footprint needs no separate check: sizes are single digits,
+        // so an anchor inside the envelope keeps `anchor + size` inside it
+        // too.
+        if !tile_inside_envelope(*anchor) || !rally.is_none_or(tile_inside_envelope) {
+            return Err(E::BuildingOutsideEnvelope(id));
+        }
+        if !salvage_ledger_coherent(b) {
+            return Err(E::IncoherentSalvageLedger(id));
+        }
+        Ok(())
+    }
 
-        for (i, v) in self.vision.iter().enumerate() {
-            let seat = PlayerId::from_index(i);
-            for ghost in v.ghosts() {
-                // Renderers index the player table with this to pick a
-                // tint; an owner outside it is a panic, not a wrong color.
-                if usize::from(ghost.owner.0) >= players {
-                    return Err(E::ForeignGhostOwner(seat));
+    /// The occupancy grid marks each cell present or absent, so two
+    /// footprints that both mark it would leave a hole when either one is
+    /// cleared. Buried charges and provisional sites never mark, and may
+    /// legitimately sit over a hidden building.
+    fn validate_footprints(&self) -> Result<(), StateIntegrityError> {
+        let width = self.map.width();
+        let mut owner: Vec<Option<BuildingId>> = vec![None; cell_count(width, self.map.height())];
+        for b in self
+            .buildings
+            .iter()
+            .filter(|b| !b.kind.is_stealthy() && !b.provisional())
+        {
+            let (w, h) = b.kind.size();
+            for tile in (0..h).flat_map(|dy| (0..w).map(move |dx| b.anchor.offset(dx, dy))) {
+                if self.map.tile(tile).is_none() {
+                    continue;
                 }
-                if self.players[usize::from(ghost.owner.0)].team == self.players[i].team {
-                    return Err(E::FriendlyGhost(seat));
+                let cell = &mut owner[tile.row_major(width)];
+                if let Some(other) = *cell {
+                    return Err(StateIntegrityError::OverlappingBuildings(other, b.id));
                 }
-                if !tile_inside_envelope(ghost.anchor) {
-                    return Err(E::GhostOutsideEnvelope(seat));
-                }
+                *cell = Some(b.id);
             }
-            // The real sort key carries the owner; two seats can hold
-            // footprints a memory records under the same corner.
-            let ghost_key = |g: &crate::vision::GhostBuilding| (g.anchor.y, g.anchor.x, g.owner);
-            if !v
-                .ghosts()
-                .windows(2)
-                .all(|a| ghost_key(&a[0]) <= ghost_key(&a[1]))
-            {
-                return Err(E::UnsortedGhosts(seat));
+        }
+        Ok(())
+    }
+
+    fn validate_crash(&self, i: usize, crash: &AircraftCrash) -> Result<(), StateIntegrityError> {
+        let AircraftCrash {
+            unit,
+            player,
+            kind,
+            heading: _,
+            launch,
+            impact,
+            started,
+            arrival,
+        } = crash;
+        let live = self
+            .units
+            .iter()
+            .any(|u| u.id == *unit || u.cargo.iter().any(|rider| rider.id == *unit));
+        let earlier = &self.aircraft_crashes[..i];
+        if usize::from(player.0) >= self.players.len()
+            || unit.0 >= self.next_unit_id
+            || live
+            || kind.stats().crash.is_none()
+            || !point_inside_envelope(*launch)
+            || !point_inside_envelope(*impact)
+            || *started >= self.tick
+            || *arrival < self.tick
+            || arrival.checked_sub(*started) != Some(crate::stats::AIRCRAFT_CRASH_TICKS)
+            || self.result.is_some()
+            || earlier
+                .last()
+                .is_some_and(|prev| (prev.started, prev.unit) >= (*started, *unit))
+            || earlier.iter().any(|other| other.unit == *unit)
+        {
+            return Err(StateIntegrityError::InvalidAircraftCrash(i));
+        }
+        let reach = kind.stats().speed * Fx::from_num(crate::stats::AIRCRAFT_CRASH_TICKS);
+        if launch.dist_sq(*impact) > reach * reach {
+            return Err(StateIntegrityError::InvalidAircraftCrash(i));
+        }
+        Ok(())
+    }
+
+    fn validate_shell(&self, i: usize, s: &Shell) -> Result<(), StateIntegrityError> {
+        use StateIntegrityError as E;
+        // Arrival and damage only change play: landing compares ticks and
+        // damage saturates, so neither can overflow. The payload kind only
+        // drives presentation.
+        let Shell {
+            kind: _,
+            shooter,
+            player,
+            launch,
+            impact,
+            launched_at,
+            arrival,
+            damage: _,
+            targets: _,
+            splash,
+        } = s;
+        // Shells carry a seat too: hostile() indexes the player table on
+        // impact, so a foreign owner would panic ticks after acceptance.
+        if usize::from(player.0) >= self.players.len() {
+            return Err(E::ForeignShellOwner(i));
+        }
+        if !point_inside_envelope(*launch)
+            || !point_inside_envelope(*impact)
+            || splash.is_some_and(|r| r < Fx::ZERO || r > Fx::from_num(COORD_ENVELOPE))
+        {
+            return Err(E::ShellOutsideEnvelope(i));
+        }
+        if !self.minted(*shooter) {
+            return Err(E::UnmintedShellShooter(i));
+        }
+        if launched_at > arrival {
+            return Err(E::ShellLaunchedAfterArrival(i));
+        }
+        Ok(())
+    }
+
+    fn validate_vision(
+        &self,
+        seat: PlayerId,
+        v: &crate::vision::Vision,
+    ) -> Result<(), StateIntegrityError> {
+        use StateIntegrityError as E;
+        let i = usize::from(seat.0);
+        for ghost in v.ghosts() {
+            // Renderers index the player table with this to pick a tint; an
+            // owner outside it is a panic, not a wrong color.
+            if usize::from(ghost.owner.0) >= self.players.len() {
+                return Err(E::ForeignGhostOwner(seat));
             }
-            if v.contacts().iter().any(|t| !tile_inside_envelope(*t)) {
-                return Err(E::ContactOutsideEnvelope(seat));
+            if self.players[usize::from(ghost.owner.0)].team == self.players[i].team {
+                return Err(E::FriendlyGhost(seat));
             }
-            // Blips are sorted and deduplicated every refresh.
-            if !v
-                .contacts()
-                .windows(2)
-                .all(|a| (a[0].y, a[0].x) < (a[1].y, a[1].x))
-            {
-                return Err(E::UnsortedContacts(seat));
+            if !tile_inside_envelope(ghost.anchor) {
+                return Err(E::GhostOutsideEnvelope(seat));
             }
-            if v.salvage_incidents().len() > crate::stats::HARVEST_INCIDENT_CAP {
-                return Err(E::OverlongSalvageIncidentMemory(seat));
-            }
-            if v.salvage_incidents()
+        }
+        // The real sort key carries the owner; two seats can hold footprints
+        // a memory records under the same corner. Equal keys are reachable:
+        // a buried charge's memory can outlive its unseen anchor while its
+        // owner builds over the spot.
+        let ghost_key = |g: &crate::vision::GhostBuilding| (g.anchor.y, g.anchor.x, g.owner);
+        if !v
+            .ghosts()
+            .windows(2)
+            .all(|a| ghost_key(&a[0]) <= ghost_key(&a[1]))
+        {
+            return Err(E::UnsortedGhosts(seat));
+        }
+        if v.contacts().iter().any(|t| !tile_inside_envelope(*t)) {
+            return Err(E::ContactOutsideEnvelope(seat));
+        }
+        // Blips are sorted and deduplicated every refresh.
+        if !v
+            .contacts()
+            .windows(2)
+            .all(|a| (a[0].y, a[0].x) < (a[1].y, a[1].x))
+        {
+            return Err(E::UnsortedContacts(seat));
+        }
+        let incidents = v.salvage_incidents();
+        if incidents.len() > crate::stats::HARVEST_INCIDENT_CAP {
+            return Err(E::OverlongSalvageIncidentMemory(seat));
+        }
+        if incidents
+            .iter()
+            .any(|incident| !tile_inside_envelope(incident.tile))
+        {
+            return Err(E::SalvageIncidentOutsideEnvelope(seat));
+        }
+        if self.result.is_none()
+            && incidents
                 .iter()
-                .any(|incident| !tile_inside_envelope(incident.tile))
-            {
-                return Err(E::SalvageIncidentOutsideEnvelope(seat));
-            }
-            if self.result.is_none()
-                && v.salvage_incidents()
-                    .iter()
-                    .any(|incident| incident.expires_at < self.tick)
-            {
-                return Err(E::ExpiredSalvageIncident(seat));
-            }
-            let expiry_horizon = self
-                .tick
-                .saturating_add(crate::stats::HARVEST_INCIDENT_MEMORY_TICKS);
-            if v.salvage_incidents()
-                .iter()
-                .any(|incident| incident.expires_at > expiry_horizon)
-            {
-                return Err(E::SalvageIncidentExpiryBeyondHorizon(seat));
-            }
-            if !v
-                .salvage_incidents()
-                .windows(2)
-                .all(|a| (a[0].tile.y, a[0].tile.x) < (a[1].tile.y, a[1].tile.x))
-            {
-                return Err(E::UnsortedSalvageIncidents(seat));
-            }
-            if !v.tracking_valid(self, seat) {
-                return Err(E::InvalidContactTracking(seat));
-            }
-            if let Some(other) = (0..i).find(|&j| self.players[j].team == self.players[i].team)
-                && !v.shares_tracking(&self.vision[other])
-            {
-                return Err(E::InvalidContactTracking(seat));
-            }
+                .any(|incident| incident.expires_at < self.tick)
+        {
+            return Err(E::ExpiredSalvageIncident(seat));
+        }
+        let expiry_horizon = self
+            .tick
+            .saturating_add(crate::stats::HARVEST_INCIDENT_MEMORY_TICKS);
+        if incidents
+            .iter()
+            .any(|incident| incident.expires_at > expiry_horizon)
+        {
+            return Err(E::SalvageIncidentExpiryBeyondHorizon(seat));
+        }
+        if !incidents
+            .windows(2)
+            .all(|a| (a[0].tile.y, a[0].tile.x) < (a[1].tile.y, a[1].tile.x))
+        {
+            return Err(E::UnsortedSalvageIncidents(seat));
+        }
+        if !v.tracking_valid(self, seat) {
+            return Err(E::InvalidContactTracking(seat));
+        }
+        if let Some(other) = (0..i).find(|&j| self.players[j].team == self.players[i].team)
+            && !v.shares_tracking(&self.vision[other])
+        {
+            return Err(E::InvalidContactTracking(seat));
         }
         Ok(())
     }
@@ -1765,7 +2212,7 @@ impl State {
             .iter()
             .map(|building| {
                 building.focus.is_none_or(|target| {
-                    building.built
+                    building.built()
                         && self
                             .attack_view(building.player, target)
                             .is_some_and(|view| {
@@ -1789,7 +2236,8 @@ impl State {
                 if self.attack_view(unit.player, target).is_some_and(|view| {
                     view.domain.is_none_or(|domain| {
                         stats.can_target(domain)
-                            || (stats.demolition && domain == crate::stats::Domain::Ground)
+                            || (stats.demolition.is_some()
+                                && domain == crate::stats::Domain::Ground)
                     })
                 }) {
                     break;
@@ -1860,11 +2308,10 @@ impl State {
     }
 
     /// Whether a unit may stand on `pos`: ground terrain, no live scrap, no
-    /// building. Units never block tiles — overlap is resolved by the
+    /// building. Units never block tiles; overlap is resolved by the
     /// separation phase instead. A buried charge blocks nothing: a mine
-    /// that closed its tile could never be stepped on, and worse, enemy
-    /// pathfinding routing around it would leak its position through
-    /// movement — the stealth would tell on itself.
+    /// that closed its tile could never be stepped on, and enemy
+    /// pathfinding routing around it would leak its position.
     pub fn passable(&self, pos: TilePos) -> bool {
         self.map.terrain_passable(pos) && !self.building_blocks(pos)
     }
@@ -1897,7 +2344,7 @@ impl State {
         for unit in self.units.iter().filter(|u| {
             u.hp > 0
                 && u.domain() == crate::stats::Domain::Ground
-                && u.drive_speed == Fx::ZERO
+                && u.drive_speed() == Fx::ZERO
                 && u.path.is_none()
                 && !self.hostile(player, u.player)
         }) {
@@ -1912,13 +2359,13 @@ impl State {
     /// Stealthy kinds never mark: a buried charge blocks nothing.
     pub(crate) fn stamp_building_occupancy(&mut self, building_index: usize, present: bool) {
         let b = &self.buildings[building_index];
-        if b.kind.is_stealthy() || b.provisional {
+        if b.kind.is_stealthy() || b.provisional() {
             return;
         }
         let (anchor, kind) = (b.anchor, b.kind);
         let width = self.map.width();
         let height = self.map.height();
-        let (w, h) = kind.base_stats().size;
+        let (w, h) = kind.size();
         for dy in 0..h {
             for dx in 0..w {
                 // Checked: this runs on deserialized bytes BEFORE the
@@ -1951,9 +2398,8 @@ impl State {
     }
 
     /// Whether a unit of the given movement domain may stand on `pos`.
-    /// Ground units need open terrain and no building; air units need the
-    /// map itself minus peaks — rock, scrap, and roofs mean nothing up
-    /// there, but a mountain owns its column of sky.
+    /// Ground units need open terrain and no building; air units need any
+    /// map tile except a peak.
     pub fn passable_for(&self, domain: crate::stats::Domain, pos: TilePos) -> bool {
         match domain {
             crate::stats::Domain::Ground => self.passable(pos),
@@ -1964,8 +2410,9 @@ impl State {
     }
 
     /// Whether `viewer` may observe this building's current condition, over
-    /// and above ordinary tile sight. Retained memory is a separate surface. True for everything except an
-    /// completed enemy [`BuildingKind::is_stealthy`] charge, which must be
+    /// and above ordinary tile sight. Retained memory is a separate surface.
+    /// True for everything except a completed enemy
+    /// [`BuildingKind::is_stealthy`] charge, which must be
     /// actively detected: an allied scout-role flyer within
     /// [`crate::stats::CHARGE_SCOUT_DETECT_RADIUS`] tiles, or an allied
     /// built Array whose detection ring covers it —
@@ -1976,10 +2423,12 @@ impl State {
     /// Every fog-honest surface — ghosts, targeting, views, rendering —
     /// must consult this before showing a hostile building.
     pub fn building_apparent(&self, viewer: PlayerId, building: &Building) -> bool {
-        if building.provisional {
+        if building.provisional() {
             return !self.hostile(viewer, building.player);
         }
-        if !building.kind.is_stealthy() || !building.built || !self.hostile(viewer, building.player)
+        if !building.kind.is_stealthy()
+            || !building.built()
+            || !self.hostile(viewer, building.player)
         {
             return true;
         }
@@ -2002,7 +2451,7 @@ impl State {
         let base_r = crate::stats::CHARGE_BASE_ARRAY_DETECT_RADIUS;
         self.buildings.iter().any(|b| {
             b.hp > 0
-                && b.built
+                && b.built()
                 && b.kind == BuildingKind::Array
                 && !self.hostile(viewer, b.player)
                 && {
@@ -2018,40 +2467,17 @@ impl State {
     pub(crate) fn spawn_unit(&mut self, player: PlayerId, kind: UnitKind, pos: Vec2Fx) -> UnitId {
         let id = UnitId(self.next_unit_id);
         self.next_unit_id += 1;
-        self.units.push(Unit {
-            id,
-            player,
-            kind,
-            pos,
-            air_motion: Vec2Fx::ZERO,
-            hp: kind.stats().max_hp,
-            carrying: 0,
-            unloading: None,
-            cooldowns: [0; crate::stats::MAX_WEAPONS],
-            brace_ticks: 0,
-            turret_heading: None,
-            drive_speed: Fx::ZERO,
-            stall_ticks: 0,
-            danger_retry_at: None,
-            progress: 0,
-            order: Order::Idle,
-            queue: std::collections::VecDeque::new(),
-            looping: false,
-            path: None,
-            leash: None,
-            settled: 0,
-            // Every unit starts facing the map centre, so mirrored seats'
-            // units start mirrored, aircraft included: a turning flyer's
-            // first heading decides how long it takes to come about.
-            heading: chassis::compass::heading_of(
-                Vec2Fx::new(
-                    Fx::from_num(self.map.width()) / 2,
-                    Fx::from_num(self.map.height()) / 2,
-                ) - pos,
-            ),
-            landed: false,
-            cargo: Vec::new(),
-        });
+        // Every unit starts facing the map centre, so mirrored seats'
+        // units start mirrored, aircraft included: a turning flyer's first
+        // heading decides how long it takes to come about.
+        let heading = chassis::compass::heading_of(
+            Vec2Fx::new(
+                Fx::from_num(self.map.width()) / 2,
+                Fx::from_num(self.map.height()) / 2,
+            ) - pos,
+        );
+        self.units
+            .push(Unit::at_rest(id, player, kind, pos, heading));
         id
     }
 
@@ -2063,26 +2489,35 @@ impl State {
         kind: BuildingKind,
         anchor: TilePos,
     ) -> BuildingId {
+        let building = self.mint_building(player, kind, anchor);
+        self.insert_building(building)
+    }
+
+    /// A complete, full-health building with the next id, not yet placed.
+    fn mint_building(&mut self, player: PlayerId, kind: BuildingKind, anchor: TilePos) -> Building {
         let id = BuildingId(self.next_building_id);
         self.next_building_id += 1;
-        self.buildings.push(Building {
+        Building {
             id,
             player,
             kind,
             anchor,
             hp: kind.base_stats().max_hp,
             queue: std::collections::VecDeque::new(),
-            progress: 0,
+            phase: BuildingPhase::Built { training: 0 },
             rally: None,
             focus: None,
-            built: true,
-            provisional: false,
             tier: 0,
             cooldown: 0,
             salvage_drained: 0,
             salvage_credited: 0,
-            salvaged: false,
-        });
+        }
+    }
+
+    /// Appends a minted building and marks its occupancy.
+    fn insert_building(&mut self, building: Building) -> BuildingId {
+        let id = building.id;
+        self.buildings.push(building);
         self.stamp_building_occupancy(self.buildings.len() - 1, true);
         id
     }
@@ -2096,11 +2531,24 @@ impl State {
         kind: BuildingKind,
         anchor: TilePos,
     ) -> BuildingId {
-        let id = self.place_building(player, kind, anchor);
-        let b = self.building_mut(id).expect("just placed");
-        b.built = false;
-        b.hp = kind.base_stats().max_hp / 5;
-        id
+        let mut site = self.mint_building(player, kind, anchor);
+        site.phase = BuildingPhase::Site { progress: 0 };
+        site.hp = kind.base_stats().max_hp / 5;
+        self.insert_building(site)
+    }
+
+    /// Records a paid blueprint whose ground is not yet verified. It claims
+    /// no occupancy, so it may sit over a building its owner cannot see.
+    pub(crate) fn place_provisional_site(
+        &mut self,
+        player: PlayerId,
+        kind: BuildingKind,
+        anchor: TilePos,
+    ) -> BuildingId {
+        let mut site = self.mint_building(player, kind, anchor);
+        site.phase = BuildingPhase::Provisional;
+        site.hp = kind.base_stats().max_hp / 5;
+        self.insert_building(site)
     }
 
     /// Undoes a just-placed site completely, id counter included — for
@@ -2127,8 +2575,8 @@ fn footprint_distance(a: &Building, b: &Building) -> i32 {
         (a - b_far).max(b - a_far).max(0)
     }
 
-    let a_size = a.stats().size;
-    let b_size = b.stats().size;
+    let a_size = a.kind.size();
+    let b_size = b.kind.size();
     axis_distance(a.anchor.x, a_size.0, b.anchor.x, b_size.0)
         .max(axis_distance(a.anchor.y, a_size.1, b.anchor.y, b_size.1))
 }
@@ -2143,15 +2591,12 @@ fn footprint_distance(a: &Building, b: &Building) -> i32 {
 /// inside [`Fx`]'s integer range.
 const COORD_ENVELOPE: i32 = 8 * MAX_MAP_EDGE as i32;
 
-/// Ceiling on the tick meters a snapshot may carry ([`Unit::progress`],
-/// [`Building::progress`]). Construction, repair, and salvage all price a
-/// step as `ramp * (meter + 1) / ramp_ticks` in `u32`; an unbounded meter
-/// overflows that product. This bound keeps it inside the type for every
-/// shipped building and unit and sits far above any meter a match of
-/// playable length reaches. The live weld/salvage meters saturate just
-/// short of here (the economy brain's `metered` read), so a torch held
-/// on one job for millions of ticks keeps billing at its marginal rate
-/// instead of walking the product past `u32`.
+/// Ceiling on the tick meters a snapshot may carry ([`Unit::progress`] and
+/// a built building's training meter), far above any meter a match of
+/// playable length reaches. Construction and upgrade meters are bounded
+/// tighter, by their rung's build time. The live weld/salvage meters saturate just short of here (the
+/// economy brain's `metered` read), so a torch held on one job for millions
+/// of ticks keeps billing at its marginal rate and its meter never wraps.
 pub(crate) const PROGRESS_ENVELOPE: u32 = 1 << 21;
 
 /// Ceiling on a building's cumulative salvage ledger. Repairing a
@@ -2160,10 +2605,9 @@ pub(crate) const PROGRESS_ENVELOPE: u32 = 1 << 21;
 /// one, which keeps the running total clear of a `u32` wrap.
 const SALVAGE_LEDGER_CEILING: u32 = u32::MAX / 2;
 
-/// Ceiling on a snapshot's tick. `State::tick` increments unchecked;
-/// a forged `u64::MAX` panics on the very next step in a debug build
-/// and wraps in release. Half the type is ~14 trillion years at 20
-/// ticks/s — no honest record gets near it.
+/// Ceiling on a snapshot's tick. `State::tick` increments unchecked; a
+/// forged `u64::MAX` panics on the very next step in a debug build and
+/// wraps in release. Half the type is billions of years at 20 ticks/s.
 const TICK_ENVELOPE: u64 = u64::MAX / 2;
 
 /// Ceiling on the id counters. Spawning increments unchecked, and a
@@ -2196,12 +2640,12 @@ fn goal_inside_envelope(goal: &Goal) -> bool {
 }
 
 /// Whether every goal an order carries keeps its slot distinct from its
-/// clicked tile and its endpoint distinct from its target, the shapes that
-/// keep reachable orders byte-identical to legacy.
+/// clicked tile and its endpoint distinct from its target. Those shapes are
+/// never stored, so each order has one serialized form.
 fn order_goals_canonical(order: &Order) -> bool {
     match order {
         Order::Run { goal } | Order::Hunt { goal } | Order::Advance { goal } => goal.canonical(),
-        Order::Unload { at } => at.canonical(),
+        Order::Unload { at, .. } => at.canonical(),
         Order::Attack { resume, .. } => resume.as_ref().is_none_or(Goal::canonical),
         _ => true,
     }
@@ -2222,28 +2666,25 @@ fn order_inside_envelope(order: &Order) -> bool {
             goal_inside_envelope(goal)
         }
         Order::Harvest { node, anchor, .. } => {
-            tile_inside_envelope(*node) && anchor.is_none_or(tile_inside_envelope)
+            tile_inside_envelope(*node) && tile_inside_envelope(*anchor)
         }
         Order::Attack { resume, .. } => resume.as_ref().is_none_or(goal_inside_envelope),
         Order::Found { anchor, .. } => tile_inside_envelope(*anchor),
         Order::Board { .. } => true,
-        Order::Unload { at } => goal_inside_envelope(at),
+        Order::Unload { at, .. } => goal_inside_envelope(at),
         Order::Land { goal, from } => {
             tile_inside_envelope(*goal) && from.is_none_or(tile_inside_envelope)
         }
     }
 }
 
-/// An anchored Harvest order may change its active source, but only within
-/// the fixed local work zone. `None` is the legacy shape and defines a
-/// zone centered on `node`.
+/// A Harvest order may change its active source, but only within the fixed
+/// local work zone.
 fn harvest_order_inside_zone(order: &Order) -> bool {
     match order {
-        Order::Harvest {
-            node,
-            anchor: Some(anchor),
-            ..
-        } => node.chebyshev(*anchor) <= crate::stats::HARVEST_ZONE_RADIUS,
+        Order::Harvest { node, anchor, .. } => {
+            node.chebyshev(*anchor) <= crate::stats::HARVEST_ZONE_RADIUS
+        }
         _ => true,
     }
 }
@@ -2434,8 +2875,9 @@ pub enum StateIntegrityError {
     /// walking a ground route.
     #[error("unit {0} carries an invalid stall counter")]
     InvalidStallTicks(UnitId),
-    /// A detour retry scheduled further ahead than a failed search sets.
-    #[error("unit {0} carries a danger retry beyond its bound")]
+    /// A detour retry scheduled further ahead than a failed search sets, or
+    /// held by a unit that never harvests.
+    #[error("unit {0} carries an invalid danger retry")]
     InvalidDangerRetry(UnitId),
     /// A chase allowance or reacquisition cooldown exceeds its legal bound.
     #[error("unit {0} carries an invalid leash clock")]
@@ -2443,9 +2885,6 @@ pub enum StateIntegrityError {
     /// Motor speed exceeds the chassis limit or belongs to a stationary/air body.
     #[error("unit {0} carries invalid ground motor speed")]
     InvalidGroundSpeed(UnitId),
-    /// Only ground units with independent gun mounts carry a turret bearing.
-    #[error("unit {0} carries an unsupported independent turret heading")]
-    InvalidTurretHeading(UnitId),
     /// A unit's order queue is longer than [`crate::stats::ORDER_QUEUE_CAP`].
     #[error("unit {0} queues more orders than the cap allows")]
     OverlongUnitQueue(UnitId),
@@ -2472,12 +2911,13 @@ pub enum StateIntegrityError {
     /// A building's hit points sit outside `(0, max_hp]`.
     #[error("building {0} carries hit points its kind cannot hold")]
     BuildingHpOutOfRange(BuildingId),
-    /// A building's progress meter is past the ceiling.
-    #[error("building {0} carries a progress meter past the ceiling")]
+    /// A construction or upgrade meter is past its rung's build time, or
+    /// a training meter is past the ceiling.
+    #[error("building {0} carries a progress meter past its ceiling")]
     BuildingProgressOutOfRange(BuildingId),
-    /// An automatic upgrade's progress exceeds its tier-specific timer.
-    #[error("building {0} carries upgrade progress past its construction timer")]
-    UpgradeProgressOutOfRange(BuildingId),
+    /// A site sits above the base rung, or an upgrade climbs to it.
+    #[error("building {0} is in a phase its tier cannot hold")]
+    InvalidBuildingPhase(BuildingId),
     /// A building's cooldown is longer than its weapon's period.
     #[error("building {0} carries a cooldown its weapon never sets")]
     BuildingCooldownOutOfRange(BuildingId),
@@ -2491,8 +2931,8 @@ pub enum StateIntegrityError {
     /// [`crate::stats::QUEUE_CAP`].
     #[error("building {0} queues more units than the cap allows")]
     OverlongBuildingQueue(BuildingId),
-    /// A building queues a unit its kind cannot train, or one belonging to
-    /// the other faction's roster.
+    /// A building queues a unit its kind cannot train, one belonging to the
+    /// other faction's roster, or anything at all before it is built.
     #[error("building {0} queues a unit it could never train")]
     UnproducibleQueueEntry(BuildingId),
     /// A building's anchor or rally point sits outside the sanity
@@ -2506,38 +2946,26 @@ pub enum StateIntegrityError {
     /// A tier index past the kind's upgrade ladder.
     #[error("building {0} claims a tier its kind's ladder does not reach")]
     TierBeyondLadder(BuildingId),
-    /// A live building carries the transient marker cleanup uses to
-    /// distinguish a completed salvage from combat destruction.
-    #[error("building {0} is still live but marked salvaged")]
-    LiveBuildingMarkedSalvaged(BuildingId),
-    /// A machine with no sling claims to carry cargo.
-    #[error("unit {0} carries cargo without being a transport")]
-    CargoOnNonTransport(UnitId),
+    /// Two buildings that mark the occupancy grid cover the same tile.
+    #[error("buildings {0} and {1} overlap")]
+    OverlappingBuildings(BuildingId, BuildingId),
     /// A transport's riders total more room than its sling offers.
     #[error("unit {0} carries more cargo than its sling holds")]
     CargoBeyondCapacity(UnitId),
     /// A rider of a kind no sling can take (a flyer, or a transport).
     #[error("unit {0} carries a rider that can never be carried")]
     UncarriableCargo(UnitId),
+    /// A unit carries a part its kind does not have, or lacks one it does:
+    /// harvest gear, a motor of the wrong movement class, a turret bearing
+    /// without a ground turret, or cargo without a sling.
+    #[error("unit {0} carries parts that do not match its kind")]
+    UnitPartMismatch(UnitId),
     /// A rider outside the living hp range.
     #[error("unit {0} carries a rider with impossible hp")]
     CargoHpOutOfRange(UnitId),
-    /// A rider owned by someone other than the carrier.
-    #[error("unit {0} carries another player's machine")]
-    CargoOwnerMismatch(UnitId),
-    /// A rider holding live orders, paths, tethers, or its own cargo.
-    #[error("unit {0} carries a rider that is not dormant")]
-    CargoNotDormant(UnitId),
-    /// A rider whose progress meter exceeds the envelope walking units
-    /// are held to.
-    #[error("unit {0} carries a rider with an impossible progress meter")]
-    CargoProgressOutOfRange(UnitId),
     /// A rider whose weapon cooldowns exceed its own weapon table.
     #[error("unit {0} carries a rider with impossible weapon cooldowns")]
     CargoCooldownOutOfRange(UnitId),
-    /// A machine that cannot land is marked landed.
-    #[error("unit {0} is landed but is not an aircraft that can land")]
-    LandedNonAircraft(UnitId),
     /// A landed airframe resting farther from its tile center than a
     /// touchdown allows.
     #[error("unit {0} is landed off its tile center")]
@@ -2569,9 +2997,9 @@ pub enum StateIntegrityError {
     /// A shell was fired by an entity id this run never handed out.
     #[error("shell {0} was fired by an id the run never minted")]
     UnmintedShellShooter(usize),
-    /// A surviving shooter contradicts its projectile's retained identity.
-    #[error("shell {0} has a projectile kind inconsistent with its shooter")]
-    ShellKindMismatch(usize),
+    /// A shell lands before it launched, so its flight has no length.
+    #[error("shell {0} lands before it launched")]
+    ShellLaunchedAfterArrival(usize),
     /// A remembered building is owned by a player outside the table.
     #[error("player {0} remembers a building owned outside the table")]
     ForeignGhostOwner(PlayerId),
@@ -2610,13 +3038,27 @@ pub enum StateIntegrityError {
     UnsortedSalvageIncidents(PlayerId),
 }
 
+/// Slot i belongs to weapon i; slots past the roster stay zero for the
+/// machine's whole life.
+fn cooldowns_out_of_range(
+    cooldowns: [u32; crate::stats::MAX_WEAPONS],
+    stats: &crate::stats::UnitStats,
+) -> bool {
+    cooldowns.iter().enumerate().any(|(i, cd)| {
+        *cd > stats
+            .weapons
+            .get(i)
+            .map_or(0, |weapon| weapon.cooldown_ticks)
+    })
+}
+
 fn valid_air_motion(unit: &Unit) -> bool {
-    let motion = unit.air_motion;
+    let motion = unit.air_motion();
     let speed = unit.kind.stats().speed;
     if motion == Vec2Fx::ZERO {
         return true;
     }
-    unit.kind.crash_profile().is_some()
+    unit.kind.stats().crash.is_some()
         && unit.domain() == crate::stats::Domain::Air
         && motion.x >= -speed
         && motion.x <= speed
@@ -2661,6 +3103,8 @@ pub struct Shell {
     pub launch: Vec2Fx,
     /// Where it will land — fixed at fire time.
     pub impact: Vec2Fx,
+    /// The tick it launched on.
+    pub launched_at: Tick,
     /// The tick it resolves on.
     pub arrival: Tick,
     /// Damage on the direct hit.
@@ -2669,29 +3113,6 @@ pub struct Shell {
     pub targets: crate::stats::DomainMask,
     /// Splash radius, if the weapon splashes.
     pub splash: Option<chassis::fx::Fx>,
-}
-
-/// Physical identity of an in-flight payload, independent of its damage.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProjectileKind {
-    /// An artillery shell.
-    Shell,
-    /// An Avalanche missile.
-    Missile,
-    /// An air-dropped bomb.
-    Bomb,
-}
-
-impl ProjectileKind {
-    /// Payload identity for a unit's projectile weapon.
-    pub const fn for_unit(kind: UnitKind) -> Self {
-        match kind {
-            UnitKind::Avalanche => Self::Missile,
-            UnitKind::Condor | UnitKind::Moth => Self::Bomb,
-            _ => Self::Shell,
-        }
-    }
 }
 
 /// The wire shape of [`State`]: a private mirror that derives the actual
@@ -2706,7 +3127,6 @@ struct StateWire {
     #[serde(default)]
     mode: crate::scenario::ScenarioMode,
     tick: Tick,
-    rng: Pcg32,
     map: Map,
     players: Vec<Player>,
     vision: Vec<crate::vision::Vision>,
@@ -2726,7 +3146,6 @@ impl From<StateWire> for State {
         let StateWire {
             mode,
             tick,
-            rng,
             map,
             players,
             vision,
@@ -2742,7 +3161,6 @@ impl From<StateWire> for State {
             mode,
             building_occupancy: Vec::new(),
             tick,
-            rng,
             map,
             players,
             vision,
@@ -2764,11 +3182,6 @@ impl<'de> Deserialize<'de> for State {
         state
             .validate_invariants()
             .map_err(serde::de::Error::custom)?;
-        if crate::vision::initialize_legacy_tracking(&mut state) {
-            state
-                .validate_invariants()
-                .map_err(serde::de::Error::custom)?;
-        }
         Ok(state)
     }
 }

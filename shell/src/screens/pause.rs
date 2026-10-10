@@ -19,9 +19,8 @@ fn naming_hint(touch_only: bool) -> &'static str {
 }
 
 /// One pause row. The row set is conditional (Watch Replay only once
-/// the match is decided), so rows are values, not indices — the
-/// confirm step and the cursor return key off the row itself, and a
-/// new conditional row costs one variant, not an index-shift audit.
+/// the match is decided), so rows are values, not indices: the confirm
+/// step and the cursor return key off the row itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Row {
     /// Back to the match.
@@ -243,8 +242,13 @@ impl PauseScreen {
 
     /// Shows `notice` as the subtitle until the next activation.
     pub fn with_notice(mut self, notice: impl Into<String>) -> Self {
-        self.notice = Some(notice.into());
+        self.show_notice(notice);
         self
+    }
+
+    /// Shows `notice` as the subtitle until the next activation.
+    pub fn show_notice(&mut self, notice: impl Into<String>) {
+        self.notice = Some(notice.into());
     }
 
     /// Longest save name the field accepts — what the shelf row can
@@ -252,8 +256,7 @@ impl PauseScreen {
     pub const NAME_MAX: usize = 26;
 
     /// Opens the name field over the pause menu, prefilled with the
-    /// caller's suggestion so Enter-Enter saves without typing (the
-    /// Start-preselected doctrine).
+    /// caller's suggestion so Enter-Enter saves without typing.
     pub fn begin_naming(&mut self, suggested: &str) {
         let field = TextField::new("SAVE GAME", "SAVE", suggested, Self::NAME_MAX);
         self.menu = field.menu();
@@ -276,9 +279,8 @@ impl PauseScreen {
 
     /// Opens straight onto the save-failure dialog: a leave verb's
     /// autosave refused, and exiting silently would be data loss. The
-    /// safe Cancel row sits preselected (the destructive-confirm house
-    /// pattern); Leave without saving is always reachable, so a full
-    /// disk can never trap the player in the game.
+    /// safe Cancel row sits preselected; Leave without saving is always
+    /// reachable, so a full disk can never trap the player in the game.
     pub fn with_save_failed(mut self, line: String, verb: LeaveVerb, cancel_home: bool) -> Self {
         let mut menu = Menu::new(
             "COULD NOT SAVE",

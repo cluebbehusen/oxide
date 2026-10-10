@@ -21,7 +21,6 @@ fn arena(scrap: u32, units: Vec<UnitSpec>, buildings: Vec<BuildingSpec>) -> Scen
     Scenario {
         mode: ScenarioMode::Match,
         name: "extractor-arena".into(),
-        seed: 7,
         map: vec![
             "####################".into(),
             "#1.................#".into(),
@@ -96,7 +95,6 @@ fn support_arena(
     Scenario {
         mode: ScenarioMode::Match,
         name: "extractor-support-arena".into(),
-        seed: 17,
         map: tiles
             .into_iter()
             .map(|row| row.into_iter().collect())
@@ -139,7 +137,6 @@ fn fog_arena(units: Vec<UnitSpec>) -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "extractor-fog-arena".into(),
-        seed: 11,
         map: vec![
             "################################".into(),
             "#1..........................2..#".into(),
@@ -310,8 +307,8 @@ fn one_explored_corner_allows_deferred_extractor_construction() {
                 .find(|b| b.anchor == FOG_FRAME)
                 .unwrap();
             let site_id = site.id;
-            assert!(site.provisional);
-            assert_eq!(site.progress, 0);
+            assert!(site.provisional());
+            assert_eq!(site.construction_progress().unwrap_or(0), 0);
             assert_eq!(state.player(PlayerId(0)).scrap, bank - 100);
             state.validate_invariants().unwrap();
             let mut restored: State =
@@ -320,11 +317,11 @@ fn one_explored_corner_allows_deferred_extractor_construction() {
             for _ in 0..1_000 {
                 state.tick(&[]);
                 restored.tick(&[]);
-                if state.building(site_id).unwrap().built {
+                if state.building(site_id).unwrap().built() {
                     break;
                 }
             }
-            assert!(state.building(site_id).unwrap().built);
+            assert!(state.building(site_id).unwrap().built());
             assert_eq!(state.hash(), restored.hash());
         }
     }
@@ -342,8 +339,8 @@ fn one_visible_corner_discloses_an_enemy_extractor_site() {
         .iter()
         .find(|b| b.anchor == FOG_FRAME)
         .unwrap();
-    assert!(!site.built);
-    assert!(!site.provisional);
+    assert!(!site.built());
+    assert!(!site.provisional());
     assert!(state.vision(PlayerId(0)).visible(FOG_FRAME));
     assert!(!state.vision(PlayerId(0)).explored(FOG_FRAME.offset(1, 1)));
     assert!(state.building_apparent(PlayerId(0), site));
@@ -402,12 +399,15 @@ fn an_unseen_unit_on_a_discovered_frame_only_blocks_when_revealed() {
             .find(|b| b.anchor == FOG_FRAME)
             .unwrap();
         let site_id = site.id;
-        assert!(site.provisional);
+        assert!(site.provisional());
         assert_eq!(state.player(PlayerId(0)).scrap, 900);
         let mut events = Vec::new();
         for _ in 0..200 {
             events.extend(state.tick(&[]).events);
-            if state.building(site_id).is_none_or(|site| !site.provisional) {
+            if state
+                .building(site_id)
+                .is_none_or(|site| !site.provisional())
+            {
                 break;
             }
         }
@@ -418,7 +418,7 @@ fn an_unseen_unit_on_a_discovered_frame_only_blocks_when_revealed() {
                 Event::BuildCancelled { building, refund: 100, .. } if *building == site_id
             )));
         } else {
-            assert!(!state.building(site_id).unwrap().provisional);
+            assert!(!state.building(site_id).unwrap().provisional());
         }
         state.validate_invariants().unwrap();
     }
@@ -532,7 +532,7 @@ fn enemy_provisional_extractor_keeps_the_visible_frame_available_until_activatio
         .find(|building| building.anchor == FOG_FRAME)
         .unwrap();
     let site_id = site.id;
-    assert!(site.provisional);
+    assert!(site.provisional());
     assert!(!state.building_apparent(PlayerId(0), site));
     assert!(!state.extractor_frame_claim_known(PlayerId(0), FOG_FRAME));
     assert!(state.extractor_frame_claim_known(PlayerId(1), FOG_FRAME));
@@ -541,7 +541,7 @@ fn enemy_provisional_extractor_keeps_the_visible_frame_available_until_activatio
     let mut contested = state.clone();
     contested.tick(&[build(0, observer, BuildingKind::Extractor, FOG_FRAME)]);
     assert!(contested.buildings().iter().any(|building| {
-        building.anchor == FOG_FRAME && building.player == PlayerId(0) && !building.provisional
+        building.anchor == FOG_FRAME && building.player == PlayerId(0) && !building.provisional()
     }));
     assert!(contested.extractor_frame_claim_known(PlayerId(0), FOG_FRAME));
     let mut events = Vec::new();
@@ -560,14 +560,14 @@ fn enemy_provisional_extractor_keeps_the_visible_frame_available_until_activatio
 
     for _ in 0..500 {
         state.tick(&[]);
-        if !state.building(site_id).unwrap().provisional {
+        if !state.building(site_id).unwrap().provisional() {
             break;
         }
     }
     let site = state.building(site_id).unwrap();
-    assert!(!site.provisional);
-    assert!(!site.built);
-    assert_eq!(site.progress, 0);
+    assert!(!site.provisional());
+    assert!(!site.built());
+    assert_eq!(site.construction_progress().unwrap_or(0), 0);
     assert!(state.building_apparent(PlayerId(0), site));
     assert!(state.extractor_frame_claim_known(PlayerId(0), FOG_FRAME));
     assert!(!state.can_place(PlayerId(0), BuildingKind::Extractor, FOG_FRAME));
@@ -616,7 +616,7 @@ fn an_extractor_stands_only_on_its_frame_and_nothing_paves_one() {
         state
             .buildings()
             .iter()
-            .any(|b| b.kind == BuildingKind::Extractor && b.anchor == FRAME && !b.built),
+            .any(|b| b.kind == BuildingKind::Extractor && b.anchor == FRAME && !b.built()),
         "the restoration site stands on the frame"
     );
 }
@@ -758,14 +758,14 @@ fn an_unfinished_foundry_does_not_support_until_construction_completes() {
             building.kind == BuildingKind::Foundry && building.anchor == SUPPORT_FOUNDRY
         })
         .expect("the legal expansion command places a site");
-    assert!(!expansion.built);
+    assert!(!expansion.built());
     let expansion = expansion.id;
     assert_eq!(state_income(&state, extractor), ExtractorIncome::Remote);
 
     for _ in 0..1_000 {
         if state
             .building(expansion)
-            .is_some_and(|building| building.built)
+            .is_some_and(oxide_sim::Building::built)
         {
             break;
         }
@@ -774,7 +774,7 @@ fn an_unfinished_foundry_does_not_support_until_construction_completes() {
     assert!(
         state
             .building(expansion)
-            .is_some_and(|building| building.built),
+            .is_some_and(oxide_sim::Building::built),
         "the adjacent Harvester completes the expansion"
     );
     assert_eq!(state_income(&state, extractor), ExtractorIncome::Supported);

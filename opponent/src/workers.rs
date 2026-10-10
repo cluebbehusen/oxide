@@ -68,12 +68,12 @@ pub(crate) fn worker(kind: UnitKind) -> bool {
     kind.stats().harvest.is_some()
 }
 
-/// Harvester slots a worker of `kind` fills: an Excavator mines at twice a
-/// Harvester's rate.
+/// Harvester slots a worker of `kind` fills: its mining rate over a
+/// Harvester's, so an Excavator, twice as fast, fills two.
 fn slots(kind: UnitKind) -> usize {
-    match kind {
-        UnitKind::Excavator => 2,
-        kind if worker(kind) => 1,
+    let per_scrap = |kind: UnitKind| kind.stats().harvest.map(|harvest| harvest.ticks_per_scrap);
+    match (per_scrap(UnitKind::Harvester), per_scrap(kind)) {
+        (Some(harvester), Some(ticks)) => (harvester / ticks.max(1)).max(1) as usize,
         _ => 0,
     }
 }
@@ -148,8 +148,8 @@ pub(crate) fn train(
     }
 }
 
-/// Brings workers away from home back from armed enemies in sight, sends a
-/// worker to each unattended construction site, welds a damaged building,
+/// Brings workers away from home back out of known enemy fire, sends a
+/// worker to each unattended construction site, welds damaged buildings,
 /// then sends idle workers to the least-worked node whose route and site are
 /// clear of known danger.
 pub(crate) fn run(
@@ -195,7 +195,7 @@ fn flee(
     if hazards.is_empty() {
         return;
     }
-    let size = BuildingKind::Foundry.base_stats().size;
+    let size = BuildingKind::Foundry.size();
     for unit in &observation.my_units {
         let working = unit.idle || unit.harvesting.is_some();
         if !worker(unit.kind) || !working || ledger.employs(unit.id) {
@@ -239,7 +239,7 @@ fn refuge(
     foundries: &[&BuildingObs],
     tile: TilePos,
 ) -> Option<TilePos> {
-    let size = BuildingKind::Foundry.base_stats().size;
+    let size = BuildingKind::Foundry.size();
     let ground = map.component(tile)?;
     let from = doubled(tile);
     foundries
@@ -280,9 +280,9 @@ fn weld(
             if hp * 1_000 > max * u64::from(1_000 - WELD_DAMAGE) {
                 return None;
             }
-            let size = building.kind.base_stats().size;
+            let size = building.kind.size();
             let threatened = observation.enemy_units.iter().any(|enemy| {
-                !enemy.kind.stats().weapons.is_empty()
+                enemy.kind.stats().can_fight()
                     && gap(building.anchor, size, enemy.tile, (1, 1)) <= WELD_CLEARANCE
             });
             let centre = footprint_centre(building.kind, building.anchor);
@@ -497,7 +497,7 @@ fn danger(map: &MapModel, scratch: &Scratch) -> Grid<bool> {
     for hazard in &scratch.ground {
         hazard.tiles().for_each(&mut mark);
     }
-    let (foundry_width, foundry_height) = BuildingKind::Foundry.base_stats().size;
+    let (foundry_width, foundry_height) = BuildingKind::Foundry.size();
     for anchor in scratch.enemy_foundries() {
         for dy in -(HOME_TILES + 1)..=foundry_height + HOME_TILES {
             for dx in -(HOME_TILES + 1)..=foundry_width + HOME_TILES {
@@ -520,7 +520,7 @@ fn clear_route(
     homes: &[&BuildingObs],
     node: TilePos,
 ) -> bool {
-    let size = BuildingKind::Foundry.base_stats().size;
+    let size = BuildingKind::Foundry.size();
     let mut tile = node;
     let mut distance = map.distance(me, tile);
     loop {
@@ -593,7 +593,7 @@ fn room(observation: &ObservationData, map: &MapModel, node: TilePos, component:
             .chain(&observation.ally_buildings)
             .chain(&observation.enemy_buildings)
             .any(|building| {
-                let (width, height) = building.kind.base_stats().size;
+                let (width, height) = building.kind.size();
                 (building.anchor.x..building.anchor.x + width).contains(&tile.x)
                     && (building.anchor.y..building.anchor.y + height).contains(&tile.y)
             })

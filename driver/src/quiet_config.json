@@ -1,0 +1,15 @@
+{
+  "markers": { "start": 24.0, "end": 16.0, "scale": 1.0 },
+  "performance_display": "off",
+  "version": 1,
+  "bindings": { "bindings": [], "secondary": [] },
+  "volumes": { "master": 0.0, "effects": 0.0, "ui": 0.0, "music": 0.0 },
+  "ui_scale": 1.0,
+  "camera": { "pan_speed": 1.0, "edge_pan": false, "zoom_inverted": false },
+  "window": [1280, 800],
+  "reduced_motion": false,
+  "colorblind": false,
+  "control_groups": true,
+  "touch": { "double_tap_ms": 300, "long_press_ms": 350 },
+  "last_join_address": null
+}

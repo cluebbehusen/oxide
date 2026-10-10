@@ -1,12 +1,11 @@
-//! The shared command panel: one HUD grammar for everything selected.
+//! The shared command panel for whatever is selected.
 //!
-//! Click a building and its cards appear — portrait, production cards
-//! with sprites and costs, the queue as cancelable thumbnails. Click a
-//! harvester and the *same* panel shows the build palette and its order
-//! queue. Every card is a button routed through the exact action its
-//! hotkey dispatches (keyboard stays first-class), and hovering any
-//! card raises a tooltip: what it is, what it costs, how it fights, and
-//! the key that does the same thing.
+//! A building shows its portrait, production cards with sprites and
+//! costs, and its queue as cancelable thumbnails; a harvester shows the
+//! build palette and its order queue. Every card is a button routed
+//! through the action its hotkey dispatches, and hovering any card raises
+//! a tooltip: what it is, what it costs, how it fights, and the key that
+//! does the same thing.
 
 pub(crate) mod info;
 mod upgrade;
@@ -51,8 +50,8 @@ pub enum CardIcon {
     },
 }
 
-/// What an order chip is ABOUT, with the colors that subject actually
-/// wears — an attack victim is not the panel owner's faction.
+/// What an order chip is about, with the colors that subject actually
+/// wears: an attack victim is not the panel owner's faction.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum OrderSubject {
     /// A machine: an attack victim.
@@ -185,10 +184,9 @@ pub struct Card {
     pub why: Option<String>,
     /// Tooltip body: description plus weapon lines.
     pub desc: Vec<String>,
-    /// How far along the card's job is, 0-1, when it has one — the
-    /// production head's bar and an order chip's own meter. The
-    /// renderer draws this and never reaches back into the state for
-    /// it; the panel model is the one description of the panel.
+    /// How far along the card's job is, 0-1, when it has one: the
+    /// production head's bar and an order chip's own meter. The renderer
+    /// draws this rather than reading the state itself.
     pub progress: Option<f32>,
 }
 
@@ -220,9 +218,8 @@ pub struct Panel {
     pub summary: String,
     /// Portrait icon.
     pub portrait: CardIcon,
-    /// Whose colors the portrait and queue sprites wear — the SELECTED
-    /// entity's owner, not the viewer (an inspected Cupric ally must
-    /// not draw in Ferrous rust).
+    /// Whose colors the portrait and queue sprites wear: the selected
+    /// entity's owner, not the viewer's.
     pub faction: oxide_sim::Faction,
     /// A mixed selection's unit-kind filters. Kept separate from
     /// command cards so choosing a roster slice can never crowd out a
@@ -255,11 +252,11 @@ impl Panel {
     }
 }
 
-/// The selection's SUBJECT: the unit whose program the dock, the
-/// portrait, and the full-opacity breadcrumbs all describe — one rule,
-/// so the surfaces can never disagree. Majority kind first (a mixed
-/// army reads as its bulk, not its lowest id), lowest id inside it as
-/// the deterministic tie-break.
+/// The selection's subject: the unit whose program the dock, the
+/// portrait, and the full-opacity breadcrumbs all describe, so those
+/// surfaces agree. Majority kind first (a mixed army reads as its bulk,
+/// not its lowest id), lowest id inside it as the deterministic
+/// tie-break.
 pub fn subject_unit(game: &Scene<'_>) -> Option<oxide_sim::UnitId> {
     let units: Vec<_> = game
         .presentation
@@ -285,9 +282,8 @@ pub fn subject_unit(game: &Scene<'_>) -> Option<oxide_sim::UnitId> {
         .min()
 }
 
-/// The player-facing description per unit kind — the sim's own copy
-/// ([`UnitKind::blurb`]), so the tooltip, the codex, and the source
-/// never drift apart.
+/// The player-facing description per unit kind: the sim's own copy
+/// ([`UnitKind::blurb`]), shared by the tooltip and the codex.
 pub fn unit_flavor(kind: UnitKind) -> &'static str {
     kind.blurb()
 }
@@ -317,9 +313,10 @@ pub fn building_stat_line(kind: BuildingKind) -> String {
     let build = stats.construction.map_or(0.0, |c| {
         c.build_ticks as f32 / oxide_sim::TICKS_PER_SECOND as f32
     });
+    let (width, height) = kind.size();
     format!(
-        "{} hp | {build:.1} s build | {}x{} | sight {}",
-        stats.max_hp, stats.size.0, stats.size.1, stats.vision
+        "{} hp | {build:.1} s build | {width}x{height} | sight {}",
+        stats.max_hp, stats.vision
     )
 }
 
@@ -351,7 +348,7 @@ pub fn building_economy_lines(kind: BuildingKind) -> Vec<String> {
 
 /// Current recurring output; harvesting and temporary recovery grants are separate.
 pub(crate) fn building_income(game: &Scene<'_>, building: &oxide_sim::state::Building) -> u32 {
-    if building.player != game.presentation.human || !building.built || building.hp == 0 {
+    if building.player != game.presentation.human || !building.built() || building.hp == 0 {
         return 0;
     }
     if let Some(income) = game.state.extractor_income(building.id) {
@@ -380,7 +377,7 @@ fn weapon_line(weapon: &WeaponStats) -> String {
         (false, true) => "air",
         (false, false) => "nothing",
     };
-    let flavor = if weapon.projectile {
+    let flavor = if weapon.projectile.is_some() {
         " | projectile"
     } else if weapon.indirect {
         " | indirect"
@@ -485,11 +482,11 @@ fn bot_controller_label(game: &Scene<'_>, player: oxide_sim::PlayerId) -> Option
         .map(|config| bot_label(config.difficulty, config.stance, BotLabelStyle::Controller))
 }
 
-/// The subject an order chip may show, plus the lines that name it —
-/// OWN programs only. An ally's chips stay bare pictograms rather than
-/// resting the panel on a claim about what team sight shares, and an
-/// attack victim resolves through the breadcrumbs' own fog gate, so
-/// the chip and the trail can never tell different stories.
+/// The subject an order chip may show, plus the lines that name it, for
+/// own programs only. An ally's chips stay bare pictograms rather than
+/// relying on what team sight shares, and an attack victim resolves
+/// through the breadcrumbs' own fog gate, so the chip and the trail
+/// agree.
 fn order_subject(
     game: &Scene<'_>,
     order: &Order,
@@ -503,11 +500,12 @@ fn order_subject(
                 |projection| projection.building(game.state, *site),
             )?;
             let ticks = b.stats().construction.map_or(1, |c| c.build_ticks).max(1);
-            let frac = (b.progress as f32 / ticks as f32).clamp(0.0, 1.0);
+            let frac =
+                (b.construction_progress().unwrap_or(0) as f32 / ticks as f32).clamp(0.0, 1.0);
             Some((
                 OrderSubject::Building(b.kind, faction_of(b.player)),
                 entity_name(b.kind.tier_name(b.tier)),
-                !b.built,
+                !b.built(),
                 Some(frac),
             ))
         }
@@ -517,7 +515,7 @@ fn order_subject(
             Some((
                 OrderSubject::Building(b.kind, faction_of(b.player)),
                 entity_name(b.kind.tier_name(b.tier)),
-                !b.built,
+                !b.built(),
                 Some(frac),
             ))
         }
@@ -744,7 +742,7 @@ fn own_order_card(
     let unbuilt = match order {
         Order::Build { site } => projection
             .building(game.state, *site)
-            .filter(|building| !building.built),
+            .filter(|building| !building.built()),
         _ => None,
     };
     match (order, unbuilt) {
@@ -847,8 +845,12 @@ pub fn build_for_palette(
     Some(panel)
 }
 
-pub(crate) fn build_for_input(game: &Scene<'_>, input: &crate::input::InputState) -> Option<Panel> {
-    let mut panel = build_for_palette(game, &input.bindings, input.construction_open())?;
+pub(crate) fn build_for_input(
+    game: &Scene<'_>,
+    bindings: &BindingMap,
+    input: &crate::input::InputState,
+) -> Option<Panel> {
+    let mut panel = build_for_palette(game, bindings, input.construction_open())?;
     let construction_scrap = input
         .construction_open()
         .then(|| crate::input::available_construction_scrap(game, input));
@@ -860,7 +862,7 @@ pub(crate) fn build_for_input(game: &Scene<'_>, input: &crate::input::InputState
                 card.why = (!card.enabled).then(|| format!("needs {cost} scrap"));
             }
             let category = crate::action::building_category(kind);
-            let key = input.bindings.labels(Action::Build(kind));
+            let key = bindings.labels(Action::Build(kind));
             card.hotkey = if input.build_category == Some(category) {
                 key
             } else if input.build_category.is_some() {
@@ -868,7 +870,7 @@ pub(crate) fn build_for_input(game: &Scene<'_>, input: &crate::input::InputState
             } else {
                 format!(
                     "{} > {}",
-                    input.bindings.label(Action::BuildCategory(category)),
+                    bindings.label(Action::BuildCategory(category)),
                     key
                 )
             };
@@ -1008,7 +1010,7 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
         let selected = crate::building_actions::SelectedBuildings::inspect(game);
         panel.cards = selected.cards(bindings);
         if plural {
-            let offline = selected.buildings.iter().filter(|b| !b.built).count();
+            let offline = selected.buildings.iter().filter(|b| !b.built()).count();
             let focused = selected
                 .buildings
                 .iter()
@@ -1036,12 +1038,13 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
                     None,
                 ));
             } else {
-                panel.queue_label = production_queue_label(&building.queue, building.progress)
-                    .unwrap_or_else(|| "queue".into());
+                panel.queue_label =
+                    production_queue_label(&building.queue, building.training_progress())
+                        .unwrap_or_else(|| "queue".into());
             }
             for (i, &kind) in building.queue.iter().enumerate() {
                 let progress = (i == 0).then(|| {
-                    (building.progress as f32 / kind.stats().train_ticks.max(1) as f32)
+                    (building.training_progress() as f32 / kind.stats().train_ticks.max(1) as f32)
                         .clamp(0.0, 1.0)
                 });
                 panel.queue.push(Card {
@@ -1153,10 +1156,9 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
         }
         return Some(panel);
     }
-    // The roster strip: a mixed army offers one chip per kind, counted.
-    // Click keeps only that kind; Shift- or Ctrl-click (or a lit QUEUE)
-    // drops it — the two cuts every RTS hand knows. It has its own eight-chip budget, so every
-    // roster role stays reachable without consuming command verbs.
+    // The roster strip: a mixed army offers one counted chip per kind.
+    // It has its own eight-chip budget, so every roster role stays
+    // reachable without consuming command verbs.
     if units.len() > 1 {
         let mut counts: Vec<(UnitKind, usize)> = Vec::new();
         for u in &units {
@@ -1376,7 +1378,7 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
     if !build_menu_open
         && units
             .iter()
-            .any(|unit| unit.kind.stats().harvest.is_some() && unit.carrying > 0)
+            .any(|unit| unit.kind.stats().harvest.is_some() && unit.carrying() > 0)
     {
         panel.cards.push(Card {
             icon: CardIcon::Verb(VerbIcon::Harvest),

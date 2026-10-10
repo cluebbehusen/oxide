@@ -154,7 +154,7 @@ fn claimed(observation: &ObservationData, site: &Site) -> bool {
     own.chain(&observation.ally_buildings)
         .chain(&observation.enemy_buildings)
         .any(|building| {
-            let size = building.kind.base_stats().size;
+            let size = building.kind.size();
             site.nodes
                 .iter()
                 .any(|(node, _)| gap(*node, (1, 1), building.anchor, size) <= HELD_REACH)
@@ -169,22 +169,14 @@ fn held(observation: &ObservationData, anchor: TilePos, reach: i32) -> bool {
         .iter()
         .chain(&observation.ally_buildings)
         .chain(&observation.enemy_buildings)
-        .any(|building| {
-            gap(
-                anchor,
-                WORKS,
-                building.anchor,
-                building.kind.base_stats().size,
-            ) <= reach
-        })
+        .any(|building| gap(anchor, WORKS, building.anchor, building.kind.size()) <= reach)
 }
 
 /// Whether an armed enemy in sight stands near the two-by-two footprint at
 /// `anchor`: an Extractor lost there, or a new one, waits until it leaves.
 fn contested(observation: &ObservationData, anchor: TilePos) -> bool {
     observation.enemy_units.iter().any(|enemy| {
-        !enemy.kind.stats().weapons.is_empty()
-            && gap(anchor, WORKS, enemy.tile, (1, 1)) <= DANGER_REACH
+        enemy.kind.stats().can_fight() && gap(anchor, WORKS, enemy.tile, (1, 1)) <= DANGER_REACH
     })
 }
 
@@ -196,8 +188,7 @@ fn danger(observation: &ObservationData, memory: &Memory, anchor: TilePos) -> u6
         .units()
         .iter()
         .filter(|unit| {
-            !unit.kind.stats().weapons.is_empty()
-                && gap(anchor, WORKS, unit.tile, (1, 1)) <= DANGER_REACH
+            unit.kind.stats().can_fight() && gap(anchor, WORKS, unit.tile, (1, 1)) <= DANGER_REACH
         })
         .map(|unit| unit.value(now))
         .sum();
@@ -206,12 +197,7 @@ fn danger(observation: &ObservationData, memory: &Memory, anchor: TilePos) -> u6
         .iter()
         .filter(|building| {
             !building.kind.base_stats().weapons.is_empty()
-                && gap(
-                    anchor,
-                    WORKS,
-                    building.anchor,
-                    building.kind.base_stats().size,
-                ) <= DANGER_REACH
+                && gap(anchor, WORKS, building.anchor, building.kind.size()) <= DANGER_REACH
         })
         .filter_map(|building| building.kind.base_stats().construction.as_ref())
         .map(|construction| u64::from(construction.cost))

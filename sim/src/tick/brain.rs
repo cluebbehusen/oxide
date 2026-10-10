@@ -1,17 +1,17 @@
-//! Phase 3: unit brains — intent becomes action.
+//! Unit brains: intent becomes action.
 //!
-//! Units decide strictly in id order, but damage is *buffered*: every shot
-//! this tick is recorded and applied only after all brains (and turrets)
-//! have acted, so everyone decides against the same start-of-tick world.
-//! Two machines can kill each other in the same tick — that's the point:
-//! inline damage would give whichever seat held the higher unit ids a
-//! same-tick reaction edge. Every selection a brain makes (targets,
-//! doorstep tiles, replacement nodes) is ordered by an explicit key ending
-//! in an id or a position, so there is exactly one possible choice.
+//! Units decide in id order on even ticks and reverse id order on odd ticks.
+//! Damage is buffered: every shot this tick is recorded and applied only after
+//! all brains and turrets have acted, so everyone decides against the same
+//! start-of-tick hp and two machines can kill each other in the same tick.
+//! Inline damage would give the earlier decider a same-tick reaction edge.
+//! Every selection a brain makes (targets, doorstep tiles, replacement nodes)
+//! is ordered by an explicit key ending in an id or a position, so exactly one
+//! choice is possible.
 
 use crate::event::Event;
 use crate::ids::{BuildingId, Target, UnitId};
-use crate::state::{Order, State};
+use crate::state::{Building, Order, State};
 
 /// A shot decided this tick, applied after every brain has acted.
 struct PendingHit {
@@ -56,13 +56,10 @@ impl PendingHit {
     }
 }
 
-/// A buffered hp gain — construction progress or repair welding —
-/// applied *after* damage: the documented rule is that a building zeroed
-/// by fire is dead even if its crew acted the same tick — the shooter
-/// aimed at the start-of-tick world, where the hit was lethal. Completion
-/// buffers too: a site whose final tick coincides with a lethal volley
-/// must never come online — no free turret shot, no "online" fanfare
-/// before death.
+/// A buffered building hp gain (construction, upgrade, or repair), applied
+/// after damage: a building zeroed by fire is dead even if its crew acted the
+/// same tick. Completion buffers too, so a site whose final tick coincides
+/// with a lethal volley never comes online.
 struct PendingHpGain {
     /// The first crew work, even when rounding gives it no hp gain.
     starts: bool,
@@ -72,23 +69,20 @@ struct PendingHpGain {
     player: crate::ids::PlayerId,
     kind: crate::stats::BuildingKind,
     /// Scrap this welder prepaid for this tick's step (zero for
-    /// construction, which pays at placement). Stacked welders bill
-    /// their own meters against the same start-of-tick reading, so a
-    /// welder whose whole step lands past the hp ceiling gets exactly
-    /// this coin back at resolution.
+    /// construction, which pays at placement). Stacked welders bill against
+    /// the same start-of-tick hp, so a welder whose whole step lands past the
+    /// hp ceiling gets this back at resolution.
     paid: u32,
     /// The Repair Bay that offered this gain, when it came from an aura.
     /// Construction, upgrades, and crew repairs leave this empty.
     repair_bay: Option<crate::ids::BuildingId>,
 }
 
-/// A buffered hp gain on a UNIT — welding by a crewmate today; any
-/// future source of unit healing (a healing structure, an aura) must
-/// push into this same list and resolve through
-/// [`resolve_unit_heals`] — two independent unit-heal paths would be a
-/// determinism trap. Same contract as [`PendingHpGain`]: applied after
-/// damage, so a machine the volley zeroed forfeits every heal (fire
-/// wins ties).
+/// A buffered unit hp gain from a field weld or a Repair Bay. Every unit heal
+/// must push into this list and resolve through [`resolve_unit_heals`]; two
+/// independent unit-heal paths would be a determinism trap. Same contract as
+/// [`PendingHpGain`]: applied after damage, so a machine the volley zeroed
+/// forfeits every heal.
 struct PendingUnitHeal {
     /// The patient.
     unit: UnitId,
@@ -96,9 +90,8 @@ struct PendingUnitHeal {
     step: u32,
     /// Whose bank prepaid, for the ceiling refund.
     player: crate::ids::PlayerId,
-    /// Scrap this welder prepaid for this tick's step — refunded when
-    /// the WHOLE step lands past the hp ceiling, exactly like a
-    /// building weld's coin.
+    /// Scrap prepaid for this step, refunded when the whole step lands past
+    /// the hp ceiling, as for a building weld.
     paid: u32,
     /// The exact producer, carried through resolution for output-only
     /// accepted-hp telemetry.
@@ -111,7 +104,7 @@ struct PendingUnitHeal {
 /// and create a departure path. Commit these only after every brain has
 /// resolved its intent so a weld never rides that same-tick departure.
 struct PendingFieldWeld {
-    /// The Harvester holding the torch.
+    /// The unit holding the torch.
     welder: UnitId,
     /// The wounded own machine offered the weld.
     patient: UnitId,
@@ -127,11 +120,14 @@ struct PendingHpDrain {
     step: u32,
 }
 
+/// Runs every machine's decision and resolves the tick's buffered work.
+/// Returns the pending boardings and unloads, and the buildings salvage
+/// stripped to nothing, which cleanup removes without wreck.
 pub(super) fn run(
     state: &mut State,
     index: &mut super::spatial::UnitIndex,
     events: &mut Vec<Event>,
-) -> logistics::Pending {
+) -> (logistics::Pending, Vec<crate::ids::BuildingId>) {
     // Positions and unit slots hold still until resolution, so acquisition
     // and arrival queries share this index. Orders, speed and landed state
     // can change during the loop and must still be read from the live unit.
@@ -148,10 +144,10 @@ pub(super) fn run(
     let mut harvest_danger_by_team: Vec<Option<crate::vision::GroundSalvageDanger>> =
         (0..state.players.len()).map(|_| None).collect();
     let mut reach = super::reach::Reach::new(state);
-    // Alternate direction by tick parity: sequential phases must not hand
-    // one seat a standing first-mover edge (with damage buffered, the
-    // remaining coupling is small — shared scrap, own-side order state —
-    // but in a zero-noise mirror match, any fixed order decides).
+    // Alternate direction by tick parity so no seat holds a standing
+    // first-mover edge. With damage buffered, the remaining coupling (shared
+    // scrap, own-side order state) is small, but in a mirror match any fixed
+    // order decides.
     let mut ids: Vec<UnitId> = state.units.iter().map(|u| u.id).collect();
     if state.tick % 2 == 1 {
         ids.reverse();
@@ -197,8 +193,8 @@ pub(super) fn run(
             // unchanged and the first airborne tick steers from the parked
             // heading at the ordinary turn rate.
             let unit = state.unit_mut(id).expect("just seen");
-            if unit.landed && !unit.stays_parked() {
-                unit.landed = false;
+            if !unit.stays_parked() {
+                unit.lift_off();
             }
         }
         let reported = events.len();
@@ -289,8 +285,8 @@ pub(super) fn run(
     // (flight is at least one tick), so ordering here cannot matter.
     land_shells(state, &mut hits, events);
     state.shells.extend(launches);
-    resolve_hits(state, &hits, &builds, &heals, &drains, events);
-    logistics_pending
+    let salvaged = resolve_hits(state, &hits, &builds, &heals, &drains, events);
+    (logistics_pending, salvaged)
 }
 
 mod combat;
@@ -306,12 +302,11 @@ use economy::{
 };
 use locomotion::{hunt, idle, land, land_at_destination, walk};
 
-/// The other half of simultaneity: buffered shots land now, in the order
-/// they were decided (unit-id order, then turret-id order). Damage first —
-/// all of it — then retaliation, so a machine that died this tick answers
-/// nothing and a survivor answers its earliest attacker *that survived
-/// resolution*: turning to face a corpse would waste the answer and let a
-/// living shooter keep firing unopposed.
+/// Applies the tick's buffered work. Shots land in decision order: the tick's
+/// unit order, then turrets in building-id order, then arriving shells. All
+/// damage lands before retaliation, so a machine that died this tick answers
+/// nothing and a survivor answers its earliest attacker that survived
+/// resolution.
 fn resolve_hits(
     state: &mut State,
     hits: &[PendingHit],
@@ -319,19 +314,20 @@ fn resolve_hits(
     heals: &[PendingUnitHeal],
     drains: &[PendingHpDrain],
     events: &mut Vec<Event>,
-) {
+) -> Vec<crate::ids::BuildingId> {
     struct Work {
         building: crate::ids::BuildingId,
         gain: i64,
         drain: i64,
         completes: Option<(crate::ids::PlayerId, crate::stats::BuildingKind)>,
     }
+    let mut salvaged = Vec::new();
     let mut incidents = Vec::new();
     for hit in hits {
         match hit.victim {
             Target::Unit(uid) => {
                 if let Some(v) = state.unit_mut(uid) {
-                    let relevant_hit = v.kind == crate::stats::UnitKind::Harvester;
+                    let relevant_hit = v.kind.stats().harvest.is_some();
                     let relevant_loss =
                         hit.damage >= v.hp && v.domain() == crate::stats::Domain::Ground;
                     if v.hp > 0 && hit.damage > 0 && (relevant_hit || relevant_loss) {
@@ -341,14 +337,14 @@ fn resolve_hits(
                 }
             }
             Target::Building(bid) => {
-                if state.building(bid).is_some_and(|b| b.provisional) {
+                if state.building(bid).is_some_and(Building::provisional) {
                     continue;
                 }
                 let incident_tile = state.building(bid).and_then(|b| {
                     (hit.approach != chassis::fx::Vec2Fx::ZERO).then(|| {
                         super::footprint_incident_tile(
                             b.anchor,
-                            b.stats().size,
+                            b.kind.size(),
                             hit.impact,
                             hit.approach,
                         )
@@ -391,13 +387,12 @@ fn resolve_hits(
         .map(|gain| gain.site)
         .collect();
     super::charges::detonate_under_construction(state, &starts, events);
-    // Stacked welders each prepaid their own meter against the same
-    // start-of-tick hp reading, but the ceiling accepts hp in decision
-    // order — a welder whose WHOLE step lands past it gets this tick's
-    // coin back (the marginal welder's partially-accepted step keeps
-    // its ceil-billed fraction: within the billing doc's one-scrap
-    // tolerance). A building fire zeroed this tick refunds nothing —
-    // fire wins and the crew's coin forfeits with its work.
+    // Stacked welders each prepaid against the same start-of-tick hp, but
+    // the ceiling accepts hp in decision order: a welder whose whole step
+    // lands past it gets this tick's payment back. The marginal welder's
+    // partially accepted step keeps its ceil-billed fraction, within the
+    // one-scrap billing tolerance. A building fire zeroed this tick refunds
+    // nothing.
     {
         let mut rooms: Vec<(crate::ids::BuildingId, i64)> = Vec::new();
         for gain in builds {
@@ -414,10 +409,9 @@ fn resolve_hits(
             let accepted = u32::try_from(rooms[i].1.clamp(0, i64::from(gain.step)))
                 .expect("clamped to a u32 step");
             if rooms[i].1 <= 0 {
-                // Only the refund cares what was paid; EVERY gain
-                // consumes room. A mid-meter welder frequently steps a
-                // free hp (its coins land every few hp), and skipping
-                // that gain here once let it eat the last room while a
+                // Every gain consumes room; only the refund cares what was
+                // paid. A mid-meter welder often steps a free hp, and
+                // skipping it here would let it eat the last room while a
                 // prepaid neighbor took the clamp uncompensated.
                 if gain.paid > 0 {
                     let bank = &mut state.player_mut(gain.player).scrap;
@@ -438,14 +432,11 @@ fn resolve_hits(
             }
         }
     }
-    // Buffered work lands only on buildings that survived the volley
-    // (hp > 0 after hits — fire wins, and a dead site forfeits gains
-    // and drains alike). Per building, gains and drains net into ONE
-    // signed delta clamped once to [0, max_hp]; the hp that delta
-    // actually removed is what salvage crediting counts. In practice
-    // gains and drains never meet on one building (construction wants
-    // !built, salvage wants built, repair and salvage evict each
-    // other), but the resolution is stated so the day they do has one
+    // Buffered work lands only on buildings that survived the volley; a dead
+    // site forfeits gains and drains alike. Per building, gains and drains
+    // net into one signed delta clamped once to [0, max_hp], and salvage
+    // credits the hp that delta actually removed. Gains and drains do not
+    // currently meet on one building, but the netting gives that case one
     // answer.
     let mut work: Vec<Work> = Vec::new();
     let slot = |v: &mut Vec<Work>, building| {
@@ -465,8 +456,8 @@ fn resolve_hits(
         let i = slot(&mut work, gain.site);
         work[i].gain += i64::from(gain.step);
         if gain.completes && work[i].completes.is_none() {
-            // First completion wins: two builders can both cross the
-            // finish line in one tick, and the site comes online once.
+            // Two builders can both finish in one tick; the site comes
+            // online once.
             work[i].completes = Some((gain.player, gain.kind));
         }
     }
@@ -488,8 +479,7 @@ fn resolve_hits(
                 .expect("clamped to a u32 max_hp");
         b.hp = after;
         if let Some((player, kind)) = w.completes {
-            b.built = true;
-            b.progress = 0;
+            b.complete();
             events.push(Event::BuildingCompleted {
                 building: w.building,
                 player,
@@ -498,9 +488,9 @@ fn resolve_hits(
         }
         if w.drain > 0 && after < before {
             b.salvage_drained += before - after;
-            // The cumulative ledger: credit whole scrap as the running
-            // target passes it, so truncation never drifts and a
-            // full-health salvage totals exactly cost * permille / 1000.
+            // Credit whole scrap as the cumulative target passes it, so
+            // truncation never drifts and a full-health salvage totals
+            // cost * permille / 1000.
             let basis = stats.construction.map_or(0, |c| c.cost);
             let target = u64::from(b.salvage_drained)
                 * u64::from(basis)
@@ -508,7 +498,7 @@ fn resolve_hits(
                 / (1000 * u64::from(stats.max_hp));
             let due = u32::try_from(target).unwrap_or(u32::MAX) - b.salvage_credited;
             if after == 0 {
-                b.salvaged = true;
+                salvaged.push(b.id);
             }
             if due > 0 {
                 b.salvage_credited += due;
@@ -526,19 +516,13 @@ fn resolve_hits(
             retaliate(state, uid, hit.attacker);
         }
     }
+    salvaged
 }
 
-/// The unit half of buffered hp work — the ONE seam every unit heal
-/// resolves through, built to be fed by any future healing source (a
-/// repair structure's aura pushes into the same list) as well as
-/// today's crewmate welds. The building resolver's three rules,
-/// restated for machines: a unit at 0 hp after the volley forfeits
-/// every heal and refunds nothing (fire wins ties, and nothing
-/// resurrects); stacked welders billed against the same start-of-tick
-/// reading, so a welder whose WHOLE step lands past the hp ceiling
-/// gets its prepaid coin back (the marginal welder's partially
-/// accepted step keeps its ceil-billed fraction); and per unit the
-/// gains net into one delta clamped once to `max_hp`.
+/// Resolves every buffered unit heal, with the building resolver's rules: a
+/// unit at 0 hp after the volley forfeits every heal and refunds nothing; a
+/// heal whose whole step lands past the hp ceiling refunds its prepayment;
+/// and per unit the gains net into one delta clamped once to `max_hp`.
 fn resolve_unit_heals(state: &mut State, heals: &[PendingUnitHeal], events: &mut Vec<Event>) {
     let mut rooms: Vec<(UnitId, i64)> = Vec::new();
     for heal in heals {
@@ -556,8 +540,7 @@ fn resolve_unit_heals(state: &mut State, heals: &[PendingUnitHeal], events: &mut
             .expect("clamped to a u32 step");
         if rooms[i].1 <= 0 {
             // Every gain consumes room; only the refund cares what was
-            // paid — the same rule the building ledger learned when a
-            // free-stepping welder ate the last room uncompensated.
+            // paid, as in the building ledger.
             if heal.paid > 0 {
                 let bank = &mut state.player_mut(heal.player).scrap;
                 *bank = bank.saturating_add(heal.paid);
@@ -586,7 +569,7 @@ fn resolve_unit_heals(state: &mut State, heals: &[PendingUnitHeal], events: &mut
             continue;
         };
         if u.hp == 0 {
-            continue; // fire won this tick; the heal forfeits with its coin
+            continue; // fire won this tick; the heal and its payment forfeit
         }
         let max = i64::from(u.kind.stats().max_hp);
         u.hp =
@@ -594,17 +577,15 @@ fn resolve_unit_heals(state: &mut State, heals: &[PendingUnitHeal], events: &mut
     }
 }
 
-/// The Repair Bay's act — the one building whose output is a heal. On
-/// its pulse cadence every built bay, in building-id order, offers each
-/// own wounded unit and completed structure inside
+/// Repair Bay healing. On its pulse cadence every built bay, in building-id
+/// order, offers each own wounded unit and completed structure inside
 /// [`crate::stats::REPAIR_BAY_RADIUS`] of its footprint one
-/// [`crate::stats::REPAIR_BAY_STEP`] of hp, billed from the owner's
-/// bank at [`crate::stats::REPAIR_COST_PERMILLE`] of the patient's active
-/// tier cost. Reach measures from body to footprint for units and between
-/// the nearest footprint edges for structures. A Bay cannot heal itself;
-/// another Bay may heal it. Units retain first claim on limited scrap,
-/// preserving the established sustain behavior, followed by structures in
-/// building-id order. Everything buffers into the shared damage-first hp
+/// [`crate::stats::REPAIR_BAY_STEP`] of hp, billed from the owner's bank at
+/// [`crate::stats::REPAIR_COST_PERMILLE`] of the patient's active tier cost.
+/// Reach measures from body to footprint for units and between the nearest
+/// footprint edges for structures. A Bay cannot heal itself;
+/// another Bay may heal it. Units have first claim on limited scrap, then
+/// structures in building-id order. Everything buffers into the shared hp
 /// resolvers, so lethal fire wins the tick and overlapping sources settle
 /// against the same ceiling.
 fn repair_bay_aura(
@@ -622,34 +603,21 @@ fn repair_bay_aura(
     let bays: Vec<crate::ids::BuildingId> = state
         .buildings
         .iter()
-        .filter(|b| b.built && b.hp > 0 && b.kind == BuildingKind::RepairBay)
+        .filter(|b| b.built() && b.hp > 0 && b.kind == BuildingKind::RepairBay)
         .map(|b| b.id)
         .collect();
     let radius = crate::stats::REPAIR_BAY_RADIUS;
-    // Unit steps already in flight per patient this pulse: overlapping
-    // auras stack in resolution, so a later bay must price from the
-    // hp earlier bays already queued — reading start-of-tick hp made
-    // every bay bill (or skip) the same first interval.
+    // Unit steps already queued per patient this pulse. Overlapping auras
+    // stack in resolution, so a later bay prices from the hp earlier bays
+    // queued; pricing from start-of-tick hp would bill every bay for the
+    // same first interval.
     let mut in_flight: std::collections::BTreeMap<UnitId, u32> = std::collections::BTreeMap::new();
     for bay in bays.iter().copied() {
         let Some(b) = state.building(bay) else {
             continue;
         };
         let owner = b.player;
-        // The aura is automatic, so unlike a voluntary purchase it must
-        // not eat the captured recovery package. A surviving paid screen
-        // makes that package worker-sized; reserving the universal maximum
-        // would strand exactly the army the Repair Bay exists to sustain.
-        let recovery_reserve = if super::harvester_recovery_needed(state, owner) {
-            let seat = state.player(owner);
-            if seat.recovery_ready {
-                state.recovery_package_target(owner)
-            } else {
-                u32::from(seat.recovery_target)
-            }
-        } else {
-            0
-        };
+        let recovery_reserve = state.recovery_reserve(owner);
         let patients: Vec<UnitId> = state
             .units
             .iter()
@@ -694,13 +662,12 @@ fn repair_bay_aura(
         }
     }
 
-    // Preserve the existing unit-heal priority exactly: only after every Bay
-    // has offered its unit pulses do structures compete for the remaining
-    // bank. Building gains share PendingHpGain with crew repair and upgrades,
-    // so damage, clamping, and refunds retain one authoritative resolver.
-    // Automatic repair must not compete with an explicit teardown. Repair and
-    // salvage commands purge one another, but the aura has no order to purge,
-    // so exclude every target still owned by an active or queued salvage job.
+    // Structures compete for the remaining bank only after every Bay has
+    // offered its unit pulses. Building gains share PendingHpGain with crew
+    // repair and upgrades, so damage, clamping, and refunds keep one
+    // resolver. Automatic repair must not fight an explicit teardown: the
+    // aura has no order for a salvage command to purge, so skip every target
+    // of an active or queued salvage job.
     let salvage_targets: std::collections::BTreeSet<BuildingId> = state
         .units
         .iter()
@@ -718,16 +685,7 @@ fn repair_bay_aura(
             continue;
         };
         let owner = source.player;
-        let recovery_reserve = if super::harvester_recovery_needed(state, owner) {
-            let seat = state.player(owner);
-            if seat.recovery_ready {
-                state.recovery_package_target(owner)
-            } else {
-                u32::from(seat.recovery_target)
-            }
-        } else {
-            0
-        };
+        let recovery_reserve = state.recovery_reserve(owner);
         let patients: Vec<crate::ids::BuildingId> = state
             .buildings
             .iter()
@@ -735,7 +693,7 @@ fn repair_bay_aura(
                 target.id != bay
                     && !salvage_targets.contains(&target.id)
                     && target.player == owner
-                    && target.built
+                    && target.built()
                     && target.hp > 0
                     && target.hp < target.stats().max_hp
                     && building_distance_sq(source, target) <= radius * radius
@@ -795,14 +753,9 @@ fn building_distance_sq(a: &crate::state::Building, b: &crate::state::Building) 
     on_a.dist_sq(on_b)
 }
 
-/// The Crucible's smelter: each pulse, every built Crucible melts one
-/// wreck unit within its ring into one scrap for its owner. Fuel is
-/// unowned battlefield debris, so no fog or ownership question arises —
-/// the works eats what the war left where it stands. Crucibles work in
-/// id order and each takes the nearest wreck inside its reach, then the
-/// richer one, with exact ties ordered in its half-turn frame, so the same
-/// scattered field always melts in the same sequence and mirrored
-/// crucibles melt mirrored tiles.
+/// The Crucible's smelter: each pulse, every built Crucible, in id order,
+/// melts one wreck unit within its radius into one scrap for its owner. Wreck
+/// is unowned, so no fog or ownership check applies.
 fn crucible_smelter(state: &mut State) {
     use crate::stats::BuildingKind;
     use chassis::grid::TilePos;
@@ -815,7 +768,7 @@ fn crucible_smelter(state: &mut State) {
     let crucibles: Vec<crate::ids::BuildingId> = state
         .buildings
         .iter()
-        .filter(|b| b.built && b.hp > 0 && b.kind == BuildingKind::Crucible)
+        .filter(|b| b.built() && b.hp > 0 && b.kind == BuildingKind::Crucible)
         .map(|b| b.id)
         .collect();
     let radius = crate::stats::CRUCIBLE_SMELT_RADIUS;
@@ -826,12 +779,11 @@ fn crucible_smelter(state: &mut State) {
         };
         let owner = b.player;
         let anchor = b.anchor;
-        let (w, h) = b.stats().size;
+        let (w, h) = b.kind.size();
         let reach = radius.to_num::<i32>() + 1;
-        // The nearest wreck feeds first, then the richer one; exact ties
-        // fall to tile order oriented in the crucible's half-turn frame, so
-        // mirrored crucibles with several wrecks in reach eat mirrored tiles
-        // instead of whichever the absolute scan meets first.
+        // The nearest wreck feeds first, then the richer one; exact ties fall
+        // to tile order in the crucible's half-turn frame, so mirrored
+        // crucibles eat mirrored tiles.
         let footprint_center = |anchor: TilePos, (w, h): (i32, i32)| {
             chassis::fx::Vec2Fx::new(
                 chassis::fx::Fx::from_num(anchor.x * 2 + w) / 2,
@@ -852,7 +804,7 @@ fn crucible_smelter(state: &mut State) {
                 .iter()
                 .filter(|f| f.player == owner && f.kind == BuildingKind::Foundry)
                 .min_by_key(|f| f.id)
-                .map_or(hearth, |f| footprint_center(f.anchor, f.stats().size))
+                .map_or(hearth, |f| footprint_center(f.anchor, f.kind.size()))
         } else {
             hearth
         };

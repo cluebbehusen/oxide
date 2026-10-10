@@ -13,7 +13,7 @@ fn a_gun_holds_off_what_its_firepower_and_health_match_not_its_price() {
     assert!(turret < gun(BuildingKind::Turret, 1, spread));
     assert!(gun(BuildingKind::Turret, 1, spread) < gun(BuildingKind::Turret, 2, spread));
     // Per scrap, a lone Bastion holds off fewer spread Sentinels than a
-    // Turret, as staged fights found, and a clump lifts it.
+    // Turret, and a clump lifts it.
     let per_scrap = |strength: u64, kind: BuildingKind| strength * 1_000 / price(kind.base_stats());
     let turret = per_scrap(turret, BuildingKind::Turret);
     let bastion = |targets| {
@@ -92,4 +92,16 @@ fn a_repair_bay_reaches_by_straight_distance_from_its_edges() {
     let building = Span::of((2, 2), TilePos::new(16, 10));
     assert!(bay.aura(building), "edges four tiles apart");
     assert!(!bay.aura(Span::of((2, 2), TilePos::new(15, 15))));
+}
+
+#[test]
+fn a_defense_faces_the_domain_its_guns_can_hit() {
+    assert_eq!(domain(BuildingKind::FlakTurret), Domain::Air);
+    for kind in [
+        BuildingKind::Turret,
+        BuildingKind::Bastion,
+        BuildingKind::Array,
+    ] {
+        assert_eq!(domain(kind), Domain::Ground, "{kind:?}");
+    }
 }

@@ -8,28 +8,6 @@ pub(super) struct ScreenFrame {
     pub(super) profile_frame_active: bool,
 }
 
-/// Whether this screen owns a decorative backdrop whose presentation clock
-/// should keep moving. A menu opened from Pause is deliberately different
-/// from the same menu opened from Home: the paused battlefield must stay
-/// frozen behind it.
-fn backdrop_fx_advances(screen: &Screen) -> bool {
-    match screen {
-        Screen::Home(_)
-        | Screen::Wizard(_)
-        | Screen::Replays(_)
-        | Screen::Results(_)
-        | Screen::Lobby { .. } => true,
-        Screen::Settings { back, .. } | Screen::Codex { back, .. } => {
-            !matches!(**back, Screen::Pause(_))
-        }
-        Screen::Playing
-        | Screen::Playback(_)
-        | Screen::FinalMap(_)
-        | Screen::Pause(_)
-        | Screen::Busy(_) => false,
-    }
-}
-
 /// Escape clears a live selection before it opens Pause. A decided match and
 /// the concession banner are terminal overlays, so their advertised Escape
 /// action wins even when a selection survived underneath.
@@ -70,16 +48,11 @@ fn gap_opens_pause(raw_dt: f32, live_streak: u8, running: bool, exempt: bool) ->
     raw_dt >= SUSPENSION_GAP_SECS && live_streak >= 2 && running && !exempt
 }
 
-/// Freezes the live match under the pause menu. Opening the menu
-/// dismisses the concede overlay for good, so Resume from here is clean
-/// spectating. Only a player's choice teaches the tutorial's pause
-/// lesson.
+/// Opens the pause menu over the live match; entering it freezes the
+/// match (see [`enter`]). Only a player's choice teaches the tutorial's
+/// pause lesson.
 fn open_pause(game: &mut Game, cause: PauseCause) -> Screen {
-    game.presentation.conceded_banner = false;
     let pause = pause_menu(game);
-    if game.net_role().is_none() {
-        game.presentation.paused = true;
-    }
     Screen::Pause(match cause {
         PauseCause::Player => {
             game.demo.paused_menu = true;
@@ -114,8 +87,128 @@ fn resolve_new_match(
 /// Restart and Rematch both rebuild the exact recorded scenario. Keeping this
 /// path independent of [`PersonalitySeedSource`] prevents either action from
 /// silently becoming a new opponent roll.
-fn rebuild_match(game: &Game) -> Result<Game> {
+pub(super) fn rebuild_match(game: &Game) -> Result<Game> {
     Game::new(game.scenario.clone())
+}
+
+/// Settles a change of screen, whatever caused it: leaving `from`, arriving
+/// on `screen`, and the resets every change makes. Every place the frame
+/// replaces the screen calls this, so no transition skips a step.
+pub(super) fn settle(app: &mut App, from: ScreenKind, screen: &Screen) {
+    if screen.kind() == from {
+        return;
+    }
+    exit(&mut app.game, from);
+    enter(&mut app.game, screen);
+    app.input.reset_transient();
+    macroquad::miniquad::window::set_mouse_cursor(macroquad::miniquad::CursorIcon::Default);
+    if !screen.holds_live_match()
+        && let Some(link) = app.net.take()
+    {
+        app.lingering = link.leave(&app.game, app.clock.elapsed());
+    }
+}
+
+/// What leaving a screen undoes in the live match.
+fn exit(game: &mut Game, from: ScreenKind) {
+    match from {
+        // Inspection ends on every way out, not only the Back button.
+        ScreenKind::FinalMap => game.presentation.spectate = false,
+        ScreenKind::Home
+        | ScreenKind::Settings
+        | ScreenKind::Codex
+        | ScreenKind::Wizard
+        | ScreenKind::Lobby
+        | ScreenKind::Playing
+        | ScreenKind::Playback
+        | ScreenKind::Replays
+        | ScreenKind::Results
+        | ScreenKind::Pause
+        | ScreenKind::Busy => {}
+    }
+}
+
+/// What arriving on a screen sets up in the live match.
+fn enter(game: &mut Game, screen: &Screen) {
+    match screen.kind() {
+        // The pause menu freezes the match, except a LAN match, which runs
+        // under its menu. Opening it dismisses the concede overlay for good,
+        // so Resume from here is clean spectating.
+        ScreenKind::Pause => {
+            game.presentation.conceded_banner = false;
+            if game.net_role().is_none() {
+                game.clock.paused = true;
+            }
+        }
+        // The decided world, frozen and seen whole, with nothing selected.
+        ScreenKind::FinalMap => {
+            game.clock.paused = true;
+            game.presentation.spectate = true;
+            game.presentation.selection.units.clear();
+            game.presentation.selection.buildings.clear();
+            game.presentation.selection.pile = None;
+        }
+        ScreenKind::Home
+        | ScreenKind::Settings
+        | ScreenKind::Codex
+        | ScreenKind::Wizard
+        | ScreenKind::Lobby
+        | ScreenKind::Playing
+        | ScreenKind::Playback
+        | ScreenKind::Replays
+        | ScreenKind::Results
+        | ScreenKind::Busy => {}
+    }
+}
+
+/// Seconds a menu notice stays up.
+const MENU_NOTICE_SECS: f64 = 8.0;
+
+/// A line on the shared menu notice. It ages only once a screen shows it,
+/// so a notice that arrives under the final map waits for the report.
+pub(super) struct MenuNotice {
+    text: String,
+    until: Option<f64>,
+}
+
+impl MenuNotice {
+    /// The text to draw at `now`, starting its time on screen at the first
+    /// draw; none once that time has passed.
+    pub(super) fn show(&mut self, now: f64) -> Option<&str> {
+        let until = *self.until.get_or_insert(now + MENU_NOTICE_SECS);
+        (now < until).then_some(self.text.as_str())
+    }
+}
+
+/// Delivers the frame's notices to the screen that is up: the HUD's toast
+/// strip in live play or a replay, the Settings and pause menus' own notice
+/// lines, and the shared menu line everywhere else. The final map has no
+/// running clock to age a toast, so its notices wait on the menu line for
+/// the report it returns to.
+pub(super) fn deliver_notices(
+    notices: &mut Vec<Notice>,
+    live: &mut Game,
+    menu_notice: &mut Option<MenuNotice>,
+    screen: &mut Screen,
+) {
+    for Notice { text, danger } in notices.drain(..) {
+        match screen {
+            Screen::Playing => live.presentation.toast(text),
+            Screen::Playback { session, .. } => session.presentation.toast(text),
+            Screen::Settings { screen, .. } => {
+                screen.notice = Some(screens::settings::Notice { text, danger });
+            }
+            Screen::Pause(pause) => pause.show_notice(text),
+            Screen::Home(_)
+            | Screen::Codex { .. }
+            | Screen::Wizard(_)
+            | Screen::Lobby { .. }
+            | Screen::Replays(_)
+            | Screen::Results(_)
+            | Screen::FinalMap(_)
+            | Screen::Busy(_) => *menu_notice = Some(MenuNotice { text, until: None }),
+        }
+    }
 }
 
 pub(super) fn update_and_draw(
@@ -129,29 +222,25 @@ pub(super) fn update_and_draw(
     // Coaching waits until the player seems stuck on this screen.
     let pressed = events.iter().any(crate::hints::is_press);
     crate::hints::set_alpha(app.hint_clock.observe(
-        super::screen_mode(&screen),
+        screen.mode(),
         pressed,
         time.presentation,
         render::reduced_motion(),
     ));
     // Controls capture and text editing keep their conventional recovery keys.
     let fixed_editor = matches!(&screen, Screen::Settings { screen, .. } if matches!(screen.face, screens::settings::Face::Controls { .. }))
-        || text_entry(&screen);
+        || screen.text_entry();
+    let classic = crate::action::BindingMap::classic();
     crate::menu::set_bindings(if fixed_editor {
-        crate::action::BindingMap::classic()
+        &classic
     } else {
-        app.input.bindings.clone()
+        &app.config.bindings
     });
-    if !fixed_editor
-        && !matches!(
-            &screen,
-            Screen::Playing | Screen::Playback(_) | Screen::FinalMap(_)
-        )
-    {
-        events = app
-            .input
-            .bindings
-            .menu_events(&events, ctrl_at_frame_start, shift_at_frame_start);
+    if !fixed_editor && !screen.kind().gameplay() {
+        events =
+            app.config
+                .bindings
+                .menu_events(&events, ctrl_at_frame_start, shift_at_frame_start);
     }
     let mut profile_frame_active = false;
     // Menu backdrops are presentation worlds too. Home, setup, and
@@ -159,9 +248,9 @@ pub(super) fn update_and_draw(
     // match for driven control; Settings inherits its caller, so the
     // pause-menu path stays frozen. Playing and Playback advance their
     // own clocks below, while Pause deliberately advances neither.
-    if backdrop_fx_advances(&screen) {
+    if screen.backdrop_runs() {
         app.game.update_fx(time.presentation);
-    } else if app.net.is_some() && !matches!(screen, Screen::Playing) {
+    } else if app.net.is_some() && screen.kind() != ScreenKind::Playing {
         // A LAN match keeps ticking under menus, so its effects age too.
         app.game.update_wall_clock_fx(time.presentation);
     }
@@ -196,7 +285,9 @@ pub(super) fn update_and_draw(
             ctrl_at_frame_start,
             shift_at_frame_start,
         ),
-        Screen::Playback(pb) => playback_frame(app, pb, &events, time, &mut rerun),
+        Screen::Playback { session, back } => {
+            playback_frame(app, session, back, &events, time, &mut rerun)
+        }
         Screen::FinalMap(final_map) => {
             final_map_frame(app, final_map, &events, time.presentation, &mut rerun)
         }
@@ -222,22 +313,23 @@ fn lobby_frame(
     rerun: &mut bool,
 ) -> Screen {
     if let Some((game, link)) = lobby.poll(app.clock.elapsed(), render::viewport()) {
-        app.install_networked(game, link);
+        app.install(
+            game,
+            Install {
+                net: Some(link),
+                ..Install::local(false)
+            },
+        );
         *rerun = true;
         return Screen::Playing;
     }
-    match lobby.update(
-        events,
-        &mut app.input.mouse,
-        &mut app.game.presentation.sounds_pending,
-    ) {
+    match lobby.update(events, &mut app.input.mouse, &mut app.ui_sounds) {
         crate::screens::lobby::Out::Stay => {}
         crate::screens::lobby::Out::Cancel => return *back,
         crate::screens::lobby::Out::Join(address) => {
             app.config.last_join_address = Some(address.clone());
             if let Err(err) = app.config.save() {
-                app.menu_notice =
-                    Some((format!("could not save settings: {err}"), get_time() + 5.0));
+                app.notify(format!("could not save settings: {err}"), true);
             }
             let commit = crate::build_identity().revision;
             *lobby = crate::screens::lobby::LobbyScreen::waiting(crate::netplay::Lobby::Client(
@@ -245,7 +337,12 @@ fn lobby_frame(
             ));
         }
     }
-    render::draw(&app.game.view(), &app.sprites, &app.input);
+    render::draw(
+        &app.game.view(),
+        &app.sprites,
+        &app.input,
+        &app.config.bindings,
+    );
     veil();
     lobby.draw(app.input.mouse);
     Screen::Lobby {
@@ -273,11 +370,7 @@ fn home_frame(app: &mut App, mut home: HomeScreen, events: &[RawEvent], dt: f32)
     let input_scope = app
         .game
         .diagnostic_stage(oxide_kit::diagnostics::Stage::Input);
-    let out = home.update(
-        events,
-        &mut app.input.mouse,
-        &mut app.game.presentation.sounds_pending,
-    );
+    let out = home.update(events, &mut app.input.mouse, &mut app.ui_sounds);
     drop(input_scope);
     // Session verbs first — Continue and Tutorial swap the
     // game this frame then draws under the menu. The menu
@@ -307,7 +400,13 @@ fn home_frame(app: &mut App, mut home: HomeScreen, events: &[RawEvent], dt: f32)
             // The tutorial is a gentle real match with the
             // lesson cards riding on top.
             let fresh = Game::new(tutorial::tutorial_scenario())?;
-            app.install_session(fresh, app.args.paused, Some(tutorial::Tutorial::new()));
+            app.install(
+                fresh,
+                Install {
+                    tutorial: Some(tutorial::Tutorial::new()),
+                    ..Install::local(app.args.paused)
+                },
+            );
             next = Some(Screen::Playing);
         }
         screens::home::Out::Replays => {
@@ -320,7 +419,12 @@ fn home_frame(app: &mut App, mut home: HomeScreen, events: &[RawEvent], dt: f32)
             ));
         }
     }
-    render::draw(&app.game.view(), &app.sprites, &app.input);
+    render::draw(
+        &app.game.view(),
+        &app.sprites,
+        &app.input,
+        &app.config.bindings,
+    );
     veil();
     home.menu.draw(home.subtitle());
     Ok(if out == screens::home::Out::Settings {
@@ -370,9 +474,8 @@ fn settings_frame(
     let up = sc.update(
         events,
         &mut app.input.mouse,
-        &mut app.game.presentation.sounds_pending,
+        &mut app.ui_sounds,
         &mut app.config,
-        &mut app.input.bindings,
         ctrl_at_frame_start,
         shift_at_frame_start,
     );
@@ -380,32 +483,26 @@ fn settings_frame(
     match up.out {
         screens::settings::Out::OpenDiagnostics => {
             if let Err(error) = app.report_job.open_folder() {
-                sc.notice = Some(screens::settings::Notice {
-                    text: error.to_string(),
-                    danger: true,
-                });
+                app.notify(error.to_string(), true);
             }
         }
-        screens::settings::Out::ExportDiagnostics => {
-            sc.notice = Some(match app.report_job.start(&app.game) {
-                Ok(()) => screens::settings::Notice {
-                    text: "Exporting diagnostic report...".into(),
-                    danger: false,
-                },
-                Err(error) => screens::settings::Notice {
-                    text: error.to_string(),
-                    danger: true,
-                },
-            });
-        }
+        screens::settings::Out::ExportDiagnostics => match app.report_job.start(&app.game) {
+            Ok(()) => app.notify("Exporting diagnostic report...", false),
+            Err(error) => app.notify(error.to_string(), true),
+        },
         _ => {}
     }
     if up.dirty
         && let Err(err) = app.config.save()
     {
-        app.menu_notice = Some((format!("could not save settings: {err}"), get_time() + 5.0));
+        app.notify(format!("could not save settings: {err}"), true);
     }
-    render::draw(&app.game.view(), &app.sprites, &app.input);
+    render::draw(
+        &app.game.view(),
+        &app.sprites,
+        &app.input,
+        &app.config.bindings,
+    );
     veil();
     sc.draw();
     crate::button::draw_back(app.input.mouse);
@@ -428,13 +525,14 @@ fn codex_frame(
     let input_scope = app
         .game
         .diagnostic_stage(oxide_kit::diagnostics::Stage::Input);
-    let out = codex.update(
-        events,
-        &mut app.input.mouse,
-        &mut app.game.presentation.sounds_pending,
-    );
+    let out = codex.update(events, &mut app.input.mouse, &mut app.ui_sounds);
     drop(input_scope);
-    render::draw(&app.game.view(), &app.sprites, &app.input);
+    render::draw(
+        &app.game.view(),
+        &app.sprites,
+        &app.input,
+        &app.config.bindings,
+    );
     veil();
     let viewer = app.game.state.player(app.game.presentation.human).faction;
     codex.draw(&app.sprites, viewer);
@@ -460,11 +558,11 @@ fn wizard_frame(app: &mut App, mut w: Wizard, events: &[RawEvent], rerun: &mut b
         events,
         &mut app.input.mouse,
         &mut app.draft,
-        &mut app.game.presentation.sounds_pending,
+        &mut app.ui_sounds,
     ) {
         Ok(out) => out,
         Err(err) => {
-            app.menu_notice = Some((format!("can't open that map: {err:#}"), get_time() + 5.0));
+            app.notify(format!("can't open that map: {err:#}"), true);
             WizardOut::Stay
         }
     };
@@ -475,7 +573,12 @@ fn wizard_frame(app: &mut App, mut w: Wizard, events: &[RawEvent], rerun: &mut b
     match out {
         WizardOut::Home => {
             let home = HomeScreen::open();
-            render::draw(&app.game.view(), &app.sprites, &app.input);
+            render::draw(
+                &app.game.view(),
+                &app.sprites,
+                &app.input,
+                &app.config.bindings,
+            );
             veil();
             home.menu.draw(home.subtitle());
             *rerun = true;
@@ -483,8 +586,13 @@ fn wizard_frame(app: &mut App, mut w: Wizard, events: &[RawEvent], rerun: &mut b
         }
         WizardOut::Launch => match launch_result.expect("launch outcome has a result") {
             Ok(NewMatch::Local(fresh)) => {
-                app.install_session(*fresh, app.args.paused, None);
-                render::draw(&app.game.view(), &app.sprites, &app.input);
+                app.install(*fresh, Install::local(app.args.paused));
+                render::draw(
+                    &app.game.view(),
+                    &app.sprites,
+                    &app.input,
+                    &app.config.bindings,
+                );
                 *rerun = true;
                 next = Some(Screen::Playing);
             }
@@ -498,8 +606,7 @@ fn wizard_frame(app: &mut App, mut w: Wizard, events: &[RawEvent], rerun: &mut b
                 };
             }
             Err(err) => {
-                app.menu_notice =
-                    Some((format!("can't start that match: {err:#}"), get_time() + 5.0));
+                app.notify(format!("can't start that match: {err:#}"), true);
             }
         },
         WizardOut::Stay => {}
@@ -507,7 +614,12 @@ fn wizard_frame(app: &mut App, mut w: Wizard, events: &[RawEvent], rerun: &mut b
     if let Some(next) = next {
         next
     } else {
-        render::draw(&app.game.view(), &app.sprites, &app.input);
+        render::draw(
+            &app.game.view(),
+            &app.sprites,
+            &app.input,
+            &app.config.bindings,
+        );
         veil();
         match w.step {
             WizardStep::Map => w.browser.draw(&w.entries, &mut app.previews),
@@ -599,7 +711,7 @@ fn playing_frame(
             RawEvent::KeyDown { key: Key::Shift } => shift = true,
             RawEvent::KeyUp { key: Key::Shift } => shift = false,
             RawEvent::KeyDown { key } => {
-                return app.input.bindings.resolve_in(
+                return app.config.bindings.resolve_in(
                     *key,
                     ctrl,
                     shift,
@@ -614,9 +726,9 @@ fn playing_frame(
     app.input.now = get_time();
     app.input.camera_prefs = app.config.camera;
     app.input.touch_prefs = app.config.touch;
-    input::apply_events(&mut app.game, &mut app.input, events);
+    input::apply_events(&mut app.game, &mut app.input, &app.config.bindings, events);
     input::update_held(&mut app.game, &app.input, time.presentation);
-    input::update_touch(&mut app.game, &mut app.input);
+    input::update_touch(&mut app.game, &mut app.input, &app.config.bindings);
     let menu_pressed = app.input.take_menu_request();
     // The cursor telegraphs the verb: crosshair while
     // placing or plotting, pointer over chrome.
@@ -639,7 +751,7 @@ fn playing_frame(
     } else if gap_opens_pause(
         time.raw,
         app.live_streak,
-        !app.game.presentation.paused && app.game.state.result().is_none(),
+        !app.game.clock.paused && app.game.state.result().is_none(),
         app.args.automation || app.args.debug_server || app.game.net_role().is_some(),
     ) {
         next = Some(open_pause(&mut app.game, PauseCause::Suspension));
@@ -650,21 +762,24 @@ fn playing_frame(
         app.tutorial = None;
     }
     drop(input_scope);
-    let profile_barrier = !app.game.presentation.paused && app.frame_profiler.take_start_barrier();
-    *profile_frame_active = !app.game.presentation.paused && !profile_barrier;
+    let leaving = next.is_some();
+    let running = !app.game.clock.paused && !leaving;
+    let profile_barrier = running && app.frame_profiler.take_start_barrier();
+    *profile_frame_active = running && !profile_barrier;
     let profile_stopped = if profile_barrier {
         false
     } else {
-        // A LAN match's link runs its ticks before the screen frame.
-        let stopped = app.game.net_role().is_none()
-            && app
-                .game
-                .advance_wall_clock(time.raw, app.frame_profiler.stop_tick());
+        let stopped = advance_live_match(
+            &mut app.game,
+            time.raw,
+            app.frame_profiler.stop_tick(),
+            leaving,
+        );
         app.game.update_wall_clock_fx(time.presentation);
         stopped
     };
     if profile_stopped {
-        app.game.presentation.paused = true;
+        app.game.clock.paused = true;
     }
     if app.game.state.result().is_some() && app.game.end_stats.is_some() {
         next = Some(Screen::Results(ResultsScreen::open()));
@@ -676,54 +791,69 @@ fn playing_frame(
         &app.game.view(),
         &app.sprites,
         &app.input,
+        &app.config.bindings,
         Some(app.performance.view()),
     );
     if let Some(t) = &app.tutorial {
-        render::draw_tutorial(t, &app.game, &app.input.bindings);
+        render::draw_tutorial(t, &app.game, &app.config.bindings);
     }
     next.unwrap_or(Screen::Playing)
+}
+
+/// Runs the ticks this frame owes a local match, unless the frame has
+/// already chosen to leave live play: the pause menu freezes the match on
+/// the gesture, so a suspension's gap is never caught up behind it. A LAN
+/// match's link runs its ticks before the screen frame.
+fn advance_live_match(game: &mut Game, raw_dt: f32, stop_tick: Option<u64>, leaving: bool) -> bool {
+    !leaving && game.net_role().is_none() && game.advance_wall_clock(raw_dt, stop_tick)
+}
+
+/// The one way into a replay viewer: leaving it restores `back` wholesale.
+fn open_playback(session: PlaybackSession, back: Screen) -> Screen {
+    Screen::Playback {
+        session: Box::new(session),
+        back: Box::new(back),
+    }
 }
 
 fn playback_frame(
     app: &mut App,
     mut pb: Box<PlaybackSession>,
+    back: Box<Screen>,
     events: &[RawEvent],
     time: FrameTime,
     rerun: &mut bool,
 ) -> Screen {
-    pb.bindings.clone_from(&app.input.bindings);
     let input_scope =
         oxide_kit::diagnostics::stage(oxide_kit::diagnostics::Stage::Input, pb.engine.position());
     let leave = pb.apply_input(
+        &app.config.bindings,
         events,
         time.presentation,
         vec2(screen_width(), screen_height()),
-        app.config.camera.zoom_inverted,
-        app.config.camera.pan_speed,
+        app.config.camera,
         &mut app.input.mouse,
     );
     drop(input_scope);
     if leave {
         *rerun = true;
-        match pb.return_to {
-            PlaybackReturn::Pause => Screen::Pause(pause_menu(&app.game)),
-            PlaybackReturn::Results => Screen::Results(ResultsScreen::open()),
-            PlaybackReturn::Home => Screen::Home(HomeScreen::open()),
-        }
+        *back
     } else {
         pb.advance_frame(time, vec2(screen_width(), screen_height()));
         render::draw_with_performance(
             &pb.view(),
             &app.sprites,
             &app.input,
+            &app.config.bindings,
             Some(app.performance.view()),
         );
         screens::playback::playback_hud(
             &pb,
+            &app.config.bindings,
             vec2(screen_width(), screen_height()),
             app.input.mouse,
         );
-        Screen::Playback(pb)
+        Screen::Playback { session: pb, back }
     }
 }
 
@@ -734,14 +864,13 @@ fn final_map_frame(
     dt: f32,
     rerun: &mut bool,
 ) -> Screen {
-    final_map.bindings.clone_from(&app.input.bindings);
     let input_scope = app
         .game
         .diagnostic_stage(oxide_kit::diagnostics::Stage::Input);
     let leave = final_map.update(
+        &app.config.bindings,
         events,
         dt,
-        vec2(screen_width(), screen_height()),
         app.config.camera,
         &mut app.input.mouse,
         &mut app.game,
@@ -751,11 +880,11 @@ fn final_map_frame(
         &app.game.view(),
         &app.sprites,
         &app.input,
+        &app.config.bindings,
         Some(app.performance.view()),
     );
-    final_map.draw_hud(app.input.mouse);
+    FinalMapScreen::draw_hud(&app.config.bindings, app.input.mouse);
     if leave {
-        app.game.presentation.spectate = false;
         *rerun = true;
         Screen::Results(ResultsScreen::open())
     } else {
@@ -777,39 +906,36 @@ fn results_frame(
         &mut app.input.mouse,
         vec2(screen_width(), screen_height()),
         render::ui_scale(),
-        &mut app.game.presentation.sounds_pending,
+        &mut app.ui_sounds,
     );
     drop(input_scope);
-    render::draw(&app.game.view(), &app.sprites, &app.input);
+    render::draw(
+        &app.game.view(),
+        &app.sprites,
+        &app.input,
+        &app.config.bindings,
+    );
     results.draw(&app.game);
     match out {
         screens::results::Out::Stay => Screen::Results(results),
         screens::results::Out::Rematch if app.game.net_role().is_some() => {
-            app.menu_notice = Some((
-                "Host a new match to play again.".to_owned(),
-                get_time() + 5.0,
-            ));
+            app.notify("Host a new match to play again.", true);
             Screen::Results(results)
         }
         screens::results::Out::Rematch => {
             app.persistence_screen(persistence::Intent::Rematch, Screen::Results(results))
         }
-        screens::results::Out::Watch => match result_playback(&app.game) {
+        screens::results::Out::Watch => match live_playback(&app.game) {
             Ok(session) => {
                 *rerun = true;
-                Screen::Playback(Box::new(session))
+                open_playback(session, Screen::Results(results))
             }
             Err(err) => {
-                app.menu_notice = Some((format!("cannot open playback: {err}"), get_time() + 5.0));
+                app.notify(format!("cannot open playback: {err}"), true);
                 Screen::Results(results)
             }
         },
         screens::results::Out::ViewFinalMap => {
-            app.game.presentation.paused = true;
-            app.game.presentation.spectate = true;
-            app.game.presentation.selection.units.clear();
-            app.game.presentation.selection.buildings.clear();
-            app.game.presentation.selection.pile = None;
             *rerun = true;
             Screen::FinalMap(FinalMapScreen::open())
         }
@@ -828,16 +954,17 @@ fn replays_frame(app: &mut App, mut shelf: Shelf, events: &[RawEvent], rerun: &m
     let input_scope = app
         .game
         .diagnostic_stage(oxide_kit::diagnostics::Stage::Input);
-    let out = shelf.update(
-        events,
-        &mut app.input.mouse,
-        &mut app.game.presentation.sounds_pending,
-    );
+    let out = shelf.update(events, &mut app.input.mouse, &mut app.ui_sounds);
     drop(input_scope);
     match out {
         screens::shelf::Out::Home => {
             let home = HomeScreen::open();
-            render::draw(&app.game.view(), &app.sprites, &app.input);
+            render::draw(
+                &app.game.view(),
+                &app.sprites,
+                &app.input,
+                &app.config.bindings,
+            );
             veil();
             home.menu.draw(home.subtitle());
             *rerun = true;
@@ -845,15 +972,19 @@ fn replays_frame(app: &mut App, mut shelf: Shelf, events: &[RawEvent], rerun: &m
         }
         screens::shelf::Out::Watch(path) => match PlaybackSession::open(&path.to_string_lossy()) {
             Ok(session) => {
-                render::draw(&app.game.view(), &app.sprites, &app.input);
+                render::draw(
+                    &app.game.view(),
+                    &app.sprites,
+                    &app.input,
+                    &app.config.bindings,
+                );
                 *rerun = true;
-                leave = Some(Screen::Playback(Box::new(session)));
+                // The shelf is a front-door browser: leaving the viewer
+                // lands on Home, as a cold `--watch` launch does.
+                leave = Some(open_playback(session, Screen::Home(HomeScreen::open())));
             }
             Err(_) => {
-                app.game
-                    .presentation
-                    .sounds_pending
-                    .push((SoundKind::Denied, None));
+                app.ui_sounds.push((SoundKind::Denied, None));
             }
         },
         screens::shelf::Out::Load(path) => {
@@ -868,7 +999,12 @@ fn replays_frame(app: &mut App, mut shelf: Shelf, events: &[RawEvent], rerun: &m
     if let Some(next) = leave {
         next
     } else {
-        render::draw(&app.game.view(), &app.sprites, &app.input);
+        render::draw(
+            &app.game.view(),
+            &app.sprites,
+            &app.input,
+            &app.config.bindings,
+        );
         veil();
         shelf
             .menu
@@ -882,19 +1018,20 @@ fn pause_frame(app: &mut App, mut ps: PauseScreen, events: &[RawEvent]) -> Resul
     let input_scope = app
         .game
         .diagnostic_stage(oxide_kit::diagnostics::Stage::Input);
-    let out = ps.update(
-        events,
-        &mut app.input.mouse,
-        &mut app.game.presentation.sounds_pending,
-    );
+    let out = ps.update(events, &mut app.input.mouse, &mut app.ui_sounds);
     drop(input_scope);
-    render::draw(&app.game.view(), &app.sprites, &app.input);
+    render::draw(
+        &app.game.view(),
+        &app.sprites,
+        &app.input,
+        &app.config.bindings,
+    );
     veil();
     ps.draw(&app.game.scenario.name, app.input.mouse);
     Ok(match out {
         screens::pause::Out::Stay => Screen::Pause(ps),
         screens::pause::Out::Resume => {
-            app.game.presentation.paused = false;
+            app.game.clock.paused = false;
             Screen::Playing
         }
         screens::pause::Out::SaveGame => {
@@ -933,24 +1070,15 @@ fn pause_frame(app: &mut App, mut ps: PauseScreen, events: &[RawEvent]) -> Resul
             // the concede overlay meets the player back in
             // the match while the ally plays on.
             app.game.issue(oxide_sim::Command::Surrender);
-            app.game.presentation.paused = false;
+            app.game.clock.paused = false;
             Screen::Playing
         }
         screens::pause::Out::WatchReplay => {
-            // The recorder IS the record — clone it, stamp
-            // its length, play it back. Non-destructive; the
-            // live match waits.
-            let mut replay = app.game.recorder.clone();
-            replay.meta.ticks = Some(app.game.state.current_tick());
-            match PlaybackSession::from_replay(replay) {
-                Ok(mut session) => {
-                    session.return_to = PlaybackReturn::Pause;
-                    Screen::Playback(Box::new(session))
-                }
+            // Leaving the viewer lands back on this exact menu.
+            match live_playback(&app.game) {
+                Ok(session) => open_playback(session, Screen::Pause(ps)),
                 Err(err) => {
-                    app.game
-                        .presentation
-                        .toast(format!("cannot open playback: {err}"));
+                    app.notify(format!("cannot open playback: {err}"), true);
                     Screen::Pause(ps)
                 }
             }
@@ -959,7 +1087,13 @@ fn pause_frame(app: &mut App, mut ps: PauseScreen, events: &[RawEvent]) -> Resul
             let fresh = rebuild_match(&app.game)?;
             // Restarting a tutorial also restarts its lesson state.
             let tutorial = app.tutorial.is_some().then(tutorial::Tutorial::new);
-            app.install_session(fresh, app.args.paused, tutorial);
+            app.install(
+                fresh,
+                Install {
+                    tutorial,
+                    ..Install::local(app.args.paused)
+                },
+            );
             Screen::Playing
         }
         screens::pause::Out::MainMenu => app.persistence_screen(

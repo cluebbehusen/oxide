@@ -40,7 +40,6 @@ fn sandbox(map: Vec<String>, teams: &[Option<u8>], units: &[(u8, UnitKind, i32, 
     Scenario {
         mode: ScenarioMode::Sandbox,
         name: "clicked-tile-goals".into(),
-        seed: 23,
         map,
         players: teams
             .iter()
@@ -78,7 +77,7 @@ fn ids(state: &State, player: u8) -> Vec<UnitId> {
 fn goal(state: &State, id: UnitId) -> Option<Goal> {
     match state.unit(id)?.order {
         Order::Run { goal } | Order::Hunt { goal } | Order::Advance { goal } => Some(goal),
-        Order::Unload { at } => Some(at),
+        Order::Unload { at, .. } => Some(at),
         _ => None,
     }
 }
@@ -672,7 +671,7 @@ fn a_condor_hands_off_only_once_its_click_is_explored() {
         "premise: in reach before the click was seen"
     );
     run_until(&mut state, 800, |state, _| {
-        state.unit(condor).unwrap().landed
+        state.unit(condor).unwrap().landed()
     });
 }
 

@@ -1,8 +1,7 @@
 use super::*;
 use crate::scenario::ScenarioMode;
 
-/// The previous refresh, kept verbatim as the reference: every
-/// candidate pairing generated and sorted.
+/// A reference refresh that generates and sorts every candidate pairing.
 fn sorted_refresh(this: &mut Tracking, view: &Vision, state: &State, player: PlayerId) {
     let mut observations: Vec<(TilePos, Option<UnitId>)> = view
         .contacts
@@ -164,7 +163,6 @@ fn direct_pairing_matches_sorting_every_candidate() {
     let mut state = Scenario {
         mode: ScenarioMode::Match,
         name: "converging-armies".into(),
-        seed: 11,
         map: (0..13)
             .map(|y| match y {
                 1 => ".1".to_owned() + &".".repeat(29),

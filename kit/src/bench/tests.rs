@@ -39,13 +39,12 @@ fn all_bots_leaves_no_idle_chair() {
     );
 }
 
-/// Two identical runs at scale, hash-compared every 50 ticks — the
-/// CI face of the bench. Short on purpose: the timed thousands-of-
-/// ticks run is the CLI's job on a dev machine.
+/// Two identical runs at scale, hash-compared every 50 ticks. Kept short;
+/// timed long runs belong to the CLI on a dev machine.
 #[test]
 fn five_hundred_units_stay_bit_identical_across_runs() {
     let run = || {
-        let scenario = mass_battle(250, 9);
+        let scenario = mass_battle(250);
         let mut state = scenario.build().expect("scale scenario builds");
         engage(&mut state);
         let mut hashes = Vec::new();

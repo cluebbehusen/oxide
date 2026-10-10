@@ -10,7 +10,7 @@ use chassis::replay::Replay;
 use oxide_sim::command::RejectReason;
 use oxide_sim::scenario::PlayerSpec;
 use oxide_sim::{
-    Command, Event, Faction, GameResult, Player, PlayerCommand, PlayerId, SIM_VERSION, Scenario,
+    Command, Event, Faction, GameResult, PlayerCommand, PlayerId, SIM_VERSION, Scenario,
 };
 
 /// A 2v2 of bare Foundries: west team (seats 0, 1) against east
@@ -28,7 +28,6 @@ fn arena4() -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "surrender-arena".into(),
-        seed: 42,
         map: vec![
             "####################".into(),
             "#1..............3..#".into(),
@@ -53,8 +52,8 @@ fn arena4() -> Scenario {
 
 #[test]
 fn a_1v1_surrender_decides_the_match_on_its_own_tick() {
-    // Commands are phase 1 and victory phase 10: the concession and the
-    // result share a tick.
+    // Commands apply before the tick's victory check, so the concession
+    // and the result share a tick.
     let mut state = Scenario::skirmish().build().unwrap();
     let winner_team = state.player(PlayerId(0)).team;
     let report = state.tick(&[cmd(1, Command::Surrender)]);
@@ -148,7 +147,7 @@ fn a_team_concession_is_seat_scoped_until_the_whole_team_resigns() {
 #[test]
 fn a_record_with_a_surrender_reproduces_headlessly() {
     let mut replay: Replay<Scenario, PlayerCommand> =
-        Replay::new(SIM_VERSION, Scenario::skirmish());
+        Replay::new(SIM_VERSION, "test", Scenario::skirmish());
     replay.record(4, cmd(1, Command::Surrender));
     replay.meta.ticks = Some(10);
     let json = serde_json::to_string(&replay).unwrap();
@@ -173,31 +172,4 @@ fn a_record_with_a_surrender_reproduces_headlessly() {
         matches!(result, Some(GameResult::Victory { .. })),
         "the recorded concession decided the re-run too"
     );
-}
-
-#[test]
-fn a_pre_surrender_record_still_deserializes() {
-    // 0.12 wrote no `resigned` field and no surrender variant; the
-    // grown types must read its bytes unchanged (the appending
-    // discipline keeps every old tag where it was).
-    let setup = serde_json::to_value(Scenario::skirmish()).unwrap();
-    let old = serde_json::json!({
-        "meta": {"sim_version": "0.12.0"},
-        "setup": setup,
-        "commands": [
-            {"tick": 2, "command": {"player": 0, "command": {"type": "stop", "units": [0]}}}
-        ],
-    });
-    let replay: Replay<Scenario, PlayerCommand> = serde_json::from_value(old).unwrap();
-    assert_eq!(replay.meta.sim_version, "0.12.0");
-    assert!(matches!(
-        replay.commands[0].command.command,
-        Command::Stop { .. }
-    ));
-
-    // And a serialized Player that predates the field reads as
-    // unresigned, not as an error.
-    let veteran: Player =
-        serde_json::from_str(r#"{"name":"vet","faction":"ferrous","team":0,"scrap":50}"#).unwrap();
-    assert!(!veteran.resigned);
 }

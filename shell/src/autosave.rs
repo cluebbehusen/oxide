@@ -119,7 +119,7 @@ impl Drop for PathReservation {
 /// `create_new` (`O_EXCL`). Every successful return owns its candidate;
 /// collision suffixes have no arbitrary cutoff that can bypass the
 /// exclusive create.
-fn free_path(dir: &Path, prefix: &str, tick: u64, seed: u64) -> Result<PathReservation, SaveError> {
+fn free_path(dir: &Path, prefix: &str, tick: u64) -> Result<PathReservation, SaveError> {
     static RESERVATION_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let mut n = 0u64;
     loop {
@@ -127,7 +127,7 @@ fn free_path(dir: &Path, prefix: &str, tick: u64, seed: u64) -> Result<PathReser
         let path = if n == 0 {
             dir.join(format!("{prefix}-{tick:010}.{extension}"))
         } else {
-            dir.join(format!("{prefix}-{tick:010}-{seed}-{n}.{extension}"))
+            dir.join(format!("{prefix}-{tick:010}-{n}.{extension}"))
         };
         match std::fs::File::create_new(&path) {
             Ok(mut file) => {
@@ -175,10 +175,9 @@ fn now_unix() -> u64 {
 }
 
 /// Retention runs per record kind: live sessions and finished matches
-/// each rotate against their own budget, and anything else in the
-/// directory — explicit saves included — is never touched. A shared
-/// prefix-blind pool once let five quick quits evict every finished
-/// match.
+/// each rotate against their own budget, so quick quits never evict
+/// finished matches. Anything else in the directory, explicit saves
+/// included, is never touched.
 fn rotate(dir: &Path) {
     chassis::fsx::sweep_temps(dir, TEMP_ORPHAN_AGE);
     rotate_prefix(dir, "autosave-", KEEP_AUTOSAVES);
@@ -245,7 +244,6 @@ pub(crate) enum SaveData {
 pub(crate) struct SaveJob {
     data: Option<SaveData>,
     meta: chassis::replay::ReplayMeta,
-    seed: u64,
     dir: Option<PathBuf>,
     named: bool,
     already_saved: bool,
@@ -293,7 +291,6 @@ impl SaveJob {
         Self {
             data,
             meta,
-            seed: game.scenario.seed,
             dir: if named {
                 crate::paths::saves_dir()
             } else {
@@ -313,7 +310,7 @@ impl SaveJob {
                 source,
             })?;
             let prefix = self.meta.kind.as_deref().unwrap();
-            let path = free_path(&dir, prefix, self.meta.ticks.unwrap(), self.seed)?
+            let path = free_path(&dir, prefix, self.meta.ticks.unwrap())?
                 .publish(|path| match data {
                     SaveData::Checkpoint(capture) => {
                         crate::saved_game::write_capture(capture, self.meta.clone(), path)

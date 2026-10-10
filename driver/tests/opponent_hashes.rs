@@ -22,7 +22,6 @@ fn scenario(name: &str, scrap: u32, worker: bool) -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: name.into(),
-        seed: 42,
         map: map
             .into_iter()
             .map(|row| row.into_iter().collect())
@@ -81,7 +80,7 @@ impl Probe {
             state,
             bots,
             twin_bots: seat_controllers(&scenario).unwrap(),
-            replay: GameReplay::new(oxide_sim::SIM_VERSION, scenario),
+            replay: GameReplay::new(oxide_sim::SIM_VERSION, "test", scenario),
             history: Vec::new(),
             command_fold: 0,
         }
@@ -266,5 +265,7 @@ fn focused_controller_contracts_match_hash_fixtures() {
         .collect();
     let fixture =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/goldens/opponent-hashes.json");
-    support::check_or_bless(&fixture, actual);
+    // Replays and netplay carry bot commands rather than rerunning the bot, so
+    // a bot change never calls for a new `SIM_VERSION`.
+    support::check_or_bless(&fixture, actual, |_, _| Ok(()));
 }

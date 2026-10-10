@@ -8,8 +8,8 @@ same ordered batches.
 The session core and start barrier perform no I/O and read no clock. Callers
 pass received lines and a monotonic `now`, and collect lines to send. The `tcp`
 module is the crate's only I/O. The crate does not own bots, recording, or
-`State` itself: hosts keep their existing batch path of staged human commands,
-then bot commands, then record, then `State::tick`.
+`State` itself: hosts run their own batch path of staged human commands, then
+bot commands, then record, then `State::tick`.
 
 ## Main pieces
 
@@ -27,11 +27,12 @@ then bot commands, then record, then `State::tick`.
 
 ## Joining and starting
 
-- Each side opens with `Hello`, carrying `PROTOCOL_VERSION` and the build
-  commit, and hangs up if the other side's does not match. Hello's shape never
-  changes, so mismatched builds can still explain the refusal; any other wire
-  change bumps `PROTOCOL_VERSION`. Local changes on top of a matching commit are
-  the players' responsibility.
+- Each side opens with `Hello`, carrying `PROTOCOL_VERSION`, `SIM_VERSION` and
+  the build commit, and hangs up if the other side's do not match. Hello's shape
+  never changes, so mismatched builds can still explain the refusal. Before
+  launch the versions stay fixed and the commit decides
+  ([versioning](../docs/versioning.md)). Local changes on top of a matching
+  commit are the players' responsibility.
 - The host freezes the roster, which must hold exactly the scenario's human
   seats, and `StartBarrier` sends each client its seat and the `Scenario`. Each
   client builds the match and replies `Ready` with its tick-zero `State::hash`.
@@ -58,6 +59,11 @@ then bot commands, then record, then `State::tick`.
   if its heartbeats continue. A client silent for `SILENCE_TIMEOUT`, a closed
   connection, or a protocol violation also drops it. A dropped seat leaves the
   progress gate at once, and its `Surrender` joins the next sealed batch.
+- A client line longer than `MAX_CLIENT_LINE_BYTES`, or orders that would leave
+  more than `CLIENT_PENDING_BYTES` of a client's commands waiting, is a protocol
+  violation. A sealed batch carries at most `BATCH_COMMAND_BYTES` of human
+  commands; later orders wait for the next tick in arrival order, so a batch
+  line stays under `MAX_LINE_BYTES`.
 - A mismatched hash report halts the session and tells every client.
   `HostSession::caught_up` reports when every live client has acknowledged every
   published batch; a host ending a decided match waits for it so the final
@@ -75,9 +81,9 @@ then bot commands, then record, then `State::tick`.
   never blocks the game loop that polls it. Received lines wait in a bounded
   queue; when the game loop falls behind, the reader stops reading and TCP
   pushes back on the peer. Outgoing lines are bounded by the session's lead cap
-  and progress timeout. A write that stalls for ten seconds or fails closes the
-  connection. There is no read timeout: the lobby may wait indefinitely, and
-  in-match liveness belongs to the session core.
+  and progress timeout. A write that stalls past the write timeout or fails
+  closes the connection. There is no read timeout: the lobby may wait
+  indefinitely, and in-match liveness belongs to the session core.
 - Dropping a `Connection` aborts it and discards unsent lines. To close cleanly,
   call `finish` and keep polling until `Closed` before dropping; after `finish`,
   `Closed` waits until every queued line has been written, so the final lines

@@ -1,6 +1,7 @@
-//! The pointer gesture every menu surface shares: a press arms the zone
-//! under it, and only a release on that same zone commits. Dragging away
-//! cancels, and the first finger down owns a touch gesture until it lifts.
+//! The pointer gesture menus and screen buttons share: a press arms the
+//! zone under it, and only a release on that same zone commits. Dragging
+//! away cancels, and the first finger down owns a touch gesture until it
+//! lifts.
 //!
 //! A screen supplies its own hit test and calls in with whichever zone the
 //! pointer is over; this type only remembers what was armed.

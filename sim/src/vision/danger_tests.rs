@@ -17,7 +17,6 @@ fn allied_incident_state() -> State {
     Scenario {
         mode: ScenarioMode::Match,
         name: "allied-incidents".into(),
-        seed: 5,
         map: vec![
             "########################".into(),
             "#1.........2........3..#".into(),
@@ -73,7 +72,6 @@ fn screened_source(extra_hostile: bool) -> (State, TilePos) {
     let state = Scenario {
         mode: ScenarioMode::Match,
         name: "screened-salvage".into(),
-        seed: 4,
         map: vec![
             "####################".into(),
             "#1.................#".into(),
@@ -270,12 +268,12 @@ fn indexed_building_knowledge_matches_the_fog_reference() {
         if vision.visible(tile) {
             return state
                 .buildings_at(tile)
-                .any(|building| !building.kind.is_stealthy() && !building.provisional);
+                .any(|building| !building.kind.is_stealthy() && !building.provisional());
         }
         let team = state.player(viewer).team;
         state.buildings.iter().any(|building| {
             !building.kind.is_stealthy()
-                && !building.provisional
+                && !building.provisional()
                 && state.player(building.player).team == team
                 && building.contains(tile)
         }) || vision

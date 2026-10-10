@@ -81,7 +81,6 @@ fn arena(scrap: u32) -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "opponent arena".into(),
-        seed: 5,
         map: ARENA.map(str::to_owned).to_vec(),
         players: vec![
             seat("west", Faction::Ferrous),
@@ -292,7 +291,6 @@ const FIELD: [&str; 24] = [
     "################################################",
 ];
 
-/// The field with both seats and no units.
 /// Sentinel spots beside the West Foundry on the field, nearer home than any
 /// other staged unit: worth the Balanced stance's home reserve, so offense
 /// leaves them there.
@@ -314,6 +312,7 @@ fn garrison(scenario: &mut Scenario) {
     }
 }
 
+/// The field with both seats and no units.
 fn field() -> Scenario {
     let mut scenario = arena(0);
     scenario.map = FIELD.map(str::to_owned).to_vec();
@@ -440,7 +439,7 @@ fn mirror(state: &State, commands: Vec<PlayerCommand>) -> Vec<PlayerCommand> {
                     queue,
                     defer,
                 } => {
-                    let (w, h) = kind.base_stats().size;
+                    let (w, h) = kind.size();
                     Command::Build {
                         units: units(sent),
                         kind,

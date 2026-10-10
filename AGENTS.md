@@ -63,8 +63,8 @@ where a profile shows a real win.
 
 ## Determinism contract
 
-The target is strict: **same seed plus same command log produces bit-identical
-state on every run and platform.**
+The target is strict: **the same scenario plus the same command log produces
+bit-identical state on every run and platform.**
 
 - `chassis`, `oxide-sim`, and `oxide-opponent` contain no floating-point
   arithmetic. Use `chassis::fx::Fx`; floats are presentation-only.
@@ -101,8 +101,11 @@ state on every run and platform.**
   bound scenario. Controller validation rejects state that could panic or cause
   unbounded work; a forged value that only changes play is accepted. A new
   checkpoint field needs a design review.
-- `FogView` is the canonical player-knowledge surface. Omniscient QA views must
-  never feed a bot or player decision.
+- Player knowledge has two fog-honest projections: `oxide_protocol::FogView` for
+  players and agents, and `oxide_sim::observation::ObservationData::fog_honest`
+  for bots. A parity test in `protocol/src/view/tests.rs` keeps them in
+  agreement; change both together. Omniscient QA views must never feed a bot or
+  player decision.
 - Live, playback, and headless sessions share `oxide_protocol::DebugSession`.
   Explicitly refuse unsupported capabilities instead of faking them.
 - Hardware and injected input enter through the same semantic event funnel and
@@ -127,11 +130,11 @@ bot owns or sends.
 
 Every bot seat of a normal match runs `oxide-opponent`. Scrapheap, Standard,
 Veteran, and Prime alter fair macro competence plus cognitive and execution
-limits such as opening army commitment, attention, reaction time, memory,
-estimate accuracy, and hesitation. Turtle, Balanced, and Aggressive bound its
-strategic posture. A deterministic per-seat seed varies air, siege, support,
-fortification, greed, and guile priorities; it never changes capabilities or
-unit strength.
+limits: reaction time, attention, the margin an attack must bring, estimate
+accuracy, and how well a seat attacks, focuses fire, and lifts. Turtle,
+Balanced, and Aggressive bound its strategic posture. A deterministic per-seat
+seed varies air, siege, support, fortification, greed, and guile priorities; it
+never changes capabilities or unit strength.
 
 Every difficulty retains the complete strategic repertoire. Automated metrics
 surface candidates and failures; human play and replay judgment decide whether
@@ -205,7 +208,7 @@ When assets or generators change, also run their deterministic checks:
 
 ```sh
 uv run tools/gen_sprites.py --check
-uv run --python 3.14 --with 'pillow==12.3.0' \
+uv run --with 'pillow==12.3.0' \
   -m unittest tools.test_gen_sprites tools.test_production_sprite_sources \
   tools.test_gen_icon
 uv run tools/gen_sounds.py --check
@@ -218,28 +221,19 @@ CPU screenshots prove schematic state, not presentation quality.
 
 ## Hashes, goldens, and versions
 
-The approval requirements below apply to agents writing code or updating
-fixtures. Agents reviewing code should not flag missing approval for a version
-change or hash bless; approval is handled by the implementing agent and may have
-been granted outside the review context. Reviewers should still assess technical
-correctness and replay compatibility.
+Oxide is pre-launch: saves, replays, settings and fixtures from other builds are
+not supported. Never add code that reads an older format, and never change a
+version number. [`docs/versioning.md`](docs/versioning.md) lists each version,
+what it gates, and what changes at launch.
 
-- Never change the workspace package version or `SIM_VERSION` without explicit
-  approval from the human user. A request to implement simulation behavior does
-  not imply approval for a compatibility-version bump.
-- If existing state-hash rows move, inspect the drift and ask the user whether
-  to approve a version bump or a same-version bless. Do not choose either path
-  autonomously.
-- Exception: fixtures driven only by `oxide-opponent` live in their own file,
-  separate from simulation-only hashes. Its behavior is expected to change, so
-  the implementing agent reblesses them with a ladder-smoke comparison in the
-  PR, without a version decision.
-- Regenerate driver fixtures with `BLESS=1 cargo test -p oxide-driver --locked`
-  only after that compatibility decision. `BLESS_SAME_VERSION=1` also requires
-  explicit approval from the human user.
+- Keep `driver/tests/goldens/state-hashes.json` as the cheap sim-drift tripwire.
+  When a change moves its rows, inspect the drift, re-bless at the same version
+  with `BLESS=1 BLESS_SAME_VERSION=1 cargo test -p oxide-driver --locked`, and
+  name the moved rows and the reason in the PR.
+- Fixtures driven only by `oxide-opponent` live in their own file and re-bless
+  with `BLESS=1` alone; the PR includes a ladder-smoke comparison.
 - Inspect changed PNGs. A green golden test cannot prove that art or layout is
   good.
-- Keep `driver/tests/goldens/state-hashes.json` as the cheap sim-drift tripwire.
 - A new `Command` variant must enter the fuzz generator's compiler-held tag
   surface and receive reach assertions.
 - `shell/src/assets.rs` and `assets/sprites/atlas.json` remain a bijection over

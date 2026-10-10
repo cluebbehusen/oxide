@@ -43,8 +43,8 @@ fn activate(shelf: &mut Shelf, label: &str) -> Out {
 
 #[test]
 fn the_back_button_leaves_even_after_every_record_is_deleted() {
-    // The 0.9 regression, pinned structurally: however the shelf is
-    // built — first open or post-delete rebuild — it has an exit.
+    // However the shelf is built (first open or post-delete rebuild), it
+    // has an exit.
     let mut shelf = Shelf::from_entries(vec![entry(
         "done",
         true,

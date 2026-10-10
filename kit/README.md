@@ -1,9 +1,10 @@
 # oxide-kit
 
 `oxide-kit` holds Oxide-specific engine services shared by the shell and the
-driver. Keeping them here lets the graphical game and the headless harness use
-the same replay, statistics, rendering, and scenario-running code without either
-depending on the other.
+driver, so the graphical game and the headless harness use the same controller
+hosting, checkpoint, replay, recovery, statistics, and rendering code without
+either depending on the other. A few services, such as the headless `runner` and
+`bench`, serve only the driver.
 
 This is not the home for game rules or UI state. Rules stay in `oxide-sim`,
 while reusable game-independent primitives stay in `chassis`.
@@ -24,26 +25,19 @@ while reusable game-independent primitives stay in `chassis`.
   session, simulation, and controller revisions are checked independently. A
   fingerprint binds the captured scenario and world, rejecting later mismatches
   even if both scenario copies change. Capture trusts the host's pairing; the
-  fingerprint neither authenticates data nor proves historical origin.
-  `RecordedCheckpoint` carries the existing recorder alongside this core so
-  current hosts can continue exporting complete legacy replays. Recorder setup
-  and duration are checked; restoration does not re-execute the log to prove its
-  correspondence to the world. This internal contract remains useful for
-  headless session adapters. Player saves use the core checkpoint without
-  historical commands; recovery pairs it with a world origin and a completed
-  command suffix.
+  fingerprint neither authenticates data nor proves historical origin. Player
+  saves use the core checkpoint without historical commands; recovery pairs it
+  with a world origin and a completed command suffix.
 
-- `bot_execution` collects commands in input seat order, using a shared pool of
-  up to four workers when multiple bots are due. A busy or unavailable pool uses
-  serial execution, so independent headless matches do not queue behind it.
-  Batch workers that already run matches concurrently use `serially` to avoid
-  adding bot threads to a saturated workload. Live sessions can submit one
-  speculative controller clone against an immutable shared world. Owned jobs
-  retain the same admission permit until completion, including when their
-  session discards the result. Collection validates the world/tick/roster and
-  installs complete controllers before returning commands; snapshots remain
-  available for saves while work runs. Speculation drains own-event buffers only
-  in its clones, so events are consumed when its result is installed.
+- `bot_execution` collects commands in input seat order, using a small shared
+  worker pool when several bots are due. A busy or unavailable pool falls back
+  to serial execution, so independent headless matches do not queue behind it;
+  batch workers that already run matches concurrently use `serially`. Live
+  sessions can speculate one decision on controller clones against an immutable
+  shared world. Collection validates the world, tick, and roster and installs
+  the complete clones before returning commands, while the session's own
+  controllers stay available for saves. Speculation drains own-event buffers
+  only in its clones, so events are consumed when its result is installed.
 
 - `recovery` keeps a bounded incremental command journal, distinguishes prepared
   commands from completed ticks, and exports verified replay prefixes with build
@@ -51,22 +45,21 @@ while reusable game-independent primitives stay in `chassis`.
   The host supplies build identity; the kit never probes Git or embeds a sibling
   executable's revision. Diagnostics share the recording identity, while export
   also records the identity of the executable preparing the report.
-- `load_replay` owns bounded Oxide replay loading and version-scoped setup
-  compatibility.
-- `runner` executes scenarios and replays headlessly through the same
-  record-then-tick composition. Its opt-in traced step returns player-facing bot
-  diagnostics without changing replay input or the ordinary step path.
+- `load_replay` owns bounded, strict Oxide replay loading.
+- `runner` executes scenarios and replays headlessly, recording each tick's
+  commands before the tick runs. Its opt-in traced step returns player-facing
+  bot diagnostics without changing replay input or the ordinary step path.
 - `recording` supplies a validated world-only origin for replay segments.
-  Scenario-start records retain their original JSON shape. Checkpoint-origin
-  records retain absolute ticks; their first available tick can be nonzero.
-  Playback and replay statistics never execute controllers. A world-only segment
-  cannot resume live play without its separate session checkpoint.
+  Scenario-start records carry no origin. Checkpoint-origin records retain
+  absolute ticks; their first available tick can be nonzero. Playback and replay
+  statistics never execute controllers. A world-only segment cannot resume live
+  play without its separate session checkpoint.
 - `playback` provides bounded seeking between the recording origin and its end.
 - `stats` derives match summaries from simulation truth. Replay statistics cover
   the available segment; live checkpoint statistics retain earlier session
   totals.
 - `render` is the deterministic CPU renderer used for previews and goldens.
-- `matchup` and `bench` build controlled combat and scale fixtures.
+- `bench` builds the mass-battle scale fixture.
 - `perceptual` compares rendered images without entering gameplay logic.
 
 ## Development

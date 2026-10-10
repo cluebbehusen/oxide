@@ -15,7 +15,6 @@ fn scenario(buildings: Vec<BuildingSpec>, scrap: u32) -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "detectors".into(),
-        seed: 3,
         map,
         players: [Faction::Ferrous, Faction::Cupric]
             .into_iter()
@@ -57,9 +56,9 @@ fn building_index(value: &serde_json::Value, kind: &str) -> usize {
 fn site(progress: u32) -> impl FnOnce(&mut serde_json::Value) {
     move |value| {
         let index = building_index(value, "fabricator");
-        value["buildings"][index]["built"] = false.into();
+        value["buildings"][index]["phase"] =
+            serde_json::json!({"phase": "site", "progress": progress});
         value["buildings"][index]["hp"] = 100.into();
-        value["buildings"][index]["progress"] = progress.into();
     }
 }
 
@@ -189,14 +188,19 @@ fn provisional_and_upgrading_works_are_not_abandoned_sites() {
     let provisional = staged(&scenario(fabricator(), 0), |value| {
         site(0)(value);
         let fabricator = building_index(value, "fabricator");
-        value["buildings"][fabricator]["provisional"] = true.into();
+        value["buildings"][fabricator]["phase"] = serde_json::json!({"phase": "provisional"});
         value["units"][0]["order"] = serde_json::json!({
             "order": "found",
             "kind": "fabricator",
             "anchor": value["buildings"][fabricator]["anchor"].clone(),
         });
     });
-    assert!(provisional.buildings().iter().any(|site| site.provisional));
+    assert!(
+        provisional
+            .buildings()
+            .iter()
+            .any(oxide_sim::Building::provisional)
+    );
     let upgrading = staged(
         &scenario(
             vec![BuildingSpec {
@@ -209,7 +213,7 @@ fn provisional_and_upgrading_works_are_not_abandoned_sites() {
         ),
         |value| {
             let turret = building_index(value, "turret");
-            value["buildings"][turret]["built"] = false.into();
+            value["buildings"][turret]["phase"] = serde_json::json!({"phase": "upgrading"});
             value["buildings"][turret]["tier"] = 1.into();
         },
     );

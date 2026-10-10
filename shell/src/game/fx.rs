@@ -40,8 +40,8 @@ impl UnitBody {
             game.draw_hull_heading(state, unit.id, 1.0)
         } else if kind.stats().turn_rate > 0
             || kind.ground_turn_rate() > 0
-            || kind.cruise_turn_rate() > 0
-            || kind.turret_turn_rate() > 0
+            || kind.stats().cruise_turn_rate > 0
+            || kind.stats().turret_turn_rate > 0
         {
             game.draw_heading(unit.id, unit.weapon_heading(), 1.0)
         } else {
@@ -115,7 +115,7 @@ impl HitSurface {
     pub(crate) fn covers(self, at: Vec2) -> bool {
         match self {
             Self::Building(hit) => {
-                let (w, h) = hit.kind.tier_stats(hit.tier).size;
+                let (w, h) = hit.kind.size();
                 at.x >= hit.anchor.x
                     && at.y >= hit.anchor.y
                     && at.x <= hit.anchor.x + w as f32
@@ -162,7 +162,7 @@ impl PreviousEffects {
                 .buildings()
                 .iter()
                 .filter(|b| {
-                    !b.provisional
+                    !b.provisional()
                         && (b.player == game.human
                             || game.all_seeing()
                             || (b.tiles().any(|t| state.vision(game.human).visible(t))
@@ -171,7 +171,7 @@ impl PreviousEffects {
                 .map(|b| {
                     (
                         b.id,
-                        b.built.then_some(CollapseBody {
+                        b.built().then_some(CollapseBody {
                             kind: b.kind,
                             tier: b.tier,
                             player: b.player,
@@ -239,83 +239,76 @@ impl Effect {
     }
 }
 
-/// A clip the shell should play (queued by sim events, drained per frame).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SoundKind {
-    /// An attack landed somewhere you can see.
-    Laser,
-    /// A unit died somewhere you can see.
-    UnitDeath,
-    /// A building fell or a heavy airframe hit the ground.
-    BuildingBoom,
-    /// Your harvester delivered.
-    Deposit,
-    /// Your Foundry finished a unit.
-    TrainDone,
-    /// Menu activation.
-    Click,
-    /// An order was rejected.
-    Denied,
-    /// High-priority warning that the local player is under attack.
-    Alert,
-    /// The match ended in your favor.
-    Victory,
-    /// It did not.
-    Defeat,
-    /// An artillery shell landing.
-    Artillery,
-    /// A hostile artillery launch heard from a visible impact warning.
-    ArtilleryLaunch,
-    /// An order acknowledged.
-    Ack,
-    /// A Sentinel's compact cannon report.
-    SentinelFire,
-    /// A Scuttler's paired mechanical shear.
-    ScuttlerFire,
-    /// A Lancer's charged rail report.
-    LancerFire,
-    /// A Bombard's heavy artillery report.
-    BombardFire,
-    /// A Flakhound's paired anti-air burst.
-    FlakhoundFire,
-    /// A Stinger's light anti-air burst.
-    StingerFire,
-    /// A Buzzard's heavy strike.
-    BuzzardFire,
-    /// A Darter's fast strike.
-    DarterFire,
-    /// A Talon's interceptor burst.
-    TalonFire,
-    /// A Wisp's compact interceptor burst.
-    WispFire,
-    /// A Bastion's emplaced artillery report.
-    BastionFire,
-    /// A Flak Turret's paired-yoke burst.
-    FlakTurretFire,
-    /// The Warden's fork cannon report.
-    WardenFire,
-    /// The Breaker's siege mortar.
-    BreakerFire,
-    /// The Avalanche bank launching.
-    AvalancheFire,
-    /// Missile motor ignition after launcher ejection.
-    RocketMotor,
-    /// A missile warhead reaching its impact point.
-    RocketImpact,
-    /// A bomber releasing its load.
-    BombRelease,
-    /// A buried charge or Sapper detonating.
-    DemolitionBoom,
-    /// A works coming back online one rung higher.
-    UpgradeDone,
-}
-
-impl SoundKind {
-    pub(crate) fn is_explosion(self) -> bool {
-        matches!(
-            self,
-            Self::Artillery | Self::RocketImpact | Self::DemolitionBoom | Self::BuildingBoom
-        )
+chassis::listed_enum! {
+    /// A clip the shell should play (queued by sim events, drained per frame).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum SoundKind {
+        /// An attack landed somewhere you can see.
+        Laser,
+        /// A unit died somewhere you can see.
+        UnitDeath,
+        /// A building fell or a heavy airframe hit the ground.
+        BuildingBoom,
+        /// Your harvester delivered.
+        Deposit,
+        /// Your Foundry finished a unit.
+        TrainDone,
+        /// Menu activation.
+        Click,
+        /// An order was rejected.
+        Denied,
+        /// High-priority warning that the local player is under attack.
+        Alert,
+        /// The match ended in your favor.
+        Victory,
+        /// It did not.
+        Defeat,
+        /// An artillery shell landing.
+        Artillery,
+        /// A hostile artillery launch heard from a visible impact warning.
+        ArtilleryLaunch,
+        /// An order acknowledged.
+        Ack,
+        /// A Sentinel's compact cannon report.
+        SentinelFire,
+        /// A Scuttler's paired mechanical shear.
+        ScuttlerFire,
+        /// A Lancer's charged rail report.
+        LancerFire,
+        /// A Bombard's heavy artillery report.
+        BombardFire,
+        /// A Flakhound's paired anti-air burst.
+        FlakhoundFire,
+        /// A Stinger's light anti-air burst.
+        StingerFire,
+        /// A Buzzard's heavy strike.
+        BuzzardFire,
+        /// A Darter's fast strike.
+        DarterFire,
+        /// A Talon's interceptor burst.
+        TalonFire,
+        /// A Wisp's compact interceptor burst.
+        WispFire,
+        /// A Bastion's emplaced artillery report.
+        BastionFire,
+        /// A Flak Turret's paired-yoke burst.
+        FlakTurretFire,
+        /// The Warden's fork cannon report.
+        WardenFire,
+        /// The Breaker's siege mortar.
+        BreakerFire,
+        /// The Avalanche bank launching.
+        AvalancheFire,
+        /// Missile motor ignition after launcher ejection.
+        RocketMotor,
+        /// A missile warhead reaching its impact point.
+        RocketImpact,
+        /// A bomber releasing its load.
+        BombRelease,
+        /// A buried charge or Sapper detonating.
+        DemolitionBoom,
+        /// A works coming back online one rung higher.
+        UpgradeDone,
     }
 }
 
@@ -361,14 +354,14 @@ impl FlakYokeDelay {
     }
 }
 
-/// The visual family of a direct-fire shot — mapped from the exact
-/// (shooter kind, weapon slot) the hit event names, so every weapon
-/// reads as itself.
+/// The visual family of a direct-fire shot, mapped from the exact
+/// (shooter kind, weapon slot) the hit event names so every weapon reads
+/// as itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShotStyle {
     /// A contact tool: target sparks, never a ranged projectile.
     Contact,
-    /// The approved compact forge-bright orb with no persistent tracer.
+    /// A compact forge-bright orb with no persistent tracer.
     ForgeSpot,
     /// A short metal round, followed by a compact impact burst.
     Kinetic { heavy: bool },
@@ -404,44 +397,14 @@ impl ShotStyle {
     }
 }
 
-/// Which report family a unit's weapon slot fires.
-fn unit_shot_style(kind: oxide_sim::UnitKind, weapon: usize) -> ShotStyle {
-    use oxide_sim::UnitKind;
-    if kind.stats().contact_reach.is_some() {
-        return ShotStyle::Contact;
-    }
-    match (kind, weapon) {
-        (UnitKind::Sentinel, _) => ShotStyle::Kinetic { heavy: false },
-        (UnitKind::Buzzard | UnitKind::Warden, _) => ShotStyle::Kinetic { heavy: true },
-        (UnitKind::Breaker, _) => ShotStyle::Mortar,
-        (UnitKind::Lancer, _) => ShotStyle::Rail,
-        (UnitKind::Flakhound, _) => ShotStyle::FlakBurst {
-            yoke_delay: FlakYokeDelay::OneTick,
-            rounds_per_yoke: 2,
-        },
-        (UnitKind::Stinger, _) => ShotStyle::FlakBurst {
-            yoke_delay: FlakYokeDelay::None,
-            rounds_per_yoke: 1,
-        },
-        _ => ShotStyle::ForgeSpot,
-    }
-}
-
-fn defense_shot_style(kind: oxide_sim::BuildingKind, tier: u8) -> ShotStyle {
-    debug_assert!(
-        kind.base_stats()
-            .weapons
-            .iter()
-            .all(|weapon| !weapon.projectile),
-        "real shell weapons must arrive through ShellLaunched"
-    );
-    match kind {
-        oxide_sim::BuildingKind::FlakTurret => ShotStyle::FlakBurst {
-            yoke_delay: FlakYokeDelay::OneAndHalfTicks,
-            rounds_per_yoke: if tier == 0 { 2 } else { 3 },
-        },
-        _ => ShotStyle::ForgeSpot,
-    }
+/// Which report family a unit's weapon slot fires: every slot speaks
+/// through the kind's one physical barrel. None for a kind that never draws
+/// a direct report.
+fn unit_shot_style(kind: oxide_sim::UnitKind, _weapon: usize) -> Option<ShotStyle> {
+    crate::look::unit(kind)
+        .weapon
+        .and_then(|weapon| weapon.shot)
+        .map(|(style, _)| style)
 }
 
 fn visual_shot_origin(from: Vec2, to: Vec2, reach: f32) -> Vec2 {
@@ -453,74 +416,30 @@ fn visual_shot_origin(from: Vec2, to: Vec2, reach: f32) -> Vec2 {
     }
 }
 
-fn unit_muzzle_reach(kind: oxide_sim::UnitKind) -> f32 {
-    match kind {
-        oxide_sim::UnitKind::Buzzard => 38.0 / 128.0 * crate::render::unit_draw_scale(kind),
-        oxide_sim::UnitKind::Flakhound => 42.0 / 128.0 * crate::render::unit_draw_scale(kind),
-        oxide_sim::UnitKind::Stinger => 35.0 / 128.0 * crate::render::unit_draw_scale(kind),
-        oxide_sim::UnitKind::Sentinel => 0.35,
-        oxide_sim::UnitKind::Warden => 0.36 * crate::render::unit_draw_scale(kind),
-        oxide_sim::UnitKind::Breaker => 0.625,
-        _ if kind.stats().domain == oxide_sim::stats::Domain::Ground => 0.38,
-        _ => 0.32,
-    }
+fn unit_muzzle_reach(kind: oxide_sim::UnitKind) -> Option<f32> {
+    crate::look::unit(kind)
+        .weapon
+        .and_then(|weapon| weapon.shot)
+        .map(|(_, reach)| reach)
 }
 
 fn unit_shot_origin(kind: oxide_sim::UnitKind, from: Vec2, to: Vec2) -> Vec2 {
     if kind.stats().contact_reach.is_some() {
         return from;
     }
-    let mut origin = visual_shot_origin(from, to, unit_muzzle_reach(kind));
+    let Some(reach) = unit_muzzle_reach(kind) else {
+        return from;
+    };
+    let mut origin = visual_shot_origin(from, to, reach);
     if kind.stats().domain == oxide_sim::stats::Domain::Air {
         origin.y -= crate::render::air_presentation(kind, 1.0).2;
     }
     origin
 }
 
-fn defense_muzzle_reach(kind: oxide_sim::BuildingKind) -> f32 {
-    match kind {
-        oxide_sim::BuildingKind::Bastion => kind.base_stats().size.0 as f32 * 0.49,
-        oxide_sim::BuildingKind::FlakTurret => 0.47,
-        _ => 0.44,
-    }
-}
-
-fn unit_fire_sound(kind: oxide_sim::UnitKind) -> SoundKind {
-    use oxide_sim::UnitKind;
-    match kind {
-        UnitKind::Sentinel => SoundKind::SentinelFire,
-        UnitKind::Scuttler => SoundKind::ScuttlerFire,
-        UnitKind::Lancer => SoundKind::LancerFire,
-        UnitKind::Bombard => SoundKind::BombardFire,
-        UnitKind::Flakhound => SoundKind::FlakhoundFire,
-        UnitKind::Stinger => SoundKind::StingerFire,
-        UnitKind::Buzzard => SoundKind::BuzzardFire,
-        UnitKind::Darter => SoundKind::DarterFire,
-        UnitKind::Talon => SoundKind::TalonFire,
-        UnitKind::Wisp => SoundKind::WispFire,
-        UnitKind::Warden => SoundKind::WardenFire,
-        // Interceptors share the air-superiority zap family on purpose.
-        UnitKind::Shrike => SoundKind::TalonFire,
-        UnitKind::Sylph => SoundKind::WispFire,
-        UnitKind::Condor | UnitKind::Moth => SoundKind::BombRelease,
-        UnitKind::Avalanche => SoundKind::AvalancheFire,
-        UnitKind::Breaker => SoundKind::BreakerFire,
-        UnitKind::Tender
-        | UnitKind::Excavator
-        | UnitKind::Kestrel
-        | UnitKind::Gnat
-        | UnitKind::Skyhook => SoundKind::Laser,
-        UnitKind::Sapper => SoundKind::DemolitionBoom,
-        UnitKind::Harvester => SoundKind::Laser,
-    }
-}
-
-fn defense_fire_sound(kind: oxide_sim::BuildingKind) -> SoundKind {
-    match kind {
-        oxide_sim::BuildingKind::Bastion => SoundKind::BastionFire,
-        oxide_sim::BuildingKind::FlakTurret => SoundKind::FlakTurretFire,
-        _ => SoundKind::Laser,
-    }
+/// The report a unit's weapon makes; an unarmed kind makes none.
+fn unit_fire_sound(kind: oxide_sim::UnitKind) -> Option<SoundKind> {
+    crate::look::unit(kind).weapon.map(|weapon| weapon.sound)
 }
 
 fn shell_fire_sound(shooter: oxide_sim::Target) -> SoundKind {
@@ -536,14 +455,20 @@ enum ShellSoundAnchor {
     Impact,
 }
 
+/// A launch heard at the muzzle is the shooting unit's own report; only a
+/// shooter without a unit pose falls back to its family's.
 fn shell_launch_audio(
     shooter: oxide_sim::Target,
+    shooter_kind: Option<oxide_sim::UnitKind>,
     allegiance: AllegianceCue,
     muzzle_seen: bool,
     impact_seen: bool,
 ) -> Option<(SoundKind, ShellSoundAnchor)> {
     if muzzle_seen || allegiance == AllegianceCue::Mine {
-        Some((shell_fire_sound(shooter), ShellSoundAnchor::Muzzle))
+        let report = shooter_kind
+            .and_then(unit_fire_sound)
+            .unwrap_or_else(|| shell_fire_sound(shooter));
+        Some((report, ShellSoundAnchor::Muzzle))
     } else if allegiance == AllegianceCue::Hostile && impact_seen {
         Some((SoundKind::ArtilleryLaunch, ShellSoundAnchor::Impact))
     } else {
@@ -750,6 +675,8 @@ impl Presentation {
         });
     }
 
+    /// Advances the effect clock and ages and prunes effects, alerts, and
+    /// toasts.
     pub fn update_fx(&mut self, state: &State, dt: f32) {
         self.fx_clock += dt;
         for (_, age) in &mut self.alerts {
@@ -811,7 +738,7 @@ impl Presentation {
         state
             .building(id)
             .filter(|b| {
-                !b.provisional
+                !b.provisional()
                     && (self.all_seeing()
                         || b.player == self.human
                         || b.tiles().any(|t| state.vision(self.human).visible(t))
@@ -992,11 +919,13 @@ impl Presentation {
                     }
                     let target_owner =
                         target.and_then(|target| event_target_owner(state, events, target));
-                    // Kind rides in the event: the attacker itself may have
-                    // died later this same tick, and a rail shot deserves
-                    // its report either way. The weapon's character decides
+                    // The kind comes from the event because the attacker
+                    // may have died later this same tick. The weapon decides
                     // the report and whether the impact blooms.
-                    let sapper_owner = (*attacker_kind == oxide_sim::UnitKind::Sapper)
+                    let sapper_owner = attacker_kind
+                        .stats()
+                        .demolition
+                        .is_some()
                         .then(|| {
                             events.iter().find_map(|event| match event {
                                 Event::UnitDied { unit, player, .. } if unit == attacker => {
@@ -1012,18 +941,19 @@ impl Presentation {
                         || target_owner.is_some_and(|player| !state.hostile(self.human, player));
                     let heard = source_witnessed || impact_witnessed;
                     let sound = unit_fire_sound(*attacker_kind);
-                    // The burst radius comes from the exact weapon that
-                    // fired — the event says which slot — so the
-                    // telegraphed area never overstates (or hides) the
-                    // damage the sim will deal.
+                    // The burst radius comes from the weapon slot the event
+                    // names, so the drawn area matches the damage the sim
+                    // deals.
                     let splash = attacker_kind
                         .stats()
                         .weapons
                         .get(*weapon)
                         .and_then(|w| w.splash)
                         .map(|s| s.to_num::<f32>());
-                    if heard || sound.is_explosion() {
-                        let at = if sound.is_explosion() {
+                    if let Some(sound) = sound
+                        && (heard || crate::mixer::spec(sound).explosion)
+                    {
+                        let at = if crate::mixer::spec(sound).explosion {
                             *target_pos
                         } else if sees(self, *attacker_pos) {
                             *attacker_pos
@@ -1032,7 +962,7 @@ impl Presentation {
                         };
                         self.sounds_pending.push((sound, Some(world_vec(at))));
                     }
-                    if *attacker_kind == oxide_sim::UnitKind::Sapper {
+                    if attacker_kind.stats().demolition.is_some() {
                         if let Some(player) = sapper_owner {
                             let direction = world_vec(*target_pos) - world_vec(*attacker_pos);
                             let rotation = if direction.length_squared() > 1e-6 {
@@ -1079,9 +1009,12 @@ impl Presentation {
                         {
                             origin.y += crate::render::air_presentation(*attacker_kind, 1.0).2;
                         }
+                        let Some(style) = unit_shot_style(*attacker_kind, *weapon) else {
+                            continue;
+                        };
                         let report = push_direct_report(
                             &mut self.fx,
-                            unit_shot_style(*attacker_kind, *weapon),
+                            style,
                             origin,
                             world_vec(*target_pos),
                             splash,
@@ -1117,12 +1050,17 @@ impl Presentation {
                             (d.y.atan2(d.x) + std::f32::consts::FRAC_PI_2, self.fx_clock),
                         );
                     }
-                    // Kind rides in the event: the turret may be rubble by
-                    // now (destroyed the tick it fired), and its shot still
-                    // deserves the right report and burst.
-                    let sound = defense_fire_sound(*kind);
+                    // The kind comes from the event because the turret may
+                    // have been destroyed the tick it fired; its shot still
+                    // gets the right report and burst. Only a direct-fire
+                    // defense fires this way; shells launch as their own
+                    // event.
+                    let Some(report) = crate::look::defense(*kind).and_then(|look| look.report)
+                    else {
+                        continue;
+                    };
                     let splash = kind
-                        .base_stats()
+                        .tier_stats(*tier)
                         .weapons
                         .iter()
                         .find_map(|w| w.splash)
@@ -1133,16 +1071,17 @@ impl Presentation {
                         } else {
                             *target_pos
                         };
-                        self.sounds_pending.push((sound, Some(world_vec(at))));
+                        self.sounds_pending
+                            .push((report.sound, Some(world_vec(at))));
                     }
                     let surface = self.hit_surface(state, *target);
                     push_direct_report(
                         &mut self.fx,
-                        defense_shot_style(*kind, *tier),
+                        report.shot(*tier),
                         visual_shot_origin(
                             world_vec(*turret_pos),
                             world_vec(*target_pos),
-                            defense_muzzle_reach(*kind),
+                            report.muzzle,
                         ),
                         world_vec(*target_pos),
                         splash,
@@ -1257,6 +1196,7 @@ impl Presentation {
                     building,
                     pos,
                     player,
+                    ..
                 } => {
                     if *player == self.human {
                         self.raise_alert(world_vec(*pos));
@@ -1287,7 +1227,7 @@ impl Presentation {
                         ),
                         age: 0.0,
                     });
-                    // A permanent-feeling scar (capped; oldest fall off).
+                    // A fading scorch decal; capped, oldest dropped first.
                     self.scorches.push((world_vec(*pos), 0.0));
                     if self.scorches.len() > 16 {
                         self.scorches.remove(0);
@@ -1345,8 +1285,8 @@ impl Presentation {
                     unit_pose,
                     ..
                 } => {
-                    // The gun turns to its work — a Bastion's mount as
-                    // much as a Bombard's chassis.
+                    // The gun turns toward its target: a Bastion's mount as
+                    // well as a Bombard's chassis.
                     let d = world_vec(*to) - world_vec(*from);
                     if d.length_squared() > 1e-6 {
                         let angle = d.y.atan2(d.x) + std::f32::consts::FRAC_PI_2;
@@ -1365,17 +1305,16 @@ impl Presentation {
                         }
                     }
                     // No effect spawned: in-flight shells render from
-                    // `state.shells()` directly, aged by sim ticks — a
-                    // paused shell hangs in the air, a loaded replay
-                    // restores its arc, and speed changes track.
-                    // Sound follows sight — but an incoming shell is a
-                    // warning worth keeping. A hostile launch whose
-                    // muzzle is fogged plays anchored at its IMPACT:
-                    // the same information the sim's incoming-shell
-                    // sense grants (impact tile visible), loudest when
-                    // it is falling on you, and nothing tracks the gun.
+                    // `state.shells()` directly, aged by sim ticks, so pause,
+                    // replay loads, and speed changes stay consistent.
+                    // Sound follows sight, except that a hostile launch
+                    // whose muzzle is fogged plays anchored at its impact:
+                    // the same information the sim's incoming-shell sense
+                    // grants (impact tile visible), without revealing the
+                    // gun.
                     if let Some((sound, anchor)) = shell_launch_audio(
                         *shooter,
+                        unit_pose.as_ref().map(|pose| pose.kind),
                         AllegianceCue::of(state, self.human, *player),
                         sees(self, *from),
                         sees(self, *to),
@@ -1383,14 +1322,6 @@ impl Presentation {
                         let at = match anchor {
                             ShellSoundAnchor::Muzzle => *from,
                             ShellSoundAnchor::Impact => *to,
-                        };
-                        let missile = unit_pose
-                            .as_ref()
-                            .is_some_and(|pose| pose.kind == oxide_sim::UnitKind::Avalanche);
-                        let sound = if missile && anchor == ShellSoundAnchor::Muzzle {
-                            SoundKind::AvalancheFire
-                        } else {
-                            sound
                         };
                         self.sounds_pending.push((sound, Some(world_vec(at))));
                     }
@@ -1414,18 +1345,17 @@ impl Presentation {
                     at,
                     splash,
                 } => {
-                    // The event names no victim on purpose (a shell in
-                    // flight chooses nothing), so ask the post-tick world
-                    // whether the blast reached anything of ours —
-                    // survivors alert here, the dead through their own
-                    // events.
+                    // The event names no victim (a shell in flight chooses
+                    // nothing), so ask the post-tick world whether the
+                    // blast reached anything of ours. Survivors alert here;
+                    // the dead alert through their own events.
                     let impact_sound = self.audio_timeline.landed(*player, *at);
                     let reach = splash.map_or(1.0, |r| r.to_num::<f32>().max(1.0));
                     let world = world_vec(*at);
                     let hostile_shell = state.hostile(self.human, *player);
-                    // Parenthesized deliberately: && binds tighter than
-                    // ||, and an unguarded building branch once alarmed
-                    // on the player's own defensive artillery.
+                    // Parenthesized deliberately: && binds tighter than ||,
+                    // and without the grouping the building branch would
+                    // alert on the player's own artillery.
                     let own_hurt = hostile_shell
                         && (state
                             .units()
@@ -1499,8 +1429,8 @@ impl Presentation {
                     reason,
                     ..
                 } if *player == self.human && !self.spectate => {
-                    // Own-state facts only — a stall reason must never
-                    // whisper about what fog hides.
+                    // Own-state facts only: a stall reason must never reveal
+                    // what fog hides.
                     self.toast(match reason {
                         oxide_sim::StallReason::NoRoute => "Can't reach that",
                         oxide_sim::StallReason::NoFiringPosition => "No ground to fire from there",

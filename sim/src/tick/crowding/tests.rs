@@ -37,8 +37,8 @@ fn allied_arrivals_claim_positions_with_full_cross_owner_spacing() {
 }
 
 /// Two workers of one seat and one of an allied seat converge on one
-/// position. Ranking by id within a seat but yielding across seats let
-/// each defer to the next in a cycle and none of them ever took it.
+/// position. Ranking by id within a seat but yielding across seats would
+/// let each defer to the next in a cycle so none of them ever took it.
 #[test]
 fn exactly_the_nearest_of_mixed_allied_arrivals_keeps_a_position() {
     let mut state = Scenario::skirmish().build().unwrap();
@@ -187,8 +187,7 @@ fn only_nearby_arrivals_claim_a_position_across_body_sizes() {
 #[test]
 fn chooser_finds_a_farther_reachable_position_after_four_sealed_candidates() {
     let scenario: Scenario = serde_json::from_value(serde_json::json!({
-        "name":"split firing positions", "mode":"sandbox", "seed":42,
-        "map":vec![".......^........";12],
+        "name":"split firing positions", "mode":"sandbox", "map":vec![".......^........";12],
         "players":[{"name":"Local","faction":"ferrous","scrap":0,"bot":false}],
         "units":[{"player":0,"kind":"sentinel","x":3,"y":5}]
     }))

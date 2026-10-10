@@ -43,14 +43,21 @@ const DEFENSES: [BuildingKind; 3] = [
 ];
 
 /// The role a unit fills. Harvesters, raiders, support, scouts and transports
-/// fill none here.
+/// fill none here. Every simulation role is listed, so a new one must be
+/// placed before the bot can field it.
 pub(crate) fn role(kind: UnitKind) -> Option<Role> {
     match kind.role() {
         Kind::Sentinel | Kind::Warden | Kind::Breaker => Some(Role::Line),
         Kind::Lancer | Kind::Bombard | Kind::Avalanche => Some(Role::Siege),
         Kind::AntiAir | Kind::AirAir | Kind::Interceptor => Some(Role::AntiAir),
         Kind::AirGround | Kind::Bomber => Some(Role::AirStrike),
-        _ => None,
+        Kind::Harvester
+        | Kind::Excavator
+        | Kind::Scuttler
+        | Kind::Sapper
+        | Kind::Tender
+        | Kind::Scout
+        | Kind::Skyhook => None,
     }
 }
 
@@ -111,7 +118,7 @@ impl Enemy {
             let value = unit.value(now);
             if unit.kind.stats().domain == Domain::Air {
                 enemy.air += value;
-            } else if !unit.kind.stats().weapons.is_empty() {
+            } else if unit.kind.stats().can_fight() {
                 enemy.ground += value;
             }
             if let Some(reach) = reach(unit.kind) {
@@ -219,9 +226,8 @@ pub(crate) fn weight(trait_value: u8) -> u64 {
 
 /// Per mille of the army the siege role holds at a middling siege trait: a
 /// stance limit on ranged units behind a line that screens them. Turtle and
-/// Balanced seats, which attack with their army massed, hold half; three
-/// quarters left the line too thin. An Aggressive seat attacks early with
-/// small armies, which slow, fragile siege only weakens.
+/// Balanced seats attack with their army massed; an Aggressive seat attacks
+/// early with small armies, which slow, fragile siege only weakens.
 fn siege_share(stance: BotStance) -> i64 {
     match stance {
         BotStance::Turtle | BotStance::Balanced => 500,
@@ -258,7 +264,7 @@ pub(crate) struct Outlet {
 /// building or start; until then line units are wanted only against
 /// invaders on the seat's own ground. A seat that delivers its ground army
 /// only by lift wants siege only against known defenses: Lancers and
-/// Bombards carry less scrap a Skyhook seat than Sentinels.
+/// Bombards carry less scrap per Skyhook seat than Sentinels.
 pub(crate) fn needs(
     observation: &ObservationData,
     memory: &Memory,

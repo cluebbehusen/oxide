@@ -16,7 +16,7 @@ an ordinary command source rather than a separate ruleset.
 - `command` and `event` define the simulation's input and output vocabulary.
 - `tick` implements the fixed phase order for commands, production, movement,
   combat, cleanup, and victory.
-- `stats` is the single home for units, buildings, and balance constants.
+- `stats` holds the unit and building tables and most balance constants.
 - `observation` projects serializable player knowledge through fog and vision
   memory. It owns information access, not controller policy or navigation
   caches.
@@ -48,7 +48,7 @@ mutually exclusive. Completed Repair Bays automatically heal nearby owned units
 before completed buildings, use the ordinary player bank, and skip structures
 with active or queued salvage commitments.
 
-Tile routing and geometric tie rules are also fair under a map half-turn.
+Tile routing and most geometric tie rules are also fair under a map half-turn.
 Building contact follows the fixed artwork, so asymmetric outlines can have
 different frontage after a map half-turn. Fixed-point vector scaling, equal-cost
 paths, group-goal snapping and spreading, footprint doorsteps, ground-production

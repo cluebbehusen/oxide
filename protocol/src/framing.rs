@@ -3,17 +3,14 @@
 //! One request object per line, one response object per line, correlated
 //! by `id`. This module knows only bytes and framing: it takes a handler
 //! factory and never mentions a shell or a session, so the windowed shell
-//! and the windowless `oxide-driver session` drive the identical loop with
-//! their own answering sides — the same lockstep-by-construction argument
-//! as the request types themselves.
+//! and the windowless `oxide-driver session` run the same loop with their
+//! own answering sides.
 //!
 //! Every bound a network server needs lives in [`Limits`]. The idle read
-//! deadline is deliberately generous — half an hour — because a paused
-//! driven-mode agent legitimately parks between commands and killing that
-//! session would be a worse failure than leaking the thread it replaces.
-//! The reply deadline instead sits just past what the driver's client
-//! budgets for the longest legal advance, so the client always gives up
-//! first and no answer arrives at a peer that stopped listening.
+//! deadline is generous because a paused driven-mode agent legitimately
+//! parks between commands. The reply deadline sits past what the driver's
+//! client budgets for the longest legal advance, so the client always gives
+//! up first and no answer arrives at a peer that stopped listening.
 
 use crate::{
     ADVANCE_TICKS_PER_BUDGET_SECOND, MAX_ADVANCE_TICKS, MAX_FRAME_BYTES, Request, RequestEnvelope,
@@ -26,12 +23,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::time::Duration;
 
-/// Connections served at once. Enough for an agent, its editor, and a
-/// stray abandoned session; far short of a thread leak.
+/// Connections served at once: enough for an agent, its editor, and a
+/// stray abandoned session.
 const MAX_CLIENTS: usize = 8;
 
-/// How long a connection may sit silent before it is closed. Generous on
-/// purpose (see the module docs).
+/// How long a connection may sit silent before it is closed (see the module
+/// docs).
 const IDLE_TIMEOUT: Duration = Duration::from_mins(30);
 
 /// How long a peer that stopped reading may stall a response.

@@ -7,7 +7,7 @@ use crate::{BuildingId, Event, Order, PlayerId, State};
 use chassis::grid::TilePos;
 
 fn known_charge_in(state: &State, player: PlayerId, kind: BuildingKind, anchor: TilePos) -> bool {
-    let (w, h) = kind.base_stats().size;
+    let (w, h) = kind.size();
     (0..h).any(|dy| (0..w).any(|dx| state.known_charge_at(player, anchor.offset(dx, dy))))
 }
 
@@ -15,13 +15,7 @@ pub(super) fn cancel_discovered(state: &mut State, events: &mut Vec<Event>) -> b
     let sites: Vec<_> = state
         .buildings
         .iter()
-        .filter(|b| {
-            b.hp > 0
-                && !b.built
-                && b.tier == 0
-                && b.progress == 0
-                && known_charge_in(state, b.player, b.kind, b.anchor)
-        })
+        .filter(|b| b.hp > 0 && b.unstarted() && known_charge_in(state, b.player, b.kind, b.anchor))
         .map(|b| (b.id, b.player, b.stats().construction.expect("site").cost))
         .collect();
     let removed = !sites.is_empty();
@@ -59,7 +53,7 @@ pub(super) fn detonate_under_construction(
         .buildings
         .iter()
         .enumerate()
-        .filter(|(_, mine)| mine.kind == BuildingKind::ScuttleCharge && mine.built && mine.hp > 0)
+        .filter(|(_, mine)| mine.kind == BuildingKind::ScuttleCharge && mine.built() && mine.hp > 0)
         .filter_map(|(slot, mine)| {
             let sites: Vec<_> = starts
                 .iter()
@@ -89,7 +83,7 @@ pub(super) fn detonate_under_units(state: &mut State, events: &mut Vec<Event>) {
     let trigger_sq = CHARGE_TRIGGER_RADIUS * CHARGE_TRIGGER_RADIUS;
     for slot in 0..state.buildings.len() {
         let b = &state.buildings[slot];
-        if b.kind != BuildingKind::ScuttleCharge || !b.built || b.hp == 0 {
+        if b.kind != BuildingKind::ScuttleCharge || !b.built() || b.hp == 0 {
             continue;
         }
         let tripped = state.units.iter().any(|u| {
@@ -126,7 +120,7 @@ fn detonate(state: &mut State, slot: usize, events: &mut Vec<Event>) {
     }
     for other in &mut state.buildings {
         if other.hp > 0
-            && !other.provisional
+            && !other.provisional()
             && other.kind.is_stealthy()
             && state.players[owner.0 as usize].team != state.players[other.player.0 as usize].team
             && other.center().dist_sq(center) <= blast_sq

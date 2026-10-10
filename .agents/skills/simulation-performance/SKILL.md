@@ -136,10 +136,9 @@ move, follow the version and bless rules in `AGENTS.md`.
   mislead. Measure the targeted pattern directly (calls, repeats, stalls) and
   check `driver replay-summary <replay> --every 5000 --minimaps none` for
   income, army size and stalls.
-- One match is one sample. A scenario's `seed` may not change controller play at
-  all; vary `personality_seed` in each seat's `bot_config` to get more matches,
-  and check whether the case fires anywhere else before claiming a general
-  effect.
+- One match is one sample. Vary `personality_seed` in each seat's `bot_config`
+  to get more matches, and check whether the case fires anywhere else before
+  claiming a general effect.
 - Keep the responsiveness that motivated the old behavior: a backoff or a
   committed choice can cost the economy what it saves the CPU.
 

@@ -44,8 +44,7 @@ fn provisional_foundry_does_not_keep_production_or_the_home_target_alive() {
         .iter_mut()
         .find(|b| b["id"] == serde_json::json!(home.id))
         .unwrap();
-    site["provisional"] = true.into();
-    site["built"] = false.into();
+    site["phase"] = serde_json::json!({"phase": "provisional"});
     site["hp"] = (home.stats().max_hp / 5).into();
     let unit = snapshot["units"]
         .as_array_mut()
@@ -213,7 +212,7 @@ fn the_stop_square_empties_every_selected_queue_with_full_refunds() {
             .all(|id| game.state.building(*id).unwrap().queue.len() == 3)
     );
     assert!(
-        game.state.building(ids[0]).unwrap().progress > 0,
+        game.state.building(ids[0]).unwrap().training_progress() > 0,
         "the head has started"
     );
     assert_eq!(stop(&game), Some(CardAction::ClearQueues));

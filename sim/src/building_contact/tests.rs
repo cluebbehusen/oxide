@@ -13,7 +13,7 @@ fn pruned_surface_queries_match_a_walk_over_every_edge() {
     };
     let (mut blocked, mut open) = (0, 0);
     for kind in BuildingKind::ALL {
-        let size = kind.base_stats().size;
+        let size = kind.size();
         let surface = Surface {
             kind,
             anchor: TilePos::new(10, 20),

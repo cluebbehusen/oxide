@@ -1,11 +1,8 @@
-//! The instruments' fan-out: a fixed worker pool pulling independent
-//! deterministic sims off one shared queue.
+//! Fan-out for the evaluation instruments: a fixed worker pool pulling
+//! independent deterministic sims off one shared queue.
 //!
-//! Every balance instrument has the same shape — build a job list, play
-//! each job in its own sim, fold the results — so the pool lives here
-//! once instead of in each of them. Results come back in job order, so a
-//! caller's report is a function of its job list and nothing else; the
-//! thread count never reaches a verdict.
+//! Results come back in job order, so a caller's report depends only on its
+//! job list, never on the thread count.
 
 use anyhow::Result;
 use std::num::NonZeroUsize;
@@ -17,8 +14,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 ///
 /// The first recorded failure is returned; workers stop picking up new
 /// jobs once one exists, though a worker already inside a job finishes
-/// it. `play` must be self-contained — the jobs are independent sims,
-/// which is what makes the fan-out safe at all.
+/// it. `play` must be self-contained: the fan-out is safe only because
+/// the jobs are independent sims.
 pub fn fan_out<J, R, F>(jobs: &[J], play: F) -> Result<Vec<R>>
 where
     J: Sync,

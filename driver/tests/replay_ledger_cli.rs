@@ -27,7 +27,7 @@ fn ledger(args: &[&std::ffi::OsStr]) -> Output {
 
 /// A skirmish replay of `ticks` idle ticks.
 fn replay(dir: &std::path::Path, ticks: u64) -> PathBuf {
-    let mut replay: GameReplay = Replay::new(SIM_VERSION, Scenario::skirmish());
+    let mut replay: GameReplay = Replay::new(SIM_VERSION, "test", Scenario::skirmish());
     replay.meta.ticks = Some(ticks);
     let path = dir.join("skirmish.json");
     replay.save(&path).expect("save generated replay fixture");

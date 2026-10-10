@@ -1,10 +1,9 @@
 //! Picking and selection: click, box, double-click-kind, and the idle
-//! harvester cycle. Since 0.11 any owner's VISIBLE units are
-//! selectable — allies for reading, enemies for inspection — but a
-//! selection is single-allegiance by construction: picks and merges of
-//! a different owner REPLACE it (a mixed own+ally box would dead-lock
-//! every command under own-gating). Fog and ownership rules for
-//! *orders* live in `orders`.
+//! harvester cycle. Any owner's visible units are selectable (allies for
+//! reading, enemies for inspection), but a selection holds one owner:
+//! picks and merges of a different owner replace it, since a mixed
+//! own+ally selection would refuse every command under own-gating. Fog
+//! and ownership rules for orders live in `orders`.
 
 use super::Pointer;
 use crate::game::Game;
@@ -51,9 +50,9 @@ pub(super) fn cycle_idle_worker(game: &mut Game) {
     game.presentation.camera.pan(Vec2::ZERO); // re-clamp
 }
 
-/// World-space pick radius around a unit: generous when zoomed out so
-/// units never need tweezers (at least 10 logical px on screen, 22 for a
-/// fingertip, which covers what it aims at).
+/// World-space pick radius around a unit: never below the unit's own
+/// radius, and wider when zoomed out so it keeps a screen-space floor that
+/// is larger for a fingertip.
 fn pick_radius(game: &Game, ui: f32, kind: oxide_sim::UnitKind, pointer: Pointer) -> f32 {
     let reach = match pointer {
         Pointer::Mouse => 10.0,
@@ -104,25 +103,23 @@ pub(super) fn pick(game: &Game, screen: Vec2, ui: f32, pointer: Pointer) -> Opti
     if let Some((_, _, id, owner)) = unit {
         return Some(Picked::Unit(id, owner));
     }
-    // Only the HUMAN'S OWN buildings skip the sight check: built ally
+    // Only the human's own buildings skip the sight check: built ally
     // buildings are always inside shared team sight anyway, but ally
-    // SITES are blind until built, and a blind press selecting one
-    // through fog would leak its live kind and hp through the panel.
+    // sites are blind until built, and selecting one through fog would
+    // leak its live kind and hp through the panel.
     game.state
         .buildings_at(tile)
         .find(|b| selectable_building(game, b))
         .map(|b| Picked::Building(b.id, b.player))
 }
 
-/// HUD chrome that swallows clicks: the top bar always; the bottom panel
-/// only while it is actually shown — and as tall as it actually drew
-/// (the packed palette wraps to several rows on narrow windows; clicks
-/// on the upper rows must not fall through to the world).
+/// Whether HUD chrome swallows a click at `screen`, per the layout the
+/// renderer published this frame.
 pub(super) fn click_on_hud(game: &Game, screen: Vec2) -> bool {
     game.presentation.layout.get().chrome_owns(screen)
 }
 
-/// Whether the human may SEE this unit at all — own and allies always
+/// Whether the human may see this unit at all: own and allies always
 /// (team sight), enemies only on currently visible ground. Selection
 /// must never reach through fog.
 fn selectable(game: &Game, unit: &oxide_sim::Unit) -> bool {
@@ -180,8 +177,8 @@ pub(super) fn click_select(
                 game.presentation.selection.units.push(id);
             }
         } else {
-            // A different owner REPLACES: single-allegiance by
-            // construction.
+            // A different owner replaces the selection, keeping it to one
+            // allegiance.
             game.presentation.selection.units = vec![id];
         }
         return;
@@ -394,10 +391,9 @@ pub(super) fn select_all_of_kind_on_screen(
     pointer: Pointer,
 ) {
     let world = game.presentation.camera.to_world(screen);
-    // The sweep stays within the PICKED unit's owner: double-clicking
-    // an ally harvester gathers that ally's harvesters on screen, never
-    // a cross-allegiance soup. Own units outrank foreign at the pick,
-    // like plain clicks.
+    // The sweep stays within the picked unit's owner: double-clicking an
+    // ally harvester gathers that ally's harvesters on screen. Own units
+    // outrank foreign at the pick, as with plain clicks.
     let picked = game
         .state
         .units()

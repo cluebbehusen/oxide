@@ -1,7 +1,7 @@
-//! Buildable Foundries: the 0.15 expansion base. Construction sits
-//! behind the Fabricator tech gate, sites count for survival exactly
-//! like standing works, abandoned scaffolds rust away, and every
-//! completed Foundry smelts the transparent drip.
+//! Buildable Foundries as expansion bases. Construction sits behind the
+//! Fabricator tech gate, sites count for survival like standing Foundries,
+//! abandoned scaffolds decay, and every completed Foundry credits the
+//! income floor.
 
 use crate::common;
 use common::{cmd, players};
@@ -21,7 +21,6 @@ fn arena(scrap: u32, fabricator: bool, units: Vec<UnitSpec>) -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
         name: "foundry-arena".into(),
-        seed: 5,
         map: vec![
             "####################".into(),
             "#1.................#".into(),
@@ -93,7 +92,7 @@ fn a_foundry_expansion_needs_a_standing_fabricator() {
             .buildings()
             .iter()
             .any(|b| b.kind == BuildingKind::Foundry
-                && !b.built
+                && !b.built()
                 && b.anchor == TilePos::new(10, 4)),
         "the expansion site stands"
     );
@@ -107,7 +106,7 @@ fn a_completed_expansion_produces_and_smelts_its_own_drip() {
     let expansion = state
         .buildings()
         .iter()
-        .find(|b| b.kind == BuildingKind::Foundry && !b.built)
+        .find(|b| b.kind == BuildingKind::Foundry && !b.built())
         .unwrap()
         .id;
     for _ in 0..BuildingKind::Foundry
@@ -118,12 +117,15 @@ fn a_completed_expansion_produces_and_smelts_its_own_drip() {
         + 40
     {
         state.tick(&[]);
-        if state.building(expansion).is_some_and(|b| b.built) {
+        if state
+            .building(expansion)
+            .is_some_and(oxide_sim::Building::built)
+        {
             break;
         }
     }
     assert!(
-        state.building(expansion).unwrap().built,
+        state.building(expansion).unwrap().built(),
         "the attended site completes"
     );
     let bank = state.player(PlayerId(0)).scrap;
@@ -177,7 +179,7 @@ fn a_foundry_site_keeps_its_team_alive() {
     let standing = state
         .buildings()
         .iter()
-        .find(|b| b.kind == BuildingKind::Foundry && b.built && b.player == PlayerId(0))
+        .find(|b| b.kind == BuildingKind::Foundry && b.built() && b.player == PlayerId(0))
         .unwrap()
         .id;
 

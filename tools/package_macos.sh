@@ -13,10 +13,11 @@ set -eu
 
 cargo build --release -p oxide-shell
 
-# The bundle wears the workspace version. Derived, never typed: a pinned
-# literal here shipped three releases stamped 0.9.0.
+# The bundle wears the workspace version, and its build number is the commit
+# count, which only rises.
 VERSION="$(cargo pkgid -p oxide-shell)"
 VERSION="${VERSION##*[@#]}"
+BUILD="$(git rev-list --count HEAD)"
 
 APP=dist/Oxide.app
 rm -rf "$APP"
@@ -36,11 +37,11 @@ cat > "$APP/Contents/Info.plist" << PLIST
 <dict>
     <key>CFBundleName</key><string>Oxide</string>
     <key>CFBundleDisplayName</key><string>Oxide</string>
-    <key>CFBundleIdentifier</key><string>com.cluebbehusen.oxide</string>
+    <key>CFBundleIdentifier</key><string>dev.luebbehusen.oxide</string>
     <key>CFBundleExecutable</key><string>Oxide</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
-    <key>CFBundleVersion</key><string>$VERSION</string>
+    <key>CFBundleVersion</key><string>$BUILD</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>CFBundleIconFile</key><string>oxide.icns</string>
 </dict>
@@ -71,5 +72,6 @@ test -f "$APP/Contents/Resources/assets/sprites/atlas.json"
 test -f "$APP/Contents/Resources/assets/sounds/music_menu.wav"
 test -f "$APP/Contents/Resources/scenarios/skirmish.json"
 grep -q "<string>$VERSION</string>" "$APP/Contents/Info.plist"
+grep -q "<string>$BUILD</string>" "$APP/Contents/Info.plist"
 
-echo "packaged Oxide $VERSION -> $APP"
+echo "packaged Oxide $VERSION ($BUILD) -> $APP"

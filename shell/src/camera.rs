@@ -9,11 +9,9 @@
 
 use macroquad::prelude::{Vec2, vec2};
 
-/// Zoom bounds in *logical* pixels per tile. Logical is the whole
-/// story: macroquad's coordinate space already absorbs the retina
-/// multiple in its backing store, so multiplying dpi in here rendered
-/// the world at double scale on every high-dpi display — the same
-/// double-scaling disease the ui-scale audit cured in chrome.
+/// Zoom bounds in logical pixels per tile. macroquad's coordinate space
+/// already absorbs the retina multiple in its backing store, so applying
+/// dpi here would double-scale the world on high-dpi displays.
 const ZOOM_MIN: f32 = 8.0;
 const ZOOM_MAX: f32 = 96.0;
 const ZOOM_DEFAULT: f32 = 32.0;
@@ -22,7 +20,7 @@ const ZOOM_DEFAULT: f32 = 32.0;
 pub struct Camera {
     /// World point at the viewport center.
     pub center: Vec2,
-    /// Physical pixels per world unit.
+    /// Logical pixels per world unit.
     pub zoom: f32,
     target_zoom: f32,
     /// Cursor the current zoom glide is anchored on.
@@ -125,6 +123,8 @@ impl Camera {
         self.center = self.center.clamp(lo, hi);
     }
 }
+
+pub(crate) mod controls;
 
 #[cfg(test)]
 mod tests;

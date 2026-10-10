@@ -27,10 +27,8 @@ fn paid_provisional_sites_are_marked_for_their_team_and_hidden_from_enemies() {
             .id;
         let anchor = state.unit(worker).unwrap().tile();
         let kind = BuildingKind::Turret;
-        let site = state.place_site(PlayerId(0), kind, anchor);
-        state.building_mut(site).unwrap().provisional = true;
+        let site = state.place_provisional_site(PlayerId(0), kind, anchor);
         state.unit_mut(worker).unwrap().order = Order::Found { kind, anchor };
-        state.rebuild_building_occupancy();
         let own = ObservationData::fog_honest(&state, PlayerId(0));
         assert_eq!(own.version, OBSERVATION_VERSION);
         assert!(
@@ -153,7 +151,7 @@ fn owner_training_progress_is_exact_aligned_and_required_by_the_schema() {
         .expect("the Foundry remains live");
     foundry.queue.clear();
     foundry.queue.push_back(UnitKind::Harvester);
-    foundry.progress = 17;
+    foundry.phase = crate::state::BuildingPhase::Built { training: 17 };
 
     for observation in [
         ObservationData::fog_honest(&state, PlayerId(0)),
@@ -207,7 +205,7 @@ fn hostile_training_progress_never_enters_an_observation() {
         .building_mut(hostile_producer)
         .expect("the hostile Foundry remains live");
     foundry.queue.push_back(UnitKind::Harvester);
-    foundry.progress = 31;
+    foundry.phase = crate::state::BuildingPhase::Built { training: 31 };
 
     assert_eq!(
         ObservationData::fog_honest(&control, PlayerId(0)),
@@ -374,14 +372,14 @@ fn a_parked_airframe_is_grounded_for_its_owner_and_for_anyone_who_sees_it() {
         },
     }]);
     for _ in 0..1_500 {
-        if state.unit(condor).is_some_and(|unit| unit.landed) {
+        if state.unit(condor).is_some_and(crate::state::Unit::landed) {
             break;
         }
         state.tick(&[]);
     }
     let parked = state.unit(condor).expect("the Condor survives its landing");
     assert!(
-        parked.landed,
+        parked.landed(),
         "the Condor sets down within the flight budget"
     );
     let tile = parked.tile();

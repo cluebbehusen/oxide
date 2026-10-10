@@ -3,7 +3,7 @@
 This module is deliberately self-contained: review cards and exploratory
 generators are not production inputs.  The public installer writes the
 approved field debris, ground blockers, and rock library, then replaces the
-old hazard-striped Peak tiles with connected quarry mesas.
+base generator's hazard-striped Peak tiles with connected quarry mesas.
 """
 
 from __future__ import annotations
@@ -1116,7 +1116,7 @@ def _peak_barrier(mask: int, variant: int) -> Image.Image:
         )
 
     # Large fractures and rare retaining remnants keep connected fields from
-    # becoming a repeated checkerboard without reverting to hazard stripes.
+    # becoming a repeated checkerboard without hazard stripes.
     start_x = rng.randrange(14, 34)
     start_y = rng.randrange(13, 31)
     crack = (

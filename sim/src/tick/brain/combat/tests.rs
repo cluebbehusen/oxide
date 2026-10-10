@@ -5,9 +5,8 @@ use crate::scenario::{PlayerSpec, Scenario, ScenarioMode, UnitSpec};
 use crate::state::Faction;
 use crate::stats::UnitKind;
 
-/// The pre-index acquisition, kept verbatim as the reference: a full
-/// scan of the unit list. The indexed window prunes candidates and
-/// must never change the pick.
+/// The reference acquisition: a full scan of the unit list. The indexed
+/// window prunes candidates and must never change the pick.
 fn linear_acquire(state: &State, id: UnitId) -> Option<Target> {
     let unit = state.unit(id).expect("caller checked");
     let stats = unit.kind.stats();
@@ -80,7 +79,6 @@ fn boundary_duel() -> State {
     Scenario {
         mode: ScenarioMode::Match,
         name: "boundary-duel".into(),
-        seed: 1,
         map: vec![
             "............".into(),
             "............".into(),
@@ -202,7 +200,6 @@ fn indexed_acquisition_matches_the_linear_scan() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "acquisition-differential".into(),
-        seed: 7,
         map: rows.into_iter().map(|r| r.into_iter().collect()).collect(),
         players: vec![
             seat("West", Faction::Ferrous),
@@ -258,8 +255,8 @@ fn indexed_acquisition_matches_the_linear_scan() {
     assert!(picks > 100, "the armies never met ({picks} picks)");
 }
 
-/// The linear chain `sidearm_victim`'s window replaced, kept verbatim
-/// as the reference the differential below compares against.
+/// A plain linear scan: the reference the differential below compares
+/// `sidearm_victim`'s windowed search against.
 fn linear_sidearm_victim(
     state: &State,
     shooter_pos: Vec2Fx,
@@ -339,7 +336,6 @@ fn windowed_sidearm_victim_matches_the_linear_scan() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "sidearm-differential".into(),
-        seed: 11,
         map: rows.into_iter().map(|r| r.into_iter().collect()).collect(),
         players: vec![
             seat("West", Faction::Ferrous),
@@ -404,14 +400,14 @@ fn motion_snapshot_tracks_motor_speed_through_retargeting_and_coasting() {
     let target = &mut state.units[1];
     target.kind = UnitKind::Scuttler;
     target.heading = 0;
-    target.drive_speed = target.kind.stats().speed / 6;
+    target.set_drive_speed(target.kind.stats().speed / 6);
     target.path = Some(PathFollow {
         final_point: None,
         goal: TilePos::new(3, 1),
         waypoints: vec![TilePos::new(5, 1), TilePos::new(3, 1)],
         next: 0,
     });
-    let (id, pos, speed) = (target.id, target.pos, target.drive_speed);
+    let (id, pos, speed) = (target.id, target.pos, target.drive_speed());
     let expected = pos + Vec2Fx::new(speed, Fx::ZERO);
     assert_eq!(
         MotionSnapshot::capture(&state).position_after(id, pos, 1),
@@ -423,7 +419,7 @@ fn motion_snapshot_tracks_motor_speed_through_retargeting_and_coasting() {
         MotionSnapshot::capture(&state).position_after(id, pos, 1),
         Some(expected)
     );
-    state.units[1].drive_speed = Fx::ZERO;
+    state.units[1].set_drive_speed(Fx::ZERO);
     state.units[1].path = Some(PathFollow {
         final_point: None,
         goal: TilePos::new(8, 1),
@@ -445,7 +441,7 @@ fn motion_snapshot_ignores_later_route_turns() {
         state.units[1].kind = UnitKind::Scuttler;
         state.units[1].pos = TilePos::new(7, 1).center();
         state.units[1].heading = 0;
-        state.units[1].drive_speed = UnitKind::Scuttler.stats().speed;
+        state.units[1].set_drive_speed(UnitKind::Scuttler.stats().speed);
         let target = state.units[1].id;
         state.units[1].path = Some(PathFollow {
             final_point: None,

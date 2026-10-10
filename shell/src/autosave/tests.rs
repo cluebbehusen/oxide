@@ -89,7 +89,11 @@ fn a_lan_match_leaves_only_a_watch_only_recording() {
 fn a_tick_zero_clean_exit_finishes_existing_recovery_without_writing_a_save() {
     use oxide_kit::recovery::{RecoveryWriter, inspect, latest_diagnostic_record};
     let root = scratch("zero-recovery");
-    let baseline = GameReplay::new(oxide_sim::SIM_VERSION, oxide_sim::Scenario::skirmish());
+    let baseline = GameReplay::new(
+        oxide_sim::SIM_VERSION,
+        "test",
+        oxide_sim::Scenario::skirmish(),
+    );
     let old = RecoveryWriter::start(root.clone(), baseline, 0, crate::build_identity()).unwrap();
     old.prepared(0, &[]);
     old.completed(1);
@@ -220,7 +224,7 @@ fn records_carry_their_kind_and_a_named_save_leaves_the_session_recorder_alone()
 #[test]
 fn an_unwritable_dir_reports_instead_of_lying() {
     // The would-be directory exists as a file, so create_dir_all
-    // refuses — the class of trouble the old bool swallowed.
+    // refuses and the error must surface.
     let dir = scratch("unwritable");
     std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
     std::fs::write(&dir, b"in the way").unwrap();
@@ -237,11 +241,11 @@ fn an_unwritable_dir_reports_instead_of_lying() {
 fn a_failed_publication_removes_only_its_uncommitted_reservation() {
     let dir = scratch("failed-reservation");
     std::fs::create_dir_all(&dir).unwrap();
-    let held = free_path(&dir, "save", 1, 0).unwrap();
+    let held = free_path(&dir, "save", 1).unwrap();
     let path = held.path.clone();
     assert!(held.publish(|_| Err::<(), _>("write refused")).is_err());
     assert!(!path.exists());
-    let held = free_path(&dir, "save", 1, 0).unwrap();
+    let held = free_path(&dir, "save", 1).unwrap();
     let path = held.path.clone();
     assert!(
         held.publish(|path| {
@@ -265,13 +269,12 @@ fn collisions_beyond_one_thousand_remain_exclusively_reserved() {
     let mut game = Game::new(oxide_sim::Scenario::skirmish()).expect("game");
     game.advance_ticks(1);
     let tick = game.state.current_tick();
-    let seed = game.scenario.seed;
     for n in 0..1000 {
         let extension = "oxsave";
         let path = if n == 0 {
             dir.join(format!("save-{tick:010}.{extension}"))
         } else {
-            dir.join(format!("save-{tick:010}-{seed}-{n}.{extension}"))
+            dir.join(format!("save-{tick:010}-{n}.{extension}"))
         };
         std::fs::write(path, b"occupied").expect("create known collision");
     }
@@ -316,13 +319,8 @@ fn rotation_does_not_count_an_in_flight_reservation() {
 
     let mut game = Game::new(scenario).expect("game");
     game.advance_ticks(100);
-    let held = free_path(
-        &dir,
-        "autosave",
-        game.state.current_tick(),
-        game.scenario.seed,
-    )
-    .expect("another saver holds an in-flight destination");
+    let held = free_path(&dir, "autosave", game.state.current_tick())
+        .expect("another saver holds an in-flight destination");
     let Ok(SaveOutcome::Wrote(new_path)) = write_record(&mut game, &dir) else {
         panic!("the concurrent completed autosave lands");
     };

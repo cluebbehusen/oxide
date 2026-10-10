@@ -1,4 +1,4 @@
-//! Production quarry boundary: collapsed, dark industrial terraces rising
+//! Quarry boundary: collapsed, dark industrial terraces rising
 //! away from the battlefield floor.
 
 use crate::game::Scene;

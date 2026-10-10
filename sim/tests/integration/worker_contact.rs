@@ -31,7 +31,7 @@ fn release_scene(kind: UnitKind) -> (State, UnitId, oxide_sim::BuildingId) {
     let mut data = serde_json::to_value(state).unwrap();
     data["tick"] = json!(1);
     data["units"][0]["pos"] = json!(point);
-    data["units"][0]["carrying"] = json!(7);
+    data["units"][0]["worker"]["carrying"] = json!(7);
     data["units"][0]["order"] = json!(Order::ReturnCargo {
         foundry,
         repair: false
@@ -64,8 +64,8 @@ fn cargo_stays_aboard_until_the_tenth_stationary_tick_even_when_reissued_and_res
                 .filter(|e| matches!(e, Event::ScrapDeposited { .. }))
                 .collect();
             if elapsed < oxide_sim::stats::UNLOAD_TICKS {
-                assert_eq!(worker.carrying, 7);
-                assert_eq!(worker.unloading.unwrap().elapsed, elapsed);
+                assert_eq!(worker.carrying(), 7);
+                assert_eq!(worker.unloading().unwrap().elapsed, elapsed);
                 assert_eq!(state.player(PlayerId(0)).scrap, bank);
                 assert!(deposits.is_empty());
                 let mut restored: State =
@@ -74,8 +74,8 @@ fn cargo_stays_aboard_until_the_tenth_stationary_tick_even_when_reissued_and_res
                 assert_eq!(restored.tick(&[]), control.tick(&[]));
                 assert_eq!(restored.hash(), control.hash());
             } else {
-                assert_eq!(worker.carrying, 0);
-                assert!(worker.unloading.is_none());
+                assert_eq!(worker.carrying(), 0);
+                assert!(worker.unloading().is_none());
                 assert_eq!(state.player(PlayerId(0)).scrap, bank + 7);
                 assert!(
                     matches!(deposits.as_slice(), [Event::ScrapDeposited { unit, foundry: destination, amount: 7, .. }] if *unit == id && *destination == foundry)
@@ -112,7 +112,7 @@ fn final_delivery_clears_the_dock_after_unloading_at_the_surface() {
         state.tick(&[]);
     }
     let worker = state.unit(id).unwrap();
-    assert_eq!(worker.carrying, 0);
+    assert_eq!(worker.carrying(), 0);
     assert_eq!(worker.order, Order::Idle);
     assert_eq!(worker.path.as_ref().unwrap().goal, TilePos::new(13, 7));
     for _ in 0..100 {
@@ -131,7 +131,7 @@ fn displacement_restarts_release_and_stop_keeps_the_uncredited_load() {
     data["units"][0]["pos"] = json!(Vec2Fx::new(Fx::lit("9.02"), Fx::lit("7.5")));
     state = serde_json::from_value(data).unwrap();
     state.tick(&[]);
-    assert!(state.unit(id).unwrap().unloading.is_none());
+    assert!(state.unit(id).unwrap().unloading().is_none());
     assert!(
         state
             .unit(id)
@@ -145,20 +145,20 @@ fn displacement_restarts_release_and_stop_keeps_the_uncredited_load() {
     let mut resumed = false;
     for _ in 0..100 {
         state.tick(&[]);
-        if let Some(release) = state.unit(id).unwrap().unloading {
+        if let Some(release) = state.unit(id).unwrap().unloading() {
             assert_eq!(release.elapsed, 1);
             resumed = true;
             break;
         }
-        assert_eq!(state.unit(id).unwrap().carrying, 7);
+        assert_eq!(state.unit(id).unwrap().carrying(), 7);
     }
     assert!(resumed);
     state.tick(&[cmd(0, Command::Stop { units: vec![id] })]);
     for _ in 0..20 {
         state.tick(&[]);
     }
-    assert_eq!(state.unit(id).unwrap().carrying, 7);
-    assert!(state.unit(id).unwrap().unloading.is_none());
+    assert_eq!(state.unit(id).unwrap().carrying(), 7);
+    assert!(state.unit(id).unwrap().unloading().is_none());
     assert!(state.player(PlayerId(0)).scrap < 107);
 }
 
@@ -189,7 +189,7 @@ fn adjacent_build_repair_and_salvage_approach_before_advancing_work() {
                 .position(|b| b.id == target)
                 .unwrap();
             if job == "build" {
-                data["buildings"][slot]["built"] = json!(false);
+                data["buildings"][slot]["phase"] = json!({"phase": "site"});
             }
             if job != "salvage" {
                 data["buildings"][slot]["hp"] = json!(100);
@@ -211,14 +211,18 @@ fn adjacent_build_repair_and_salvage_approach_before_advancing_work() {
                         .dist_sq(state.contact_surface(b).closest(before.pos))
                         <= reach * reach;
                 let old_progress = if job == "build" {
-                    b.progress
+                    b.construction_progress().unwrap_or(0)
                 } else {
                     before.progress
                 };
                 state.tick(&[]);
                 let after = state.unit(id).unwrap();
                 let progress = if job == "build" {
-                    state.building(target).unwrap().progress
+                    state
+                        .building(target)
+                        .unwrap()
+                        .construction_progress()
+                        .unwrap_or(0)
                 } else {
                     after.progress
                 };
@@ -244,11 +248,11 @@ fn malformed_release_and_endpoint_snapshots_are_rejected() {
         ("foundry", json!(999)),
     ] {
         let mut bad = base.clone();
-        bad["units"][0]["unloading"][field] = value;
+        bad["units"][0]["worker"]["unloading"][field] = value;
         assert!(serde_json::from_value::<State>(bad).is_err());
     }
     let mut bad = base.clone();
-    bad["units"][0]["carrying"] = json!(0);
+    bad["units"][0]["worker"]["carrying"] = json!(0);
     assert!(serde_json::from_value::<State>(bad).is_err());
     let mut displaced = base;
     displaced["units"][0]["pos"] = json!(Vec2Fx::new(Fx::lit("9.02"), Fx::lit("7.5")));
@@ -323,7 +327,7 @@ fn losing_the_dropoff_cancels_release_and_only_automatic_delivery_retargets() {
             let mut data = serde_json::to_value(state).unwrap();
             data["units"][0]["order"] = json!(Order::Harvest {
                 node: TilePos::new(13, 7),
-                anchor: Some(TilePos::new(13, 7)),
+                anchor: TilePos::new(13, 7),
                 retiring: true
             });
             state = serde_json::from_value(data).unwrap();
@@ -331,7 +335,7 @@ fn losing_the_dropoff_cancels_release_and_only_automatic_delivery_retargets() {
         for _ in 0..5 {
             state.tick(&[]);
         }
-        assert_eq!(state.unit(id).unwrap().unloading.unwrap().elapsed, 5);
+        assert_eq!(state.unit(id).unwrap().unloading().unwrap().elapsed, 5);
         let mut data = serde_json::to_value(state).unwrap();
         data["buildings"]
             .as_array_mut()
@@ -345,8 +349,8 @@ fn losing_the_dropoff_cancels_release_and_only_automatic_delivery_retargets() {
                 .iter()
                 .any(|e| matches!(e, Event::ScrapDeposited { .. }))
         );
-        assert!(state.unit(id).unwrap().unloading.is_none());
-        assert_eq!(state.unit(id).unwrap().carrying, 7);
+        assert!(state.unit(id).unwrap().unloading().is_none());
+        assert_eq!(state.unit(id).unwrap().carrying(), 7);
         let mut deposited = 0;
         for _ in 0..500 {
             deposited += state
@@ -358,7 +362,7 @@ fn losing_the_dropoff_cancels_release_and_only_automatic_delivery_retargets() {
         }
         assert_eq!(deposited, usize::from(automatic));
         assert_eq!(
-            state.unit(id).unwrap().carrying,
+            state.unit(id).unwrap().carrying(),
             if automatic { 0 } else { 7 }
         );
     }
@@ -401,13 +405,13 @@ fn harvester_closes_to_the_footprint_on_every_approach_side_before_gathering() {
             },
         )]);
         for _ in 0..200 {
-            if state.unit(id).unwrap().carrying > 0 {
+            if state.unit(id).unwrap().carrying() > 0 {
                 break;
             }
             state.tick(&[]);
         }
         let worker = state.unit(id).unwrap();
-        assert!(worker.carrying > 0, "approach {dx},{dy} never gathered");
+        assert!(worker.carrying() > 0, "approach {dx},{dy} never gathered");
         let edge = oxide_sim::geometry::footprint_contact(worker.pos, node, (1, 1));
         assert!(
             worker.in_work_reach(node, (1, 1)) && worker.pos.dist(edge) <= Fx::lit("0.12"),
@@ -475,8 +479,7 @@ fn a_crowded_crew_delivers_every_last_load_and_clears_the_dropoff() {
                     }
                 }
                 let scenario: oxide_sim::Scenario = serde_json::from_value(json!({
-                    "mode":"sandbox", "name":"crowded-delivery", "seed":42,
-                    "map":rows.into_iter().map(|r|r.into_iter().collect::<String>()).collect::<Vec<_>>(),
+                    "mode":"sandbox", "name":"crowded-delivery", "map":rows.into_iter().map(|r|r.into_iter().collect::<String>()).collect::<Vec<_>>(),
                     "players":[{"name":"Local","faction":"ferrous","scrap":0,"bot":false}],
                     "buildings":[{"player":0,"kind":"foundry","x":5,"y":11}],
                     "units":(0..12).map(|i| {
@@ -519,7 +522,7 @@ fn a_crowded_crew_delivers_every_last_load_and_clears_the_dropoff() {
                     oxide_sim::stats::SCRAP_NODE_AMOUNT,
                     "gap {gap}, blocked {blocked}, approach {approach}"
                 );
-                assert!(state.units().iter().all(|u| u.carrying == 0));
+                assert!(state.units().iter().all(|u| u.carrying() == 0));
                 state.validate_invariants().unwrap();
             }
         }

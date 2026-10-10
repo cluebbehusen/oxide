@@ -6,6 +6,7 @@
 //! Nothing reaches [`State`]; the answers depend only on the world the phase
 //! started from plus the passability writes the owner reports.
 
+use super::goals::ring;
 use super::spatial::UnitIndex;
 use crate::ids::{PlayerId, UnitId};
 use crate::state::{Order, State};
@@ -60,7 +61,7 @@ impl Reach {
             .map(|unit| {
                 (unit.hp > 0
                     && unit.path.is_none()
-                    && unit.drive_speed == Fx::ZERO
+                    && unit.drive_speed() == Fx::ZERO
                     && unit.order == Order::Idle)
                     .then(|| (unit.domain(), unit.player))
             })
@@ -320,10 +321,10 @@ fn scan_reversed(
         .iter()
         .find(|building| {
             building.player == player
-                && !building.provisional
+                && !building.provisional()
                 && building.kind == crate::stats::BuildingKind::Foundry
         })
-        .map(|building| (building.anchor, building.kind.base_stats().size));
+        .map(|building| (building.anchor, building.kind.size()));
     super::group_spread_scan_reversed(
         center,
         [from],
@@ -366,15 +367,6 @@ fn nearest(
         }
     }
     best.map(|(_, tile)| tile)
-}
-
-/// The offsets of Chebyshev ring `r` in the spread-slot scan order: rows top
-/// to bottom, columns left to right.
-fn ring(r: i32) -> impl Iterator<Item = (i32, i32)> {
-    let top = (-r..=r).map(move |dx| (dx, -r));
-    let sides = (1 - r..r).flat_map(move |dy| [(-r, dy), (r, dy)]);
-    let bottom = (-r..=r).map(move |dx| (dx, r)).filter(move |_| r > 0);
-    top.chain(sides).chain(bottom)
 }
 
 #[cfg(test)]

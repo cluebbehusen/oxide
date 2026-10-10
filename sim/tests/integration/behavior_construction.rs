@@ -123,7 +123,7 @@ fn a_pocketed_canonical_founder_uses_the_existing_make_way_fallback() {
             .unwrap()
             .cost
     );
-    run_until(&mut state, 600, |s, _| s.building(site_id).unwrap().built);
+    run_until(&mut state, 600, |s, _| s.building(site_id).unwrap().built());
     state.validate_invariants().unwrap();
 }
 
@@ -202,7 +202,7 @@ fn construction_ramps_and_completes() {
         .expect("site placed")
         .id;
     let b = state.building(site).unwrap();
-    assert!(!b.built);
+    assert!(!b.built());
     assert_eq!(b.hp, BuildingKind::Turret.base_stats().max_hp / 5);
     assert!(!state.passable(anchor), "sites block their footprint");
 
@@ -213,7 +213,7 @@ fn construction_ramps_and_completes() {
     });
     assert!(!events.is_empty());
     let b = state.building(site).unwrap();
-    assert!(b.built);
+    assert!(b.built());
     assert_eq!(
         b.hp,
         BuildingKind::Turret.base_stats().max_hp,
@@ -283,13 +283,21 @@ fn a_second_builder_resumes_a_dead_builders_site() {
         .find(|b| b.anchor == anchor)
         .expect("site survives its builder")
         .id;
-    let progress_when_orphaned = state.building(site).unwrap().progress;
+    let progress_when_orphaned = state
+        .building(site)
+        .unwrap()
+        .construction_progress()
+        .unwrap_or(0);
     // Progress is frozen while nobody tends the site.
     for _ in 0..60 {
         state.tick(&[]);
     }
     assert_eq!(
-        state.building(site).unwrap().progress,
+        state
+            .building(site)
+            .unwrap()
+            .construction_progress()
+            .unwrap_or(0),
         progress_when_orphaned
     );
     // Aiming a fresh Build at the same anchor resumes, not double-pays.
@@ -306,7 +314,7 @@ fn a_second_builder_resumes_a_dead_builders_site() {
     )]);
     assert_eq!(state.player(PlayerId(0)).scrap, scrap_before);
     run_until(&mut state, 900, |s, _| {
-        s.building(site).is_some_and(|b| b.built)
+        s.building(site).is_some_and(oxide_sim::Building::built)
     });
 }
 
@@ -380,11 +388,10 @@ fn cancel_refunds_by_health_and_damage_burns_it() {
 fn sealed_apart_scenarios_refuse_to_build() {
     use oxide_sim::scenario::ScenarioError;
     // A mesa wall: rock alone would leave the sky open, and an
-    // air-connected map is legal since the island relaxation.
+    // air-connected map is legal.
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "sealed".into(),
-        seed: 1,
         map: vec![
             "#####^######".into(),
             "#1...^.....#".into(),
@@ -420,8 +427,8 @@ fn validator_rejects_foreign_owners() {
     let mut doc: serde_json::Value =
         serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
     doc["units"][0]["player"] = serde_json::json!(9);
-    // Validation runs inside Deserialize since 0.6: the tamper never
-    // becomes a State at all.
+    // Validation runs inside Deserialize: the tamper never becomes a
+    // State at all.
     assert!(serde_json::from_value::<State>(doc).is_err());
 }
 
@@ -463,7 +470,9 @@ fn scouted_sites_are_remembered_as_sites() {
     )]);
     run_until(&mut state, 400, |s, _| !s.can_see(PlayerId(0), anchor));
     run_until(&mut state, 700, |s, _| {
-        s.buildings().iter().any(|b| b.anchor == anchor && b.built)
+        s.buildings()
+            .iter()
+            .any(|b| b.anchor == anchor && b.built())
     });
     let ghost = state
         .vision(PlayerId(0))
@@ -527,11 +536,10 @@ fn a_fresh_site_blocks_units_already_walking_through_it() {
 #[test]
 fn a_zeroed_site_cannot_be_revived_by_its_builder() {
     use oxide_sim::stats::BuildingKind;
-    // Three lancers volley 90 damage — more than the fresh site's 70 hp —
-    // while the builder (highest id, acting last each tick) feeds it
-    // progress. Without the hp check, the builder revives the corpse
-    // every volley and the site eventually *completes*; with it, the
-    // first volley kills the site for good.
+    // Three lancers volley more than the fresh site's 70 hp while the
+    // builder feeds it progress. Without the hp check, the builder would
+    // revive the corpse every volley and the site would eventually
+    // complete; with it, the first volley kills the site for good.
     let mut state = arena(vec![
         unit(1, UnitKind::Lancer, 8, 5),
         unit(1, UnitKind::Lancer, 9, 6),
@@ -559,8 +567,8 @@ fn a_zeroed_site_cannot_be_revived_by_its_builder() {
         .find(|b| b.anchor == anchor)
         .unwrap()
         .id;
-    // The first volley can land on the command tick itself — keep its
-    // report (the oldest gotcha in the book).
+    // The first volley can land on the command tick itself; keep its
+    // report.
     let mut events = state
         .tick(&[cmd(
             1,
@@ -631,7 +639,6 @@ fn unreachable_sites_are_rejected_before_charging() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "sealed-doorstep".into(),
-        seed: 42,
         map: vec![
             "##############".into(),
             "#1...........#".into(),
@@ -709,8 +716,8 @@ fn placement_requires_current_vision_not_mere_exploration() {
 #[test]
 fn extra_builders_accelerate_construction() {
     use oxide_sim::stats::BuildingKind;
-    // Deliberate mechanic (documented in AGENTS): every adjacent builder
-    // contributes a progress tick, so two roughly halve the build.
+    // Deliberate mechanic: every adjacent builder contributes a progress
+    // tick, so two roughly halve the build.
     let build_time = |extra_builder: bool| {
         let mut units = vec![unit(0, UnitKind::Harvester, 4, 6)];
         if extra_builder {
@@ -745,7 +752,7 @@ fn extra_builders_accelerate_construction() {
         while !state
             .buildings()
             .iter()
-            .any(|b| b.anchor == anchor && b.built)
+            .any(|b| b.anchor == anchor && b.built())
         {
             state.tick(&[]);
             ticks += 1;
@@ -783,7 +790,6 @@ fn a_fresh_site_cannot_be_corner_cut_diagonally() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "corner-cut".into(),
-        seed: 42,
         map: vec![
             "###############".into(),
             "#1............#".into(),
@@ -869,7 +875,6 @@ fn a_rejected_build_leaves_no_trace_on_the_hash() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "sealed-doorstep".into(),
-        seed: 42,
         map: vec![
             "##############".into(),
             "#1...........#".into(),
@@ -973,7 +978,11 @@ fn same_tick_construction_cannot_absorb_a_lethal_hit() {
         .unwrap()
         .id;
     run_until(&mut state, 100, |s, _| {
-        s.building(site).unwrap().progress > 0
+        s.building(site)
+            .unwrap()
+            .construction_progress()
+            .unwrap_or(0)
+            > 0
     });
     // Freeze construction at exactly 70 hp (the first ramp step is zero).
     state.tick(&[cmd(
@@ -1048,7 +1057,6 @@ fn a_doomed_site_never_comes_online() {
     let scenario = Scenario {
         mode: ScenarioMode::Match,
         name: "doomed-site".into(),
-        seed: 42,
         map: vec![
             "####################".into(),
             "#1.................#".into(),
@@ -1124,7 +1132,7 @@ fn a_doomed_site_never_comes_online() {
     for _ in 0..(build_ticks - 3) {
         all_events.extend(state.tick(&[]).events);
         assert!(
-            state.building(site).is_some_and(|b| !b.built && b.hp > 0),
+            state.building(site).is_some_and(|b| !b.built() && b.hp > 0),
             "premise: the site survives, unfinished, until the final tick"
         );
     }
@@ -1204,7 +1212,7 @@ fn queued_builds_chain_one_builder_through_two_sites() {
     run_until(&mut state, 2_000, |s, _| {
         s.buildings()
             .iter()
-            .filter(|b| b.player == PlayerId(0) && b.built)
+            .filter(|b| b.player == PlayerId(0) && b.built())
             .count()
             == 3 // foundry + both towers
     });
@@ -1260,7 +1268,7 @@ fn a_queued_build_claim_protects_the_site_until_its_worker_arrives() {
     }
 
     let queued_site = state.building(queued).unwrap();
-    assert!(!queued_site.built, "the queued job has not started yet");
+    assert!(!queued_site.built(), "the queued job has not started yet");
     assert_eq!(
         queued_site.hp, initial_hp,
         "a paid site promised to a live worker must not decay while it waits"
@@ -1391,16 +1399,15 @@ fn a_queued_build_whose_site_died_pops_silently_and_the_program_survives() {
         state
             .buildings()
             .iter()
-            .any(|b| b.kind == oxide_sim::stats::BuildingKind::Turret && b.built),
+            .any(|b| b.kind == oxide_sim::stats::BuildingKind::Turret && b.built()),
         "the first leg still finished"
     );
 }
 
 #[test]
 fn a_full_order_queue_refuses_placement_with_nothing_spent() {
-    // The old code paid for the site and discarded the assignment
-    // result; a builder whose program is full must reject the whole
-    // command with the site retracted and the bank untouched.
+    // A builder whose program is full must reject the whole command with
+    // the site retracted and the bank untouched.
     let mut state = arena(vec![unit(0, UnitKind::Harvester, 3, 2)])
         .build()
         .unwrap();
@@ -1456,7 +1463,7 @@ fn a_full_order_queue_refuses_placement_with_nothing_spent() {
 #[test]
 fn resuming_a_site_sends_every_hand() {
     // Builders stack; a resume command commits the whole crew, and the
-    // site rises roughly three times as fast under three welders.
+    // site rises roughly three times as fast under three builders.
     let mut state = arena(vec![
         unit(0, UnitKind::Harvester, 3, 2),
         unit(0, UnitKind::Harvester, 4, 2),
@@ -1495,7 +1502,7 @@ fn resuming_a_site_sends_every_hand() {
     run_until(&mut state, 600, |s, _| {
         s.buildings()
             .iter()
-            .any(|b| b.kind == oxide_sim::stats::BuildingKind::Turret && b.built)
+            .any(|b| b.kind == oxide_sim::stats::BuildingKind::Turret && b.built())
     });
 }
 
@@ -1517,8 +1524,8 @@ fn place_refusal_names_the_actual_blocker() {
     assert_eq!(refusal(4, 6), None);
     // A visible ENEMY machine denies its ground.
     assert_eq!(refusal(5, 5), Some(PlaceRefusal::Unit));
-    // Open visible ground: allowed, and the predicate is literally the
-    // same answer with the reason thrown away.
+    // Open visible ground: allowed, and the predicate is the same answer
+    // with the reason thrown away.
     assert_eq!(refusal(5, 6), None);
     assert!(state.can_place(p, k, TilePos::new(5, 6)));
     // Visible rock.
@@ -1528,8 +1535,7 @@ fn place_refusal_names_the_actual_blocker() {
     // The enemy Foundry's ground is fogged — and fog must win before
     // the building underneath can leak through the reason.
     assert_eq!(refusal(13, 6), Some(PlaceRefusal::Fog));
-    // A Foundry without a completed Fabricator names the missing tech
-    // (0.15: Foundries are buildable expansions behind the tree's gate).
+    // A Foundry without a completed Fabricator names the missing tech.
     assert_eq!(
         state.place_refusal(p, BuildingKind::Foundry, TilePos::new(5, 6)),
         Some(PlaceRefusal::Prerequisite)
@@ -1562,9 +1568,9 @@ fn a_builder_founds_a_building_under_its_own_feet() {
         state.unit(builder).unwrap().order,
         Order::Build { .. }
     ));
-    // The builder WALKS off the claimed ground — the position series is
-    // continuous, never the old instant relocation (a 1+ tile jump
-    // inside one tick).
+    // The builder walks off the claimed ground: the position series is
+    // continuous, never an instant relocation (a 1+ tile jump inside one
+    // tick).
     let step_cap = chassis::fx::Fx::lit("0.5");
     let mut prev = state.unit(builder).unwrap().pos;
     let mut off_at = None;
@@ -1637,7 +1643,7 @@ fn friendly_machines_make_way_for_foundations() {
             prev[i] = now;
         }
     }
-    let (w, h) = BuildingKind::Fabricator.base_stats().size;
+    let (w, h) = BuildingKind::Fabricator.size();
     let inside =
         |t: TilePos| t.x >= anchor.x && t.x < anchor.x + w && t.y >= anchor.y && t.y < anchor.y + h;
     assert!(
@@ -1679,12 +1685,10 @@ fn an_enemy_machine_still_denies_the_ground() {
 fn an_allied_machine_makes_way_like_your_own() {
     use oxide_sim::stats::BuildingKind;
     // Two seats on one team: seat 0 builds where seat 1's sentinel
-    // stands. The ally steps aside — your teammate's foundation is
-    // not an enemy of your parking spot.
+    // stands. The ally steps aside like an own machine.
     let scenario = oxide_sim::Scenario::from_json(
         &serde_json::json!({
             "name": "Team Yard",
-            "seed": 11,
             "players": [
                 {"name": "West", "faction": "ferrous", "team": 1, "scrap": 300, "bot": false},
                 {"name": "East", "faction": "cupric", "team": 1, "scrap": 0, "bot": true,
@@ -1741,7 +1745,7 @@ fn an_allied_machine_makes_way_like_your_own() {
         );
         prev = now;
     }
-    let (w, h) = BuildingKind::Fabricator.base_stats().size;
+    let (w, h) = BuildingKind::Fabricator.size();
     let t = state.unit(ally).unwrap().tile();
     assert!(
         !(t.x >= anchor.x && t.x < anchor.x + w && t.y >= anchor.y && t.y < anchor.y + h),
@@ -1811,7 +1815,6 @@ fn a_walled_in_machine_takes_the_instant_deal() {
     let scenario = Scenario::from_json(
         &serde_json::json!({
             "name": "Pocket Yard",
-            "seed": 7,
             "players": [
                 {"name": "West", "faction": "ferrous", "scrap": 300, "bot": false},
                 {"name": "East", "faction": "cupric", "scrap": 0, "bot": false}
@@ -1853,7 +1856,7 @@ fn a_walled_in_machine_takes_the_instant_deal() {
         state.buildings().iter().any(|b| b.anchor == anchor),
         "the pocketed footprint still accepts the site"
     );
-    let (w, h) = BuildingKind::Fabricator.base_stats().size;
+    let (w, h) = BuildingKind::Fabricator.size();
     let inside =
         |t: TilePos| t.x >= anchor.x && t.x < anchor.x + w && t.y >= anchor.y && t.y < anchor.y + h;
     let t = state.unit(sealed).unwrap().tile();
@@ -1873,10 +1876,9 @@ fn a_walled_in_machine_takes_the_instant_deal() {
 #[test]
 fn a_fresh_placement_commits_the_whole_crew() {
     use oxide_sim::stats::BuildingKind;
-    // The reclaim-parity rule reaches construction: a fresh Build
-    // drafts every accepted harvester — not just the founder — and
-    // non-harvesters in the selection are left to their own work.
-    // Three hands raise the site markedly faster than one.
+    // A fresh Build drafts every accepted harvester, not just the
+    // founder, and non-harvesters in the selection are left to their own
+    // work. Three builders raise the site markedly faster than one.
     let build_time = |crew: usize| {
         let mut units: Vec<_> = (0..crew)
             .map(|i| unit(0, UnitKind::Harvester, 3 + i32::try_from(i).unwrap(), 2))
@@ -1911,7 +1913,7 @@ fn a_fresh_placement_commits_the_whole_crew() {
         while !state
             .buildings()
             .iter()
-            .any(|b| b.anchor == anchor && b.built)
+            .any(|b| b.anchor == anchor && b.built())
         {
             state.tick(&[]);
             ticks += 1;
@@ -1974,7 +1976,7 @@ fn a_deferred_build_founds_on_arrival() {
         state
             .buildings()
             .iter()
-            .any(|b| b.anchor == spot && b.provisional),
+            .any(|b| b.anchor == spot && b.provisional()),
         "acceptance creates a nonphysical paid scaffold"
     );
     assert_eq!(
@@ -1988,7 +1990,7 @@ fn a_deferred_build_founds_on_arrival() {
     run_until(&mut state, 600, |s, _| {
         s.buildings()
             .iter()
-            .any(|b| b.anchor == spot && !b.provisional)
+            .any(|b| b.anchor == spot && !b.provisional())
     });
     let cost = BuildingKind::Turret.base_stats().construction.unwrap().cost;
     assert_eq!(
@@ -2281,7 +2283,10 @@ fn cancelling_a_started_site_by_kind_and_anchor_matches_cancelling_it_by_id() {
         .expect("the site stands")
         .id;
     for _ in 0..600 {
-        if state.building(site).is_some_and(|b| b.progress > 0) {
+        if state
+            .building(site)
+            .is_some_and(|b| b.construction_progress().unwrap_or(0) > 0)
+        {
             break;
         }
         state.tick(&[]);
@@ -2289,7 +2294,7 @@ fn cancelling_a_started_site_by_kind_and_anchor_matches_cancelling_it_by_id() {
     assert!(
         state
             .building(site)
-            .is_some_and(|b| b.progress > 0 && !b.built),
+            .is_some_and(|b| b.construction_progress().unwrap_or(0) > 0 && !b.built()),
         "premise: the site is under way"
     );
 
@@ -2897,8 +2902,8 @@ fn a_rejected_deferred_build_leaves_no_trace_on_the_hash() {
 
 /// The information boundary itself: two worlds differing ONLY in what
 /// the issuer's fog hides must return the same intent verdict for every
-/// anchor on the map — the amber ghost can never be a hidden-enemy
-/// detector.
+/// anchor on the map, so the placement preview can never be a
+/// hidden-enemy detector.
 #[test]
 fn intent_verdicts_ignore_what_fog_hides() {
     use oxide_sim::stats::BuildingKind;
@@ -3153,13 +3158,13 @@ fn a_late_crewmate_finds_its_building_finished_and_calls_it_done() {
         },
     )]);
     run_until(&mut state, 2_000, |s, _| {
-        s.buildings().iter().any(|b| b.anchor == spot && b.built)
+        s.buildings().iter().any(|b| b.anchor == spot && b.built())
     });
     assert!(
         state
             .buildings()
             .iter()
-            .any(|b| b.anchor == spot && b.built),
+            .any(|b| b.anchor == spot && b.built()),
         "the founder must finish before the straggler arrives for this test to bite"
     );
     let events = run_until(&mut state, 600, |s, _| {
@@ -3231,12 +3236,12 @@ fn a_paid_founder_cannot_lose_its_funding_to_training() {
         }
     )));
     run_until(&mut state, 1000, |s, _| {
-        s.buildings().iter().any(|b| b.anchor == spot && b.built)
+        s.buildings().iter().any(|b| b.anchor == spot && b.built())
     });
     assert!(
         state
             .buildings()
             .iter()
-            .any(|b| b.anchor == spot && b.built)
+            .any(|b| b.anchor == spot && b.built())
     );
 }

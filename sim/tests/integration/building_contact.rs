@@ -5,7 +5,7 @@ use serde_json::json;
 
 fn scene(kind: &str, own_building: bool) -> State {
     let scenario: Scenario = serde_json::from_value(json!({
-        "name":"local contact", "mode":"sandbox", "seed":42, "map":vec!["................................";24],
+        "name":"local contact", "mode":"sandbox", "map":vec!["................................";24],
         "players":[{"name":"Local","faction":"ferrous","scrap":10000,"bot":false},{"name":"Target","faction":"cupric","scrap":0,"bot":false}],
         "units":[{"player":0,"kind":kind,"x":12,"y":9}],
         "buildings":[{"player":i32::from(!own_building),"kind":"fabricator","x":10,"y":10}]
@@ -140,7 +140,7 @@ fn worker_repairs_at_the_surface_then_obeys_a_new_move() {
 #[test]
 fn rectangular_building_wall_still_blocks_ordinary_travel() {
     let scenario:Scenario=serde_json::from_value(json!({
-        "name":"sealed wall", "mode":"sandbox", "seed":42, "map":vec!["........................";16],
+        "name":"sealed wall", "mode":"sandbox", "map":vec!["........................";16],
         "players":[{"name":"Local","faction":"ferrous","scrap":0,"bot":false},{"name":"Target","faction":"cupric","scrap":0,"bot":false}],
         "units":[{"player":0,"kind":"harvester","x":7,"y":7}],
         "buildings":(0..16).step_by(2).map(|y|json!({"player":1,"kind":"fabricator","x":12,"y":y})).collect::<Vec<_>>()
@@ -171,8 +171,7 @@ fn unusable_building_stances_stall_once_and_obey_order_failure_policy() {
             row[5..7].fill('.');
         }
         let scenario: Scenario = serde_json::from_value(json!({
-            "name":"unusable stance", "mode":"sandbox", "seed":42,
-            "map":map.into_iter().map(|row| row.into_iter().collect::<String>()).collect::<Vec<_>>(),
+            "name":"unusable stance", "mode":"sandbox", "map":map.into_iter().map(|row| row.into_iter().collect::<String>()).collect::<Vec<_>>(),
             "players":[{"name":"Local","faction":"ferrous","scrap":10000,"bot":false},
                        {"name":"Target","faction":"cupric","scrap":0,"bot":false}],
             "units":[{"player":0,"kind":kind,"x":4,"y":4}],
@@ -246,7 +245,7 @@ fn unusable_building_stances_stall_once_and_obey_order_failure_policy() {
 fn builders_reach_a_stance_past_a_neighboring_footprint_corner() {
     for x in [19, 21] {
         let scenario: Scenario = serde_json::from_value(json!({
-            "name":"neighbor corner", "mode":"sandbox", "seed":42, "map":vec!["................................";24],
+            "name":"neighbor corner", "mode":"sandbox", "map":vec!["................................";24],
             "players":[{"name":"Local","faction":"ferrous","scrap":10000,"bot":false}],
             "units":[{"player":0,"kind":"harvester","x":x,"y":12}],
             "buildings":[{"player":0,"kind":"flak_turret","x":20,"y":15}]
@@ -270,7 +269,13 @@ fn builders_reach_a_stance_past_a_neighboring_footprint_corner() {
         let mut started = false;
         for _ in 0..300 {
             state.tick(&[]);
-            if state.building(site).unwrap().progress > 0 {
+            if state
+                .building(site)
+                .unwrap()
+                .construction_progress()
+                .unwrap_or(0)
+                > 0
+            {
                 started = true;
                 break;
             }
@@ -293,7 +298,7 @@ fn paid_site(
         .unwrap()
         .push(json!({"player":0,"kind":"fabricator","x":28,"y":20}));
     let scenario: Scenario = serde_json::from_value(json!({
-        "name":"paid site", "mode":"sandbox", "seed":42, "map":vec!["................................";24],
+        "name":"paid site", "mode":"sandbox", "map":vec!["................................";24],
         "players":[{"name":"Local","faction":"ferrous","scrap":10000,"bot":false}],
         "units":[{"player":0,"kind":"harvester","x":anchor.x,"y":anchor.y + 4}],
         "buildings": buildings,
@@ -311,10 +316,10 @@ fn paid_site(
     let site = state
         .buildings()
         .iter()
-        .find(|b| b.anchor == anchor && !b.built)
+        .find(|b| b.anchor == anchor && !b.built())
         .unwrap_or_else(|| panic!("{:?}", report.events))
         .id;
-    assert!(!state.building(site).unwrap().provisional);
+    assert!(!state.building(site).unwrap().provisional());
     (state, id, site)
 }
 
@@ -334,7 +339,7 @@ fn walking(
         .find(|unit| unit["id"] == json!(id))
         .unwrap();
     unit["pos"] = json!(pos);
-    unit["drive_speed"] = json!(Fx::ZERO);
+    unit["motor"]["speed"] = json!(Fx::ZERO);
     unit["path"] = json!(oxide_sim::state::PathFollow {
         final_point: point,
         goal: *waypoints.last().unwrap(),
@@ -389,7 +394,7 @@ fn a_builder_in_reach_works_where_it_stands_from_every_side_and_corner() {
         BuildingKind::Fabricator,
     ] {
         let anchor = TilePos::new(14, 10);
-        let size = kind.base_stats().size;
+        let size = kind.size();
         let (state, id, site) = paid_site(kind, anchor, json!([]));
         let clearance = UnitKind::Harvester.stats().radius + oxide_sim::stats::WORK_FOOTPRINT_GAP;
         let surface = state.contact_surface(state.building(site).unwrap());
@@ -420,7 +425,12 @@ fn a_builder_in_reach_works_where_it_stands_from_every_side_and_corner() {
             }
             let unit = state.unit(id).unwrap();
             assert!(
-                state.building(site).unwrap().progress > 0,
+                state
+                    .building(site)
+                    .unwrap()
+                    .construction_progress()
+                    .unwrap_or(0)
+                    > 0,
                 "{kind:?} from {side:?} never started: {unit:?}"
             );
             assert!(state.in_building_work_reach(unit, site));
@@ -448,7 +458,13 @@ fn a_builder_chooses_again_when_new_ground_spoils_its_position() {
     let mut started = false;
     for _ in 0..100 {
         state.tick(&[]);
-        if state.building(site).unwrap().progress > 0 {
+        if state
+            .building(site)
+            .unwrap()
+            .construction_progress()
+            .unwrap_or(0)
+            > 0
+        {
             started = true;
             break;
         }
