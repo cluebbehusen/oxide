@@ -586,10 +586,6 @@ pub struct Building {
     /// Scrap already credited against `salvage_drained`'s target.
     #[serde(default, skip_serializing_if = "crate::is_default")]
     pub salvage_credited: u32,
-    /// Set when salvage — not fire — took the last hp: cleanup removes
-    /// the building without wreck or a destruction event.
-    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
-    pub salvaged: bool,
 }
 
 /// The recurring-income state of a completed, living Extractor.
@@ -1015,8 +1011,7 @@ impl State {
     ///   envelope, every anchored Harvest source inside its work zone,
     ///   every entity named by an order actually minted.
     /// - Buildings: the same, plus a queue this kind can produce for this
-    ///   seat's faction, a coherent salvage ledger, and no live salvage
-    ///   marker.
+    ///   seat's faction, and a coherent salvage ledger.
     /// - Shells: coordinates inside the envelope, shooter minted.
     /// - Vision: ghost owners in the table and hostile to the viewer;
     ///   ghosts, contacts, and recent allied impact sites inside their
@@ -1505,7 +1500,6 @@ impl State {
             cooldown,
             salvage_drained,
             salvage_credited,
-            salvaged,
         } = b;
         let id = *id;
         if usize::from(player.0) >= self.players.len() {
@@ -1527,7 +1521,6 @@ impl State {
                 || *cooldown != 0
                 || *salvage_drained != 0
                 || *salvage_credited != 0
-                || *salvaged
                 || !self
                     .units
                     .iter()
@@ -1599,9 +1592,6 @@ impl State {
         }
         if !salvage_ledger_coherent(b) {
             return Err(E::IncoherentSalvageLedger(id));
-        }
-        if *salvaged {
-            return Err(E::LiveBuildingMarkedSalvaged(id));
         }
         Ok(())
     }
@@ -2193,7 +2183,6 @@ impl State {
             cooldown: 0,
             salvage_drained: 0,
             salvage_credited: 0,
-            salvaged: false,
         });
         self.stamp_building_occupancy(self.buildings.len() - 1, true);
         id
@@ -2614,10 +2603,6 @@ pub enum StateIntegrityError {
     /// Two buildings that mark the occupancy grid cover the same tile.
     #[error("buildings {0} and {1} overlap")]
     OverlappingBuildings(BuildingId, BuildingId),
-    /// A live building carries the transient marker cleanup uses to
-    /// distinguish a completed salvage from combat destruction.
-    #[error("building {0} is still live but marked salvaged")]
-    LiveBuildingMarkedSalvaged(BuildingId),
     /// A machine with no sling claims to carry cargo.
     #[error("unit {0} carries cargo without being a transport")]
     CargoOnNonTransport(UnitId),

@@ -718,7 +718,7 @@ fn run_calibration_open_tick(
     assert_calibration_open_symmetry(&stage("production"), state, unit_pairs);
     charges::cancel_discovered(state, &mut events);
     production::decay_abandoned_sites(state);
-    let pending = brain::run(state, &mut index, &mut events);
+    let (pending, salvaged) = brain::run(state, &mut index, &mut events);
     assert_calibration_open_symmetry(&stage("brains"), state, unit_pairs);
     brain::logistics::resolve(state, pending, &mut events);
     assert_calibration_open_symmetry(&stage("logistics"), state, unit_pairs);
@@ -731,7 +731,7 @@ fn run_calibration_open_tick(
     aircraft_crashes::remember_motion(state, &air_positions);
     aircraft_crashes::land(state, &mut events);
     charges::detonate_under_units(state, &mut events);
-    cleanup(state, &mut events);
+    cleanup(state, &salvaged, &mut events);
     if state.tick.is_multiple_of(crate::stats::WRECK_DECAY_TICKS) {
         state.map.decay_wrecks();
     }

@@ -353,7 +353,7 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::BuildingOutsideEnvelope(_) => 33,
         E::IncoherentSalvageLedger(_) => 34,
         E::TierBeyondLadder(_) => 35,
-        E::LiveBuildingMarkedSalvaged(_) => 36,
+        E::OverlappingBuildings(..) => 36,
         E::CargoOnNonTransport(_) => 51,
         E::CargoBeyondCapacity(_) => 52,
         E::UncarriableCargo(_) => 53,
@@ -401,11 +401,10 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::InvalidUnloading(_) => 81,
         E::InvalidWorkEndpoint(_) => 82,
         E::InvalidDangerRetry(_) => 83,
-        E::OverlappingBuildings(..) => 84,
     }
 }
 
-const ROWS: usize = 85;
+const ROWS: usize = 84;
 
 /// One rendered message per row, with the entity ids the forgeries
 /// provoke (everything targets seat p0 and entity 0). A fixture's
@@ -454,7 +453,7 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::BuildingOutsideEnvelope(BuildingId(0)),
         E::IncoherentSalvageLedger(BuildingId(0)),
         E::TierBeyondLadder(BuildingId(0)),
-        E::LiveBuildingMarkedSalvaged(BuildingId(0)),
+        E::OverlappingBuildings(BuildingId(0), BuildingId(1)),
         E::ForeignShellOwner(0),
         E::ShellOutsideEnvelope(0),
         E::UnmintedShellShooter(0),
@@ -502,7 +501,6 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::InvalidUnloading(UnitId(0)),
         E::InvalidWorkEndpoint(UnitId(0)),
         E::InvalidDangerRetry(UnitId(0)),
-        E::OverlappingBuildings(BuildingId(0), BuildingId(1)),
     ]
 }
 
@@ -1147,11 +1145,6 @@ fn every_checklist_row_refuses_its_forgery() {
             "a tier past the kind's ladder",
             |d| d["buildings"][0]["tier"] = json!(9),
             "claims a tier its kind's ladder does not reach",
-        ),
-        (
-            "a live building marked as already salvaged",
-            |d| d["buildings"][0]["salvaged"] = json!(true),
-            "building b0 is still live but marked salvaged",
         ),
         (
             "two standing buildings on the same ground",

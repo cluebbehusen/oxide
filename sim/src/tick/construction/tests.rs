@@ -25,7 +25,7 @@ fn last_worker_wreck_survives_provisional_site_cleanup_and_refund() {
         unit.order = Order::Build { site };
         unit.hp = 0;
         let mut events = Vec::new();
-        super::super::cleanup(&mut state, &mut events);
+        super::super::cleanup(&mut state, &[], &mut events);
         cancel_abandoned(&mut state, &mut events);
         assert!(state.unit(worker).is_none());
         assert!(state.building(site).is_none());
