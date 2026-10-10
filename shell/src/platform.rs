@@ -1,10 +1,54 @@
-//! Platform facts the shell's presentation depends on.
+//! Platform facts the shell's presentation depends on, and the hands the
+//! player is using right now.
 
-/// Whether this build's only pointer is a fingertip: no hardware keys,
-/// mouse, hover, or wheel reach the app. Code branches on this constant
-/// rather than `#[cfg]` so both sides compile, lint, and test on every
-/// target; pure helpers take it as a parameter.
+use std::cell::Cell;
+
+use crate::input::Pointer;
+
+/// Whether this build runs on a touch device, where a finger is always
+/// at hand even if a keyboard or trackpad is attached. Platform facts
+/// (no Quit, the on-screen keyboard) and fingertip sizing follow it;
+/// wording and hover follow [`Hands`] instead. Code branches on this
+/// constant rather than `#[cfg]` so both sides compile, lint, and test on
+/// every target; pure helpers take it as a parameter.
 pub(crate) const TOUCH_ONLY: bool = cfg!(target_os = "ios");
+
+/// The pointer and keys the player is using, which decide how copy
+/// speaks: tap or click, and whether it names keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Hands {
+    /// The pointer used last.
+    pub pointer: Pointer,
+    /// Whether a hardware key has been pressed.
+    pub keys: bool,
+}
+
+impl Hands {
+    /// What a build assumes before any input: a finger alone on a
+    /// touch device, a mouse and keyboard elsewhere.
+    pub const BUILD: Self = if TOUCH_ONLY {
+        Self {
+            pointer: Pointer::Touch,
+            keys: false,
+        }
+    } else {
+        Self {
+            pointer: Pointer::Mouse,
+            keys: true,
+        }
+    };
+}
+
+thread_local! {
+    /// This frame's hands. The build's default, so tests and headless
+    /// runs see the copy they always have.
+    static HANDS: Cell<Hands> = const { Cell::new(Hands::BUILD) };
+}
+
+/// Publishes this frame's hands for the copy code.
+pub(crate) fn set_hands(hands: Hands) {
+    HANDS.with(|cell| cell.set(hands));
+}
 
 /// The pointer verb opening an instruction: a touch player taps what a
 /// mouse player clicks.

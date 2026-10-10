@@ -182,7 +182,7 @@ fn draw_menu_button(rect: Rect, s: f32) {
 
 /// Where the cursor hovers: only while the mouse is the pointer in use,
 /// never at a stale point on a touch device.
-fn hover_point(input: &InputState) -> Option<Vec2> {
+pub(super) fn hover_point(input: &InputState) -> Option<Vec2> {
     (input.touches.is_empty() && input.last_pointer == crate::input::Pointer::Mouse)
         .then_some(input.mouse)
 }

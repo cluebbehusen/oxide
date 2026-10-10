@@ -4097,6 +4097,45 @@ fn publish_minimap(game: &Game) -> macroquad::math::Rect {
 }
 
 #[test]
+fn every_screen_tracks_the_pointer_and_keys_in_use() {
+    let mut input = InputState::new();
+    input.keys_seen = false;
+    track_hands(&mut input, &touch_down(1, vec2(1.0, 1.0)), false);
+    assert_eq!(input.last_pointer, Pointer::Touch);
+    for event in [
+        mouse_move(vec2(2.0, 2.0)),
+        RawEvent::Wheel { delta: 1.0 },
+        left_down(vec2(3.0, 3.0)),
+    ] {
+        input.last_pointer = Pointer::Touch;
+        track_hands(&mut input, &event, false);
+        assert_eq!(input.last_pointer, Pointer::Mouse, "{event:?}");
+    }
+    track_hands(&mut input, &key_down(Key::Enter), true);
+    assert!(!input.keys_seen, "keys typed into a text field don't count");
+    track_hands(&mut input, &key_down(Key::H), false);
+    assert!(input.keys_seen);
+}
+
+#[test]
+fn only_the_mouse_edge_pans() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    input.camera_prefs.edge_pan = true;
+    input.mouse = vec2(game.presentation.camera.viewport().x, 400.0);
+    input.last_pointer = Pointer::Touch;
+    let before = game.presentation.camera.center;
+    update_held(&mut game, &input, 0.5);
+    assert_eq!(
+        game.presentation.camera.center, before,
+        "a finger leaves the mouse point stale"
+    );
+    input.last_pointer = Pointer::Mouse;
+    update_held(&mut game, &input, 0.5);
+    assert_ne!(game.presentation.camera.center, before);
+}
+
+#[test]
 fn hardware_touch_phases_speak_the_funnel_vocabulary() {
     // The polling adapter translates macroquad's touch phases into the
     // exact events the harness injects — one vocabulary, so a real

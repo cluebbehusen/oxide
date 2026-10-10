@@ -573,3 +573,17 @@ fn a_commandless_building_does_not_reserve_an_empty_card_row() {
     let info = selection_info_rect(viewport, 228.0, 218.0, actions);
     assert_eq!(info.y, 582.0);
 }
+
+#[test]
+fn cards_light_under_the_mouse_only_while_it_is_the_pointer_in_use() {
+    let mut input = InputState::new();
+    let rect = Rect::new(0.0, 0.0, 50.0, 50.0);
+    input.mouse = vec2(10.0, 10.0);
+    input.last_pointer = crate::input::Pointer::Mouse;
+    assert!(hovers(&input, rect));
+    input.last_pointer = crate::input::Pointer::Touch;
+    assert!(
+        !hovers(&input, rect),
+        "a finger leaves the mouse point stale"
+    );
+}
