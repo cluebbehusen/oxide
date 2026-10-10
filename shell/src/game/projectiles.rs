@@ -79,14 +79,14 @@ impl ProjectileReleases {
             .get(&(shell.shooter, shell.arrival))?
             .first()?
             .pose
-            .filter(|pose| pose.kind == UnitKind::Bombard)
+            .filter(|pose| crate::look::fires(pose.kind, ProjectileKind::Shell))
             .map(|pose| pose.heading)
     }
 
     pub(crate) fn release(&self, shells: &[Shell], index: usize) -> Option<LaunchPose> {
         (shells.get(index)?.kind == ProjectileKind::Bomb)
             .then(|| self.flight(shells, index)?.pose)?
-            .filter(|pose| matches!(pose.kind, UnitKind::Condor | UnitKind::Moth))
+            .filter(|pose| crate::look::fires(pose.kind, ProjectileKind::Bomb))
     }
 }
 
