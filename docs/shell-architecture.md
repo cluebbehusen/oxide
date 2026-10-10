@@ -207,22 +207,24 @@ rectangles and panel bounds share the same separator and inset calculations.
 
 Coordinates are logical throughout the input/layout pipeline; the hardware
 adapter applies DPI conversion once. Touches arrive through the same ordered
-input stream as mouse events. miniquad's iOS backend reports every live finger
-whenever one changes, so a landing re-reports the others as landing and a lift
-reports them all lifted. Gesture code treats a repeated landing as the same
-finger and picks up a falsely lifted pair finger on its next move. Drawing
-publishes a shared `LayoutModel` whose rectangles also drive hit testing. The
-HUD's supported layout floor is 1280×800 at default UI scale. Smaller windows
-are overflow stress cases. `layout::top_bar` places the top bar from measured
-text: the bank, income, and unit count run left to right, then the idle and
-under-attack badges, and the status hangs off the menu button. Touch-only builds
-hold the menu button and bank further from the corners, which iPad screens round
-and iPadOS safe areas leave out. `layout::group_column` stacks the control
-groups on a plate above the minimap's right edge, mirroring the orders dock, and
-wraps into more columns when the window is short. It shows once a group is saved
-or the selection can be saved, never while the minimap is hidden, and a setting
-hides it; its slots and plate are chrome. The top edge is left to taps because
-iPadOS takes a long-press there as a window move.
+input stream as mouse events. miniquad's iOS backend reports only the fingers
+that changed, and a finger iOS takes away, as for palm rejection or a system
+gesture, arrives cancelled; the hardware adapter lifts it. Gesture code also
+treats a repeated landing as the same finger and picks up a falsely lifted pair
+finger on its next move. On iPad, `UIApplicationSupportsIndirectInputEvents`
+makes trackpad and mouse clicks arrive as mouse events rather than touches.
+Drawing publishes a shared `LayoutModel` whose rectangles also drive hit
+testing. The HUD's supported layout floor is 1280×800 at default UI scale.
+Smaller windows are overflow stress cases. `layout::top_bar` places the top bar
+from measured text: the bank, income, and unit count run left to right, then the
+idle and under-attack badges, and the status hangs off the menu button.
+Touch-only builds hold the menu button and bank further from the corners, which
+iPad screens round and iPadOS safe areas leave out. `layout::group_column`
+stacks the control groups on a plate above the minimap's right edge, mirroring
+the orders dock, and wraps into more columns when the window is short. It shows
+once a group is saved or the selection can be saved, never while the minimap is
+hidden, and a setting hides it; its slots and plate are chrome. The top edge is
+left to taps because iPadOS takes a long-press there as a window move.
 
 Selections contain units of one allegiance or buildings of one owner, ordered by
 id. Foreign entities can be inspected while visible, but commands remain gated
