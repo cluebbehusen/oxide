@@ -10,8 +10,8 @@ use oxide_protocol::{Key, RawEvent};
 
 /// The name field's coaching line; a touch-only build has no keys to
 /// name.
-fn naming_hint(touch_only: bool) -> &'static str {
-    if touch_only {
+fn naming_hint(keyless: bool) -> &'static str {
+    if keyless {
         "type a name"
     } else {
         "type a name | Enter saves | Esc cancels"
@@ -300,7 +300,7 @@ impl PauseScreen {
     pub fn draw(&self, scenario_name: &str, mouse: Vec2) {
         match &self.face {
             Face::Naming(field) => field.draw(
-                naming_hint(crate::platform::TOUCH_ONLY),
+                naming_hint(!crate::platform::hands().keys),
                 crate::hints::fade(crate::theme::TEXT_SECONDARY),
                 mouse,
             ),
@@ -409,7 +409,7 @@ impl PauseScreen {
     pub fn subtitle<'a>(&'a self, scenario_name: &'a str) -> &'a str {
         match &self.face {
             Face::SaveFailed(dialog) => &dialog.line,
-            Face::Naming(_) => naming_hint(crate::platform::TOUCH_ONLY),
+            Face::Naming(_) => naming_hint(!crate::platform::hands().keys),
             Face::Confirm(verb) => verb.consequence(),
             Face::Rows => self.notice.as_deref().unwrap_or(scenario_name),
         }

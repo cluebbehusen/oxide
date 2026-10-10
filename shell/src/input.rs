@@ -121,6 +121,32 @@ pub(crate) enum Pointer {
     Touch,
 }
 
+impl Pointer {
+    /// The pointer an event shows in use, if it shows one. A wheel
+    /// carries no position, so it leaves the pointer as it was: before
+    /// any motion, hover and edge pan would read a stale mouse point.
+    fn of(event: &RawEvent) -> Option<Self> {
+        match event {
+            RawEvent::MouseDown { .. } | RawEvent::MouseMove { .. } => Some(Self::Mouse),
+            RawEvent::TouchDown { .. } => Some(Self::Touch),
+            _ => None,
+        }
+    }
+}
+
+/// Notes the hands behind one event, whatever the screen: the pointer in
+/// use and whether a hardware key has been pressed. A key pressed while
+/// a text field has focus doesn't count, since iOS's on-screen keyboard
+/// sends Enter, Space, and Backspace as key events.
+pub fn track_hands(input: &mut InputState, event: &RawEvent, text_entry: bool) {
+    if let Some(pointer) = Pointer::of(event) {
+        input.last_pointer = pointer;
+    }
+    if !text_entry && matches!(event, RawEvent::KeyDown { .. }) {
+        input.keys_seen = true;
+    }
+}
+
 /// Where a touch placement's ghost sits until a tap on it confirms.
 /// Touch has no hover, so the ghost stands in for the mouse's preview:
 /// dropped where the finger lands, dragged into place, and built only
@@ -182,9 +208,11 @@ pub struct InputState {
     pub(crate) placing_stroke: Option<PlacingStroke>,
     /// The touch placement's ghost, once a tap has dropped one.
     pub(crate) touch_ghost: Option<PlacementGhost>,
-    /// The pointer that pressed last: the mouse's hover preview only
-    /// means something while the mouse is the one in use.
+    /// The pointer used last: the mouse's hover only means something
+    /// while the mouse is the one in use.
     pub(crate) last_pointer: Pointer,
+    /// Whether a hardware key has been pressed, so copy may name keys.
+    pub(crate) keys_seen: bool,
     /// The verb the next world click issues, if one is armed.
     pub(crate) click_verb: Option<ClickVerb>,
     /// Producers whose rally point the next world/minimap click sets.
@@ -424,11 +452,8 @@ impl InputState {
             placing: None,
             placing_stroke: None,
             touch_ghost: None,
-            last_pointer: if crate::platform::TOUCH_ONLY {
-                Pointer::Touch
-            } else {
-                Pointer::Mouse
-            },
+            last_pointer: crate::platform::Hands::BUILD.pointer,
+            keys_seen: crate::platform::Hands::BUILD.keys,
             click_verb: None,
             rallying: Vec::new(),
             build_menu: false,
@@ -951,9 +976,13 @@ pub fn poll_events(text_entry: bool) -> Vec<RawEvent> {
         // never queues a baseline: seed the stream with the position
         // the pointer already holds, or edge pan and wheel zoom anchor
         // at (0, 0) until the first real motion. mouse_position() is
-        // already logical (macroquad divides its dpi out).
-        let (x, y) = mq::mouse_position();
-        events.push(RawEvent::MouseMove { x, y });
+        // already logical (macroquad divides its dpi out). A touch-only
+        // device has no cursor until a trackpad moves one, and a seed
+        // would read as the mouse in use.
+        if !crate::platform::TOUCH_ONLY {
+            let (x, y) = mq::mouse_position();
+            events.push(RawEvent::MouseMove { x, y });
+        }
     });
     let mut stream = PointerStream::new(macroquad::miniquad::window::dpi_scale(), text_entry);
     mq::utils::repeat_all_miniquad_input(&mut stream, sub);
@@ -1144,12 +1173,8 @@ pub fn apply_events(
 }
 
 fn apply_event(game: &mut Game, input: &mut InputState, bindings: &BindingMap, event: &RawEvent) {
-    match *event {
-        RawEvent::MouseDown { .. } | RawEvent::MouseMove { .. } => {
-            input.last_pointer = Pointer::Mouse;
-        }
-        RawEvent::TouchDown { .. } => input.last_pointer = Pointer::Touch,
-        _ => {}
+    if let Some(pointer) = Pointer::of(event) {
+        input.last_pointer = pointer;
     }
     match *event {
         RawEvent::MouseMove { x, y } => {
@@ -1874,7 +1899,7 @@ fn add_patrol_waypoint(
     };
     if route.len() >= oxide_sim::stats::ORDER_QUEUE_CAP {
         game.presentation
-            .toast(patrol_full_toast(&key, crate::platform::TOUCH_ONLY));
+            .toast(patrol_full_toast(&key, crate::platform::hands()));
     } else {
         let waypoint = ground_tile(&game.state, world);
         route.push(waypoint);
@@ -1884,20 +1909,22 @@ fn add_patrol_waypoint(
 }
 
 /// The toast that arms a patrol.
-pub(crate) fn patrol_arm_toast(key: &str, touch_only: bool) -> String {
-    if touch_only {
-        "Patrol: tap waypoints, then tap Patrol again to start".to_string()
-    } else {
-        format!("Patrol: click waypoints, {key} to start")
+pub(crate) fn patrol_arm_toast(key: &str, hands: crate::platform::Hands) -> String {
+    match (hands.touch(), hands.keys) {
+        (false, true) => format!("Patrol: click waypoints, {key} to start"),
+        (false, false) => "Patrol: click waypoints, then click Patrol again to start".to_string(),
+        (true, true) => format!("Patrol: tap waypoints, then {key} or tap Patrol again to start"),
+        (true, false) => "Patrol: tap waypoints, then tap Patrol again to start".to_string(),
     }
 }
 
 /// The toast when the route has no room for another waypoint.
-fn patrol_full_toast(key: &str, touch_only: bool) -> String {
-    if touch_only {
-        "Patrol is full: tap Patrol to start it".to_string()
-    } else {
-        format!("Patrol is full: {key} starts it")
+fn patrol_full_toast(key: &str, hands: crate::platform::Hands) -> String {
+    match (hands.touch(), hands.keys) {
+        (false, true) => format!("Patrol is full: {key} starts it"),
+        (false, false) => "Patrol is full: click Patrol to start it".to_string(),
+        (true, true) => format!("Patrol is full: {key} or tap Patrol to start it"),
+        (true, false) => "Patrol is full: tap Patrol to start it".to_string(),
     }
 }
 
@@ -2048,9 +2075,11 @@ fn press_card(
 /// Continuous per-frame input (held-key and edge panning).
 pub fn update_held(game: &mut Game, input: &InputState, dt: f32) {
     let mut dir = crate::camera::controls::held_pan(&input.resolver);
-    if input.camera_prefs.edge_pan && dir == vec2(0.0, 0.0) {
+    if input.camera_prefs.edge_pan && input.last_pointer == Pointer::Mouse && dir == vec2(0.0, 0.0)
+    {
         // Edge panning is opt-in because it fights windowed-mode mousing;
-        // keyboard panning wins when both apply.
+        // keyboard panning wins when both apply. A finger leaves the
+        // mouse point wherever it last was, so only the mouse pans.
         const EDGE: f32 = 8.0;
         let viewport = game.presentation.camera.viewport();
         if input.mouse.x <= EDGE {

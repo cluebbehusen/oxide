@@ -44,23 +44,25 @@ fn a_capture_prompt_is_information_and_key_help_is_coaching() {
 }
 
 #[test]
-fn the_settings_hint_speaks_touch_on_touch_only_builds() {
-    assert!(settings_hint(false).contains("{confirm}"));
-    crate::platform::assert_touch_copy(settings_hint(true));
+fn the_settings_hint_names_only_what_the_hands_in_use_have() {
+    for hands in crate::platform::ALL_HANDS {
+        let hint = settings_hint(hands);
+        crate::platform::assert_copy_fits(hands, hint);
+        assert_eq!(hint.contains("{confirm}"), hands.keys, "{hint}");
+    }
 }
 
 #[test]
-fn a_touch_only_build_hides_rows_it_cannot_use() {
+fn a_touch_only_build_hides_only_the_rows_it_cannot_use() {
     let touch = rows(true);
-    for hidden in [
-        Row::EdgePan,
-        Row::LeftHandedPreset,
-        Row::Controls,
-        Row::OpenDiagnostics,
-    ] {
-        assert!(!touch.contains(&hidden), "{hidden:?} needs a desktop");
+    assert!(!touch.contains(&Row::OpenDiagnostics), "no file manager");
+    for kept in [Row::EdgePan, Row::LeftHandedPreset, Row::Controls] {
+        assert!(
+            touch.contains(&kept),
+            "{kept:?} serves an attached keyboard or trackpad"
+        );
     }
-    assert_eq!(touch.len(), Row::ALL.len() - 4);
+    assert_eq!(touch.len(), Row::ALL.len() - 1);
     assert_eq!(rows(false), Row::ALL.to_vec(), "desktop keeps every row");
 }
 

@@ -7,8 +7,16 @@ fn hud_copy_names_keys_only_on_desktop() {
     assert_eq!(alert_badge_text("Tab", false), "under attack [Tab]");
     assert_eq!(alert_badge_text("", false), "under attack");
     crate::platform::assert_touch_copy(&alert_badge_text("Tab", true));
-    assert!(concede_hint(false).contains("{back}"));
-    crate::platform::assert_touch_copy(concede_hint(true));
+    for hands in crate::platform::ALL_HANDS {
+        let hint = concede_hint(hands);
+        assert_eq!(hint.contains("{back}"), hands.keys, "{hint}");
+        if !hands.keys {
+            crate::platform::assert_keyless_copy(hint);
+        }
+        if hands.touch() {
+            crate::platform::assert_mouseless_copy(hint);
+        }
+    }
 }
 
 #[test]

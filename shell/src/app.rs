@@ -423,8 +423,10 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         // this baseline, so a chord fully pressed AND released inside
         // one frame still reads its modifiers as of the main key-down.
         let (ctrl_at_frame_start, shift_at_frame_start) = (app.capture_ctrl, app.capture_shift);
+        let text_entry = screen.text_entry();
         for e in &events {
             track_pointer_position(&mut app.input.mouse, e);
+            input::track_hands(&mut app.input, e, text_entry);
             match e {
                 RawEvent::KeyDown { key: Key::Ctrl } => app.capture_ctrl = true,
                 RawEvent::KeyUp { key: Key::Ctrl } => app.capture_ctrl = false,

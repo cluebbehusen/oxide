@@ -309,10 +309,14 @@ interrupted harvest job.
 
 ### Touch-only builds
 
-`platform::TOUCH_ONLY` is true on iOS, where only touches and on-screen keyboard
-characters arrive: no hardware keys, mouse, hover, or wheel. Code branches on
-the constant, and pure helpers take it as a parameter, so both variants compile
-and test on every platform.
+`platform::TOUCH_ONLY` is true on iOS, where a finger is always at hand and a
+hardware keyboard and trackpad may join it. Platform facts and fingertip sizing
+branch on the constant, and pure helpers take it as a parameter, so both
+variants compile and test on every platform. Copy and hover follow the hands in
+use instead: every screen tracks the last pointer and whether a hardware key has
+been pressed (`input::track_hands`), and each frame publishes them as
+`platform::Hands` for the copy code. Keys typed into a focused text field do not
+count, since the on-screen keyboard sends some as key events.
 
 Every screen offers a pointer path for what Escape does, on every platform. The
 top bar ends in a menu button that opens the pause menu, and its clock or PAUSED
@@ -332,20 +336,23 @@ stay with the renderer. The read-only viewers pan and pinch through
 field has Save and Cancel; on touch-only builds the frame loop raises and hides
 the on-screen keyboard to follow it.
 
-Hints, toasts, card descriptions, and the tutorial speak touch on touch-only
-builds, and panel cards drop their hotkeys. A finger resting on chrome for
-`TOUCH_REST_MS` previews the card beneath it with the hover tooltip. Chrome
-touches never fire a long-press, so lifting in place still activates the card,
-and a finger that lands on one card or group slot and lifts on another activates
-neither. The one exception is a control-group slot, where a long-press saves the
-selection to that group and spends the finger so its lift does not also recall.
-A dock chip that discards work, whether an order, a site, a planned foundation,
-or a production slot, ignores a lift after a hold: a finger held past the
-long-press threshold was reading its preview, so it lifts without cancelling
-anything. A world-born or group-slot finger draws a filling ring from the same
-rest threshold until its long-press fires; the slot's ring draws above the HUD
-and minimap. Disabled cards publish `CardAction::Refused`, so a tap or click
-toasts the reason their hotkey gives.
+Hints, toasts, card descriptions, and the tutorial say tap or click for the last
+pointer and name keys only once a hardware key has been pressed; copy that mixes
+both has a variant for each pairing, and panel cards drop their hotkeys until
+then. Card hover, the hover tooltip, and edge pan follow the mouse only while it
+is the last pointer. A finger resting on chrome for `TOUCH_REST_MS` previews the
+card beneath it with the hover tooltip. Chrome touches never fire a long-press,
+so lifting in place still activates the card, and a finger that lands on one
+card or group slot and lifts on another activates neither. The one exception is
+a control-group slot, where a long-press saves the selection to that group and
+spends the finger so its lift does not also recall. A dock chip that discards
+work, whether an order, a site, a planned foundation, or a production slot,
+ignores a lift after a hold: a finger held past the long-press threshold was
+reading its preview, so it lifts without cancelling anything. A world-born or
+group-slot finger draws a filling ring from the same rest threshold until its
+long-press fires; the slot's ring draws above the HUD and minimap. Disabled
+cards publish `CardAction::Refused`, so a tap or click toasts the reason their
+hotkey gives.
 
 Gameplay touch lives in `input::touch`. Each finger records where it landed
 (`TouchBorn`: world, minimap, other chrome, or the placement ghost), and that
@@ -394,9 +401,9 @@ keeps it until the screen changes; draw code reads `hints::alpha`. Menu footers
 carry the coaching (`Menu::draw_with_coaching`), and screens that mix
 information with key help show only the information until then.
 
-Touch-only builds hide rows they cannot use: Controls and the left-handed preset
-(key rebinding), edge pan (no hovering pointer), Open diagnostics folder (no
-file manager), and Quit (the platform closes apps). A match the platform
+Touch-only builds hide rows they cannot use: Open diagnostics folder (no file
+manager) and Quit (the platform closes apps). Controls, the left-handed preset,
+and edge pan stay for an attached keyboard or trackpad. A match the platform
 terminates in the background returns through recovery.
 
 ## Persistence and replay

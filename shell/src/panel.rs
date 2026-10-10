@@ -16,6 +16,7 @@ use crate::game::Scene;
 use crate::game::projection::{Program, Projection};
 use crate::numeric;
 use crate::numeric::Fit;
+use crate::platform::Hands;
 use crate::typography::entity_name;
 use oxide_sim::stats::{BuildingKind, UnitKind, WeaponStats};
 use oxide_sim::{BuildingId, Order};
@@ -752,14 +753,14 @@ fn own_order_card(
             };
             card.desc.push(format!(
                 "{} to cancel the site and recover its remaining value.",
-                crate::platform::tap_or_click_capitalized(crate::platform::TOUCH_ONLY)
+                crate::platform::tap_or_click_capitalized(crate::platform::hands().touch())
             ));
         }
         (Order::Found { kind, anchor }, _) => {
             card.action = CardAction::CancelFound(*kind, *anchor);
             card.desc.push(format!(
                 "{} to cancel this planned site.",
-                crate::platform::tap_or_click_capitalized(crate::platform::TOUCH_ONLY)
+                crate::platform::tap_or_click_capitalized(crate::platform::hands().touch())
             ));
         }
         _ => {
@@ -871,13 +872,13 @@ pub(crate) fn build_for_input(
             };
         }
     }
-    if crate::platform::TOUCH_ONLY {
+    if !crate::platform::hands().keys {
         strip_hotkeys(&mut panel);
     }
     Some(panel)
 }
 
-/// A touch-only build has no keys to name, so its cards carry none.
+/// A player without a keyboard has no keys to name, so cards carry none.
 fn strip_hotkeys(panel: &mut Panel) {
     for card in panel
         .roster
@@ -889,28 +890,33 @@ fn strip_hotkeys(panel: &mut Panel) {
     }
 }
 
-/// How a roster tile narrows the selection. The lit QUEUE toggle is
-/// touch's Shift, so it drops the kind as Shift- and Ctrl-clicks do.
-fn roster_filter_desc(touch_only: bool) -> Vec<String> {
-    if touch_only {
-        vec![
-            "Tap: keep only this kind.".into(),
-            "With QUEUE lit, tap drops this kind.".into(),
-        ]
-    } else {
-        vec![
-            "Click: keep only this kind.".into(),
-            "Shift- or Ctrl-click: drop this kind.".into(),
-        ]
-    }
+/// How a roster tile narrows the selection. The lit QUEUE toggle stands
+/// in for Shift without a keyboard, so it drops the kind as Shift- and
+/// Ctrl-clicks do.
+fn roster_filter_desc(hands: Hands) -> Vec<String> {
+    let (keep, drop) = match (hands.touch(), hands.keys) {
+        (false, true) => ("Click", "Shift- or Ctrl-click: drop this kind."),
+        (false, false) => ("Click", "With QUEUE lit, click drops this kind."),
+        (true, true) => (
+            "Tap",
+            "Shift-tap, or tap with QUEUE lit, to drop this kind.",
+        ),
+        (true, false) => ("Tap", "With QUEUE lit, tap drops this kind."),
+    };
+    vec![format!("{keep}: keep only this kind."), drop.into()]
 }
 
 /// How the Patrol card collects and starts its route.
-fn patrol_desc(touch_only: bool) -> &'static str {
-    if touch_only {
-        "Arm a looping route, tap waypoints, then tap Patrol again to start it."
-    } else {
-        "Arm a looping route, click waypoints, then press again to start it."
+fn patrol_desc(hands: Hands) -> &'static str {
+    match (hands.touch(), hands.keys) {
+        (false, true) => "Arm a looping route, click waypoints, then press again to start it.",
+        (false, false) => {
+            "Arm a looping route, click waypoints, then click Patrol again to start it."
+        }
+        (true, true) => {
+            "Arm a looping route, tap waypoints, then press again or tap Patrol to start it."
+        }
+        (true, false) => "Arm a looping route, tap waypoints, then tap Patrol again to start it.",
     }
 }
 
@@ -1050,7 +1056,7 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
                     why: None,
                     desc: vec![format!(
                         "{} to cancel; full refund.",
-                        crate::platform::tap_or_click_capitalized(crate::platform::TOUCH_ONLY)
+                        crate::platform::tap_or_click_capitalized(crate::platform::hands().touch())
                     )],
                     progress,
                 });
@@ -1174,7 +1180,7 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
                     action: CardAction::FilterKind(kind),
                     enabled: true,
                     why: None,
-                    desc: roster_filter_desc(crate::platform::TOUCH_ONLY),
+                    desc: roster_filter_desc(crate::platform::hands()),
                     progress: None,
                 });
             }
@@ -1221,7 +1227,7 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
         enabled: true,
         why: None,
         desc: vec![
-            patrol_desc(crate::platform::TOUCH_ONLY).into(),
+            patrol_desc(crate::platform::hands()).into(),
             "Machines engage whatever they meet along the way.".into(),
         ],
         progress: None,
@@ -1277,7 +1283,7 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
             why: (!loaded).then(|| "the sling is empty".to_string()),
             desc: vec![
                 "Sets every carried machine down on open ground around the airframe.".into(),
-                transport_load_desc(crate::platform::TOUCH_ONLY).into(),
+                transport_load_desc(crate::platform::hands().touch()).into(),
             ],
             progress: None,
         });

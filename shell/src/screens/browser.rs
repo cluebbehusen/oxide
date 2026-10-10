@@ -201,11 +201,14 @@ fn on_shelf(card: Rect, grid: GridMetrics) -> bool {
 }
 
 /// The map grid's coaching line.
-fn browser_hint(touch_only: bool) -> &'static str {
-    if touch_only {
-        "tap a map to select it - tap it again to play"
-    } else {
-        "{up}/{down} or click select - {confirm} or click again plays - {back} back"
+fn browser_hint(hands: crate::platform::Hands) -> &'static str {
+    match (hands.touch(), hands.keys) {
+        (false, true) => {
+            "{up}/{down} or click select - {confirm} or click again plays - {back} back"
+        }
+        (false, false) => "click a map to select it - click it again to play",
+        (true, true) => "{up}/{down} or tap select - {confirm} or tap again plays - {back} back",
+        (true, false) => "tap a map to select it - tap it again to play",
     }
 }
 
@@ -629,7 +632,7 @@ impl Browser {
                 TEXT_PRIMARY,
             );
         }
-        let hint = crate::menu::binding_hint(browser_hint(crate::platform::TOUCH_ONLY));
+        let hint = crate::menu::binding_hint(browser_hint(crate::platform::hands()));
         let dims = measure_text(
             &hint,
             None,

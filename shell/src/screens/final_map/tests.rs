@@ -264,3 +264,18 @@ fn final_map_keeps_the_secondary_camera_hold_after_releasing_a_rebound_primary()
     assert_eq!(game.presentation.camera.center.x, after);
     assert!(game.pending.is_empty());
 }
+
+#[test]
+fn the_camera_line_names_only_what_the_hands_in_use_have() {
+    let bindings = BindingMap::classic();
+    let back = bindings.label(Action::Back);
+    for hands in crate::platform::ALL_HANDS {
+        let line = FinalMapScreen::coaching(&bindings, hands);
+        crate::platform::assert_copy_fits(hands, &line.replace(&back, ""));
+        assert_eq!(
+            line.ends_with(&format!("{back} report")),
+            hands.keys,
+            "{line}"
+        );
+    }
+}

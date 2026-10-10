@@ -211,14 +211,11 @@ impl Row {
         Row::ExportDiagnostics,
     ];
 
-    /// Rows a touch-only build cannot use: key rebinding needs a
-    /// keyboard, edge pan needs a hovering pointer, and there is no file
-    /// manager to open a folder in.
+    /// Rows a touch-only build cannot use: it has no file manager to
+    /// open a folder in. A keyboard or trackpad can join a touch device
+    /// at any time, so their rows stay.
     fn needs_desktop(self) -> bool {
-        matches!(
-            self,
-            Row::EdgePan | Row::LeftHandedPreset | Row::Controls | Row::OpenDiagnostics
-        )
+        matches!(self, Row::OpenDiagnostics)
     }
 
     fn label(self, config: &Config) -> String {
@@ -252,11 +249,12 @@ impl Row {
 }
 
 /// The settings face's coaching line.
-fn settings_hint(touch_only: bool) -> &'static str {
-    if touch_only {
-        "tap a row to change it - changes stick immediately"
-    } else {
-        "{confirm} cycles a value - changes stick immediately"
+fn settings_hint(hands: crate::platform::Hands) -> &'static str {
+    match (hands.touch(), hands.keys) {
+        (false, true) => "{confirm} cycles a value",
+        (false, false) => "click a row to change it",
+        (true, true) => "tap a row or press {confirm} to change it",
+        (true, false) => "tap a row to change it",
     }
 }
 
@@ -409,7 +407,7 @@ impl SettingsScreen {
     /// The face's coaching line, in the footer.
     fn coaching(&self) -> Option<&'static str> {
         match self.face {
-            Face::Settings => Some(settings_hint(crate::platform::TOUCH_ONLY)),
+            Face::Settings => Some(settings_hint(crate::platform::hands())),
             Face::Controls { rebinding: Some(_) } => None,
             Face::Controls { rebinding: None } => Some(if self.binding_slot == 0 {
                 "PRIMARY selected | Left/Right chooses column | Enter remaps | X clears | Esc back"

@@ -458,11 +458,11 @@ fn category_label(
     open: bool,
     key: &str,
     palette_key: Option<&str>,
-    touch_only: bool,
+    keyless: bool,
 ) -> String {
     if open {
         format!("{label} *")
-    } else if touch_only {
+    } else if keyless {
         label.to_string()
     } else if let Some(palette_key) = palette_key {
         format!("{label} [{palette_key} > {key}]")
@@ -521,7 +521,7 @@ fn draw_catalog(
                     .build_category
                     .is_some()
                     .then_some(palette_key.as_str()),
-                crate::platform::TOUCH_ONLY,
+                !crate::platform::hands().keys,
             );
             crate::typography::draw(
                 &label,
@@ -532,7 +532,7 @@ fn draw_catalog(
             );
         }
     }
-    let hovered = slots.iter().position(|rect| rect.contains(input.mouse));
+    let hovered = slots.iter().position(|rect| hovers(input, *rect));
     for (i, (card, &rect)) in panel.cards.iter().zip(slots).enumerate() {
         let armed =
             matches!(card.action, CardAction::ArmBuild(kind) if input.placing == Some(kind));
@@ -1107,7 +1107,7 @@ pub(crate) fn draw_panel(
             TEXT_SECONDARY,
         );
         for (card, &rect) in panel.roster.iter().zip(roster) {
-            let hovered = rect.contains(input.mouse);
+            let hovered = hovers(input, rect);
             fill_rect(
                 rect,
                 if hovered {
@@ -1174,7 +1174,7 @@ pub(crate) fn draw_panel(
 
     // Command cards, wrapping into as many rows as the width demands.
     for (card, &rect) in panel.cards.iter().zip(card_rects) {
-        let hovered = rect.contains(input.mouse);
+        let hovered = hovers(input, rect);
         let selected = matches!(card.action, CardAction::ArmBuild(kind) if input.placing == Some(kind))
             || (card.action == CardAction::ArmRally && !input.rallying.is_empty());
         let bg = if selected {
@@ -1376,7 +1376,7 @@ fn draw_dock(
         stroke_rect(
             rect,
             crate::theme::Stroke::Edge.at(s),
-            if rect.contains(input.mouse) {
+            if hovers(input, rect) {
                 crate::theme::EDGE_FOCUS
             } else {
                 crate::theme::EDGE_CHIP
@@ -1405,7 +1405,7 @@ fn draw_dock(
     }
     let orders_dock = panel.queue_label == "Orders";
     for (i, (card, &rect)) in panel.queue.iter().zip(chips).enumerate() {
-        let hovered = rect.contains(input.mouse);
+        let hovered = hovers(input, rect);
         fill_rect(rect, crate::theme::CHIP);
         // The active order or production head wears the bright border;
         // a ready-but-blocked head remains the queue's current job.
@@ -1532,6 +1532,11 @@ fn draw_dock(
     }
 }
 
+/// Whether the mouse hovers `rect`, only while it is the pointer in use.
+fn hovers(input: &InputState, rect: Rect) -> bool {
+    super::chrome::hover_point(input).is_some_and(|p| rect.contains(p))
+}
+
 /// The hover tooltip for panel cards, drawn over everything: name,
 /// hotkey, cost, description, weapon lines, and why a disabled card
 /// refuses. Rebuilt from the same panel model the frame drew.
@@ -1546,11 +1551,11 @@ pub(crate) fn draw_panel_tooltip(game: &crate::game::Scene<'_>, input: &InputSta
         return;
     }
     let s = ui_scale();
-    // A resting finger previews the card it covers; a touch-only build
-    // has no hover, so its stale mouse point never does.
+    // A resting finger previews the card it covers; the mouse previews
+    // what it hovers only while it is the pointer in use.
     let pointer = match input.touch_preview() {
         Some(p) => Some((p, Some(s))),
-        None => (!crate::platform::TOUCH_ONLY).then_some((input.mouse, None)),
+        None => super::chrome::hover_point(input).map(|p| (p, None)),
     };
     let Some(hit) =
         pointer.and_then(|(p, touch_ui)| crate::layout::card_under(&layout, p, touch_ui))

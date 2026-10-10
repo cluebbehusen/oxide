@@ -3534,13 +3534,20 @@ fn patrol_is_exclusive_with_the_other_armed_verbs() {
 }
 
 #[test]
-fn patrol_copy_speaks_touch_on_touch_only_builds() {
+fn patrol_toasts_name_only_what_the_hands_in_use_have() {
+    use crate::platform::{ALL_HANDS, assert_copy_fits};
     assert_eq!(
-        patrol_arm_toast("R", false),
+        patrol_arm_toast("R", ALL_HANDS[0]),
         "Patrol: click waypoints, R to start"
     );
-    crate::platform::assert_touch_copy(&patrol_arm_toast("R", true));
-    crate::platform::assert_touch_copy(&patrol_full_toast("R", true));
+    for hands in ALL_HANDS {
+        let arm = patrol_arm_toast("R", hands);
+        let full = patrol_full_toast("R", hands);
+        assert_copy_fits(hands, &arm);
+        assert_copy_fits(hands, &full);
+        assert_eq!(arm.contains('R'), hands.keys, "{arm}");
+        assert_eq!(full.contains(" R "), hands.keys, "{full}");
+    }
 }
 
 fn own_fighter(game: &Game) -> (oxide_sim::UnitId, Vec2) {
@@ -4077,6 +4084,47 @@ fn publish_minimap(game: &Game) -> macroquad::math::Rect {
     layout.minimap = minimap;
     game.presentation.layout.set(layout);
     minimap
+}
+
+#[test]
+fn every_screen_tracks_the_pointer_and_keys_in_use() {
+    let mut input = InputState::new();
+    input.keys_seen = false;
+    track_hands(&mut input, &touch_down(1, vec2(1.0, 1.0)), false);
+    assert_eq!(input.last_pointer, Pointer::Touch);
+    track_hands(&mut input, &RawEvent::Wheel { delta: 1.0 }, false);
+    assert_eq!(
+        input.last_pointer,
+        Pointer::Touch,
+        "a wheel has no point for hover or edge pan to read"
+    );
+    for event in [mouse_move(vec2(2.0, 2.0)), left_down(vec2(3.0, 3.0))] {
+        input.last_pointer = Pointer::Touch;
+        track_hands(&mut input, &event, false);
+        assert_eq!(input.last_pointer, Pointer::Mouse, "{event:?}");
+    }
+    track_hands(&mut input, &key_down(Key::Enter), true);
+    assert!(!input.keys_seen, "keys typed into a text field don't count");
+    track_hands(&mut input, &key_down(Key::H), false);
+    assert!(input.keys_seen);
+}
+
+#[test]
+fn only_the_mouse_edge_pans() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    input.camera_prefs.edge_pan = true;
+    input.mouse = vec2(game.presentation.camera.viewport().x, 400.0);
+    input.last_pointer = Pointer::Touch;
+    let before = game.presentation.camera.center;
+    update_held(&mut game, &input, 0.5);
+    assert_eq!(
+        game.presentation.camera.center, before,
+        "a finger leaves the mouse point stale"
+    );
+    input.last_pointer = Pointer::Mouse;
+    update_held(&mut game, &input, 0.5);
+    assert_ne!(game.presentation.camera.center, before);
 }
 
 #[test]
@@ -6110,7 +6158,11 @@ fn the_tutorial_survives_its_own_touch_instructions() {
 
     // "Tap your Foundry, then the Harvester card."
     assert!(t.advance(game.demo));
-    assert!(STEPS[0].body(true)[0].contains("Harvester card"));
+    let touch = crate::platform::Hands {
+        pointer: Pointer::Touch,
+        keys: false,
+    };
+    assert!(STEPS[0].body(touch)[0].contains("Harvester card"));
     let world = home(&game);
     tap_world(&mut game, &mut input, world);
     tap_panel_card(&mut game, &mut input, |card| card.title == "Harvester");

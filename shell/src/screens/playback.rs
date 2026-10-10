@@ -214,9 +214,9 @@ pub fn playback_hud(pb: &PlaybackSession, bindings: &BindingMap, viewport: Vec2,
         bindings.label(Action::Back),
     );
     // A 640px window cannot seat the controls hint; the transport
-    // numbers alone must never run off both edges. A touch-only build
-    // has no keys to hint at.
-    let line = if crate::platform::TOUCH_ONLY
+    // numbers alone must never run off both edges. A player without a
+    // keyboard has no keys to hint at.
+    let line = if !crate::platform::hands().keys
         || !crate::hints::showing()
         || measure_text(&full, None, numeric::font_size(size), 1.0).width
             > screen_width() - 16.0 * s
