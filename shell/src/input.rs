@@ -212,8 +212,6 @@ pub struct InputState {
     pub(crate) queue_toggle: bool,
     /// The live two-finger gesture, if two fingers are down.
     pub(crate) pair: Option<Pair>,
-    /// Pair fingers the platform reported lifted, newest last.
-    pub(crate) lifted_pair: Vec<touch::LiftedFinger>,
     /// The menu button was pressed this frame. Input cannot switch
     /// screens itself, so the frame loop takes this one-shot request.
     pub(crate) menu_requested: bool,
@@ -443,7 +441,6 @@ impl InputState {
             last_tap: None,
             queue_toggle: false,
             pair: None,
-            lifted_pair: Vec::new(),
             menu_requested: false,
             bookmarks: [None; 4],
             resolver: ActionResolver::default(),
@@ -576,7 +573,6 @@ impl InputState {
         self.last_tap = None;
         self.queue_toggle = false;
         self.pair = None;
-        self.lifted_pair.clear();
         self.menu_requested = false;
     }
 

@@ -117,9 +117,6 @@ impl<Z: Copy + PartialEq> Press<Z> {
                 x,
                 y,
             } if self.mouse.is_some() => claimed(self.mouse_up(zone_at(vec2(x, y), false))),
-            // Some platforms re-report every live finger when another
-            // lands; the owning finger's repeat start changes nothing.
-            RawEvent::TouchDown { id, .. } if self.owns(id) => Fed::Held,
             RawEvent::TouchDown { id, x, y } if self.touch_free() => {
                 let zone = zone_at(vec2(x, y), true);
                 self.touch_down(id, zone);

@@ -63,7 +63,7 @@ fn feed_leaves_unarmed_events_to_the_caller() {
 }
 
 #[test]
-fn feed_ignores_a_re_reported_start_for_the_owning_finger() {
+fn a_second_finger_cannot_steal_the_press() {
     let mut press = Press::default();
     let start = RawEvent::TouchDown {
         id: 3,
@@ -71,13 +71,6 @@ fn feed_ignores_a_re_reported_start_for_the_owning_finger() {
         y: 0.0,
     };
     assert_eq!(press.feed(&start, zone), Fed::Held);
-    let repeat = RawEvent::TouchDown {
-        id: 3,
-        x: 11.0,
-        y: 0.0,
-    };
-    assert_eq!(press.feed(&repeat, zone), Fed::Held);
-    assert_eq!(press.armed_touch(), Some((3, 1)));
     let other = RawEvent::TouchDown {
         id: 4,
         x: 10.0,

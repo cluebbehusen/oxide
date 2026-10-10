@@ -474,10 +474,6 @@ impl PlaybackSession {
                 button: MouseButton::Left,
                 ..
             } => self.scrubbing = false,
-            RawEvent::TouchDown { id, .. } if self.scrub_finger == Some(id) => {
-                // A platform's repeat report of the scrubbing finger.
-                return;
-            }
             RawEvent::TouchDown { id, x, y }
                 if self.scrub_finger.is_none()
                     && crate::layout::touch_pad(bar, ui).contains(vec2(x, y)) =>
