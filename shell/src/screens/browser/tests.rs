@@ -2,9 +2,12 @@ use super::*;
 use oxide_protocol::MouseButton;
 
 #[test]
-fn the_map_hint_speaks_touch_on_touch_only_builds() {
-    assert!(browser_hint(false).contains("{confirm}"));
-    crate::platform::assert_touch_copy(browser_hint(true));
+fn the_map_hint_names_only_what_the_hands_in_use_have() {
+    for hands in crate::platform::ALL_HANDS {
+        let hint = browser_hint(hands);
+        crate::platform::assert_copy_fits(hands, hint);
+        assert_eq!(hint.contains("{confirm}"), hands.keys, "{hint}");
+    }
 }
 
 fn entry(label: &str, seats: usize) -> ScenarioEntry {

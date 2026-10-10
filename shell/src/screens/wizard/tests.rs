@@ -8,16 +8,20 @@ fn card(layout: &SetupLayout, row: usize) -> CardRects {
 }
 
 #[test]
-fn the_setup_hint_speaks_touch_on_touch_only_builds() {
+fn the_setup_hint_names_only_what_the_hands_in_use_have() {
+    use crate::platform::ALL_HANDS;
     assert_eq!(
-        setup_hint(false, true, Cell::Seat, false),
+        setup_hint(false, true, Cell::Seat, ALL_HANDS[0]),
         "{confirm} starts the match - {back} back"
     );
-    for one_team in [false, true] {
-        for on_start in [false, true] {
-            for cell in Cell::ALL {
-                crate::platform::assert_touch_copy(setup_hint(one_team, on_start, cell, true));
-                assert!(setup_hint(one_team, on_start, cell, false).contains("{back}"));
+    for hands in ALL_HANDS {
+        for one_team in [false, true] {
+            for on_start in [false, true] {
+                for cell in Cell::ALL {
+                    let hint = setup_hint(one_team, on_start, cell, hands);
+                    crate::platform::assert_copy_fits(hands, hint);
+                    assert_eq!(hint.contains("{back}"), hands.keys, "{hint}");
+                }
             }
         }
     }

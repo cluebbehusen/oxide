@@ -11,8 +11,8 @@ use crate::theme::TEXT_ACCENT;
 
 /// The paused status names the pause key where one exists. A
 /// touch-only build has no key to name, and an unbound key reads bare.
-fn paused_status(key: &str, touch_only: bool) -> String {
-    if touch_only || key.is_empty() {
+fn paused_status(key: &str, keyless: bool) -> String {
+    if keyless || key.is_empty() {
         "PAUSED".to_string()
     } else {
         format!("PAUSED [{key}]")
@@ -20,8 +20,8 @@ fn paused_status(key: &str, touch_only: bool) -> String {
 }
 
 /// The under-attack badge names the jump key where one exists.
-fn alert_badge_text(key: &str, touch_only: bool) -> String {
-    if touch_only || key.is_empty() {
+fn alert_badge_text(key: &str, keyless: bool) -> String {
+    if keyless || key.is_empty() {
         "under attack".to_string()
     } else {
         format!("under attack [{key}]")
@@ -29,8 +29,8 @@ fn alert_badge_text(key: &str, touch_only: bool) -> String {
 }
 
 /// The idle badge names its key where one exists.
-fn idle_badge_text(idle: usize, key: &str, touch_only: bool) -> String {
-    if touch_only {
+fn idle_badge_text(idle: usize, key: &str, keyless: bool) -> String {
+    if keyless {
         format!("{idle} idle")
     } else {
         format!("{idle} idle [{key}]")
@@ -38,11 +38,12 @@ fn idle_badge_text(idle: usize, key: &str, touch_only: bool) -> String {
 }
 
 /// The concede banner's way to the menu.
-fn concede_hint(touch_only: bool) -> &'static str {
-    if touch_only {
-        "your team fights on | tap the menu button for options"
-    } else {
-        "your team fights on | {back} for options"
+fn concede_hint(hands: crate::platform::Hands) -> &'static str {
+    match (hands.touch(), hands.keys) {
+        (false, true) => "your team fights on | {back} for options",
+        (false, false) => "your team fights on | click the menu button for options",
+        (true, true) => "your team fights on | {back} or tap the menu button for options",
+        (true, false) => "your team fights on | tap the menu button for options",
     }
 }
 
@@ -182,7 +183,7 @@ fn draw_menu_button(rect: Rect, s: f32) {
 
 /// Where the cursor hovers: only while the mouse is the pointer in use,
 /// never at a stale point on a touch device.
-fn hover_point(input: &InputState) -> Option<Vec2> {
+pub(super) fn hover_point(input: &InputState) -> Option<Vec2> {
     (input.touches.is_empty() && input.last_pointer == crate::input::Pointer::Mouse)
         .then_some(input.mouse)
 }
@@ -593,20 +594,15 @@ pub(super) fn top_bar_layout(
     let scrap = scrap.to_string();
     let passive = format!("+{passive}/min passive");
     let units = my_units.to_string();
+    let keyless = !crate::platform::hands().keys;
     let idle = crate::input::idle_harvesters(game).len();
-    let idle = (idle > 0).then(|| {
-        idle_badge_text(
-            idle,
-            &label(Action::CycleIdleWorker),
-            crate::platform::TOUCH_ONLY,
-        )
-    });
+    let idle = (idle > 0).then(|| idle_badge_text(idle, &label(Action::CycleIdleWorker), keyless));
     // Alerts age out in a few seconds and hold while paused, so the
     // badge shows exactly while the minimap still pulses one.
     let alert = (!game.presentation.alerts.is_empty())
-        .then(|| alert_badge_text(&label(Action::JumpToLastAlert), crate::platform::TOUCH_ONLY));
+        .then(|| alert_badge_text(&label(Action::JumpToLastAlert), keyless));
     let status = if game.clock.paused {
-        paused_status(&label(Action::TogglePause), crate::platform::TOUCH_ONLY)
+        paused_status(&label(Action::TogglePause), keyless)
     } else if (game.clock.speed - 1.0).abs() > f64::EPSILON {
         format!("x{:.2}", game.clock.speed)
     } else {
@@ -846,7 +842,7 @@ pub(crate) fn draw_result_overlay(game: &crate::game::Scene<'_>) {
         PANEL,
     );
     draw_text(text, x, y, size, DANGER);
-    let sub = crate::menu::binding_hint(concede_hint(crate::platform::TOUCH_ONLY));
+    let sub = crate::menu::binding_hint(concede_hint(crate::platform::hands()));
     let sub_dims = measure_text(
         &sub,
         None,

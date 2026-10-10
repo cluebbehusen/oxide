@@ -1219,7 +1219,7 @@ pub fn tutorial_card_rect(t: &crate::tutorial::Tutorial) -> Rect {
     let x = (viewport().x - w) * 0.5;
     let lines = (crate::tutorial::STEPS
         .get(t.step)
-        .map_or(0, |step| step.body(crate::platform::TOUCH_ONLY).len())
+        .map_or(0, |step| step.body(crate::platform::hands()).len())
         + usize::from(t.coach_active())) as f32;
     Rect::new(x, 36.0 * s, w, 34.0 * s + lines * 18.0 * s + 10.0 * s)
 }
@@ -1242,7 +1242,7 @@ pub fn draw_tutorial(
     let Some(step) = crate::tutorial::STEPS.get(t.step) else {
         return;
     };
-    let body = step.body(crate::platform::TOUCH_ONLY);
+    let body = step.body(crate::platform::hands());
     let s = ui_scale();
     let rect = tutorial_card_rect(t);
     let (x, y, w, h) = (rect.x, rect.y, rect.w, rect.h);

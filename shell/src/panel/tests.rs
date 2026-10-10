@@ -31,13 +31,23 @@ fn every_dock_chip_that_cancels_work_discards_it_and_nothing_else_does() {
 }
 
 #[test]
-fn touch_copy_drops_keys_and_mouse_buttons_from_cards() {
-    for line in roster_filter_desc(true) {
-        crate::platform::assert_touch_copy(&line);
+fn card_copy_names_only_what_the_hands_in_use_have() {
+    use crate::platform::{ALL_HANDS, assert_copy_fits};
+    for hands in ALL_HANDS {
+        let roster = roster_filter_desc(hands);
+        assert_eq!(roster.len(), 2);
+        for line in &roster {
+            assert_copy_fits(hands, line);
+        }
+        assert_copy_fits(hands, patrol_desc(hands));
+        assert_copy_fits(hands, transport_load_desc(hands.touch()));
     }
-    crate::platform::assert_touch_copy(transport_load_desc(true));
-    crate::platform::assert_touch_copy(patrol_desc(true));
-    assert_eq!(roster_filter_desc(false).len(), 2);
+    let patrols: std::collections::BTreeSet<_> = ALL_HANDS.map(patrol_desc).into();
+    assert_eq!(
+        patrols.len(),
+        ALL_HANDS.len(),
+        "each pairing has its own patrol copy"
+    );
 }
 
 #[test]

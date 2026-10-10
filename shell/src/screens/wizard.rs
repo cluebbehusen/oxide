@@ -193,16 +193,31 @@ impl NewMatchDraft {
 const COMPACT_PAGE_ITEMS: usize = 5;
 
 /// The setup screen's coaching line. The keyboard hint follows the
-/// cursor; taps move the cursor anyway, so the touch hint is one line.
-fn setup_hint(one_team: bool, on_start: bool, cell: Cell, touch_only: bool) -> &'static str {
-    match (touch_only, one_team) {
-        (true, true) => "every seat is on one team, nobody to fight - tap a TEAM chip to regroup",
-        (true, false) => "tap a seat to take it - tap a chip to change it",
-        (false, true) => {
+/// cursor; a pointer moves the cursor anyway, so its hint is one line.
+fn setup_hint(
+    one_team: bool,
+    on_start: bool,
+    cell: Cell,
+    hands: crate::platform::Hands,
+) -> &'static str {
+    match (hands.touch(), hands.keys, one_team) {
+        (true, false, true) => {
+            "every seat is on one team, nobody to fight - tap a TEAM chip to regroup"
+        }
+        (true, false, false) => "tap a seat to take it - tap a chip to change it",
+        (true, true, true) => {
+            "every seat is on one team, nobody to fight - tap a TEAM chip to regroup - {back} back"
+        }
+        (true, true, false) => "tap a seat to take it - tap a chip to change it - {back} back",
+        (false, false, true) => {
+            "every seat is on one team, nobody to fight - click a TEAM chip to regroup"
+        }
+        (false, false, false) => "click a seat to take it - click a chip to change it",
+        (false, true, true) => {
             "every seat is on one team, nobody to fight - regroup a TEAM chip - {back} back"
         }
-        (false, false) if on_start => "{confirm} starts the match - {back} back",
-        (false, false) => match cell {
+        (false, true, false) if on_start => "{confirm} starts the match - {back} back",
+        (false, true, false) => match cell {
             Cell::Difficulty => "{confirm} cycles difficulty - {left}/{right} move - {back} back",
             Cell::Stance => "{confirm} cycles stance - {left}/{right} move - {back} back",
             Cell::Team => "{confirm} cycles the chip - {left}/{right} move - {back} back",
@@ -1327,7 +1342,7 @@ impl Wizard {
                 one_team,
                 self.setup_sel == order.len(),
                 self.setup_cell,
-                crate::platform::TOUCH_ONLY,
+                crate::platform::hands(),
             );
             let hint = crate::menu::binding_hint(hint);
             let hdims = measure_text(&hint, None, numeric::font_size(Type::Body.at(ui)), 1.0);

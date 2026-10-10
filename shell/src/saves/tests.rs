@@ -2,16 +2,21 @@ use super::*;
 use crate::game::GameReplay;
 
 #[test]
-fn shelf_hints_offer_only_the_gestures_the_build_has() {
+fn shelf_hints_offer_only_the_gestures_the_hands_in_use_have() {
+    use crate::platform::{ALL_HANDS, assert_copy_fits};
     assert_eq!(
-        entry_hint(Some(("watches", "watch")), false),
+        entry_hint(Some(("watches", "watch")), ALL_HANDS[0]),
         "{confirm} watches | {delete} twice deletes"
     );
-    assert_eq!(entry_hint(None, false), "{delete} twice deletes");
-    for action in [("watches", "watch"), ("loads paused", "load paused")] {
-        crate::platform::assert_touch_copy(&entry_hint(Some(action), true));
+    for hands in ALL_HANDS {
+        for action in [("watches", "watch"), ("loads paused", "load paused")] {
+            let hint = entry_hint(Some(action), hands);
+            assert_copy_fits(hands, &hint);
+            assert_eq!(hint.contains("{delete}"), hands.keys, "{hint}");
+        }
+        let hint = entry_hint(None, hands);
+        assert_eq!(hint.is_empty(), !hands.keys, "{hint}");
     }
-    assert_eq!(entry_hint(None, true), "");
 }
 
 #[test]

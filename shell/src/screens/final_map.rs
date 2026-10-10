@@ -82,22 +82,36 @@ impl FinalMapScreen {
         false
     }
 
+    /// The camera line, for the hands the player is using.
+    fn coaching(bindings: &BindingMap, hands: crate::platform::Hands) -> String {
+        match (hands.touch(), hands.keys) {
+            (false, true) => format!(
+                "FINAL BATTLEFIELD | {} pan up / minimap / middle drag | wheel zoom | {} report",
+                bindings.labels(Action::PanUp),
+                bindings.label(Action::Back)
+            ),
+            (false, false) => {
+                "FINAL BATTLEFIELD | click the minimap to pan | scroll to zoom".to_string()
+            }
+            (true, true) => format!(
+                "FINAL BATTLEFIELD | drag or {} to pan | pinch to zoom | {} report",
+                bindings.labels(Action::PanUp),
+                bindings.label(Action::Back)
+            ),
+            (true, false) => "FINAL BATTLEFIELD | drag to pan | pinch to zoom".to_string(),
+        }
+    }
+
     /// Draws the Back button and the compact camera-help strip over the
     /// battlefield.
     pub fn draw_hud(bindings: &BindingMap, mouse: Vec2) {
         let scale = render::ui_scale();
         crate::button::draw_back(mouse);
         let size = crate::theme::Type::Body.at(scale);
-        let line = if !crate::hints::showing() {
-            "FINAL BATTLEFIELD".to_string()
-        } else if crate::platform::TOUCH_ONLY {
-            "FINAL BATTLEFIELD | drag to pan | pinch to zoom".to_string()
+        let line = if crate::hints::showing() {
+            Self::coaching(bindings, crate::platform::hands())
         } else {
-            format!(
-                "FINAL BATTLEFIELD | {} pan up / minimap / middle drag | wheel zoom | {} report",
-                bindings.labels(Action::PanUp),
-                bindings.label(Action::Back)
-            )
+            "FINAL BATTLEFIELD".to_string()
         };
         let width = measure_text(&line, None, numeric::font_size(size), 1.0).width;
         let x = (screen_width() - width) * 0.5;

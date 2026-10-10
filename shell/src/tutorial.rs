@@ -33,95 +33,152 @@ pub struct Demo {
 pub struct Step {
     /// Card headline.
     pub title: &'static str,
-    /// Body lines for mouse and keyboard.
-    desktop: &'static [&'static str],
-    /// Body lines for a touch-only build, which has no keys, right
-    /// button, or Shift.
+    /// Body lines for a mouse and keyboard.
+    mouse_keys: &'static [&'static str],
+    /// Body lines for a mouse or trackpad with no keyboard in use, where
+    /// the QUEUE toggle stands in for Shift.
+    mouse: &'static [&'static str],
+    /// Body lines for a finger with a keyboard in use.
+    touch_keys: &'static [&'static str],
+    /// Body lines for a finger alone, which has no keys, right button,
+    /// or Shift.
     touch: &'static [&'static str],
 }
 
 impl Step {
-    /// The body lines this build's player can follow.
-    pub fn body(&self, touch_only: bool) -> &'static [&'static str] {
-        if touch_only { self.touch } else { self.desktop }
+    /// The body lines the player can follow with the hands in use.
+    pub fn body(&self, hands: crate::platform::Hands) -> &'static [&'static str] {
+        match (hands.touch(), hands.keys) {
+            (false, true) => self.mouse_keys,
+            (false, false) => self.mouse,
+            (true, true) => self.touch_keys,
+            (true, false) => self.touch,
+        }
     }
 }
+
+const ECONOMY: &str = "Harvesters are your economy: they haul scrap, build, and weld.";
+const FIRST_LOAD: &str = "Wait for its first load to reach your Foundry.";
+const KEEP_MINING: &str = "Select a second Harvester and leave the first one mining.";
+const FIGHTERS: [&str; 3] = [
+    "Train a Sentinel at the Foundry.",
+    "Build a Fabricator to unlock advanced units and aircraft.",
+    "Select any visible unit to see its damage, range, and valid targets.",
+];
+const KEEP_MOVING: &str = "Units keep moving and fire at enemies already in range.";
+const WIN: &str = "Destroy all enemy Foundries to win.";
 
 /// The six demonstrations, in teaching order.
 pub const STEPS: [Step; 6] = [
     Step {
         title: "Train a Harvester",
-        desktop: &[
+        mouse_keys: &[
             "Click your Foundry, then the Harvester card (or press {train}).",
-            "Harvesters are your economy: they haul scrap, build, and weld.",
+            ECONOMY,
         ],
-        touch: &[
-            "Tap your Foundry, then the Harvester card.",
-            "Harvesters are your economy: they haul scrap, build, and weld.",
+        mouse: &["Click your Foundry, then the Harvester card.", ECONOMY],
+        touch_keys: &[
+            "Tap your Foundry, then the Harvester card (or press {train}).",
+            ECONOMY,
         ],
+        touch: &["Tap your Foundry, then the Harvester card.", ECONOMY],
     },
     Step {
         title: "Gather scrap",
-        desktop: &[
+        mouse_keys: &[
             "Select a Harvester and right-click a scrap pile.",
-            "Wait for its first load to reach your Foundry.",
+            FIRST_LOAD,
             "The red IDLE count shows available Harvesters; press {idle} to select one.",
+        ],
+        mouse: &[
+            "Select a Harvester and right-click a scrap pile.",
+            FIRST_LOAD,
+            "The red IDLE count shows available Harvesters; click it to select one.",
+        ],
+        touch_keys: &[
+            "Select a Harvester and long-press a scrap pile.",
+            FIRST_LOAD,
+            "The red IDLE count shows available Harvesters; tap it or press {idle}.",
         ],
         touch: &[
             "Select a Harvester and long-press a scrap pile.",
-            "Wait for its first load to reach your Foundry.",
+            FIRST_LOAD,
             "The red IDLE count shows available Harvesters; tap it to select one.",
         ],
     },
     Step {
         title: "Build a structure",
-        desktop: &[
-            "Select a second Harvester and leave the first one mining.",
+        mouse_keys: &[
+            KEEP_MINING,
             "Open construction ({build}), choose a category and building,",
             "then click open ground. Red tint means you can't build there.",
             "Hold Shift to chain: keep placing, and each build queues up.",
         ],
+        mouse: &[
+            KEEP_MINING,
+            "Click Build, choose a category and building,",
+            "then click open ground. Red tint means you can't build there.",
+            "Light QUEUE to chain: keep placing, and each build queues up.",
+        ],
+        touch_keys: &[
+            KEEP_MINING,
+            "Tap Build (or press {build}), then a building, then open ground.",
+            "That drops a ghost; tap it to build. Red tint means you can't build there.",
+            "Hold Shift to chain: keep placing, and each build queues up.",
+        ],
         touch: &[
-            "Select a second Harvester and leave the first one mining.",
+            KEEP_MINING,
             "Tap Build, then a building, then open ground to place a ghost.",
             "Tap the ghost to build it. Red tint means you can't build there.",
         ],
     },
     Step {
         title: "Train a combat unit",
-        desktop: &[
-            "Train a Sentinel at the Foundry.",
-            "Build a Fabricator to unlock advanced units and aircraft.",
-            "Select any visible unit to see its damage, range, and valid targets.",
-        ],
-        touch: &[
-            "Train a Sentinel at the Foundry.",
-            "Build a Fabricator to unlock advanced units and aircraft.",
-            "Select any visible unit to see its damage, range, and valid targets.",
-        ],
+        mouse_keys: &FIGHTERS,
+        mouse: &FIGHTERS,
+        touch_keys: &FIGHTERS,
+        touch: &FIGHTERS,
     },
     Step {
         title: "Advance under fire",
-        desktop: &[
+        mouse_keys: &[
             "Right-click ground with a combat unit selected.",
-            "Units keep moving and fire at enemies already in range.",
+            KEEP_MOVING,
             "Press {hunt} for Hunt when you want them to stop and chase.",
+        ],
+        mouse: &[
+            "Right-click ground with a combat unit selected.",
+            KEEP_MOVING,
+            "Click Hunt first when you want them to stop and chase.",
+        ],
+        touch_keys: &[
+            "Long-press ground with a combat unit selected.",
+            KEEP_MOVING,
+            "Tap Hunt (or press {hunt}) first when you want them to stop and chase.",
         ],
         touch: &[
             "Long-press ground with a combat unit selected.",
-            "Units keep moving and fire at enemies already in range.",
+            KEEP_MOVING,
             "Tap Hunt first when you want them to stop and chase.",
         ],
     },
     Step {
         title: "Win the match",
-        desktop: &[
+        mouse_keys: &[
             "Press {back} to cancel, deselect, then open the pause menu.",
-            "Destroy all enemy Foundries to win.",
+            WIN,
+        ],
+        mouse: &[
+            "Click the menu button at the top right to open the pause menu.",
+            WIN,
+        ],
+        touch_keys: &[
+            "Tap the top-right menu button (or press {back}) for the pause menu.",
+            WIN,
         ],
         touch: &[
             "Tap the menu button at the top right to open the pause menu.",
-            "Destroy all enemy Foundries to win.",
+            WIN,
         ],
     },
 ];
@@ -230,7 +287,7 @@ impl Tutorial {
             .count();
         if bank < cost && hauling == 0 {
             return Some(CoachLine::Recovery(
-                recovery_line(crate::platform::TOUCH_ONLY).to_string(),
+                recovery_line(crate::platform::hands().touch()).to_string(),
             ));
         }
         Some(CoachLine::Status(format!(
