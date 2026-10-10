@@ -198,7 +198,7 @@ pub(super) fn dispatch_action(
                     input.patrol_route = Some(Vec::new());
                     game.presentation.toast(super::patrol_arm_toast(
                         &bindings.label(Action::Patrol),
-                        crate::platform::TOUCH_ONLY,
+                        crate::platform::hands(),
                     ));
                 }
                 Some(waypoints) if !waypoints.is_empty() => {

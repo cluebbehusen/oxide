@@ -38,7 +38,8 @@ crate-level rustdoc.
   draws the shared action and BACK buttons. `camera::controls` holds the camera
   hands every view shares; `viewer_touch` pans and pinches the read-only
   viewers. Key bindings live only in the configuration.
-- `platform` states whether the build is touch-only (iOS).
+- `platform` states whether the build is touch-only (iOS) and publishes the
+  pointer and keys in use.
 - `building_actions` derives single and grouped building controls from their
   capabilities, using projected pending orders for eligibility and spending.
 - `production` shares selected-factory purchases and collective queue

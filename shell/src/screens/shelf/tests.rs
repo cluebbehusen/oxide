@@ -7,7 +7,7 @@ fn entry(name: &str, compatible: bool, kind: RecordKind, path: std::path::PathBu
         path,
         label: name.to_string(),
         blurb: format!("{name} blurb"),
-        hint: String::new(),
+        action: None,
         compatible,
         kind,
     }
@@ -69,7 +69,7 @@ fn the_back_button_leaves_even_after_every_record_is_deleted() {
 #[test]
 fn a_record_says_how_to_act_only_as_coaching() {
     let mut record = entry("done", true, RecordKind::Match, "/nowhere/m.json".into());
-    record.hint = "{confirm} watches | {delete} twice deletes".to_string();
+    record.action = Some(("watches", "watch"));
     let mut shelf = Shelf::from_entries(vec![record]);
     assert_eq!(shelf.subtitle(), "done blurb", "the details stay visible");
     assert_eq!(

@@ -154,7 +154,7 @@ impl Shelf {
         }
         self.entries
             .get(i)
-            .map(|entry| entry.hint.clone())
+            .map(|entry| entry.hint(crate::platform::hands()))
             .filter(|hint| !hint.is_empty())
     }
 

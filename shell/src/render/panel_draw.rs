@@ -458,11 +458,11 @@ fn category_label(
     open: bool,
     key: &str,
     palette_key: Option<&str>,
-    touch_only: bool,
+    keyless: bool,
 ) -> String {
     if open {
         format!("{label} *")
-    } else if touch_only {
+    } else if keyless {
         label.to_string()
     } else if let Some(palette_key) = palette_key {
         format!("{label} [{palette_key} > {key}]")
@@ -521,7 +521,7 @@ fn draw_catalog(
                     .build_category
                     .is_some()
                     .then_some(palette_key.as_str()),
-                crate::platform::TOUCH_ONLY,
+                !crate::platform::hands().keys,
             );
             crate::typography::draw(
                 &label,

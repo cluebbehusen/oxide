@@ -70,8 +70,8 @@ fn the_coach_prices_the_lesson_and_names_the_exit_when_broke() {
 fn every_card_string_is_ascii() {
     // The bundled font cannot be trusted to cover typographic punctuation.
     for step in &STEPS {
-        for touch_only in [false, true] {
-            for line in std::iter::once(&step.title).chain(step.body(touch_only)) {
+        for hands in crate::platform::ALL_HANDS {
+            for line in std::iter::once(&step.title).chain(step.body(hands)) {
                 assert!(line.is_ascii(), "non-ASCII in card text: {line}");
             }
         }
@@ -79,11 +79,13 @@ fn every_card_string_is_ascii() {
 }
 
 #[test]
-fn touch_lessons_name_no_keys_or_mouse_buttons() {
-    for step in &STEPS {
-        for line in step.body(true) {
-            crate::platform::assert_touch_copy(line);
+fn lessons_name_only_what_the_hands_in_use_have() {
+    for hands in crate::platform::ALL_HANDS {
+        for step in &STEPS {
+            for line in step.body(hands) {
+                crate::platform::assert_copy_fits(hands, line);
+            }
         }
+        crate::platform::assert_copy_fits(hands, recovery_line(hands.touch()));
     }
-    crate::platform::assert_touch_copy(recovery_line(true));
 }

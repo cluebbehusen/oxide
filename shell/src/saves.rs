@@ -43,23 +43,35 @@ pub struct ReplayEntry {
     pub label: String,
     /// Focused-row detail line.
     pub blurb: String,
-    /// How to act on the focused row: coaching, shown when stuck.
-    pub hint: String,
+    /// What activating the row does, as a keyboard verb and a pointer
+    /// verb, where it can be activated.
+    pub action: Option<(&'static str, &'static str)>,
     /// Whether this build can load or watch the record.
     pub compatible: bool,
     /// What the record is; decides its shelf section and verb.
     pub kind: RecordKind,
 }
 
+impl ReplayEntry {
+    /// How to act on the row, for the hands the player is using.
+    pub fn hint(&self, hands: crate::platform::Hands) -> String {
+        entry_hint(self.action, hands)
+    }
+}
+
 /// How to act on a shelf row: activate it, where it can be activated,
-/// and delete it. Deleting takes a key, so a touch-only build leaves the
-/// delete clause out.
-fn entry_hint(action: Option<(&str, &str)>, touch_only: bool) -> String {
-    match (action, touch_only) {
-        (Some((_, touch_action)), true) => format!("tap to {touch_action}"),
-        (None, true) => String::new(),
-        (Some((action, _)), false) => format!("{{confirm}} {action} | {{delete}} twice deletes"),
-        (None, false) => "{delete} twice deletes".to_string(),
+/// and delete it. Deleting takes a key, so without a keyboard the delete
+/// clause is left out.
+fn entry_hint(action: Option<(&str, &str)>, hands: crate::platform::Hands) -> String {
+    let verb = if hands.touch() { "tap" } else { "click" };
+    match (action, hands.keys) {
+        (Some((key_action, _)), true) if !hands.touch() => {
+            format!("{{confirm}} {key_action} | {{delete}} twice deletes")
+        }
+        (Some((_, action)), true) => format!("{verb} to {action} | {{delete}} twice deletes"),
+        (Some((_, action)), false) => format!("{verb} to {action}"),
+        (None, true) => "{delete} twice deletes".to_string(),
+        (None, false) => String::new(),
     }
 }
 
@@ -160,7 +172,6 @@ fn scan_cancellable(
             Some(name) => format!("{} | {} | t{} | {}", elide(name), replay.map, ticks, date),
             None => format!("{} | t{} | {} | {}", replay.map, ticks, date, elide(stem)),
         };
-        let touch_only = crate::platform::TOUCH_ONLY;
         let (blurb, action) = if let Some(problem) = replay.problem {
             (format!("unavailable: {problem}"), None)
         } else if kind.resumable() {
@@ -175,14 +186,13 @@ fn scan_cancellable(
                 Some(("watches", "watch")),
             )
         };
-        let hint = entry_hint(action, touch_only);
         out.push((
             RecordTime { saved_at, modified },
             ReplayEntry {
                 path,
                 label,
                 blurb,
-                hint,
+                action,
                 compatible,
                 kind,
             },

@@ -250,7 +250,7 @@ impl Production {
                 format!("{active} building; {} waiting.", count - active),
                 format!(
                     "{} to cancel one; waiting units first. Full refund.",
-                    crate::platform::tap_or_click_capitalized(crate::platform::TOUCH_ONLY)
+                    crate::platform::tap_or_click_capitalized(crate::platform::hands().touch())
                 ),
                 "Select one factory to inspect its exact queue.".into(),
             ];

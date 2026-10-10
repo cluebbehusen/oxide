@@ -714,7 +714,7 @@ impl<R: Clone> Menu<R> {
 
         let scrolls = first > 0 || first + visible < self.lines.len();
         let hint = coaching.map_or_else(
-            || menu_footer(crate::platform::TOUCH_ONLY, scrolls),
+            || menu_footer(crate::platform::hands(), scrolls),
             binding_hint,
         );
         let hint_size = crate::typography::fit(
@@ -747,22 +747,24 @@ fn row_pitch(avail: f32, rows: usize, s: f32, touch_only: bool) -> f32 {
     (avail / rows.max(1) as f32).clamp(min * s, max * s)
 }
 
-/// The line under every menu: its keys and clicks on desktop, taps on a
-/// touch-only build, plus the drag only when the list actually scrolls.
-/// ASCII on purpose: the default font has no glyphs for arrows.
-fn menu_footer(touch_only: bool, scrolls: bool) -> String {
-    if touch_only {
-        return if scrolls {
-            "tap to choose - drag to scroll"
-        } else {
-            "tap to choose"
-        }
-        .to_string();
+/// The line under every menu: its keys once the player has a keyboard,
+/// the pointer's verb, and without keys the drag or scroll only when the
+/// list actually scrolls. ASCII on purpose: the default font has no
+/// glyphs for arrows.
+fn menu_footer(hands: crate::platform::Hands, scrolls: bool) -> String {
+    let verb = if hands.touch() { "tap" } else { "click" };
+    if !hands.keys {
+        let scroll = match (scrolls, hands.touch()) {
+            (false, _) => "",
+            (true, true) => " - drag to scroll",
+            (true, false) => " - scroll for more",
+        };
+        return format!("{verb} to choose{scroll}");
     }
     MENU_BINDINGS.with(|bindings| {
         let bindings = bindings.borrow();
         format!(
-            "{}/{} select - {} confirm - or click",
+            "{}/{} select - {} confirm - or {verb}",
             bindings.label(crate::action::Action::MenuUp),
             bindings.label(crate::action::Action::MenuDown),
             bindings.label(crate::action::Action::Confirm)

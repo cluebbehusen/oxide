@@ -3546,13 +3546,20 @@ fn patrol_is_exclusive_with_the_other_armed_verbs() {
 }
 
 #[test]
-fn patrol_copy_speaks_touch_on_touch_only_builds() {
+fn patrol_toasts_name_only_what_the_hands_in_use_have() {
+    use crate::platform::{ALL_HANDS, assert_copy_fits};
     assert_eq!(
-        patrol_arm_toast("R", false),
+        patrol_arm_toast("R", ALL_HANDS[0]),
         "Patrol: click waypoints, R to start"
     );
-    crate::platform::assert_touch_copy(&patrol_arm_toast("R", true));
-    crate::platform::assert_touch_copy(&patrol_full_toast("R", true));
+    for hands in ALL_HANDS {
+        let arm = patrol_arm_toast("R", hands);
+        let full = patrol_full_toast("R", hands);
+        assert_copy_fits(hands, &arm);
+        assert_copy_fits(hands, &full);
+        assert_eq!(arm.contains('R'), hands.keys, "{arm}");
+        assert_eq!(full.contains(" R "), hands.keys, "{full}");
+    }
 }
 
 fn own_fighter(game: &Game) -> (oxide_sim::UnitId, Vec2) {
@@ -6132,7 +6139,11 @@ fn the_tutorial_survives_its_own_touch_instructions() {
 
     // "Tap your Foundry, then the Harvester card."
     assert!(t.advance(game.demo));
-    assert!(STEPS[0].body(true)[0].contains("Harvester card"));
+    let touch = crate::platform::Hands {
+        pointer: Pointer::Touch,
+        keys: false,
+    };
+    assert!(STEPS[0].body(touch)[0].contains("Harvester card"));
     let world = home(&game);
     tap_world(&mut game, &mut input, world);
     tap_panel_card(&mut game, &mut input, |card| card.title == "Harvester");

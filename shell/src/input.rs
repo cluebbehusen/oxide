@@ -1869,7 +1869,7 @@ fn add_patrol_waypoint(
     };
     if route.len() >= oxide_sim::stats::ORDER_QUEUE_CAP {
         game.presentation
-            .toast(patrol_full_toast(&key, crate::platform::TOUCH_ONLY));
+            .toast(patrol_full_toast(&key, crate::platform::hands()));
     } else {
         let waypoint = ground_tile(&game.state, world);
         route.push(waypoint);
@@ -1879,20 +1879,22 @@ fn add_patrol_waypoint(
 }
 
 /// The toast that arms a patrol.
-pub(crate) fn patrol_arm_toast(key: &str, touch_only: bool) -> String {
-    if touch_only {
-        "Patrol: tap waypoints, then tap Patrol again to start".to_string()
-    } else {
-        format!("Patrol: click waypoints, {key} to start")
+pub(crate) fn patrol_arm_toast(key: &str, hands: crate::platform::Hands) -> String {
+    match (hands.touch(), hands.keys) {
+        (false, true) => format!("Patrol: click waypoints, {key} to start"),
+        (false, false) => "Patrol: click waypoints, then click Patrol again to start".to_string(),
+        (true, true) => format!("Patrol: tap waypoints, then {key} or tap Patrol again to start"),
+        (true, false) => "Patrol: tap waypoints, then tap Patrol again to start".to_string(),
     }
 }
 
 /// The toast when the route has no room for another waypoint.
-fn patrol_full_toast(key: &str, touch_only: bool) -> String {
-    if touch_only {
-        "Patrol is full: tap Patrol to start it".to_string()
-    } else {
-        format!("Patrol is full: {key} starts it")
+fn patrol_full_toast(key: &str, hands: crate::platform::Hands) -> String {
+    match (hands.touch(), hands.keys) {
+        (false, true) => format!("Patrol is full: {key} starts it"),
+        (false, false) => "Patrol is full: click Patrol to start it".to_string(),
+        (true, true) => format!("Patrol is full: {key} or tap Patrol to start it"),
+        (true, false) => "Patrol is full: tap Patrol to start it".to_string(),
     }
 }
 

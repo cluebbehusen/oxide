@@ -44,9 +44,12 @@ fn a_capture_prompt_is_information_and_key_help_is_coaching() {
 }
 
 #[test]
-fn the_settings_hint_speaks_touch_on_touch_only_builds() {
-    assert!(settings_hint(false).contains("{confirm}"));
-    crate::platform::assert_touch_copy(settings_hint(true));
+fn the_settings_hint_names_only_what_the_hands_in_use_have() {
+    for hands in crate::platform::ALL_HANDS {
+        let hint = settings_hint(hands);
+        crate::platform::assert_copy_fits(hands, hint);
+        assert_eq!(hint.contains("{confirm}"), hands.keys, "{hint}");
+    }
 }
 
 #[test]
