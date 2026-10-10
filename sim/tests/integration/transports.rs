@@ -823,7 +823,6 @@ fn a_rider_that_stalled_on_its_way_boards_dormant() {
     state.validate_invariants().expect("cargo is dormant");
     let carrier = state.unit(sky).unwrap();
     assert_eq!(carrier.cargo.len(), 1);
-    assert_eq!(carrier.cargo[0].stall_ticks, 0);
 }
 
 #[test]

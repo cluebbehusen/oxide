@@ -11,7 +11,7 @@
 use super::super::route_for;
 use crate::event::{Event, StallReason};
 use crate::ids::UnitId;
-use crate::state::{Order, PathFollow, State, Unit};
+use crate::state::{Order, PathFollow, Rider, State, Unit};
 use chassis::grid::TilePos;
 
 /// Boardings and unloads one tick's brains asked for, applied by
@@ -202,7 +202,6 @@ pub(in crate::tick) fn resolve(state: &mut State, mut pending: Pending, events: 
         };
         let capacity = carrier.kind.stats().transport_capacity;
         let held = cargo_load(carrier);
-        let carrier_pos = carrier.pos;
         // hp > 0 mirrors the carrier filter above: a rider dealt lethal
         // damage this same tick must die in cleanup, not ride in the sling
         // as a zero-hp corpse the death pass can no longer see.
@@ -220,23 +219,10 @@ pub(in crate::tick) fn resolve(state: &mut State, mut pending: Pending, events: 
             .iter()
             .position(|u| u.id == rider_id)
             .expect("just seen");
-        let mut rider = state.units.remove(slot);
-        let player = rider.player;
-        rider.order = Order::Idle;
-        rider.queue.clear();
-        rider.looping = false;
-        rider.path = None;
-        rider.leash = None;
-        rider.settled = 0;
-        rider.brace_ticks = 0;
-        rider.drive_speed = chassis::fx::Fx::ZERO;
-        rider.stall_ticks = 0;
-        rider.danger_retry_at = None;
-        rider.progress = 0;
-        rider.unloading = None;
-        rider.pos = carrier_pos;
+        let walker = state.units.remove(slot);
+        let player = walker.player;
         let carrier = state.unit_mut(transport).expect("just seen");
-        carrier.cargo.push(rider);
+        carrier.cargo.push(Rider::board(&walker));
         events.push(Event::UnitBoarded {
             transport,
             unit: rider_id,
@@ -264,9 +250,8 @@ pub(in crate::tick) fn resolve(state: &mut State, mut pending: Pending, events: 
             if carrier.cargo.is_empty() {
                 break;
             }
-            let mut rider = carrier.cargo.remove(0);
             let spot = open[placed];
-            rider.pos = spot.center();
+            let rider = carrier.cargo.remove(0).disembark(player, spot.center());
             let rider_id = rider.id;
             // Reinsert in id order to keep the unit list sorted.
             let slot = state

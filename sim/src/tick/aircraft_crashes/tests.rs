@@ -213,7 +213,7 @@ fn simultaneous_crashes_are_ordered_and_cargo_does_not_schedule_another_blast() 
         .find(|u| u.id == carrier)
         .unwrap()
         .cargo
-        .push(rider);
+        .push(crate::state::Rider::board(&rider));
     state.tick(&[]);
     assert_eq!(
         state

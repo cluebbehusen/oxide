@@ -393,12 +393,9 @@ pub struct Unit {
     /// Independent ground gun bearing; absent mounts follow the hull initially.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turret_heading: Option<u8>,
-    /// Machines riding aboard this transport. Cargo lives OUTSIDE the
-    /// world's unit list: nothing can see, target, collide with, or
-    /// command a carried machine, and it contributes no vision. It
-    /// keeps its id (ids are never reused) and dies with the carrier.
+    /// Machines riding aboard this transport.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub cargo: Vec<Unit>,
+    pub cargo: Vec<Rider>,
     /// Parked on the ground at its tile center. Only turn-limited kinds
     /// land; a landed body is physically a ground body (see
     /// [`Unit::domain`]) until an order lifts it off again.
@@ -410,7 +407,100 @@ fn is_zero_motion(motion: &Vec2Fx) -> bool {
     *motion == Vec2Fx::ZERO
 }
 
+/// A machine riding aboard a transport. Cargo lives OUTSIDE the world's
+/// unit list: nothing can see, target, collide with, or command a carried
+/// machine, and it contributes no vision. It keeps its id (ids are never
+/// reused), its owner is its carrier's, and it dies with the carrier.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Rider {
+    /// The id it had walking and will have again.
+    pub id: UnitId,
+    /// What kind of machine this is.
+    pub kind: UnitKind,
+    /// Current hit points.
+    pub hp: u32,
+    /// Scrap it carried aboard.
+    #[serde(default, skip_serializing_if = "crate::is_default")]
+    pub carrying: u32,
+    /// Weapon cooldowns, frozen while carried.
+    pub cooldowns: [u32; crate::stats::MAX_WEAPONS],
+    /// The heading it boarded with.
+    #[serde(default, skip_serializing_if = "crate::is_default")]
+    pub heading: u8,
+    /// Its independent gun bearing, if it had one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turret_heading: Option<u8>,
+}
+
+impl Rider {
+    /// Takes a walking unit aboard. Everything a carried machine cannot
+    /// keep (its orders, route, tether, motor, and work) is left behind.
+    pub(crate) fn board(unit: &Unit) -> Self {
+        let Unit {
+            id,
+            kind,
+            hp,
+            carrying,
+            cooldowns,
+            heading,
+            turret_heading,
+            ..
+        } = *unit;
+        Self {
+            id,
+            kind,
+            hp,
+            carrying,
+            cooldowns,
+            heading,
+            turret_heading,
+        }
+    }
+
+    /// Sets the rider down at `pos` as an idle machine at rest.
+    pub(crate) fn disembark(self, player: PlayerId, pos: Vec2Fx) -> Unit {
+        Unit {
+            hp: self.hp,
+            carrying: self.carrying,
+            cooldowns: self.cooldowns,
+            turret_heading: self.turret_heading,
+            ..Unit::at_rest(self.id, player, self.kind, pos, self.heading)
+        }
+    }
+}
+
 impl Unit {
+    /// A healthy, idle machine standing at `pos` with nothing aboard.
+    fn at_rest(id: UnitId, player: PlayerId, kind: UnitKind, pos: Vec2Fx, heading: u8) -> Self {
+        Self {
+            id,
+            player,
+            kind,
+            pos,
+            air_motion: Vec2Fx::ZERO,
+            hp: kind.stats().max_hp,
+            carrying: 0,
+            unloading: None,
+            cooldowns: [0; crate::stats::MAX_WEAPONS],
+            brace_ticks: 0,
+            turret_heading: None,
+            drive_speed: Fx::ZERO,
+            stall_ticks: 0,
+            danger_retry_at: None,
+            progress: 0,
+            order: Order::Idle,
+            queue: std::collections::VecDeque::new(),
+            looping: false,
+            path: None,
+            leash: None,
+            settled: 0,
+            heading,
+            landed: false,
+            cargo: Vec::new(),
+        }
+    }
+
     /// Compass bearing used to aim this unit's primary weapon.
     pub fn weapon_heading(&self) -> u8 {
         self.turret_heading.unwrap_or(self.heading)
@@ -980,11 +1070,14 @@ impl State {
                     && building.built()
                     && building.kind == BuildingKind::Foundry
             })
-            && !self
-                .units
-                .iter()
-                .flat_map(|unit| core::iter::once(unit).chain(&unit.cargo))
-                .any(|unit| unit.player == player && unit.hp > 0 && harvests(unit.kind))
+            && !self.units.iter().any(|unit| {
+                unit.player == player
+                    && ((unit.hp > 0 && harvests(unit.kind))
+                        || unit
+                            .cargo
+                            .iter()
+                            .any(|rider| rider.hp > 0 && harvests(rider.kind)))
+            })
             && !self.buildings.iter().any(|building| {
                 building.player == player
                     && building.hp > 0
@@ -1528,39 +1621,18 @@ impl State {
         Ok(())
     }
 
-    fn validate_rider(&self, carrier: &Unit, rider: &Unit) -> Result<(), StateIntegrityError> {
+    fn validate_rider(&self, carrier: &Unit, rider: &Rider) -> Result<(), StateIntegrityError> {
         use StateIntegrityError as E;
-        let Unit {
+        let Rider {
             id,
-            player,
             kind,
-            // Stale while carried; unloading overwrites it.
-            pos: _,
-            air_motion: _,
             hp,
             carrying,
-            unloading,
             cooldowns,
-            brace_ticks,
-            progress,
-            order,
-            queue,
-            looping,
-            path,
-            leash,
-            settled,
             heading: _,
-            drive_speed,
-            stall_ticks,
-            danger_retry_at,
             turret_heading,
-            cargo,
-            landed,
         } = rider;
         let rstats = kind.stats();
-        if !valid_air_motion(rider) {
-            return Err(E::InvalidAirMotion(*id));
-        }
         if rstats.transport_size == 0 {
             return Err(E::UncarriableCargo(carrier.id));
         }
@@ -1570,35 +1642,8 @@ impl State {
         if *carrying > rstats.harvest.map_or(0, |harvest| harvest.capacity) {
             return Err(E::ScrapBeyondCapacity(*id));
         }
-        if *player != carrier.player {
-            return Err(E::CargoOwnerMismatch(carrier.id));
-        }
-        // Dormancy is exactly what boarding normalizes: order, queue,
-        // looping, path, leash, settled, and cargo all reset at the sling
-        // door, so any survivor is forged.
-        if *order != Order::Idle
-            || !queue.is_empty()
-            || *looping
-            || path.is_some()
-            || unloading.is_some()
-            || leash.is_some()
-            || *settled != 0
-            || *brace_ticks != 0
-            || *drive_speed != Fx::ZERO
-            || *stall_ticks != 0
-            || danger_retry_at.is_some()
-            || *landed
-            || !cargo.is_empty()
-        {
-            return Err(E::CargoNotDormant(carrier.id));
-        }
         if turret_heading.is_some() && !kind.has_ground_turret() {
             return Err(E::InvalidTurretHeading(*id));
-        }
-        // Boarding zeroes the progress meter too; any nonzero value is
-        // unreachable, not merely oversized.
-        if *progress != 0 {
-            return Err(E::CargoProgressOutOfRange(carrier.id));
         }
         // Cooldowns are the one scalar boarding does NOT reset — a machine
         // slung mid-cooldown keeps it frozen — so the bound is the walking
@@ -2259,40 +2304,17 @@ impl State {
     pub(crate) fn spawn_unit(&mut self, player: PlayerId, kind: UnitKind, pos: Vec2Fx) -> UnitId {
         let id = UnitId(self.next_unit_id);
         self.next_unit_id += 1;
-        self.units.push(Unit {
-            id,
-            player,
-            kind,
-            pos,
-            air_motion: Vec2Fx::ZERO,
-            hp: kind.stats().max_hp,
-            carrying: 0,
-            unloading: None,
-            cooldowns: [0; crate::stats::MAX_WEAPONS],
-            brace_ticks: 0,
-            turret_heading: None,
-            drive_speed: Fx::ZERO,
-            stall_ticks: 0,
-            danger_retry_at: None,
-            progress: 0,
-            order: Order::Idle,
-            queue: std::collections::VecDeque::new(),
-            looping: false,
-            path: None,
-            leash: None,
-            settled: 0,
-            // Every unit starts facing the map centre, so mirrored seats'
-            // units start mirrored, aircraft included: a turning flyer's
-            // first heading decides how long it takes to come about.
-            heading: chassis::compass::heading_of(
-                Vec2Fx::new(
-                    Fx::from_num(self.map.width()) / 2,
-                    Fx::from_num(self.map.height()) / 2,
-                ) - pos,
-            ),
-            landed: false,
-            cargo: Vec::new(),
-        });
+        // Every unit starts facing the map centre, so mirrored seats'
+        // units start mirrored, aircraft included: a turning flyer's first
+        // heading decides how long it takes to come about.
+        let heading = chassis::compass::heading_of(
+            Vec2Fx::new(
+                Fx::from_num(self.map.width()) / 2,
+                Fx::from_num(self.map.height()) / 2,
+            ) - pos,
+        );
+        self.units
+            .push(Unit::at_rest(id, player, kind, pos, heading));
         id
     }
 
@@ -2779,16 +2801,6 @@ pub enum StateIntegrityError {
     /// A rider outside the living hp range.
     #[error("unit {0} carries a rider with impossible hp")]
     CargoHpOutOfRange(UnitId),
-    /// A rider owned by someone other than the carrier.
-    #[error("unit {0} carries another player's machine")]
-    CargoOwnerMismatch(UnitId),
-    /// A rider holding live orders, paths, tethers, or its own cargo.
-    #[error("unit {0} carries a rider that is not dormant")]
-    CargoNotDormant(UnitId),
-    /// A rider whose progress meter exceeds the envelope walking units
-    /// are held to.
-    #[error("unit {0} carries a rider with an impossible progress meter")]
-    CargoProgressOutOfRange(UnitId),
     /// A rider whose weapon cooldowns exceed its own weapon table.
     #[error("unit {0} carries a rider with impossible weapon cooldowns")]
     CargoCooldownOutOfRange(UnitId),

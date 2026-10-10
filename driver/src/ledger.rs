@@ -341,8 +341,8 @@ fn snapshot(state: &State) -> Vec<Body> {
                 let stats = rider.kind.stats();
                 Body {
                     key: Key::Unit(rider.id),
-                    owner: rider.player.0,
-                    team: team(rider.player),
+                    owner: carrier.player.0,
+                    team: team(carrier.player),
                     hp: rider.hp,
                     max_hp: stats.max_hp,
                     value: u64::from(stats.cost),

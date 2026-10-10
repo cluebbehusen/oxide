@@ -228,7 +228,7 @@ fn cleanup(state: &mut State, salvaged: &[crate::ids::BuildingId], events: &mut 
             events.push(Event::UnitDied {
                 unit: rider.id,
                 kind: rider.kind,
-                player: rider.player,
+                player: unit.player,
                 pos: unit.pos,
                 grounded: unit.domain() == crate::stats::Domain::Ground,
             });
