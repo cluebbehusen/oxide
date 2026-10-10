@@ -164,6 +164,22 @@ fn enter(game: &mut Game, screen: &Screen) {
 /// Seconds a menu notice stays up.
 const MENU_NOTICE_SECS: f64 = 8.0;
 
+/// A line on the shared menu notice. It ages only once a screen shows it,
+/// so a notice that arrives under the final map waits for the report.
+pub(super) struct MenuNotice {
+    text: String,
+    until: Option<f64>,
+}
+
+impl MenuNotice {
+    /// The text to draw at `now`, starting its time on screen at the first
+    /// draw; none once that time has passed.
+    pub(super) fn show(&mut self, now: f64) -> Option<&str> {
+        let until = *self.until.get_or_insert(now + MENU_NOTICE_SECS);
+        (now < until).then_some(self.text.as_str())
+    }
+}
+
 /// Delivers the frame's notices to the screen that is up: the HUD's toast
 /// strip in live play or a replay, the Settings and pause menus' own notice
 /// lines, and the shared menu line everywhere else. The final map has no
@@ -172,9 +188,8 @@ const MENU_NOTICE_SECS: f64 = 8.0;
 pub(super) fn deliver_notices(
     notices: &mut Vec<Notice>,
     live: &mut Game,
-    menu_notice: &mut Option<(String, f64)>,
+    menu_notice: &mut Option<MenuNotice>,
     screen: &mut Screen,
-    now: f64,
 ) {
     for Notice { text, danger } in notices.drain(..) {
         match screen {
@@ -191,7 +206,7 @@ pub(super) fn deliver_notices(
             | Screen::Replays(_)
             | Screen::Results(_)
             | Screen::FinalMap(_)
-            | Screen::Busy(_) => *menu_notice = Some((text, now + MENU_NOTICE_SECS)),
+            | Screen::Busy(_) => *menu_notice = Some(MenuNotice { text, until: None }),
         }
     }
 }
@@ -747,16 +762,19 @@ fn playing_frame(
         app.tutorial = None;
     }
     drop(input_scope);
-    let profile_barrier = !app.game.clock.paused && app.frame_profiler.take_start_barrier();
-    *profile_frame_active = !app.game.clock.paused && !profile_barrier;
+    let leaving = next.is_some();
+    let running = !app.game.clock.paused && !leaving;
+    let profile_barrier = running && app.frame_profiler.take_start_barrier();
+    *profile_frame_active = running && !profile_barrier;
     let profile_stopped = if profile_barrier {
         false
     } else {
-        // A LAN match's link runs its ticks before the screen frame.
-        let stopped = app.game.net_role().is_none()
-            && app
-                .game
-                .advance_wall_clock(time.raw, app.frame_profiler.stop_tick());
+        let stopped = advance_live_match(
+            &mut app.game,
+            time.raw,
+            app.frame_profiler.stop_tick(),
+            leaving,
+        );
         app.game.update_wall_clock_fx(time.presentation);
         stopped
     };
@@ -780,6 +798,14 @@ fn playing_frame(
         render::draw_tutorial(t, &app.game, &app.config.bindings);
     }
     next.unwrap_or(Screen::Playing)
+}
+
+/// Runs the ticks this frame owes a local match, unless the frame has
+/// already chosen to leave live play: the pause menu freezes the match on
+/// the gesture, so a suspension's gap is never caught up behind it. A LAN
+/// match's link runs its ticks before the screen frame.
+fn advance_live_match(game: &mut Game, raw_dt: f32, stop_tick: Option<u64>, leaving: bool) -> bool {
+    !leaving && game.net_role().is_none() && game.advance_wall_clock(raw_dt, stop_tick)
 }
 
 /// The one way into a replay viewer: leaving it restores `back` wholesale.
