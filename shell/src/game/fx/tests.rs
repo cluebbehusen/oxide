@@ -867,7 +867,7 @@ fn charge_detonation_plays_one_blast_and_preserves_other_building_losses() {
                 .sounds_pending
                 .iter()
                 .copied()
-                .filter(|(kind, _)| kind.is_explosion())
+                .filter(|(kind, _)| crate::mixer::spec(*kind).explosion)
                 .collect();
             let mut expected = vec![(SoundKind::DemolitionBoom, Some(world_vec(tile.center())))];
             if collateral_charge {
@@ -928,7 +928,7 @@ fn hidden_demolition_and_building_loss_sound_without_revealing_identity() {
         game.presentation.sounds_pending.clear();
         game.presentation.spawn_fx(&game.state, &[event]);
         assert_eq!(game.presentation.sounds_pending.len(), 1);
-        assert!(game.presentation.sounds_pending[0].0.is_explosion());
+        assert!(crate::mixer::spec(game.presentation.sounds_pending[0].0).explosion);
         assert_eq!(game.presentation.sounds_pending[0].1, Some(world_vec(at)));
         assert_eq!(game.state.hash(), hash);
         assert!(game.presentation.toasts.is_empty());

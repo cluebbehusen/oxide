@@ -312,56 +312,6 @@ chassis::listed_enum! {
     }
 }
 
-impl SoundKind {
-    /// The generated clip this kind plays, which also names its row in the
-    /// sound manifest. The basic zap alternates with `laser2`, a clip the
-    /// manifest gives the same mixing.
-    pub(crate) fn clip_name(self) -> &'static str {
-        match self {
-            Self::Laser => "laser",
-            Self::UnitDeath => "unit_death",
-            Self::BuildingBoom => "building_boom",
-            Self::Deposit => "deposit",
-            Self::TrainDone => "train_done",
-            Self::Click => "click",
-            Self::Denied => "denied",
-            Self::Alert => "alert",
-            Self::Victory => "victory",
-            Self::Defeat => "defeat",
-            Self::Artillery => "artillery_boom",
-            Self::ArtilleryLaunch => "artillery_launch",
-            Self::Ack => "ack",
-            Self::SentinelFire => "attack_sentinel",
-            Self::ScuttlerFire => "attack_scuttler",
-            Self::LancerFire => "attack_lancer",
-            Self::BombardFire => "attack_bombard",
-            Self::FlakhoundFire => "attack_flakhound",
-            Self::StingerFire => "attack_stinger",
-            Self::BuzzardFire => "attack_buzzard",
-            Self::DarterFire => "attack_darter",
-            Self::TalonFire => "attack_talon",
-            Self::WispFire => "attack_wisp",
-            Self::BastionFire => "attack_bastion",
-            Self::FlakTurretFire => "attack_flak_turret",
-            Self::WardenFire => "attack_warden",
-            Self::BreakerFire => "attack_breaker",
-            Self::AvalancheFire => "avalanche_launch",
-            Self::RocketMotor => "avalanche_motor",
-            Self::RocketImpact => "rocket_impact",
-            Self::BombRelease => "bomb_release",
-            Self::DemolitionBoom => "demolition_boom",
-            Self::UpgradeDone => "upgrade_done",
-        }
-    }
-
-    pub(crate) fn is_explosion(self) -> bool {
-        matches!(
-            self,
-            Self::Artillery | Self::RocketImpact | Self::DemolitionBoom | Self::BuildingBoom
-        )
-    }
-}
-
 /// What an order-acknowledgment ping means (decides its color).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PingKind {
@@ -1069,8 +1019,8 @@ impl Presentation {
                         .get(*weapon)
                         .and_then(|w| w.splash)
                         .map(|s| s.to_num::<f32>());
-                    if heard || sound.is_explosion() {
-                        let at = if sound.is_explosion() {
+                    if heard || crate::mixer::spec(sound).explosion {
+                        let at = if crate::mixer::spec(sound).explosion {
                             *target_pos
                         } else if sees(self, *attacker_pos) {
                             *attacker_pos

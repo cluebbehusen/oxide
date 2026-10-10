@@ -95,9 +95,9 @@ results, and final-map inspection.
 
 Screen modules consume `RawEvent` values and return semantic outcomes.
 `app/screen_flow.rs` applies those outcomes and draws the active screen.
-`app.rs` owns frame orchestration and debug request handling. Screen update
-logic accepts injected viewport/input state so navigation can be tested without
-a GPU window.
+`app.rs` owns frame orchestration; `app/debug.rs` handles debug requests. Screen
+update logic accepts injected viewport/input state so navigation can be tested
+without a GPU window.
 
 The New Match draft records each seat's difficulty and stance. Successful launch
 materializes distinct personality seeds into the `Scenario`. Ordinary launches
@@ -640,22 +640,22 @@ endpoints are clamped to finite, ordered values. Logical marker dimensions keep
 readability consistent across display densities; sprite sampling independently
 uses physical pixels.
 
-Simulation events enqueue audio cues. The mixer applies user buses, repetition
-limits, and camera-relative attenuation. Missile, artillery, bomb, mine and
-Sapper detonations, building destruction, and aircraft ground impacts are
-audible through fog regardless of ownership. Their distance gain is full inside
-the camera viewport and fades linearly to silence a fixed tile distance beyond
-its nearest edge, with the same range at every zoom. Zoom weighting also
-attenuates heavy sounds at the widest view. Same-kind events coalesce to the
-loudest emitter; inaudible events consume no voices and do not raise combat
-music. A detonated charge uses only its demolition cue; other buildings
-destroyed in the same tick keep their destruction cues. Visuals, target
-knowledge, launch warnings, and missile motors follow sight rules. Continuous
-positional sounds are owned and stopped individually; pause and screen
-transitions release them, and resumed presentation can reconstruct them.
-Soundtrack state controls music beds and crossfades. Audio never feeds a
-simulation decision. Production sprite and sound bytes remain owned by their
-generators and approval workflows.
+Simulation events enqueue audio cues. `mixer::spec` is the one table of what the
+shell decides per sound kind. The mixer applies user buses, repetition limits,
+and camera-relative attenuation. Missile, artillery, bomb, mine and Sapper
+detonations, building destruction, and aircraft ground impacts are audible
+through fog regardless of ownership. Their distance gain is full inside the
+camera viewport and fades linearly to silence a fixed tile distance beyond its
+nearest edge, with the same range at every zoom. Zoom weighting also attenuates
+heavy sounds at the widest view. Same-kind events coalesce to the loudest
+emitter; inaudible events consume no voices and do not raise combat music. A
+detonated charge uses only its demolition cue; other buildings destroyed in the
+same tick keep their destruction cues. Visuals, target knowledge, launch
+warnings, and missile motors follow sight rules. Continuous positional sounds
+are owned and stopped individually; pause and screen transitions release them,
+and resumed presentation can reconstruct them. Soundtrack state controls music
+beds and crossfades. Audio never feeds a simulation decision. Production sprite
+and sound bytes remain owned by their generators and approval workflows.
 
 The tiny-skia renderer in `oxide-kit` produces whole-map CPU schematics. It does
 not share the native atlas, camera, HUD, animation, or visual polish. Screenshot
@@ -675,5 +675,5 @@ composition; presentation and input claims require the real shell.
 | Protocol capabilities and fog | `protocol/src/session.rs`, `protocol/src/view.rs`, `shell/src/debug_server.rs` | Protocol tests, `driver/tests/session_parity.rs`                           |
 | Native presentation           | `shell/src/render.rs`, `shell/src/assets.rs`                                   | Asset tests, `shell/tests/presentation_animation.rs`, native capture tests |
 | CPU schematics                | `kit/src/render.rs`                                                            | `driver/tests/golden.rs`                                                   |
-| Audio                         | `shell/src/audio_mix.rs`, `shell/src/soundtrack.rs`                            | Module tests                                                               |
+| Audio                         | `shell/src/mixer.rs`, `shell/src/audio_mix.rs`, `shell/src/soundtrack.rs`      | Module tests                                                               |
 | iPad build                    | `ios/`, `shell/src/platform.rs`                                                | iOS clippy in CI, device builds                                            |
