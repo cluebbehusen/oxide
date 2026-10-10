@@ -259,50 +259,35 @@ class ProductionSpriteSourceTests(unittest.TestCase):
 
     def test_metadata_counts_match_every_generated_action_row(self) -> None:
         for stem, frame_set in finalized.UNIT_ACTIONS.items():
-            self.assertEqual(finalized.ACTION_COUNTS[stem], len(frame_set.suffixes))
-            self.assertEqual(len(frame_set.suffixes), len(frame_set.events))
-            self.assertEqual(len(frame_set.events), len(frame_set.durations_ms))
+            self.assertEqual(finalized.ACTION_COUNTS[stem], len(frame_set))
             for faction in gen.FACTIONS:
-                for suffix in frame_set.suffixes:
+                for suffix in frame_set:
                     self.assertIn(f"{stem}_{faction}{suffix}", self.registry)
 
         for stem, frame_set in finalized.BUILDING_WORK.items():
-            self.assertEqual(finalized.ACTION_COUNTS[stem], len(frame_set.suffixes))
-            self.assertEqual(len(frame_set.suffixes), len(frame_set.events))
-            self.assertEqual(len(frame_set.events), len(frame_set.durations_ms))
+            self.assertEqual(finalized.ACTION_COUNTS[stem], len(frame_set))
             for faction in gen.FACTIONS:
-                for suffix in frame_set.suffixes:
+                for suffix in frame_set:
                     self.assertIn(f"{stem}_{faction}{suffix}", self.registry)
 
         for stem, frame_set in finalized.DEFENSE_ACTIONS.items():
-            self.assertEqual(finalized.ACTION_COUNTS[stem], len(frame_set.suffixes))
-            self.assertEqual(len(frame_set.suffixes), len(frame_set.events))
-            self.assertEqual(len(frame_set.events), len(frame_set.durations_ms))
+            self.assertEqual(finalized.ACTION_COUNTS[stem], len(frame_set))
             for faction in gen.FACTIONS:
-                for suffix in frame_set.suffixes:
+                for suffix in frame_set:
                     self.assertIn(f"{stem}_{faction}{suffix}", self.registry)
 
         for stem, frame_set in finalized.DEFENSE_BASE_ACTIONS.items():
-            self.assertEqual(finalized.ACTION_COUNTS[stem], len(frame_set.suffixes))
+            self.assertEqual(finalized.ACTION_COUNTS[stem], len(frame_set))
             for faction in gen.FACTIONS:
-                for suffix in frame_set.suffixes:
+                for suffix in frame_set:
                     self.assertIn(f"{stem}_{faction}{suffix}", self.registry)
-
-        for frame_sets in (finalized.UNIT_ACTIONS, finalized.DEFENSE_ACTIONS):
-            for stem, frame_set in frame_sets.items():
-                with self.subTest(stem=stem, contract="damage-event"):
-                    self.assertEqual(
-                        sum("damage" in event for event in frame_set.events), 1
-                    )
 
     def test_movement_metadata_matches_every_generated_row(self) -> None:
         self.assertEqual(set(finalized.UNIT_MOVEMENT), set(finalized.UNIT_ACTIONS))
         for stem, frame_set in finalized.UNIT_MOVEMENT.items():
-            self.assertEqual(len(frame_set.suffixes), len(frame_set.events))
-            self.assertEqual(len(frame_set.events), len(frame_set.durations_ms))
             for faction in gen.FACTIONS:
                 base = self.registry[f"{stem}_{faction}"]
-                for suffix in frame_set.suffixes:
+                for suffix in frame_set:
                     frame = self.registry[f"{stem}_{faction}{suffix}"]
                     self.assertEqual(frame.size, base.size)
                 self.assertTrue(
@@ -311,7 +296,7 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                             base, self.registry[f"{stem}_{faction}{suffix}"]
                         )
                         > 2
-                        for suffix in frame_set.suffixes
+                        for suffix in frame_set
                     ),
                     stem,
                 )
@@ -337,7 +322,7 @@ class ProductionSpriteSourceTests(unittest.TestCase):
 
     def test_darter_action_frames_keep_transparent_canvas_margin(self) -> None:
         for faction in ("ferrous", "cupric"):
-            for suffix in finalized.UNIT_ACTIONS["darter"].suffixes:
+            for suffix in finalized.UNIT_ACTIONS["darter"]:
                 image = self.registry[f"darter_{faction}{suffix}"]
                 bbox = image.getchannel("A").getbbox()
                 self.assertIsNotNone(bbox)
@@ -545,28 +530,6 @@ class ProductionSpriteSourceTests(unittest.TestCase):
             open_nose = self.registry[f"condor_{faction}_action2"]
             self.assertLess(open_nose.getpixel((64, 24))[3], idle.getpixel((64, 24))[3])
 
-    def test_unit_metadata_matches_source_sequences(self) -> None:
-        for stem, builder in finalized._unit_sequences().items():
-            sequence = builder()
-            movement = finalized.UNIT_MOVEMENT[stem]
-            actions = finalized.UNIT_ACTIONS[stem]
-            self.assertEqual(
-                tuple(frame.event for frame in sequence.frames[1:3]),
-                movement.events,
-            )
-            self.assertEqual(
-                tuple(frame.duration_ms for frame in sequence.frames[1:3]),
-                movement.durations_ms,
-            )
-            self.assertEqual(
-                tuple(frame.event for frame in sequence.frames[4:]),
-                actions.events,
-            )
-            self.assertEqual(
-                tuple(frame.duration_ms for frame in sequence.frames[4:]),
-                actions.durations_ms,
-            )
-
     def test_factions_share_dimensions_but_not_accent_pixels(self) -> None:
         stems = (
             "harvester",
@@ -647,7 +610,7 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                     self.assertIsNotNone(base.getchannel("A").getbbox())
                     self.assertIsNotNone(mount.getchannel("A").getbbox())
                     self.assertGreater(_changed_pixels(base, mount), side)
-                for suffix in finalized.DEFENSE_ACTIONS[mount_stem].suffixes:
+                for suffix in finalized.DEFENSE_ACTIONS[mount_stem]:
                     action = self.registry[f"{mount_stem}_{faction}{suffix}"]
                     self.assertEqual(action.size, (side, side))
                     if mount_stem == "bastion_mount":
@@ -663,7 +626,7 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                 base = self.registry[f"{stem}_{faction}"]
                 changed = [
                     _changed_pixels(base, self.registry[f"{stem}_{faction}{suffix}"])
-                    for suffix in frame_set.suffixes
+                    for suffix in frame_set
                 ]
                 with self.subTest(faction=faction, stem=stem):
                     self.assertGreater(max(changed), 12)
@@ -671,7 +634,7 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                 base = self.registry[f"{stem}_{faction}"]
                 changed = [
                     _changed_pixels(base, self.registry[f"{stem}_{faction}{suffix}"])
-                    for suffix in frame_set.suffixes
+                    for suffix in frame_set
                 ]
                 with self.subTest(faction=faction, stem=stem):
                     self.assertGreater(max(changed), 12)

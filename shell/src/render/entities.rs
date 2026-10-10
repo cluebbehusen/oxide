@@ -845,15 +845,8 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                 );
             }
         }
-        if building.built() {
-            match building.kind {
-                oxide_sim::BuildingKind::Turret
-                | oxide_sim::BuildingKind::FlakTurret
-                | oxide_sim::BuildingKind::Bastion => {
-                    draw_defense_mount(game, sprites, building, frame.mount_action);
-                }
-                _ => {}
-            }
+        if building.built() && crate::look::defense(building.kind).is_some() {
+            draw_defense_mount(game, sprites, building, frame.mount_action);
         }
         if !building.built() {
             // Construction progress in bone, distinct from training amber.
@@ -951,10 +944,7 @@ fn bomber_release(game: &crate::game::Scene<'_>, index: usize) -> Option<crate::
                 return None;
             };
             let kind = game.state.unit(id)?.kind;
-            if !matches!(
-                kind,
-                oxide_sim::UnitKind::Condor | oxide_sim::UnitKind::Moth
-            ) {
+            if !crate::look::fires(kind, oxide_sim::ProjectileKind::Bomb) {
                 return None;
             }
             // Seeks without launch history use a stable impact line, never the
@@ -1033,7 +1023,13 @@ fn draw_bomber_bombs(game: &crate::game::Scene<'_>, sprites: &Sprites) {
         let t = (crate::audio_timeline::projectile_elapsed_ticks(now, shell.arrival, total)
             / total)
             .clamp(0.0, 1.0);
-        let moth = release.kind == oxide_sim::UnitKind::Moth;
+        // A bomber releasing a stick drops it along its run.
+        let moth = release
+            .kind
+            .stats()
+            .weapons
+            .iter()
+            .any(|weapon| weapon.salvo > 1);
         let (position, direction) = if moth {
             moth_bomb_pose(launch, impact, release, t, total)
         } else {
@@ -1049,7 +1045,9 @@ fn draw_bomber_bombs(game: &crate::game::Scene<'_>, sprites: &Sprites) {
             continue;
         }
         let flat = game.presentation.camera.to_screen(position);
-        let lift = if moth { 0.08 } else { 0.0625 };
+        let lift = crate::look::unit(release.kind)
+            .airframe
+            .map_or(0.0, |airframe| airframe.lift);
         let center = flat - vec2(0.0, zoom * lift * (1.0 - t * t));
         let scale = zoom * (1.0 - 0.15 * t) * if moth { 0.70 } else { 1.0 };
         let normal = vec2(-direction.y, direction.x);

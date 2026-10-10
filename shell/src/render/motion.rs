@@ -4,6 +4,7 @@
 //! facts. This module maps those facts onto atlas rows without
 //! consulting wall time or changing gameplay state.
 
+use crate::look::Gait;
 use crate::numeric;
 use oxide_sim::{BuildingKind, UnitKind};
 
@@ -87,7 +88,7 @@ pub(crate) enum BuildingBodyFrame {
 /// Selects a unit frame with action transients taking precedence over every
 /// concurrent state.
 pub(crate) fn unit_frame(kind: UnitKind, state: UnitAnimationState) -> UnitFrame {
-    if kind == UnitKind::Skyhook
+    if kind.stats().transport_capacity > 0
         && let Some(action) = state.transport
     {
         return skyhook_transport_frame(action);
@@ -102,7 +103,7 @@ pub(crate) fn unit_frame(kind: UnitKind, state: UnitAnimationState) -> UnitFrame
         return UnitFrame::Action(unit_preparation_frame(kind, progress));
     }
 
-    if kind == UnitKind::Sapper
+    if kind.stats().demolition.is_some()
         && let Some(progress) = state.demolition_preparation
     {
         return UnitFrame::Action(cycle_index(progress, 3));
@@ -151,11 +152,13 @@ pub(crate) fn unit_frame(kind: UnitKind, state: UnitAnimationState) -> UnitFrame
     if let LocomotionState::Moving { cycle } = state.locomotion {
         return match state.propulsion {
             PropulsionState::LiftRotors { cycle } => lift_rotor_frame(cycle),
-            PropulsionState::None if has_treads(kind) => match tread_phase(cycle) {
-                0 => UnitFrame::Idle,
-                phase => UnitFrame::Moving(phase - 1),
-            },
-            PropulsionState::None if matches!(kind, UnitKind::Scuttler | UnitKind::Sapper) => {
+            PropulsionState::None if crate::look::unit(kind).gait == Gait::Treads => {
+                match tread_phase(cycle) {
+                    0 => UnitFrame::Idle,
+                    phase => UnitFrame::Moving(phase - 1),
+                }
+            }
+            PropulsionState::None if crate::look::unit(kind).gait == Gait::Legs => {
                 match cycle_index(cycle, 4) {
                     0 => UnitFrame::Moving(0),
                     2 => UnitFrame::Moving(1),
@@ -177,21 +180,6 @@ pub(crate) fn unit_frame(kind: UnitKind, state: UnitAnimationState) -> UnitFrame
     preparation.map_or(UnitFrame::Idle, |progress| {
         UnitFrame::Action(unit_preparation_frame(kind, progress))
     })
-}
-
-fn has_treads(kind: UnitKind) -> bool {
-    matches!(
-        kind,
-        UnitKind::Sentinel
-            | UnitKind::Warden
-            | UnitKind::Lancer
-            | UnitKind::Breaker
-            | UnitKind::Avalanche
-            | UnitKind::Bombard
-            | UnitKind::Flakhound
-            | UnitKind::Stinger
-            | UnitKind::Tender
-    )
 }
 
 /// Base, tread one, tread two form one forward belt loop.
@@ -232,14 +220,10 @@ pub(crate) fn building_frame(kind: BuildingKind, state: BuildingAnimationState) 
     if kind.base_stats().weapons.is_empty() {
         let body = match state.activity {
             BuildingActivity::Idle => BuildingBodyFrame::Idle,
-            BuildingActivity::Production { cycle, .. } => {
-                let frames = match kind {
-                    BuildingKind::Airworks => 2,
-                    BuildingKind::Foundry => 12,
-                    _ => 4,
-                };
-                BuildingBodyFrame::Work(cycle_index(cycle, frames))
-            }
+            BuildingActivity::Production { cycle, .. } => production_frames(kind)
+                .map_or(BuildingBodyFrame::Idle, |frames| {
+                    BuildingBodyFrame::Work(cycle_index(cycle, frames))
+                }),
             BuildingActivity::AirworksLaunch { progress } => {
                 BuildingBodyFrame::Work(2 + cycle_index(progress, 2))
             }
@@ -264,19 +248,38 @@ pub(crate) fn building_frame(kind: BuildingKind, state: BuildingAnimationState) 
 
     let action = state
         .attack
-        .map(|attack| defense_attack_frame(kind, attack))
+        .and_then(|attack| defense_attack_frame(kind, attack))
         .or_else(|| match state.weapon {
-            Some(WeaponCycle::Preparing { progress }) => {
-                Some(defense_preparation_frame(kind, progress))
-            }
+            Some(WeaponCycle::Preparing { progress }) => defense_preparation_frame(kind, progress),
             Some(WeaponCycle::Ready | WeaponCycle::Unavailable) | None => None,
         });
+    let charge_rack = crate::look::defense(kind).is_some_and(|look| look.charge_rack);
     BuildingFrame {
-        body: match (kind, action) {
-            (BuildingKind::Bastion, Some(frame)) => BuildingBodyFrame::Action(frame),
+        body: match action {
+            Some(frame) if charge_rack => BuildingBodyFrame::Action(frame),
             _ => BuildingBodyFrame::Idle,
         },
         mount_action: action,
+    }
+}
+
+/// How many of its work frames a producer cycles while training; none for
+/// a building that trains nothing. The Airworks keeps its last two for the
+/// launch.
+pub(crate) fn production_frames(kind: BuildingKind) -> Option<usize> {
+    match kind {
+        BuildingKind::Foundry => Some(12),
+        BuildingKind::Fabricator | BuildingKind::Crucible => Some(4),
+        BuildingKind::Airworks => Some(2),
+        BuildingKind::Turret
+        | BuildingKind::FlakTurret
+        | BuildingKind::Bastion
+        | BuildingKind::Array
+        | BuildingKind::Reclaimer
+        | BuildingKind::RepairBay
+        | BuildingKind::Extractor
+        | BuildingKind::Barricade
+        | BuildingKind::ScuttleCharge => None,
     }
 }
 
@@ -440,30 +443,51 @@ fn unit_attack_frame(kind: UnitKind, attack: AttackPhase) -> usize {
     }
 }
 
-fn defense_preparation_frame(kind: BuildingKind, progress: f32) -> usize {
+/// A defense mount's frame while its gun reloads; none for a building
+/// without a mount.
+fn defense_preparation_frame(kind: BuildingKind, progress: f32) -> Option<usize> {
     match kind {
-        BuildingKind::Turret => 2,
-        BuildingKind::FlakTurret => cycle_index(progress, 4),
-        BuildingKind::Bastion => cycle_index(progress, 5),
-        _ => 0,
+        BuildingKind::Turret => Some(2),
+        BuildingKind::FlakTurret => Some(cycle_index(progress, 4)),
+        BuildingKind::Bastion => Some(cycle_index(progress, 5)),
+        BuildingKind::Foundry
+        | BuildingKind::Fabricator
+        | BuildingKind::Array
+        | BuildingKind::Reclaimer
+        | BuildingKind::RepairBay
+        | BuildingKind::Extractor
+        | BuildingKind::Airworks
+        | BuildingKind::Crucible
+        | BuildingKind::Barricade
+        | BuildingKind::ScuttleCharge => None,
     }
 }
 
-fn defense_attack_frame(kind: BuildingKind, attack: AttackPhase) -> usize {
-    match attack {
-        AttackPhase::Report { progress, .. } => match kind {
-            BuildingKind::Turret => 0,
-            BuildingKind::FlakTurret => 4 + cycle_index(progress, 2),
-            BuildingKind::Bastion => 5,
-            _ => 0,
-        },
-        AttackPhase::Recover { progress, .. } => match kind {
-            BuildingKind::Turret => 1,
-            BuildingKind::FlakTurret => 6,
-            BuildingKind::Bastion => 6 + cycle_index(progress, 2),
-            _ => 0,
-        },
-    }
+/// A defense mount's frame as its gun reports and recovers; none for a
+/// building without a mount.
+fn defense_attack_frame(kind: BuildingKind, attack: AttackPhase) -> Option<usize> {
+    use AttackPhase::{Recover, Report};
+    Some(match (kind, attack) {
+        (BuildingKind::Turret, Report { .. }) => 0,
+        (BuildingKind::Turret, Recover { .. }) => 1,
+        (BuildingKind::FlakTurret, Report { progress, .. }) => 4 + cycle_index(progress, 2),
+        (BuildingKind::FlakTurret, Recover { .. }) => 6,
+        (BuildingKind::Bastion, Report { .. }) => 5,
+        (BuildingKind::Bastion, Recover { progress, .. }) => 6 + cycle_index(progress, 2),
+        (
+            BuildingKind::Foundry
+            | BuildingKind::Fabricator
+            | BuildingKind::Array
+            | BuildingKind::Reclaimer
+            | BuildingKind::RepairBay
+            | BuildingKind::Extractor
+            | BuildingKind::Airworks
+            | BuildingKind::Crucible
+            | BuildingKind::Barricade
+            | BuildingKind::ScuttleCharge,
+            _,
+        ) => return None,
+    })
 }
 
 fn cycle_index(progress: f32, count: usize) -> usize {
