@@ -223,7 +223,15 @@ fn cancelling_the_last_build_order_on_an_unstarted_site_refunds_it() {
         .expect("the site stands")
         .id;
     let paid = state.player(PlayerId(0)).scrap;
-    assert_eq!(state.building(site).unwrap().progress, 0, "test premise");
+    assert_eq!(
+        state
+            .building(site)
+            .unwrap()
+            .construction_progress()
+            .unwrap_or(0),
+        0,
+        "test premise"
+    );
     let report = state.tick(&[cancel(worker, OrderKey::Build { site }, 0, &[])]);
     let cost = BuildingKind::Turret
         .base_stats()

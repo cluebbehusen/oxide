@@ -294,7 +294,7 @@ fn cleanup(state: &mut State, salvaged: &[crate::ids::BuildingId], events: &mut 
         if state
             .buildings
             .iter()
-            .any(|b| !b.provisional && b.contains(tile))
+            .any(|b| !b.provisional() && b.contains(tile))
         {
             continue;
         }
@@ -334,7 +334,9 @@ fn victory(state: &mut State, events: &mut Vec<Event>) {
         let seat = crate::ids::PlayerId::from_index(index);
         let out = state.players[index].resigned
             || !state.buildings.iter().any(|b| {
-                b.player == seat && !b.provisional && b.kind == crate::stats::BuildingKind::Foundry
+                b.player == seat
+                    && !b.provisional()
+                    && b.kind == crate::stats::BuildingKind::Foundry
             });
         if out {
             state.players[index].eliminated_at = Some(state.tick);
@@ -346,7 +348,7 @@ fn victory(state: &mut State, events: &mut Vec<Event>) {
     let alive = |team: u8| {
         state.buildings.iter().any(|b| {
             let owner = &state.players[b.player.0 as usize];
-            !b.provisional
+            !b.provisional()
                 && b.kind == crate::stats::BuildingKind::Foundry
                 && owner.team == team
                 && !owner.resigned
@@ -459,7 +461,7 @@ pub(crate) fn rect_approach_origin(
         .iter()
         .filter(|building| {
             building.player == player
-                && !building.provisional
+                && !building.provisional()
                 && building.kind == crate::stats::BuildingKind::Foundry
         })
         .min_by_key(|building| building.id)

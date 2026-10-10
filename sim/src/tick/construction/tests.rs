@@ -71,7 +71,7 @@ fn paid_site_activation_does_not_recheck_lost_prerequisites() {
     let bank = state.player(PlayerId(0)).scrap;
     let mut events = Vec::new();
     reveal(&mut state, &mut events);
-    assert!(!state.building(site).unwrap().provisional);
+    assert!(!state.building(site).unwrap().provisional());
     assert_eq!(state.unit(worker).unwrap().order, Order::Build { site });
     assert_eq!(state.player(PlayerId(0)).scrap, bank);
     assert!(events.is_empty());

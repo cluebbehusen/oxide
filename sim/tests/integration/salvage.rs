@@ -264,7 +264,14 @@ fn foundations_preserve_wrecks_until_construction_starts() {
         .find(|b| b.anchor == grave)
         .unwrap()
         .id;
-    assert_eq!(state.building(site).unwrap().progress, 0);
+    assert_eq!(
+        state
+            .building(site)
+            .unwrap()
+            .construction_progress()
+            .unwrap_or(0),
+        0
+    );
     assert_eq!(state.map().wreck_at(grave), control.map().wreck_at(grave));
     let mut cancelled = state.clone();
     let mut untouched = control.clone();
@@ -279,7 +286,11 @@ fn foundations_preserve_wrecks_until_construction_starts() {
         untouched.player(PlayerId(0)).scrap
     );
     run_until(&mut state, 400, |s, _| {
-        s.building(site).unwrap().progress > 0
+        s.building(site)
+            .unwrap()
+            .construction_progress()
+            .unwrap_or(0)
+            > 0
     });
     assert_eq!(state.map().wreck_at(grave), 0, "foundations bury salvage");
 }

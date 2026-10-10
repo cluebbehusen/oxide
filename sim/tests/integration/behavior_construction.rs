@@ -123,7 +123,7 @@ fn a_pocketed_canonical_founder_uses_the_existing_make_way_fallback() {
             .unwrap()
             .cost
     );
-    run_until(&mut state, 600, |s, _| s.building(site_id).unwrap().built);
+    run_until(&mut state, 600, |s, _| s.building(site_id).unwrap().built());
     state.validate_invariants().unwrap();
 }
 
@@ -202,7 +202,7 @@ fn construction_ramps_and_completes() {
         .expect("site placed")
         .id;
     let b = state.building(site).unwrap();
-    assert!(!b.built);
+    assert!(!b.built());
     assert_eq!(b.hp, BuildingKind::Turret.base_stats().max_hp / 5);
     assert!(!state.passable(anchor), "sites block their footprint");
 
@@ -213,7 +213,7 @@ fn construction_ramps_and_completes() {
     });
     assert!(!events.is_empty());
     let b = state.building(site).unwrap();
-    assert!(b.built);
+    assert!(b.built());
     assert_eq!(
         b.hp,
         BuildingKind::Turret.base_stats().max_hp,
@@ -283,13 +283,21 @@ fn a_second_builder_resumes_a_dead_builders_site() {
         .find(|b| b.anchor == anchor)
         .expect("site survives its builder")
         .id;
-    let progress_when_orphaned = state.building(site).unwrap().progress;
+    let progress_when_orphaned = state
+        .building(site)
+        .unwrap()
+        .construction_progress()
+        .unwrap_or(0);
     // Progress is frozen while nobody tends the site.
     for _ in 0..60 {
         state.tick(&[]);
     }
     assert_eq!(
-        state.building(site).unwrap().progress,
+        state
+            .building(site)
+            .unwrap()
+            .construction_progress()
+            .unwrap_or(0),
         progress_when_orphaned
     );
     // Aiming a fresh Build at the same anchor resumes, not double-pays.
@@ -306,7 +314,7 @@ fn a_second_builder_resumes_a_dead_builders_site() {
     )]);
     assert_eq!(state.player(PlayerId(0)).scrap, scrap_before);
     run_until(&mut state, 900, |s, _| {
-        s.building(site).is_some_and(|b| b.built)
+        s.building(site).is_some_and(oxide_sim::Building::built)
     });
 }
 
@@ -462,7 +470,9 @@ fn scouted_sites_are_remembered_as_sites() {
     )]);
     run_until(&mut state, 400, |s, _| !s.can_see(PlayerId(0), anchor));
     run_until(&mut state, 700, |s, _| {
-        s.buildings().iter().any(|b| b.anchor == anchor && b.built)
+        s.buildings()
+            .iter()
+            .any(|b| b.anchor == anchor && b.built())
     });
     let ghost = state
         .vision(PlayerId(0))
@@ -742,7 +752,7 @@ fn extra_builders_accelerate_construction() {
         while !state
             .buildings()
             .iter()
-            .any(|b| b.anchor == anchor && b.built)
+            .any(|b| b.anchor == anchor && b.built())
         {
             state.tick(&[]);
             ticks += 1;
@@ -968,7 +978,11 @@ fn same_tick_construction_cannot_absorb_a_lethal_hit() {
         .unwrap()
         .id;
     run_until(&mut state, 100, |s, _| {
-        s.building(site).unwrap().progress > 0
+        s.building(site)
+            .unwrap()
+            .construction_progress()
+            .unwrap_or(0)
+            > 0
     });
     // Freeze construction at exactly 70 hp (the first ramp step is zero).
     state.tick(&[cmd(
@@ -1118,7 +1132,7 @@ fn a_doomed_site_never_comes_online() {
     for _ in 0..(build_ticks - 3) {
         all_events.extend(state.tick(&[]).events);
         assert!(
-            state.building(site).is_some_and(|b| !b.built && b.hp > 0),
+            state.building(site).is_some_and(|b| !b.built() && b.hp > 0),
             "premise: the site survives, unfinished, until the final tick"
         );
     }
@@ -1198,7 +1212,7 @@ fn queued_builds_chain_one_builder_through_two_sites() {
     run_until(&mut state, 2_000, |s, _| {
         s.buildings()
             .iter()
-            .filter(|b| b.player == PlayerId(0) && b.built)
+            .filter(|b| b.player == PlayerId(0) && b.built())
             .count()
             == 3 // foundry + both towers
     });
@@ -1254,7 +1268,7 @@ fn a_queued_build_claim_protects_the_site_until_its_worker_arrives() {
     }
 
     let queued_site = state.building(queued).unwrap();
-    assert!(!queued_site.built, "the queued job has not started yet");
+    assert!(!queued_site.built(), "the queued job has not started yet");
     assert_eq!(
         queued_site.hp, initial_hp,
         "a paid site promised to a live worker must not decay while it waits"
@@ -1385,7 +1399,7 @@ fn a_queued_build_whose_site_died_pops_silently_and_the_program_survives() {
         state
             .buildings()
             .iter()
-            .any(|b| b.kind == oxide_sim::stats::BuildingKind::Turret && b.built),
+            .any(|b| b.kind == oxide_sim::stats::BuildingKind::Turret && b.built()),
         "the first leg still finished"
     );
 }
@@ -1488,7 +1502,7 @@ fn resuming_a_site_sends_every_hand() {
     run_until(&mut state, 600, |s, _| {
         s.buildings()
             .iter()
-            .any(|b| b.kind == oxide_sim::stats::BuildingKind::Turret && b.built)
+            .any(|b| b.kind == oxide_sim::stats::BuildingKind::Turret && b.built())
     });
 }
 
@@ -1899,7 +1913,7 @@ fn a_fresh_placement_commits_the_whole_crew() {
         while !state
             .buildings()
             .iter()
-            .any(|b| b.anchor == anchor && b.built)
+            .any(|b| b.anchor == anchor && b.built())
         {
             state.tick(&[]);
             ticks += 1;
@@ -1962,7 +1976,7 @@ fn a_deferred_build_founds_on_arrival() {
         state
             .buildings()
             .iter()
-            .any(|b| b.anchor == spot && b.provisional),
+            .any(|b| b.anchor == spot && b.provisional()),
         "acceptance creates a nonphysical paid scaffold"
     );
     assert_eq!(
@@ -1976,7 +1990,7 @@ fn a_deferred_build_founds_on_arrival() {
     run_until(&mut state, 600, |s, _| {
         s.buildings()
             .iter()
-            .any(|b| b.anchor == spot && !b.provisional)
+            .any(|b| b.anchor == spot && !b.provisional())
     });
     let cost = BuildingKind::Turret.base_stats().construction.unwrap().cost;
     assert_eq!(
@@ -2269,7 +2283,10 @@ fn cancelling_a_started_site_by_kind_and_anchor_matches_cancelling_it_by_id() {
         .expect("the site stands")
         .id;
     for _ in 0..600 {
-        if state.building(site).is_some_and(|b| b.progress > 0) {
+        if state
+            .building(site)
+            .is_some_and(|b| b.construction_progress().unwrap_or(0) > 0)
+        {
             break;
         }
         state.tick(&[]);
@@ -2277,7 +2294,7 @@ fn cancelling_a_started_site_by_kind_and_anchor_matches_cancelling_it_by_id() {
     assert!(
         state
             .building(site)
-            .is_some_and(|b| b.progress > 0 && !b.built),
+            .is_some_and(|b| b.construction_progress().unwrap_or(0) > 0 && !b.built()),
         "premise: the site is under way"
     );
 
@@ -3141,13 +3158,13 @@ fn a_late_crewmate_finds_its_building_finished_and_calls_it_done() {
         },
     )]);
     run_until(&mut state, 2_000, |s, _| {
-        s.buildings().iter().any(|b| b.anchor == spot && b.built)
+        s.buildings().iter().any(|b| b.anchor == spot && b.built())
     });
     assert!(
         state
             .buildings()
             .iter()
-            .any(|b| b.anchor == spot && b.built),
+            .any(|b| b.anchor == spot && b.built()),
         "the founder must finish before the straggler arrives for this test to bite"
     );
     let events = run_until(&mut state, 600, |s, _| {
@@ -3219,12 +3236,12 @@ fn a_paid_founder_cannot_lose_its_funding_to_training() {
         }
     )));
     run_until(&mut state, 1000, |s, _| {
-        s.buildings().iter().any(|b| b.anchor == spot && b.built)
+        s.buildings().iter().any(|b| b.anchor == spot && b.built())
     });
     assert!(
         state
             .buildings()
             .iter()
-            .any(|b| b.anchor == spot && b.built)
+            .any(|b| b.anchor == spot && b.built())
     );
 }

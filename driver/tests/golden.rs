@@ -734,14 +734,20 @@ fn showcase_covers_every_rendered_feature() {
         BuildingKind::ScuttleCharge,
     ] {
         assert!(
-            state.buildings().iter().any(|b| b.kind == kind && b.built),
+            state
+                .buildings()
+                .iter()
+                .any(|b| b.kind == kind && b.built()),
             "no standing {kind:?}"
         );
         // Anything constructible must show a site form, the Foundry
         // included.
         assert_eq!(
             kind.base_stats().construction.is_some(),
-            state.buildings().iter().any(|b| b.kind == kind && !b.built),
+            state
+                .buildings()
+                .iter()
+                .any(|b| b.kind == kind && !b.built()),
             "{kind:?}'s scaffolding coverage disagrees with whether it can be built"
         );
     }

@@ -125,7 +125,7 @@ fn authored_structures_stand_built_and_validate_their_ground() {
         .iter()
         .find(|b| b.kind == BuildingKind::Turret)
         .expect("the authored turret stands");
-    assert!(turret.built, "at full strength from tick zero");
+    assert!(turret.built(), "at full strength from tick zero");
     assert_eq!(turret.hp, BuildingKind::Turret.base_stats().max_hp);
 
     // The same anchor twice: the second footprint reads occupied.

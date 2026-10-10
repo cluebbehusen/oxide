@@ -130,12 +130,12 @@ pub(crate) fn selection_info(game: &Scene<'_>, panel: &Panel) -> SelectionInfo {
             return info;
         };
         let stats = b.stats();
-        if b.player == game.presentation.human && b.built {
+        if b.player == game.presentation.human && b.built() {
             info.upgrade = super::upgrade::comparison(b.kind, b.tier);
         }
         info.health = Some((b.hp, stats.max_hp));
         info.ownership(game, b.player);
-        if !b.built {
+        if !b.built() {
             info.status.push(
                 if b.tier > 0 {
                     "Upgrading"
@@ -168,7 +168,7 @@ pub(crate) fn selection_info(game: &Scene<'_>, panel: &Panel) -> SelectionInfo {
                 );
             } else if matches!(b.kind, BuildingKind::Foundry | BuildingKind::Reclaimer) {
                 let income = building_income(game, b);
-                if b.built && b.kind == BuildingKind::Foundry && income == 0 {
+                if b.built() && b.kind == BuildingKind::Foundry && income == 0 {
                     let remaining = FOUNDRY_DRIP_START_TICK
                         .saturating_sub(game.state.current_tick())
                         .div_ceil(u64::from(oxide_sim::TICKS_PER_SECOND));

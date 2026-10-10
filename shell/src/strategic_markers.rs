@@ -235,7 +235,7 @@ pub(crate) fn draw_buildings(game: &Scene<'_>) {
             b.kind,
             b.player,
             b.anchor,
-            b.built,
+            b.built(),
             false,
             game.presentation.selection.buildings.contains(&b.id),
             1.0,

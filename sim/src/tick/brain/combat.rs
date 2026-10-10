@@ -313,13 +313,13 @@ pub(super) fn land_shells(state: &mut State, hits: &mut Vec<PendingHit>, events:
             .iter()
             .filter(|b| {
                 b.hp > 0
-                    && !b.provisional
+                    && !b.provisional()
                     && shell.targets.ground
                     && state.hostile(shell.player, b.player)
                     && b.closest_point_to(shell.impact).dist_sq(shell.impact)
                         <= const { chassis::fx::Fx::lit("0.0001") }
             })
-            .min_by_key(|b| (b.kind.is_stealthy() && b.built, b.id));
+            .min_by_key(|b| (b.kind.is_stealthy() && b.built(), b.id));
         if let Some(b) = direct {
             hits.push(PendingHit::along(
                 state,
@@ -336,7 +336,7 @@ pub(super) fn land_shells(state: &mut State, hits: &mut Vec<PendingHit>, events:
         if shell.targets.ground {
             for b in &state.buildings {
                 if b.hp == 0
-                    || b.provisional
+                    || b.provisional()
                     || !b.kind.is_stealthy()
                     || !state.hostile(shell.player, b.player)
                     || direct.is_some_and(|d| d.id == b.id)
@@ -430,7 +430,7 @@ fn buffer_shot(
     if weapon.targets.ground {
         for b in &state.buildings {
             if b.hp == 0
-                || b.provisional
+                || b.provisional()
                 || !b.kind.is_stealthy()
                 || !state.hostile(attacker_owner, b.player)
                 || Target::Building(b.id) == victim
@@ -471,7 +471,7 @@ pub(super) fn turret_fire(
         let Some(atk) = b.stats().weapons.first() else {
             continue;
         };
-        if !b.built || b.hp == 0 {
+        if !b.built() || b.hp == 0 {
             continue;
         }
         let (me, center, cooling, kind, tier, focus) = (

@@ -348,7 +348,7 @@ pub fn building_economy_lines(kind: BuildingKind) -> Vec<String> {
 
 /// Current recurring output; harvesting and temporary recovery grants are separate.
 pub(crate) fn building_income(game: &Scene<'_>, building: &oxide_sim::state::Building) -> u32 {
-    if building.player != game.presentation.human || !building.built || building.hp == 0 {
+    if building.player != game.presentation.human || !building.built() || building.hp == 0 {
         return 0;
     }
     if let Some(income) = game.state.extractor_income(building.id) {
@@ -500,11 +500,12 @@ fn order_subject(
                 |projection| projection.building(game.state, *site),
             )?;
             let ticks = b.stats().construction.map_or(1, |c| c.build_ticks).max(1);
-            let frac = (b.progress as f32 / ticks as f32).clamp(0.0, 1.0);
+            let frac =
+                (b.construction_progress().unwrap_or(0) as f32 / ticks as f32).clamp(0.0, 1.0);
             Some((
                 OrderSubject::Building(b.kind, faction_of(b.player)),
                 entity_name(b.kind.tier_name(b.tier)),
-                !b.built,
+                !b.built(),
                 Some(frac),
             ))
         }
@@ -514,7 +515,7 @@ fn order_subject(
             Some((
                 OrderSubject::Building(b.kind, faction_of(b.player)),
                 entity_name(b.kind.tier_name(b.tier)),
-                !b.built,
+                !b.built(),
                 Some(frac),
             ))
         }
@@ -741,7 +742,7 @@ fn own_order_card(
     let unbuilt = match order {
         Order::Build { site } => projection
             .building(game.state, *site)
-            .filter(|building| !building.built),
+            .filter(|building| !building.built()),
         _ => None,
     };
     match (order, unbuilt) {
@@ -1009,7 +1010,7 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
         let selected = crate::building_actions::SelectedBuildings::inspect(game);
         panel.cards = selected.cards(bindings);
         if plural {
-            let offline = selected.buildings.iter().filter(|b| !b.built).count();
+            let offline = selected.buildings.iter().filter(|b| !b.built()).count();
             let focused = selected
                 .buildings
                 .iter()
@@ -1037,12 +1038,13 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
                     None,
                 ));
             } else {
-                panel.queue_label = production_queue_label(&building.queue, building.progress)
-                    .unwrap_or_else(|| "queue".into());
+                panel.queue_label =
+                    production_queue_label(&building.queue, building.training_progress())
+                        .unwrap_or_else(|| "queue".into());
             }
             for (i, &kind) in building.queue.iter().enumerate() {
                 let progress = (i == 0).then(|| {
-                    (building.progress as f32 / kind.stats().train_ticks.max(1) as f32)
+                    (building.training_progress() as f32 / kind.stats().train_ticks.max(1) as f32)
                         .clamp(0.0, 1.0)
                 });
                 panel.queue.push(Card {

@@ -88,7 +88,10 @@ fn find(state: &State, kind: BuildingKind) -> oxide_sim::BuildingId {
 fn run_until_built(state: &mut State, building: oxide_sim::BuildingId, cap: u64) {
     for _ in 0..cap {
         state.tick(&[]);
-        if state.building(building).is_some_and(|b| b.built) {
+        if state
+            .building(building)
+            .is_some_and(oxide_sim::Building::built)
+        {
             return;
         }
     }
@@ -110,12 +113,19 @@ fn a_self_upgrade_uses_the_exact_timer_without_workers() {
     assert!(report.events.iter().all(
         |event| !matches!(event, Event::BuildingCompleted { building, .. } if *building == turret)
     ));
-    assert_eq!(state.building(turret).unwrap().progress, 1);
+    assert_eq!(
+        state
+            .building(turret)
+            .unwrap()
+            .construction_progress()
+            .unwrap_or(0),
+        1
+    );
     for expected in 2..ticks {
         let report = state.tick(&[]);
         let building = state.building(turret).unwrap();
-        assert!(!building.built, "the works stood one tick too soon");
-        assert_eq!(building.progress, expected);
+        assert!(!building.built(), "the works stood one tick too soon");
+        assert_eq!(building.construction_progress().unwrap_or(0), expected);
         assert!(report.events.iter().all(
             |event| !matches!(event, Event::BuildingCompleted { building, .. } if *building == turret)
         ));
@@ -123,8 +133,7 @@ fn a_self_upgrade_uses_the_exact_timer_without_workers() {
 
     let report = state.tick(&[]);
     let building = state.building(turret).unwrap();
-    assert!(building.built);
-    assert_eq!(building.progress, 0);
+    assert!(building.built());
     assert!(report.events.iter().any(
         |event| matches!(event, Event::BuildingCompleted { building, .. } if *building == turret)
     ));
@@ -232,7 +241,11 @@ fn a_stale_builder_order_cannot_speed_up_the_next_tier() {
     state.tick(&[upgrade(turret)]);
 
     assert_eq!(
-        state.building(turret).unwrap().progress,
+        state
+            .building(turret)
+            .unwrap()
+            .construction_progress()
+            .unwrap_or(0),
         1,
         "only the building's automatic clock advances"
     );
@@ -258,7 +271,7 @@ fn the_ladder_lifts_and_the_numbers_follow() {
     );
     {
         let b = state.building(turret).unwrap();
-        assert!(!b.built, "the works goes offline as a site");
+        assert!(!b.built(), "the works goes offline as a site");
         assert_eq!(b.tier, 1, "the tier bumps at commitment");
     }
     run_until_built(&mut state, turret, 2_000);
@@ -398,7 +411,14 @@ fn lethal_fire_wins_an_upgrades_completion_tick() {
     for _ in 0..ticks - 2 {
         state.tick(&[]);
     }
-    assert_eq!(state.building(turret).unwrap().progress, ticks - 1);
+    assert_eq!(
+        state
+            .building(turret)
+            .unwrap()
+            .construction_progress()
+            .unwrap_or(0),
+        ticks - 1
+    );
 
     for &attacker in &sappers {
         common::face_target(&mut state, attacker, oxide_sim::Target::Building(turret));

@@ -272,7 +272,7 @@ fn a_mast_under_construction_detects_nothing() {
         state
             .buildings()
             .iter()
-            .any(|b| b.anchor == mast && !b.built),
+            .any(|b| b.anchor == mast && !b.built()),
         "the site is claimed at once, unfinished"
     );
     assert!(
@@ -286,7 +286,7 @@ fn a_mast_under_construction_detects_nothing() {
         if state
             .buildings()
             .iter()
-            .any(|b| b.anchor == mast && b.built)
+            .any(|b| b.anchor == mast && b.built())
         {
             break;
         }
@@ -295,7 +295,7 @@ fn a_mast_under_construction_detects_nothing() {
         state
             .buildings()
             .iter()
-            .any(|b| b.anchor == mast && b.built),
+            .any(|b| b.anchor == mast && b.built()),
         "the mast never finished"
     );
     assert!(
@@ -343,7 +343,7 @@ fn the_deep_array_upgrade_buys_the_wide_ring() {
         let b = state
             .building(mast_id)
             .expect("the works survives its own site");
-        assert_eq!((b.built, b.tier), (false, 1), "offline as a tier-1 site");
+        assert_eq!((b.built(), b.tier), (false, 1), "offline as a tier-1 site");
     }
     assert!(
         !apparent(&state, 0, far),
@@ -352,13 +352,16 @@ fn the_deep_array_upgrade_buys_the_wide_ring() {
 
     for _ in 0..2_000 {
         state.tick(&[]);
-        if state.building(mast_id).is_some_and(|b| b.built) {
+        if state
+            .building(mast_id)
+            .is_some_and(oxide_sim::Building::built)
+        {
             break;
         }
     }
     let b = state.building(mast_id).expect("the mast survives");
     assert!(
-        b.built && b.tier == 1,
+        b.built() && b.tier == 1,
         "the mast stood back up as a Deep Array"
     );
     assert!(

@@ -580,7 +580,7 @@ fn excavator_construction_activates_unit_and_site_machinery() {
         if state
             .buildings()
             .iter()
-            .any(|b| b.anchor == anchor && b.progress > 0)
+            .any(|b| b.anchor == anchor && b.construction_progress().unwrap_or(0) > 0)
         {
             break;
         }
@@ -592,8 +592,8 @@ fn excavator_construction_activates_unit_and_site_machinery() {
         .iter()
         .find(|building| building.anchor == anchor)
         .expect("construction site exists");
-    assert!(!site.built);
-    assert!(site.progress > 0);
+    assert!(!site.built());
+    assert!(site.construction_progress().unwrap_or(0) > 0);
     let unit = state.unit(excavator).expect("Excavator survives");
     let mut controller = AnimationController::default();
     controller.observe_workers(&state);
@@ -706,11 +706,9 @@ fn construction_requires_the_assigned_harvester_at_the_site() {
         anchor: TilePos::new(10, 10),
         hp: 100,
         queue: VecDeque::new(),
-        progress: 20,
+        phase: BuildingPhase::Site { progress: 20 },
         rally: None,
         focus: None,
-        built: false,
-        provisional: false,
         tier: 0,
         cooldown: 0,
         salvage_drained: 0,

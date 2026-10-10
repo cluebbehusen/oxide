@@ -225,7 +225,7 @@ fn recurring_income_tracks_real_output_upgrade_downtime_and_foundry_warmup() {
             building: reclaimer,
         },
     }]);
-    assert!(!game.state.building(reclaimer).unwrap().built);
+    assert!(!game.state.building(reclaimer).unwrap().built());
     assert_eq!(rate(&game, reclaimer), 0);
     for _ in 0..300 {
         game.state.tick(&[]);

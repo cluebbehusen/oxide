@@ -60,7 +60,7 @@ impl Production {
             .selected
             .buildings
             .iter()
-            .find(|b| (homogeneous || b.built) && self.roster(b).nth(slot).is_some())?;
+            .find(|b| (homogeneous || b.built()) && self.roster(b).nth(slot).is_some())?;
         let kind = self.roster(first).nth(slot)?;
         let candidates: Vec<_> = self
             .selected
@@ -109,7 +109,7 @@ impl Production {
         let mut offline = 0;
         let mut unfunded = 0;
         for building in candidates {
-            if !building.built || !building.stats().produces.contains(&kind) {
+            if !building.built() || !building.stats().produces.contains(&kind) {
                 offline += 1;
             } else if building.queue.len() >= oxide_sim::stats::QUEUE_CAP {
                 full += 1;
@@ -199,7 +199,7 @@ impl Production {
                         (
                             (
                                 index == 0,
-                                if index == 0 { b.progress } else { 0 },
+                                if index == 0 { b.training_progress() } else { 0 },
                                 b.id,
                                 std::cmp::Reverse(index),
                             ),
@@ -240,7 +240,11 @@ impl Production {
                 .buildings
                 .iter()
                 .filter(|b| b.queue.front() == Some(&kind))
-                .map(|b| kind.stats().train_ticks.saturating_sub(b.progress))
+                .map(|b| {
+                    kind.stats()
+                        .train_ticks
+                        .saturating_sub(b.training_progress())
+                })
                 .min();
             let mut desc = vec![
                 format!("{active} building; {} waiting.", count - active),

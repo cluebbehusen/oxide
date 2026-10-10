@@ -168,9 +168,14 @@ fn forge_buildings(
             .find(|building| building["id"] == serde_json::json!(id))
             .expect("building id survives serialization");
         building["hp"] = serde_json::json!(hp);
-        building["built"] = serde_json::json!(built);
         building["tier"] = serde_json::json!(tier);
-        building["progress"] = serde_json::json!(i32::from(!*built));
+        building["phase"] = if *built {
+            serde_json::json!({"phase": "built"})
+        } else if *tier > 0 {
+            serde_json::json!({"phase": "upgrading", "progress": 1})
+        } else {
+            serde_json::json!({"phase": "site", "progress": 1})
+        };
     }
     serde_json::from_value(json).unwrap()
 }
@@ -324,7 +329,7 @@ fn overlapping_bays_stack_the_heal_and_telescope_the_bill_once() {
         state
             .buildings()
             .iter()
-            .filter(|b| b.kind == BuildingKind::RepairBay && b.built)
+            .filter(|b| b.kind == BuildingKind::RepairBay && b.built())
             .count(),
         2,
         "the second bay must actually stand"
@@ -643,9 +648,9 @@ fn an_unbuilt_bay_is_inert() {
         },
     )]);
     run_until(&mut state, 500, |s, _| {
-        s.buildings()
-            .iter()
-            .any(|b| b.kind == BuildingKind::RepairBay && b.progress > 0)
+        s.buildings().iter().any(|b| {
+            b.kind == BuildingKind::RepairBay && b.construction_progress().unwrap_or(0) > 0
+        })
     });
     state.tick(&[cmd(
         0,
@@ -657,7 +662,7 @@ fn an_unbuilt_bay_is_inert() {
         state
             .buildings()
             .iter()
-            .any(|b| b.kind == BuildingKind::RepairBay && !b.built),
+            .any(|b| b.kind == BuildingKind::RepairBay && !b.built()),
         "test premise: the site stands unbuilt"
     );
     let hurt = wound(&mut state, patient, raider, 20);

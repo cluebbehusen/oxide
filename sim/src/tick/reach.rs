@@ -321,7 +321,7 @@ fn scan_reversed(
         .iter()
         .find(|building| {
             building.player == player
-                && !building.provisional
+                && !building.provisional()
                 && building.kind == crate::stats::BuildingKind::Foundry
         })
         .map(|building| (building.anchor, building.kind.size()));

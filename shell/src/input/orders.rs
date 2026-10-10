@@ -225,7 +225,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
     if (has_worker || has_welder)
         && let Some(building) = own_building
     {
-        if !building.built {
+        if !building.built() {
             if building.tier > 0 {
                 game.presentation.toast("Upgrade runs automatically");
                 return;

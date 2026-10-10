@@ -91,7 +91,7 @@ pub(crate) fn draw_pending_founds(game: &crate::game::Scene<'_>, sprites: &Sprit
         .state
         .buildings()
         .iter()
-        .filter(|b| b.player == game.presentation.human && b.provisional)
+        .filter(|b| b.player == game.presentation.human && b.provisional())
     {
         let (w, h) = site.kind.size();
         let screen = game
@@ -755,7 +755,7 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
     // Frustum cull by anchor with a margin covering the widest footprint
     // plus bars and site dressing.
     let (view_lo, view_hi) = game.presentation.camera.world_rect();
-    for building in game.state.buildings().iter().filter(|b| !b.provisional) {
+    for building in game.state.buildings().iter().filter(|b| !b.provisional()) {
         if building.player != game.presentation.human
             && !game.presentation.all_seeing()
             && (!building.tiles().any(|t| game.my_vision().visible(t))
@@ -789,7 +789,7 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
             },
         );
         let frame = super::motion::building_frame(building.kind, animation);
-        let array_layers = (building.built && building.kind == oxide_sim::BuildingKind::Array)
+        let array_layers = (building.built() && building.kind == oxide_sim::BuildingKind::Array)
             .then(|| sprites.array_rig())
             .flatten()
             .map(|rig| rig.layers(building.tier, faction));
@@ -845,7 +845,7 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                 );
             }
         }
-        if building.built {
+        if building.built() {
             match building.kind {
                 oxide_sim::BuildingKind::Turret
                 | oxide_sim::BuildingKind::FlakTurret
@@ -855,10 +855,10 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                 _ => {}
             }
         }
-        if !building.built {
+        if !building.built() {
             // Construction progress in bone, distinct from training amber.
             let ticks = building.stats().construction.map_or(1, |c| c.build_ticks);
-            let fraction = building.progress as f32 / ticks as f32;
+            let fraction = building.construction_progress().unwrap_or(0) as f32 / ticks as f32;
             draw_rectangle(screen.x, screen.y + dest.y + 3.0, dest.x, 4.0, HP_BACK);
             draw_rectangle(
                 screen.x,
@@ -881,21 +881,19 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
         // A site's partial hp is what the construction ramp grants, so the
         // progress bar shows it alone; the hp bar appears only when damage
         // has taken hp construction already gave. The check mirrors the
-        // sim's integer ramp exactly (a float version flickers), and gates
-        // on !built because progress doubles as the train counter on
-        // finished producers.
+        // sim's integer ramp exactly (a float version flickers).
         let max_hp = building.stats().max_hp;
-        let under_own_salvage = building.built && salvaging.contains(&building.id);
+        let under_own_salvage = building.built() && salvaging.contains(&building.id);
         let wounded = if under_own_salvage {
             // The gold teardown bar below already shows the fraction.
             false
-        } else if building.built {
-            building.hp < max_hp
-        } else {
+        } else if let Some(progress) = building.construction_progress() {
             let ticks = building.stats().construction.map_or(1, |c| c.build_ticks);
             let start = max_hp / 5;
-            let expected = start + (max_hp - start) * building.progress.min(ticks) / ticks;
+            let expected = start + (max_hp - start) * progress.min(ticks) / ticks;
             building.hp < expected
+        } else {
+            building.hp < max_hp
         };
         if wounded {
             hp_bar(screen.x, screen.y - 8.0, dest.x, building.hp, max_hp);
@@ -904,7 +902,7 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
         if production_progress_visible(game, building)
             && let Some(kind) = building.queue.front()
         {
-            let fraction = building.progress as f32 / kind.stats().train_ticks as f32;
+            let fraction = building.training_progress() as f32 / kind.stats().train_ticks as f32;
             draw_rectangle(screen.x, screen.y + dest.y + 3.0, dest.x, 4.0, HP_BACK);
             draw_rectangle(
                 screen.x,
@@ -2331,7 +2329,7 @@ fn selected_economy_support_links(game: &crate::game::Scene<'_>) -> Vec<EconomyS
     let Some(building) = game.state.building(selected) else {
         return Vec::new();
     };
-    if building.player != game.presentation.human || !building.built || building.hp == 0 {
+    if building.player != game.presentation.human || !building.built() || building.hp == 0 {
         return Vec::new();
     }
 

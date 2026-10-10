@@ -136,7 +136,7 @@ impl Opponent {
             || !state.buildings().iter().any(|building| {
                 building.player == self.player
                     && building.kind == BuildingKind::Foundry
-                    && building.built
+                    && building.built()
             })
         {
             return None;

@@ -189,7 +189,7 @@ fn adjacent_build_repair_and_salvage_approach_before_advancing_work() {
                 .position(|b| b.id == target)
                 .unwrap();
             if job == "build" {
-                data["buildings"][slot]["built"] = json!(false);
+                data["buildings"][slot]["phase"] = json!({"phase": "site"});
             }
             if job != "salvage" {
                 data["buildings"][slot]["hp"] = json!(100);
@@ -211,14 +211,18 @@ fn adjacent_build_repair_and_salvage_approach_before_advancing_work() {
                         .dist_sq(state.contact_surface(b).closest(before.pos))
                         <= reach * reach;
                 let old_progress = if job == "build" {
-                    b.progress
+                    b.construction_progress().unwrap_or(0)
                 } else {
                     before.progress
                 };
                 state.tick(&[]);
                 let after = state.unit(id).unwrap();
                 let progress = if job == "build" {
-                    state.building(target).unwrap().progress
+                    state
+                        .building(target)
+                        .unwrap()
+                        .construction_progress()
+                        .unwrap_or(0)
                 } else {
                     after.progress
                 };

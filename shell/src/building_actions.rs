@@ -35,7 +35,7 @@ impl SelectedBuildings {
                 .collect(),
             tech: buildings
                 .iter()
-                .filter(|b| b.player == game.presentation.human && b.built)
+                .filter(|b| b.player == game.presentation.human && b.built())
                 .map(|b| b.kind)
                 .collect(),
             scrap,
@@ -69,7 +69,7 @@ impl SelectedBuildings {
     pub fn producers(&self) -> Vec<BuildingId> {
         self.buildings
             .iter()
-            .filter(|b| self.accepts && b.built && !b.stats().produces.is_empty())
+            .filter(|b| self.accepts && b.built() && !b.stats().produces.is_empty())
             .map(|b| b.id)
             .collect()
     }
@@ -79,7 +79,7 @@ impl SelectedBuildings {
             .iter()
             .filter(|b| {
                 self.accepts
-                    && b.built
+                    && b.built()
                     && b.stats().weapons.first().is_some_and(|weapon| {
                         domain.is_none_or(|domain| weapon.targets.covers(domain))
                     })
@@ -94,7 +94,7 @@ impl SelectedBuildings {
         }
         self.buildings
             .iter()
-            .filter(|b| !b.built && b.tier == 0)
+            .filter(|b| !b.built() && b.tier == 0)
             .map(|b| b.id)
             .collect()
     }
@@ -120,7 +120,7 @@ impl SelectedBuildings {
         let mut bank = self.scrap;
         let mut reasons = Vec::new();
         for b in &self.buildings {
-            let reason = if !b.built {
+            let reason = if !b.built() {
                 Some("offline".into())
             } else if let Some(upgrade) = b.kind.upgrade_from(b.tier) {
                 if let Some(req) = upgrade.requires.iter().find(|req| !self.tech.contains(req)) {
@@ -202,7 +202,7 @@ impl SelectedBuildings {
         // A single upgrading works retains its progress card. Group actions
         // remain available for other members that are still in service.
         if let [b] = self.buildings.as_slice()
-            && !b.built
+            && !b.built()
             && b.tier > 0
         {
             cards.push(Card {
@@ -214,10 +214,10 @@ impl SelectedBuildings {
                 enabled: false,
                 why: Some("upgrades cannot be cancelled".into()),
                 desc: vec!["The works returns to service when the upgrade finishes.".into()],
-                progress: b
-                    .stats()
-                    .construction
-                    .map(|c| (b.progress as f32 / c.build_ticks.max(1) as f32).clamp(0.0, 1.0)),
+                progress: b.stats().construction.map(|c| {
+                    (b.construction_progress().unwrap_or(0) as f32 / c.build_ticks.max(1) as f32)
+                        .clamp(0.0, 1.0)
+                }),
             });
         } else if let Some(batch) = self.upgrade_batch() {
             let first = self
@@ -325,7 +325,7 @@ pub(crate) fn stop_or_scrap(game: &mut Game) {
         game.issue(Command::ClearFocus { buildings });
     } else if !selected.sites().is_empty() {
         scrap_sites(game);
-    } else if selected.buildings.iter().any(|b| !b.built && b.tier > 0) {
+    } else if selected.buildings.iter().any(|b| !b.built() && b.tier > 0) {
         game.presentation.toast("Upgrades cannot be cancelled");
     }
 }

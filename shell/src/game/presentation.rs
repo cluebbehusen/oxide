@@ -197,7 +197,7 @@ impl<'a> Scene<'a> {
     pub fn home_foundry(&self) -> Option<&'a Building> {
         self.state.buildings().iter().find(|b| {
             b.player == self.presentation.human
-                && !b.provisional
+                && !b.provisional()
                 && b.kind == oxide_sim::BuildingKind::Foundry
         })
     }

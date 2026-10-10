@@ -165,7 +165,7 @@ pub(in crate::tick) fn surface_for(
                 .then(|| {
                     state
                         .buildings_at(unit.tile())
-                        .find(|b| !b.kind.is_stealthy() && !b.provisional)
+                        .find(|b| !b.kind.is_stealthy() && !b.provisional())
                 })
                 .flatten()
         })?;

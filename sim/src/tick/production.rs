@@ -10,7 +10,7 @@
 use super::{rect_adjacent_tiles, spawn_doorstep_key};
 use crate::event::Event;
 use crate::ids::{PlayerId, UnitId};
-use crate::state::{Order, Recovery, State};
+use crate::state::{BuildingPhase, Order, Recovery, State};
 use crate::stats::{BuildingKind, Domain};
 use chassis::grid::TilePos;
 
@@ -53,7 +53,7 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
             .buildings
             .iter()
             .filter(|b| {
-                b.built
+                b.built()
                     && b.hp > 0
                     && b.kind == crate::stats::BuildingKind::Reclaimer
                     && b.tier == tier
@@ -108,7 +108,7 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
                     .filter(|building| {
                         building.player == player
                             && building.hp > 0
-                            && building.built
+                            && building.built()
                             && building.kind == crate::stats::BuildingKind::Foundry
                     })
                     .count();
@@ -171,15 +171,15 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
         let Some(b) = state.building_mut(id) else {
             continue;
         };
-        if !b.built {
+        let BuildingPhase::Built { training } = &mut b.phase else {
             continue; // a site's progress belongs to its builder
-        }
+        };
         let Some(&kind) = b.queue.front() else {
-            b.progress = 0;
+            *training = 0;
             continue;
         };
-        b.progress = (b.progress + 1).min(kind.stats().train_ticks);
-        if b.progress < kind.stats().train_ticks {
+        *training = (*training + 1).min(kind.stats().train_ticks);
+        if *training < kind.stats().train_ticks {
             continue;
         }
         // Ready — aircraft occupy the open Airworks roof bay itself. Ground
@@ -218,7 +218,7 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
         }
         let b = state.building_mut(id).expect("still standing");
         b.queue.pop_front();
-        b.progress = 0;
+        b.phase = BuildingPhase::Built { training: 0 };
     }
 }
 
@@ -284,9 +284,7 @@ pub(super) fn decay_abandoned_sites(state: &mut State) {
     let decays: Vec<crate::ids::BuildingId> = state
         .buildings
         .iter()
-        .filter(|building| {
-            !building.built && !building.provisional && building.hp > 0 && building.tier == 0
-        })
+        .filter(|building| matches!(building.phase, BuildingPhase::Site { .. }) && building.hp > 0)
         .filter(|building| {
             !state.units.iter().any(|unit| {
                 unit.player == building.player

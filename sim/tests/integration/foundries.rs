@@ -92,7 +92,7 @@ fn a_foundry_expansion_needs_a_standing_fabricator() {
             .buildings()
             .iter()
             .any(|b| b.kind == BuildingKind::Foundry
-                && !b.built
+                && !b.built()
                 && b.anchor == TilePos::new(10, 4)),
         "the expansion site stands"
     );
@@ -106,7 +106,7 @@ fn a_completed_expansion_produces_and_smelts_its_own_drip() {
     let expansion = state
         .buildings()
         .iter()
-        .find(|b| b.kind == BuildingKind::Foundry && !b.built)
+        .find(|b| b.kind == BuildingKind::Foundry && !b.built())
         .unwrap()
         .id;
     for _ in 0..BuildingKind::Foundry
@@ -117,12 +117,15 @@ fn a_completed_expansion_produces_and_smelts_its_own_drip() {
         + 40
     {
         state.tick(&[]);
-        if state.building(expansion).is_some_and(|b| b.built) {
+        if state
+            .building(expansion)
+            .is_some_and(oxide_sim::Building::built)
+        {
             break;
         }
     }
     assert!(
-        state.building(expansion).unwrap().built,
+        state.building(expansion).unwrap().built(),
         "the attended site completes"
     );
     let bank = state.player(PlayerId(0)).scrap;
@@ -176,7 +179,7 @@ fn a_foundry_site_keeps_its_team_alive() {
     let standing = state
         .buildings()
         .iter()
-        .find(|b| b.kind == BuildingKind::Foundry && b.built && b.player == PlayerId(0))
+        .find(|b| b.kind == BuildingKind::Foundry && b.built() && b.player == PlayerId(0))
         .unwrap()
         .id;
 

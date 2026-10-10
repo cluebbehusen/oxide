@@ -1668,7 +1668,7 @@ fn armed_verb_click(
             let tile = numeric::tile_at(world);
             let target = game.state.buildings_at(tile).find(|b| {
                 b.player == game.presentation.human
-                    && b.built
+                    && b.built()
                     && b.kind != oxide_sim::BuildingKind::Foundry
             });
             let Some(building) = target.map(|b| b.id) else {

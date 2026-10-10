@@ -36,9 +36,7 @@ pub(crate) fn replaced_sites(state: &State, player: PlayerId, units: &[UnitId]) 
         .iter()
         .filter(|site| {
             site.player == player
-                && !site.built
-                && site.tier == 0
-                && site.progress == 0
+                && site.unstarted()
                 && state
                     .units
                     .iter()
@@ -66,11 +64,7 @@ pub(super) fn cancel_abandoned(state: &mut State, events: &mut Vec<Event>) {
         .buildings
         .iter()
         .filter(|site| {
-            site.hp > 0
-                && !site.built
-                && site.tier == 0
-                && site.progress == 0
-                && !state.units.iter().any(|unit| committed(unit, site))
+            site.hp > 0 && site.unstarted() && !state.units.iter().any(|unit| committed(unit, site))
         })
         .map(|site| site.id)
         .collect();
@@ -84,7 +78,7 @@ pub(super) fn reveal(state: &mut State, events: &mut Vec<Event>) {
         .buildings
         .iter()
         .filter(|site| {
-            site.provisional
+            site.provisional()
                 && site
                     .tiles()
                     .all(|tile| state.vision(site.player).visible(tile))
@@ -101,7 +95,7 @@ pub(super) fn reveal(state: &mut State, events: &mut Vec<Event>) {
             refund(state, id, events);
             continue;
         }
-        state.building_mut(id).expect("collected site").provisional = false;
+        state.building_mut(id).expect("collected site").activate();
         let index = state
             .buildings
             .iter()

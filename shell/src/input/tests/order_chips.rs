@@ -309,7 +309,7 @@ fn a_held_site_chip_scraps_nothing_but_a_tap_cancels_the_site() {
         .state
         .buildings()
         .iter()
-        .find(|b| b.anchor == anchor && !b.built)
+        .find(|b| b.anchor == anchor && !b.built())
         .expect("the site stands")
         .id;
     game.presentation.selection.units = vec![worker];

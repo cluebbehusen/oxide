@@ -35,7 +35,7 @@ fn a_lethal_volley_precedes_construction_triggers_and_completion() {
                 .iter()
                 .any(|e| matches!(e, Event::ChargeDetonated { .. }))
         );
-        assert_eq!(state.building(site).unwrap().built, kill_mine);
+        assert_eq!(state.building(site).unwrap().built(), kill_mine);
         assert_eq!(state.building(mine).unwrap().hp == 0, kill_mine);
     }
 }
