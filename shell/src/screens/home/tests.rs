@@ -37,10 +37,9 @@ fn rows_mean_the_same_verbs_with_and_without_a_continue_row() {
 #[test]
 fn a_touch_only_door_offers_no_quit_and_keeps_its_verbs() {
     let mut door = HomeScreen::build(true, false);
-    assert!(!door.menu.items.iter().any(|item| item == "Quit"));
+    assert!(!door.menu.view().items.iter().any(|item| item == "Quit"));
     assert_eq!(pick(&mut door, 0), Out::Continue);
     assert_eq!(pick(&mut door, 6), Out::Settings);
-    assert_eq!(door.rows.len(), door.menu.items.len());
 }
 
 #[test]
@@ -53,7 +52,7 @@ fn recovery_is_explicit_and_does_not_change_continue_or_play() {
                 scenario: "test".into(),
             },
         ));
-        assert!(home.menu.items[0].contains("02:00"));
+        assert!(home.menu.view().items[0].contains("02:00"));
         assert_eq!(pick(&mut home, 0), Out::Recover);
         assert_eq!(
             pick(&mut home, 1),

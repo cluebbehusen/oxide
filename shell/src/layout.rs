@@ -1,8 +1,9 @@
 //! Where the in-game HUD chrome sits this frame.
 //!
-//! The renderer computes a [`LayoutModel`] as it draws and publishes it
-//! on the `Game`; hit-testing reads the same model, so drawing and
-//! hit-testing never keep separate geometry that could disagree.
+//! The HUD layout pass (`render::hud`) computes a [`LayoutModel`] before
+//! input and publishes it on the `Game`; hit-testing reads that model and
+//! drawing consumes the same pass, so they never keep separate geometry
+//! that could disagree.
 
 use crate::numeric;
 use crate::panel::CardAction;
@@ -101,9 +102,7 @@ impl Default for LayoutModel {
 /// and drawing.
 pub const TOP_BAR_H: f32 = 40.0;
 
-/// Minimum touch target edge in logical px (platform guidance says a
-/// fingertip needs ~44).
-pub const MIN_TOUCH_TARGET: f32 = 44.0;
+use crate::theme::MIN_TOUCH_TARGET;
 
 /// Pads a hit rect out to the minimum touch target, centered. Touch
 /// paths hit-test through this so small chrome stays tappable; mouse
@@ -341,65 +340,6 @@ pub fn tooltip_origin(
 }
 
 impl LayoutModel {
-    /// Computes the frame's chrome geometry. `panel_top` is the band's
-    /// top edge (`f32::INFINITY` when no panel is shown).
-    #[allow(clippy::too_many_arguments)]
-    #[expect(
-        clippy::large_types_passed_by_value,
-        reason = "the slot arrays move into the model"
-    )]
-    pub fn compute(
-        viewport: Vec2,
-        ui: f32,
-        panel_top: f32,
-        panel_right: f32,
-        orders: Rect,
-        minimap: Rect,
-        idle_badge: Rect,
-        menu_button: Rect,
-        pause_status: Rect,
-        mode_ribbon: Rect,
-        roster_slots: [(Rect, CardAction); 8],
-        roster_count: usize,
-        cards: [(Rect, CardAction); 16],
-        card_count: usize,
-        queue_slots: [(Rect, CardAction); 8],
-        queue_count: usize,
-    ) -> Self {
-        Self {
-            top_bar_h: TOP_BAR_H * ui,
-            performance: Rect::new(0.0, 0.0, 0.0, 0.0),
-            panel_top,
-            panel_right,
-            panel_regions: [
-                Rect::new(
-                    0.0,
-                    panel_top,
-                    panel_right,
-                    (viewport.y - panel_top).max(0.0),
-                ),
-                Rect::new(0.0, 0.0, 0.0, 0.0),
-            ],
-            orders,
-            minimap,
-            idle_badge,
-            alert_badge: Rect::new(0.0, 0.0, 0.0, 0.0),
-            group_column: Rect::new(0.0, 0.0, 0.0, 0.0),
-            group_slots: [None; crate::action::CONTROL_GROUPS],
-            menu_button,
-            pause_status,
-            mode_ribbon,
-            queue_toggle: Rect::new(0.0, 0.0, 0.0, 0.0),
-            roster_slots,
-            roster_count,
-            cards,
-            card_count,
-            queue_slots,
-            queue_count,
-            queue_stop: (Rect::new(0.0, 0.0, 0.0, 0.0), CardAction::None),
-        }
-    }
-
     /// Whether persistent chrome (top bar or panel band) owns this
     /// point — such clicks must never reach the world. The minimap has
     /// its own richer meaning and is tested separately.

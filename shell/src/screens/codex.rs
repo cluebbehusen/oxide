@@ -6,7 +6,7 @@
 
 use crate::assets::Sprites;
 use crate::game::SoundKind;
-use crate::menu::Menu;
+use crate::menu::{Label, Line, Menu};
 use crate::numeric;
 use crate::numeric::Fit;
 use crate::panel::{
@@ -14,7 +14,9 @@ use crate::panel::{
     unit_flavor, unit_stat_line, weapon_lines,
 };
 use crate::render;
-use crate::theme::{SURFACE_MENU, TEXT_ACCENT, TEXT_BODY, TEXT_PRIMARY, TEXT_SECONDARY};
+use crate::theme::{
+    BORDER_STRONG, CHIP, SURFACE_MENU, Stroke, TEXT_ACCENT, TEXT_BODY, TEXT_PRIMARY, TEXT_SECONDARY,
+};
 use crate::typography::entity_name;
 use macroquad::prelude::*;
 use oxide_protocol::{Key, RawEvent};
@@ -84,10 +86,9 @@ fn sections() -> Vec<(&'static str, Vec<Entry>)> {
 
 /// The codex screen: the list and what each row opens.
 pub struct CodexScreen {
-    /// The live list: section headers and one row per kind.
-    pub menu: Menu,
-    /// The page behind each row (`None` for headers).
-    entries: Vec<Option<Entry>>,
+    /// The live list: section headers and one row per kind, each
+    /// standing for its page.
+    pub menu: Menu<Entry>,
     back: crate::button::BackButton,
 }
 
@@ -95,28 +96,22 @@ impl CodexScreen {
     /// Opens on the first machine. Where leaving lands is the
     /// coordinator's business.
     pub fn open() -> Self {
-        let mut items = Vec::new();
-        let mut entries = Vec::new();
-        let mut headers = Vec::new();
+        let mut lines = Vec::new();
         for (title, section) in sections() {
-            headers.push(items.len());
-            items.push(title.to_string());
-            entries.push(None);
+            lines.push(Line::Header(title.to_string()));
             for entry in section {
                 let name = match entry {
                     Entry::Unit(kind) => kind.name(),
                     Entry::Building(kind) => kind.name(),
                 };
-                items.push(entity_name(name));
-                entries.push(Some(entry));
+                lines.push(Line::Row(Label::Text(entity_name(name)), entry));
             }
         }
         // The list shifts left to make room for the page beside it.
-        let mut menu = Menu::with_headers("ROSTER", items, headers);
+        let mut menu = Menu::new("ROSTER", lines);
         menu.shift = -0.24;
         Self {
             menu,
-            entries,
             back: crate::button::BackButton::default(),
         }
     }
@@ -132,7 +127,7 @@ impl CodexScreen {
 
     /// The page under the cursor, if the cursor is on a kind.
     pub fn selected_entry(&self) -> Option<Entry> {
-        self.entries.get(self.menu.selected).copied().flatten()
+        self.menu.value().copied()
     }
 
     /// Applies a frame's events. Rows are pages, not verbs: moving the
@@ -223,7 +218,7 @@ impl CodexScreen {
 
         // The page: description, figures, weapons, and what else the
         // kind does — the same lines the training tooltip shows.
-        let body_size = 16.0 * s;
+        let body_size = crate::theme::Type::Body.at(s);
         let line_h = 20.0 * s;
         let body_w = w - pad * 2.0;
         let measure = |t: &str| measure_text(t, None, numeric::font_size(body_size), 1.0).width;
@@ -268,16 +263,10 @@ impl CodexScreen {
             top,
             w,
             box_bottom - top,
-            1.5,
-            Color::new(0.6, 0.6, 0.65, 0.4),
+            Stroke::Edge.at(s),
+            BORDER_STRONG,
         );
-        draw_rectangle(
-            plate_x,
-            plate_y,
-            plates_w,
-            plate,
-            Color::from_rgba(35, 35, 41, 255),
-        );
+        draw_rectangle(plate_x, plate_y, plates_w, plate, CHIP);
         for (i, faction) in sprite_factions.iter().enumerate() {
             let dest = Rect::new(
                 plate_x + i as f32 * (plate + 6.0 * s),
@@ -299,8 +288,20 @@ impl CodexScreen {
             }
         }
         let text_x = plate_x + plates_w + pad;
-        draw_text(&name, text_x, plate_y + 30.0 * s, 34.0 * s, TEXT_PRIMARY);
-        draw_text(&role, text_x, plate_y + 54.0 * s, 16.0 * s, TEXT_ACCENT);
+        draw_text(
+            &name,
+            text_x,
+            plate_y + 30.0 * s,
+            crate::theme::Type::Title.at(s),
+            TEXT_PRIMARY,
+        );
+        draw_text(
+            &role,
+            text_x,
+            plate_y + 54.0 * s,
+            crate::theme::Type::Body.at(s),
+            TEXT_ACCENT,
+        );
         let mut y = text_top;
         for (line, color) in lines {
             if y > box_bottom - pad * 0.5 {

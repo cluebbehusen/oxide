@@ -3,7 +3,7 @@
 //! (resume, watch, settings, restart, main menu, quit) and draws.
 
 use crate::game::SoundKind;
-use crate::menu::Menu;
+use crate::menu::{Label, Menu};
 use crate::text_field::{Edit, TextField};
 use macroquad::prelude::Vec2;
 use oxide_protocol::{Key, RawEvent};
@@ -46,6 +46,17 @@ pub enum Row {
 }
 
 impl Row {
+    /// The confirmation this row asks before acting, if it asks one.
+    fn confirmable(self) -> Option<Confirmable> {
+        match self {
+            Row::Surrender => Some(Confirmable::Surrender),
+            Row::Restart => Some(Confirmable::Restart),
+            Row::MainMenu => Some(Confirmable::MainMenu),
+            Row::Quit => Some(Confirmable::Quit),
+            Row::Resume | Row::SaveGame | Row::WatchReplay | Row::Settings | Row::Roster => None,
+        }
+    }
+
     fn label(self) -> &'static str {
         match self {
             Row::Resume => "Resume",
@@ -59,6 +70,64 @@ impl Row {
             Row::Quit => "Quit",
         }
     }
+}
+
+/// A pause verb that asks before carrying out its consequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Confirmable {
+    Surrender,
+    Restart,
+    MainMenu,
+    Quit,
+}
+
+impl Confirmable {
+    /// The pause row that asked.
+    fn row(self) -> Row {
+        match self {
+            Confirmable::Surrender => Row::Surrender,
+            Confirmable::Restart => Row::Restart,
+            Confirmable::MainMenu => Row::MainMenu,
+            Confirmable::Quit => Row::Quit,
+        }
+    }
+
+    /// What confirming does.
+    fn out(self) -> Out {
+        match self {
+            Confirmable::Surrender => Out::Surrender,
+            Confirmable::Restart => Out::Restart,
+            Confirmable::MainMenu => Out::MainMenu,
+            Confirmable::Quit => Out::Quit,
+        }
+    }
+
+    /// The dialog's subtitle: what confirming costs.
+    fn consequence(self) -> &'static str {
+        match self {
+            Confirmable::Surrender => "this concedes the match",
+            Confirmable::Restart => "progress is discarded and the match starts over",
+            Confirmable::MainMenu => "the match is saved before returning home",
+            Confirmable::Quit => "the match is saved before quitting",
+        }
+    }
+}
+
+/// What a row of any pause face stands for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Choice {
+    /// A pause row.
+    Row(Row),
+    /// Back out of a dialog without acting.
+    Cancel,
+    /// Carry out the verb a confirmation dialog asks about.
+    Confirm,
+    /// Try a failed save again.
+    Retry,
+    /// Leave without the save that failed.
+    LeaveUnsaved,
+    /// The save-name field's one row.
+    Field,
 }
 
 /// The rows the current match state offers, in display order. Watch
@@ -137,21 +206,27 @@ pub enum Out {
     Home,
 }
 
-/// The pause screen: its menu, plus the armed row while a confirmation
-/// dialog is up.
+/// Which face of the pause screen is up.
+enum Face {
+    /// The pause rows.
+    Rows,
+    /// A verb asking for confirmation.
+    Confirm(Confirmable),
+    /// A leave verb's autosave refused.
+    SaveFailed(SaveFailed),
+    /// The save-name field has focus. Only here do Text events mean
+    /// anything; letters stay semantic everywhere else.
+    Naming(TextField),
+}
+
+/// The pause screen: its rows and whichever face is up.
 pub struct PauseScreen {
-    /// The live menu (pause rows, the two-row confirm dialog, or the
-    /// save-failure dialog).
-    pub menu: Menu,
+    /// The live menu (pause rows, the two-row confirm dialog, the
+    /// save-failure dialog, or the name field's row).
+    pub menu: Menu<Choice>,
     /// The displayed rows, in menu order.
     rows: Vec<Row>,
-    /// Which row is awaiting confirmation, if any.
-    confirming: Option<Row>,
-    /// The save-failure dialog, if a leave verb's autosave refused.
-    save_failed: Option<SaveFailed>,
-    /// The save-name field while it has focus. Only here do Text events
-    /// mean anything; letters stay semantic everywhere else.
-    naming: Option<TextField>,
+    face: Face,
     /// A one-line verdict from the last explicit save (success or
     /// failure), shown as the subtitle until the next activation.
     notice: Option<String>,
@@ -172,20 +247,24 @@ struct SaveFailed {
     cancel_home: bool,
 }
 
-fn pause_menu(rows: &[Row], lan: bool) -> Menu {
-    Menu::new(
+fn pause_menu(rows: &[Row], lan: bool) -> Menu<Choice> {
+    Menu::rows(
         if lan { "MENU" } else { "PAUSED" },
-        rows.iter().map(|row| row.label().to_string()).collect(),
+        rows.iter()
+            .map(|row| (Label::from(row.label()), Choice::Row(*row))),
     )
 }
 
-fn confirm_menu(row: Row) -> Menu {
-    let verb = row.label();
+fn confirm_menu(verb: Confirmable) -> Menu<Choice> {
+    let label = verb.row().label();
     // Cancel sits first and preselected: a consequential choice takes a
     // deliberate second motion, never a double-tap.
-    Menu::new(
-        format!("{}?", verb.to_uppercase()),
-        vec!["Cancel".to_string(), verb.to_string()],
+    Menu::rows(
+        format!("{}?", label.to_uppercase()),
+        [
+            (Label::from("Cancel"), Choice::Cancel),
+            (Label::from(label), Choice::Confirm),
+        ],
     )
 }
 
@@ -196,9 +275,7 @@ impl PauseScreen {
         Self {
             menu: pause_menu(&rows, false),
             rows,
-            confirming: None,
-            save_failed: None,
-            naming: None,
+            face: Face::Rows,
             notice: None,
             lan: false,
         }
@@ -206,9 +283,10 @@ impl PauseScreen {
 
     /// Consumes a request to raise the on-screen keyboard again.
     pub fn take_keyboard_request(&mut self) -> bool {
-        self.naming
-            .as_mut()
-            .is_some_and(TextField::take_keyboard_request)
+        match &mut self.face {
+            Face::Naming(field) => field.take_keyboard_request(),
+            Face::Rows | Face::Confirm(_) | Face::SaveFailed(_) => false,
+        }
     }
 
     /// Draws the menu while a save this screen asked for runs: the same
@@ -220,13 +298,15 @@ impl PauseScreen {
     /// Draws the current face: the menu, or the name field with its
     /// Save and Cancel buttons.
     pub fn draw(&self, scenario_name: &str, mouse: Vec2) {
-        match &self.naming {
-            Some(field) => field.draw(
+        match &self.face {
+            Face::Naming(field) => field.draw(
                 naming_hint(crate::platform::TOUCH_ONLY),
                 crate::hints::fade(crate::theme::TEXT_SECONDARY),
                 mouse,
             ),
-            None => self.menu.draw(self.subtitle(scenario_name)),
+            Face::Rows | Face::Confirm(_) | Face::SaveFailed(_) => {
+                self.menu.draw(self.subtitle(scenario_name));
+            }
         }
     }
 
@@ -259,22 +339,22 @@ impl PauseScreen {
     /// caller's suggestion so Enter-Enter saves without typing.
     pub fn begin_naming(&mut self, suggested: &str) {
         let field = TextField::new("SAVE GAME", "SAVE", suggested, Self::NAME_MAX);
-        self.menu = field.menu();
-        self.naming = Some(field);
+        self.menu = field.menu(Choice::Field);
+        self.face = Face::Naming(field);
     }
 
     /// Reports the save verdict and returns to the pause rows, cursor
     /// back on Save Game, the verdict as the subtitle.
     pub fn end_naming(&mut self, notice: String) {
-        self.naming = None;
-        self.menu = pause_menu(&self.rows, self.lan);
-        let display = self
-            .rows
-            .iter()
-            .position(|&r| r == Row::SaveGame)
-            .unwrap_or(0);
-        self.menu.select(display);
+        self.back_to_rows(Row::SaveGame);
         self.notice = Some(notice);
+    }
+
+    /// Returns to the pause rows with the cursor on `row`.
+    fn back_to_rows(&mut self, row: Row) {
+        self.face = Face::Rows;
+        self.menu = pause_menu(&self.rows, self.lan);
+        self.menu.select_where(|choice| *choice == Choice::Row(row));
     }
 
     /// Opens straight onto the save-failure dialog: a leave verb's
@@ -282,17 +362,17 @@ impl PauseScreen {
     /// safe Cancel row sits preselected; Leave without saving is always
     /// reachable, so a full disk can never trap the player in the game.
     pub fn with_save_failed(mut self, line: String, verb: LeaveVerb, cancel_home: bool) -> Self {
-        let mut menu = Menu::new(
+        let mut menu = Menu::rows(
             "COULD NOT SAVE",
-            vec![
-                "Retry".to_string(),
-                "Cancel".to_string(),
-                "Leave without saving".to_string(),
+            [
+                (Label::from("Retry"), Choice::Retry),
+                (Label::from("Cancel"), Choice::Cancel),
+                (Label::from("Leave without saving"), Choice::LeaveUnsaved),
             ],
         );
         menu.select(1);
         self.menu = menu;
-        self.save_failed = Some(SaveFailed {
+        self.face = Face::SaveFailed(SaveFailed {
             verb,
             line,
             cancel_home,
@@ -305,41 +385,33 @@ impl PauseScreen {
         self.rows.contains(&Row::WatchReplay)
     }
 
-    /// Whether the confirmation dialog is up (for the mode report).
-    pub fn confirming(&self) -> bool {
-        self.confirming.is_some()
-    }
-
-    /// Whether the save-failure dialog is up (for the mode report).
+    /// Whether the save-failure dialog is up.
     pub fn saving_failed(&self) -> bool {
-        self.save_failed.is_some()
+        matches!(self.face, Face::SaveFailed(_))
     }
 
-    /// Whether the save-name field has focus (for the mode report).
+    /// Whether the save-name field has focus.
     pub fn naming(&self) -> bool {
-        self.naming.is_some()
+        matches!(self.face, Face::Naming(_))
+    }
+
+    /// The debug protocol's stable mode name for the current face.
+    pub fn mode_name(&self) -> &'static str {
+        match self.face {
+            Face::Rows => "pause_menu",
+            Face::Confirm(_) => "confirm_pause",
+            Face::SaveFailed(_) => "save_failed",
+            Face::Naming(_) => "save_name",
+        }
     }
 
     /// The subtitle for the current face of the screen.
     pub fn subtitle<'a>(&'a self, scenario_name: &'a str) -> &'a str {
-        if let Some(dialog) = &self.save_failed {
-            &dialog.line
-        } else if self.naming.is_some() {
-            naming_hint(crate::platform::TOUCH_ONLY)
-        } else if let Some(row) = self.confirming {
-            match row {
-                Row::Surrender => "this concedes the match",
-                Row::Restart => "progress is discarded and the match starts over",
-                Row::MainMenu => "the match is saved before returning home",
-                Row::Quit => "the match is saved before quitting",
-                Row::Resume | Row::SaveGame | Row::WatchReplay | Row::Settings | Row::Roster => {
-                    scenario_name
-                }
-            }
-        } else if let Some(notice) = &self.notice {
-            notice
-        } else {
-            scenario_name
+        match &self.face {
+            Face::SaveFailed(dialog) => &dialog.line,
+            Face::Naming(_) => naming_hint(crate::platform::TOUCH_ONLY),
+            Face::Confirm(verb) => verb.consequence(),
+            Face::Rows => self.notice.as_deref().unwrap_or(scenario_name),
         }
     }
 
@@ -353,87 +425,72 @@ impl PauseScreen {
         let escaped = events
             .iter()
             .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
-        if let Some(field) = self.naming.as_mut() {
+        if let Face::Naming(field) = &mut self.face {
             match field.update(events, sounds) {
                 Edit::Commit(name) => return Out::Save(name),
-                Edit::Stay => self.menu = field.menu(),
-                Edit::Cancel => {
-                    self.naming = None;
-                    self.menu = pause_menu(&self.rows, self.lan);
-                    let display = self
-                        .rows
-                        .iter()
-                        .position(|&r| r == Row::SaveGame)
-                        .unwrap_or(0);
-                    self.menu.select(display);
+                Edit::Stay => self.menu = field.menu(Choice::Field),
+                Edit::Cancel => self.back_to_rows(Row::SaveGame),
+            }
+            return Out::Stay;
+        }
+        let picked = self.menu.handle(events, mouse).map(|picked| picked.value);
+        match &self.face {
+            Face::SaveFailed(dialog) => {
+                let (verb, cancel_home) = (dialog.verb, dialog.cancel_home);
+                match picked {
+                    Some(Choice::Retry) => return Out::RetrySave(verb, cancel_home),
+                    Some(Choice::LeaveUnsaved) => return Out::LeaveUnsaved(verb),
+                    Some(_) => {}
+                    None if escaped => {}
+                    None => return Out::Stay,
                 }
-            }
-            return Out::Stay;
-        }
-        let picked = self.menu.handle(events, mouse);
-        if let Some(dialog) = &self.save_failed {
-            let (verb, cancel_home) = (dialog.verb, dialog.cancel_home);
-            match picked {
-                Some(0) => return Out::RetrySave(verb, cancel_home),
-                Some(2) => return Out::LeaveUnsaved(verb),
-                Some(_) => {}
-                None if escaped => {}
-                None => return Out::Stay,
-            }
-            // Cancel (or Escape — never the leave verb): back to the
-            // rows, cursor on the verb that raised the dialog, or back
-            // to the front door that asked.
-            self.save_failed = None;
-            if cancel_home {
-                return Out::Home;
-            }
-            let row = match verb {
-                LeaveVerb::MainMenu => Row::MainMenu,
-                LeaveVerb::Quit => Row::Quit,
-            };
-            self.menu = pause_menu(&self.rows, self.lan);
-            let display = self.rows.iter().position(|&r| r == row).unwrap_or(0);
-            self.menu.select(display);
-            return Out::Stay;
-        }
-        if let Some(row) = self.confirming {
-            if escaped || picked == Some(0) {
-                self.confirming = None;
-                self.menu = pause_menu(&self.rows, self.lan);
-                // The cursor returns to the armed row.
-                let display = self.rows.iter().position(|&r| r == row).unwrap_or(0);
-                self.menu.select(display);
-                return Out::Stay;
-            }
-            if picked == Some(1) {
-                return match row {
-                    Row::Surrender => Out::Surrender,
-                    Row::Restart => Out::Restart,
-                    Row::MainMenu => Out::MainMenu,
-                    _ => Out::Quit,
-                };
-            }
-            return Out::Stay;
-        }
-        if picked.is_some() {
-            sounds.push((SoundKind::Click, None));
-            self.notice = None;
-        }
-        match picked.map(|i| self.rows[i]) {
-            Some(Row::Resume) => Out::Resume,
-            Some(Row::SaveGame) => Out::SaveGame,
-            Some(Row::WatchReplay) => Out::WatchReplay,
-            Some(Row::Settings) => Out::Settings,
-            Some(Row::Roster) => Out::Roster,
-            Some(confirmed) => {
-                // Surrender, Restart, Main Menu, and Quit each ask
-                // before carrying out their distinct consequence.
-                self.confirming = Some(confirmed);
-                self.menu = confirm_menu(confirmed);
+                // Cancel (or Escape — never the leave verb): back to the
+                // rows, cursor on the verb that raised the dialog, or back
+                // to the front door that asked.
+                if cancel_home {
+                    self.face = Face::Rows;
+                    return Out::Home;
+                }
+                self.back_to_rows(match verb {
+                    LeaveVerb::MainMenu => Row::MainMenu,
+                    LeaveVerb::Quit => Row::Quit,
+                });
                 Out::Stay
             }
-            None if escaped => Out::Resume,
-            None => Out::Stay,
+            Face::Confirm(verb) => {
+                let verb = *verb;
+                if escaped || picked == Some(Choice::Cancel) {
+                    // The cursor returns to the armed row.
+                    self.back_to_rows(verb.row());
+                    return Out::Stay;
+                }
+                if picked == Some(Choice::Confirm) {
+                    return verb.out();
+                }
+                Out::Stay
+            }
+            Face::Rows | Face::Naming(_) => {
+                let Some(Choice::Row(row)) = picked else {
+                    return if escaped { Out::Resume } else { Out::Stay };
+                };
+                sounds.push((SoundKind::Click, None));
+                self.notice = None;
+                if let Some(verb) = row.confirmable() {
+                    // Surrender, Restart, Main Menu, and Quit each ask
+                    // before carrying out their distinct consequence.
+                    self.face = Face::Confirm(verb);
+                    self.menu = confirm_menu(verb);
+                    return Out::Stay;
+                }
+                match row {
+                    Row::Resume => Out::Resume,
+                    Row::SaveGame => Out::SaveGame,
+                    Row::WatchReplay => Out::WatchReplay,
+                    Row::Settings => Out::Settings,
+                    Row::Roster => Out::Roster,
+                    Row::Surrender | Row::Restart | Row::MainMenu | Row::Quit => Out::Stay,
+                }
+            }
         }
     }
 }

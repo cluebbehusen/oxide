@@ -17,7 +17,7 @@ pub(crate) fn corner_slot(index: usize, s: f32) -> Rect {
         16.0 * s + index as f32 * (width + 8.0 * s),
         16.0 * s,
         width,
-        crate::layout::MIN_TOUCH_TARGET * s,
+        crate::theme::MIN_TOUCH_TARGET * s,
     )
 }
 
@@ -39,14 +39,19 @@ pub(crate) fn draw(rect: Rect, label: &str, active: bool, s: f32) {
         rect.y,
         rect.w,
         rect.h,
-        if active { 2.0 * s } else { 1.0 * s },
+        if active {
+            theme::Stroke::Focus
+        } else {
+            theme::Stroke::Hairline
+        }
+        .at(s),
         if active {
             theme::TEXT_ACCENT
         } else {
             theme::TEXT_DISABLED
         },
     );
-    let size = 16.0 * s;
+    let size = crate::theme::Type::Body.at(s);
     let dims = measure_text(label, None, numeric::font_size(size), 1.0);
     draw_text(
         label,
@@ -71,6 +76,11 @@ pub(crate) struct BackButton {
 }
 
 impl BackButton {
+    /// Drops a half-made press, as when the screen beneath changes.
+    pub(crate) fn cancel(&mut self) {
+        self.press.cancel();
+    }
+
     /// Whether this frame pressed the button, and the events it left
     /// for the screen.
     pub(crate) fn route(&mut self, events: &[RawEvent]) -> (bool, Vec<RawEvent>) {

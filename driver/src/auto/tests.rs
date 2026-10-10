@@ -66,34 +66,68 @@ fn isolated_shells_override_every_platform_writable_root() {
     );
 }
 
+/// Walks `view` with a cursor `step` moves, returning the keys pressed.
+fn walk(view: &UiView, needle: &str, step: impl Fn(usize, Key) -> usize) -> Vec<Key> {
+    let mut walk = Walk::to_label(view, needle).unwrap();
+    let mut selected = view.selected.unwrap_or(0);
+    let mut keys = Vec::new();
+    loop {
+        match walk.next(selected) {
+            Stride::Press(key) => {
+                keys.push(key);
+                selected = step(selected, key);
+            }
+            Stride::Arrived => return keys,
+            Stride::Stuck => panic!("stuck after {keys:?}"),
+        }
+    }
+}
+
 #[test]
 fn labeled_activation_prefers_an_exact_row_over_an_earlier_substring() {
     let view = menu(&["REPLAYS", "PLAY", "SETTINGS"], Some(0));
+    assert_eq!(walk(&view, "play", |at, _| at + 1), vec![Key::Down]);
+}
+
+#[test]
+fn a_walk_follows_a_wrapping_list_and_defaults_to_the_first_row() {
+    let view = menu(&["PLAY", "SETTINGS", "QUIT"], Some(2));
+    assert_eq!(walk(&view, "play", |at, _| (at + 1) % 3), vec![Key::Down]);
+    let no_selection = menu(&["PLAY", "SETTINGS", "QUIT"], None);
     assert_eq!(
-        labeled_activation_keys(&view, "play").unwrap(),
-        vec![Key::Down, Key::Enter]
+        walk(&no_selection, "quit", |at, _| (at + 1) % 3),
+        vec![Key::Down, Key::Down]
     );
 }
 
 #[test]
-fn labeled_activation_navigates_in_both_directions_and_defaults_to_the_first_row() {
-    let view = menu(&["PLAY", "SETTINGS", "QUIT"], Some(2));
+fn a_walk_turns_right_when_down_cycles_a_grid_column() {
+    // Two rows of three: Down keeps the column, Right reads on.
+    let view = menu(&["a", "b", "c", "d", "e", "f"], Some(0));
+    let keys = walk(&view, "e", |at, key| match key {
+        Key::Down => (at + 3) % 6,
+        _ => (at + 1) % 6,
+    });
     assert_eq!(
-        labeled_activation_keys(&view, "play").unwrap(),
-        vec![Key::Up, Key::Up, Key::Enter]
+        keys,
+        [vec![Key::Down; 2], vec![Key::Right; 4]].concat(),
+        "down cycles back to a, then right reads b, c, d and lands on e"
     );
+}
 
-    let no_selection = menu(&["PLAY", "SETTINGS", "QUIT"], None);
-    assert_eq!(
-        labeled_activation_keys(&no_selection, "settings").unwrap(),
-        vec![Key::Down, Key::Enter]
-    );
+#[test]
+fn a_walk_gives_up_when_no_key_moves_the_cursor() {
+    let view = menu(&["a", "b"], Some(0));
+    let mut walk = Walk::to_label(&view, "b").unwrap();
+    assert_eq!(walk.next(0), Stride::Press(Key::Down));
+    assert_eq!(walk.next(0), Stride::Press(Key::Right));
+    assert_eq!(walk.next(0), Stride::Stuck);
 }
 
 #[test]
 fn labeled_activation_reports_the_visible_rows_when_no_row_matches() {
     let view = menu(&["PLAY", "SETTINGS"], Some(0));
-    let error = labeled_activation_keys(&view, "credits").unwrap_err();
+    let error = Walk::to_label(&view, "credits").unwrap_err();
     assert_eq!(
         error.to_string(),
         "no row containing 'credits' in [\"PLAY\", \"SETTINGS\"]"

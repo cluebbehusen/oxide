@@ -46,7 +46,7 @@ impl Layout {
 pub fn layout(view: Vec2, s: f32) -> Layout {
     let width = (420.0 * s).min(view.x - 32.0 * s);
     let x = (view.x - width) * 0.5;
-    let field = Rect::new(x, 92.0 * s, width, crate::layout::MIN_TOUCH_TARGET * s);
+    let field = Rect::new(x, 92.0 * s, width, crate::theme::MIN_TOUCH_TARGET * s);
     let gap = 12.0 * s;
     let button_w = (width - gap) * 0.5;
     let buttons_y = field.y + field.h + gap;
@@ -54,12 +54,12 @@ pub fn layout(view: Vec2, s: f32) -> Layout {
         title_y: 56.0 * s,
         hint_y: 80.0 * s,
         field,
-        cancel: Rect::new(x, buttons_y, button_w, crate::layout::MIN_TOUCH_TARGET * s),
+        cancel: Rect::new(x, buttons_y, button_w, crate::theme::MIN_TOUCH_TARGET * s),
         confirm: Rect::new(
             x + button_w + gap,
             buttons_y,
             button_w,
-            crate::layout::MIN_TOUCH_TARGET * s,
+            crate::theme::MIN_TOUCH_TARGET * s,
         ),
     }
 }
@@ -109,8 +109,11 @@ impl TextField {
     /// The field as a one-row menu, for the UI report. The caret is a
     /// static underscore, never a blink, so reduced motion holds and the
     /// shots suite stays deterministic.
-    pub fn menu(&self) -> Menu {
-        Menu::new(self.title, vec![format!("{}_", self.value)])
+    pub fn menu<R: Clone>(&self, value: R) -> Menu<R> {
+        Menu::rows(
+            self.title,
+            [(crate::menu::Label::Text(format!("{}_", self.value)), value)],
+        )
     }
 
     /// Consumes a request to raise the on-screen keyboard again.
@@ -176,7 +179,7 @@ impl TextField {
         let s = crate::render::ui_scale();
         let view = crate::render::viewport();
         let layout = layout(view, s);
-        let title_size = 48.0 * s;
+        let title_size = crate::theme::Type::Title.at(s);
         let dims = measure_text(self.title, None, numeric::font_size(title_size), 1.0);
         draw_text(
             self.title,
@@ -185,7 +188,7 @@ impl TextField {
             title_size,
             crate::theme::TEXT_TITLE,
         );
-        let hint_size = 18.0 * s;
+        let hint_size = crate::theme::Type::Label.at(s);
         let dims = measure_text(hint, None, numeric::font_size(hint_size), 1.0);
         draw_text(
             hint,
@@ -207,12 +210,12 @@ impl TextField {
             field.y,
             field.w,
             field.h,
-            2.0 * s,
+            crate::theme::Stroke::Focus.at(s),
             crate::theme::TEXT_ACCENT,
         );
         let text = format!("{}_", self.value);
         let room = field.w - 24.0 * s;
-        let mut size = 22.0 * s;
+        let mut size = crate::theme::Type::Heading.at(s);
         let width = measure_text(&text, None, numeric::font_size(size), 1.0).width;
         if width > room {
             size = (size * room / width).max(10.0);

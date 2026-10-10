@@ -8,16 +8,16 @@
 //! rects it publishes.
 
 use crate::menu::{PreviewCache, ScenarioEntry};
+use crate::nav::{Nav, step_grid};
 use crate::numeric;
-use crate::numeric::Fit;
+use crate::press::{ScrollPress, Swipe};
 use crate::render::prim::{fill_rect, stroke_rect};
 use macroquad::prelude::{
-    Color, DrawTextureParams, Rect, Vec2, draw_rectangle, draw_text, draw_texture_ex, measure_text,
-    vec2,
+    DrawTextureParams, Rect, Vec2, draw_rectangle, draw_text, draw_texture_ex, measure_text, vec2,
 };
-use oxide_protocol::{Key, MouseButton, RawEvent};
+use oxide_protocol::{Key, RawEvent};
 
-use crate::theme::{SURFACE_MENU, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TITLE};
+use crate::theme::{BORDER_FAINT, SURFACE_MENU, Stroke, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TITLE};
 
 /// What a frame of browser input decided.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -66,11 +66,9 @@ pub struct Browser {
     /// wizard's protocol surface so hover-driven row discovery in the
     /// UX battery works on the grid like it does on row menus.
     pub(crate) hover: Option<usize>,
-    pressed: Option<usize>,
-    touch_id: Option<u64>,
-    touch_last_y: f32,
-    touch_travel: f32,
-    touch_pressed: Option<usize>,
+    /// The card a click or tap armed; a finger that drags scrolls the
+    /// grid instead.
+    press: ScrollPress<usize>,
     /// The viewport the last frame handled, so the snap-back guard fires
     /// only on resize.
     last_view: Vec2,
@@ -138,14 +136,34 @@ fn content_height(all: &[Line], card_h: f32, heading_h: f32, gap: f32) -> f32 {
 /// bottom of the window, so scrolling can never park one row above an
 /// otherwise empty screen.
 fn max_scroll(all: &[Line], view: Vec2, ui: f32) -> f32 {
-    let (_, _, _, card_h, heading_h, top, bottom) = metrics(view, ui);
+    let GridMetrics {
+        card_h,
+        heading_h,
+        top,
+        bottom,
+        ..
+    } = metrics(view, ui);
     let gap = 16.0 * ui;
     (content_height(all, card_h, heading_h, gap) - (bottom - top)).max(0.0)
 }
 
 /// Card and band sizes at this viewport. Returns
 /// (`band_x`, `band_w`, `card_w`, `card_h`, `heading_h`, top, bottom).
-fn metrics(view: Vec2, ui: f32) -> (f32, f32, f32, f32, f32, f32, f32) {
+/// The grid's geometry in a window.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct GridMetrics {
+    /// The card band's left edge and width.
+    band_x: f32,
+    band_w: f32,
+    card_w: f32,
+    card_h: f32,
+    heading_h: f32,
+    /// The scrolling shelf's top and bottom edges.
+    top: f32,
+    bottom: f32,
+}
+
+fn metrics(view: Vec2, ui: f32) -> GridMetrics {
     let cols = columns(view.x, ui) as f32;
     let band_w = (view.x - 96.0 * ui).min(1120.0 * ui);
     let band_x = (view.x - band_w) * 0.5;
@@ -164,7 +182,22 @@ fn metrics(view: Vec2, ui: f32) -> (f32, f32, f32, f32, f32, f32, f32) {
     let card_h = (card_w * 0.5 + 26.0 * ui)
         .min(bottom - top - heading_h - 16.0 * ui)
         .max(40.0);
-    (band_x, band_w, card_w, card_h, heading_h, top, bottom)
+    GridMetrics {
+        band_x,
+        band_w,
+        card_w,
+        card_h,
+        heading_h,
+        top,
+        bottom,
+    }
+}
+
+/// Whether a card shows whole on the shelf. A card scrolled flush with an
+/// edge lands there only to within float rounding.
+fn on_shelf(card: Rect, grid: GridMetrics) -> bool {
+    const SLACK: f32 = 0.5;
+    card.y >= grid.top - SLACK && card.y + card.h <= grid.bottom + SLACK
 }
 
 /// The map grid's coaching line.
@@ -189,11 +222,7 @@ impl Browser {
             selected: 0,
             scroll_y: 0.0,
             hover: None,
-            pressed: None,
-            touch_id: None,
-            touch_last_y: 0.0,
-            touch_travel: 0.0,
-            touch_pressed: None,
+            press: ScrollPress::default(),
             last_view: vec2(0.0, 0.0),
         }
     }
@@ -210,7 +239,15 @@ impl Browser {
 
     /// The frame's visible geometry.
     pub fn layout(&self, entries: &[ScenarioEntry], view: Vec2, ui: f32) -> Layout {
-        let (band_x, band_w, card_w, card_h, heading_h, top, bottom) = metrics(view, ui);
+        let GridMetrics {
+            band_x,
+            band_w,
+            card_w,
+            card_h,
+            heading_h,
+            top,
+            bottom,
+        } = metrics(view, ui);
         let cols = columns(view.x, ui);
         let gap = 16.0 * ui;
         let all = lines(entries, cols);
@@ -271,7 +308,13 @@ impl Browser {
         let ui = crate::render::ui_scale();
         let cols = columns(view.x, ui);
         let all = lines(entries, cols);
-        let (_, _, _, card_h, heading_h, top, bottom) = metrics(view, ui);
+        let GridMetrics {
+            card_h,
+            heading_h,
+            top,
+            bottom,
+            ..
+        } = metrics(view, ui);
         let gap = 16.0 * ui;
         let (li, _) = Self::locate(entries, cols, self.selected);
         let mut line_top = 0.0;
@@ -316,17 +359,19 @@ impl Browser {
             let max = max_scroll(&lines(entries, cols), view, ui);
             self.scroll_y = self.scroll_y.clamp(0.0, max);
             let layout = self.layout(entries, view, ui);
-            let selected_fully_visible = layout.cards.iter().any(|(entry, rect)| {
-                *entry == self.selected
-                    && rect.y >= metrics(view, ui).5
-                    && rect.y + rect.h <= metrics(view, ui).6
-            });
+            let selected_fully_visible = layout
+                .cards
+                .iter()
+                .any(|(entry, rect)| *entry == self.selected && on_shelf(*rect, metrics(view, ui)));
             if !layout.cards.is_empty() && !selected_fully_visible {
                 self.ensure_visible(entries);
             }
         }
-        let (_, _, _, _, _, shelf_top, shelf_bottom) = metrics(view, ui);
-        let last = entries.len() - 1;
+        let GridMetrics {
+            top: shelf_top,
+            bottom: shelf_bottom,
+            ..
+        } = metrics(view, ui);
         let card_at = |browser: &Self, p: Vec2| {
             if p.y < shelf_top || p.y >= shelf_bottom {
                 return None;
@@ -339,6 +384,37 @@ impl Browser {
                 .map(|(e, _)| *e)
         };
         for event in events {
+            // A finger landing outside the grid neither taps nor drags it.
+            if matches!(*event, RawEvent::TouchDown { y, .. } if y < shelf_top || y >= shelf_bottom)
+            {
+                continue;
+            }
+            let mut press = self.press;
+            let swipe = press.feed(event, ui, |p, _| card_at(self, p));
+            self.press = press;
+            match swipe {
+                Swipe::Scrolled { dy, .. } => {
+                    let max = max_scroll(&lines(entries, cols), view, ui);
+                    self.scroll_y = (self.scroll_y - dy).clamp(0.0, max);
+                    self.hover = None;
+                    continue;
+                }
+                Swipe::Activated(card) => {
+                    if let Some(p) = crate::press::position(event) {
+                        *mouse = p;
+                    }
+                    // First click selects; a click on the already-selected
+                    // card commits. Browsing by pointer can't misfire a
+                    // launch, and the double-click reflex reads as
+                    // select-then-play.
+                    if card == self.selected {
+                        return Out::Pick(card);
+                    }
+                    self.selected = card;
+                    continue;
+                }
+                Swipe::Held | Swipe::Ignored => {}
+            }
             match *event {
                 RawEvent::KeyDown { key: Key::Escape } => return Out::Back,
                 RawEvent::KeyDown { key: Key::Enter } => {
@@ -347,48 +423,39 @@ impl Browser {
                     // and the second Enter commits.
                     let shown = self.layout(entries, view, ui);
                     if shown.cards.iter().any(|(entry, rect)| {
-                        *entry == self.selected
-                            && rect.y >= shelf_top
-                            && rect.y + rect.h <= shelf_bottom
+                        *entry == self.selected && on_shelf(*rect, metrics(view, ui))
                     }) {
                         return Out::Pick(self.selected);
                     }
                     self.ensure_visible(entries);
                 }
-                RawEvent::KeyDown { key: Key::Left } => {
-                    self.selected = self.selected.saturating_sub(1);
-                    self.ensure_visible(entries);
-                }
-                RawEvent::KeyDown { key: Key::Right } => {
-                    self.selected = (self.selected + 1).min(last);
-                    self.ensure_visible(entries);
-                }
-                RawEvent::KeyDown {
-                    key: Key::Up | Key::Down,
-                } => {
-                    let down = matches!(*event, RawEvent::KeyDown { key: Key::Down });
-                    let all = lines(entries, cols);
-                    let (li, ci) = Self::locate(entries, cols, self.selected);
-                    let mut target = li.fit::<i64>();
-                    loop {
-                        target += if down { 1 } else { -1 };
-                        if target < 0 || target.fit::<usize>() >= all.len() {
-                            break;
-                        }
-                        if let Line::Cards(row) = &all[target.fit::<usize>()] {
-                            self.selected = row[ci.min(row.len() - 1)];
-                            break;
+                RawEvent::KeyDown { .. } => {
+                    let Some(nav) = Nav::decode(event) else {
+                        continue;
+                    };
+                    let rows: Vec<usize> = lines(entries, cols)
+                        .iter()
+                        .filter_map(|line| match line {
+                            Line::Cards(row) => Some(row.len()),
+                            Line::Heading(_) => None,
+                        })
+                        .collect();
+                    let GridMetrics {
+                        card_h,
+                        top,
+                        bottom,
+                        ..
+                    } = metrics(view, ui);
+                    let page_rows =
+                        numeric::to_usize(((bottom - top) / (card_h + 16.0 * ui)).floor());
+                    if let Some(next) = step_grid(&rows, self.selected, nav, page_rows) {
+                        self.selected = next;
+                        if nav == Nav::Home {
+                            self.scroll_y = 0.0;
+                        } else {
+                            self.ensure_visible(entries);
                         }
                     }
-                    self.ensure_visible(entries);
-                }
-                RawEvent::KeyDown { key: Key::Home } => {
-                    self.selected = 0;
-                    self.scroll_y = 0.0;
-                }
-                RawEvent::KeyDown { key: Key::End } => {
-                    self.selected = last;
-                    self.ensure_visible(entries);
                 }
                 RawEvent::Wheel { delta } => {
                     if !delta.is_finite() {
@@ -404,70 +471,11 @@ impl Browser {
                     *mouse = vec2(x, y);
                     self.hover = card_at(self, *mouse);
                 }
-                RawEvent::MouseDown {
-                    button: MouseButton::Left,
-                    x,
-                    y,
-                } => {
-                    self.pressed = card_at(self, vec2(x, y));
-                }
-                RawEvent::MouseUp {
-                    button: MouseButton::Left,
-                    x,
-                    y,
-                } => {
-                    let released = card_at(self, vec2(x, y));
-                    let armed = self.pressed.take();
-                    if let (Some(a), Some(r)) = (armed, released)
-                        && a == r
-                    {
-                        // First click selects; a click on the already-
-                        // selected card commits. Browsing by pointer
-                        // can't misfire a launch, and the double-click
-                        // reflex reads as select-then-play.
-                        if a == self.selected {
-                            return Out::Pick(a);
-                        }
-                        self.selected = a;
-                    }
-                }
-                RawEvent::TouchDown { id, x, y } => {
-                    if self.touch_id.is_none() && y >= shelf_top && y < shelf_bottom {
-                        let point = vec2(x, y);
-                        self.touch_id = Some(id);
-                        self.touch_last_y = y;
-                        self.touch_travel = 0.0;
-                        self.touch_pressed = card_at(self, point);
-                        *mouse = point;
-                        self.hover = self.touch_pressed;
-                    }
-                }
-                RawEvent::TouchMove { id, x, y } if self.touch_id == Some(id) => {
-                    let dy = y - self.touch_last_y;
-                    self.touch_last_y = y;
-                    self.touch_travel += dy.abs();
-                    let max = max_scroll(&lines(entries, cols), view, ui);
-                    self.scroll_y = (self.scroll_y - dy).clamp(0.0, max);
+                RawEvent::TouchDown { id, x, y } if self.press.owns(id) => {
                     *mouse = vec2(x, y);
-                    self.hover = None;
+                    self.hover = card_at(self, *mouse);
                 }
-                RawEvent::TouchUp { id, x, y } if self.touch_id == Some(id) => {
-                    let released = card_at(self, vec2(x, y));
-                    let armed = self.touch_pressed.take();
-                    self.touch_id = None;
-                    let was_tap = self.touch_travel <= 8.0 * ui;
-                    self.touch_travel = 0.0;
-                    self.hover = None;
-                    if was_tap
-                        && let (Some(a), Some(r)) = (armed, released)
-                        && a == r
-                    {
-                        if a == self.selected {
-                            return Out::Pick(a);
-                        }
-                        self.selected = a;
-                    }
-                }
+                RawEvent::TouchUp { .. } => self.hover = None,
                 _ => {}
             }
         }
@@ -481,14 +489,25 @@ impl Browser {
         let ui = crate::render::ui_scale();
         let layout = self.layout(entries, view, ui);
         for (label, rect) in &layout.headings {
-            draw_text(label, rect.x, rect.y + rect.h * 0.62, 22.0 * ui, TEXT_TITLE);
-            let dims = measure_text(label, None, numeric::font_size(22.0 * ui), 1.0);
+            draw_text(
+                label,
+                rect.x,
+                rect.y + rect.h * 0.62,
+                crate::theme::Type::Heading.at(ui),
+                TEXT_TITLE,
+            );
+            let dims = measure_text(
+                label,
+                None,
+                numeric::font_size(crate::theme::Type::Heading.at(ui)),
+                1.0,
+            );
             draw_rectangle(
                 rect.x + dims.width + 14.0 * ui,
                 rect.y + rect.h * 0.5,
                 rect.w - dims.width - 14.0 * ui,
-                1.0,
-                Color::new(0.6, 0.6, 0.65, 0.25),
+                Stroke::Hairline.at(ui),
+                BORDER_FAINT,
             );
         }
         for (entry_idx, rect) in &layout.cards {
@@ -522,10 +541,15 @@ impl Browser {
             } else if hovered {
                 TEXT_SECONDARY
             } else {
-                Color::new(0.6, 0.6, 0.65, 0.25)
+                BORDER_FAINT
             };
-            stroke_rect(*rect, if selected { 3.0 } else { 1.5 }, border);
-            let name_size = 17.0 * ui;
+            let stroke = if selected {
+                Stroke::Heavy
+            } else {
+                Stroke::Edge
+            };
+            stroke_rect(*rect, stroke.at(ui), border);
+            let name_size = crate::theme::Type::Body.at(ui);
             let name = measure_text(&entry.label, None, numeric::font_size(name_size), 1.0);
             draw_text(
                 &entry.label,
@@ -542,7 +566,13 @@ impl Browser {
         // Edge rows stay at their true translated positions so wheel
         // and touch input move continuously. Opaque chrome masks clip
         // the portions outside the shelf.
-        let (band_x, band_w, _, _, _, top, bottom) = metrics(view, ui);
+        let GridMetrics {
+            band_x,
+            band_w,
+            top,
+            bottom,
+            ..
+        } = metrics(view, ui);
         draw_rectangle(0.0, 0.0, view.x, top, crate::render::OUTSIDE);
         draw_rectangle(
             0.0,
@@ -551,7 +581,7 @@ impl Browser {
             (view.y - bottom).max(0.0),
             crate::render::OUTSIDE,
         );
-        let title_size = 64.0 * ui;
+        let title_size = crate::theme::Type::Title.at(ui);
         let dims = measure_text("OXIDE", None, numeric::font_size(title_size), 1.0);
         draw_text(
             "OXIDE",
@@ -584,7 +614,7 @@ impl Browser {
                 .blurb
                 .clone()
                 .unwrap_or_else(|| "machines eating a dead world".to_string());
-            let mut size = 18.0 * ui;
+            let mut size = crate::theme::Type::Label.at(ui);
             let mut dims = measure_text(&blurb, None, numeric::font_size(size), 1.0);
             let max = view.x * 0.8;
             if dims.width > max {
@@ -600,12 +630,17 @@ impl Browser {
             );
         }
         let hint = crate::menu::binding_hint(browser_hint(crate::platform::TOUCH_ONLY));
-        let dims = measure_text(&hint, None, numeric::font_size(16.0 * ui), 1.0);
+        let dims = measure_text(
+            &hint,
+            None,
+            numeric::font_size(crate::theme::Type::Body.at(ui)),
+            1.0,
+        );
         draw_text(
             &hint,
             (view.x - dims.width) * 0.5,
             view.y - 20.0 * ui,
-            16.0 * ui,
+            crate::theme::Type::Body.at(ui),
             crate::hints::fade(TEXT_SECONDARY),
         );
     }

@@ -78,6 +78,7 @@ mod chrome;
 mod destruction;
 pub(crate) mod entities;
 mod environment;
+pub(crate) mod hud;
 mod impacts;
 mod minimap;
 mod motion;
@@ -146,12 +147,7 @@ fn draw_capability_icon(
     let radius = radius.max(2.0);
     let stroke = (radius * 0.18).clamp(1.0, 2.0);
     if plate {
-        draw_circle(
-            center.x,
-            center.y,
-            radius * 1.34,
-            Color::new(0.045, 0.045, 0.060, 0.88),
-        );
+        draw_circle(center.x, center.y, radius * 1.34, crate::theme::ICON_PLATE);
     }
     match icon {
         CapabilityIcon::Weapon | CapabilityIcon::AirWeapon | CapabilityIcon::DeadZone => {
@@ -494,6 +490,14 @@ pub(crate) fn draw_with_performance(
     bindings: &crate::action::BindingMap,
     performance: Option<&crate::performance::PerformanceView>,
 ) {
+    let hud = hud::refresh(
+        game,
+        input,
+        bindings,
+        hud::HudEnv::current(),
+        performance,
+        &hud::window_measure,
+    );
     clear_background(OUTSIDE);
     environment::draw_backdrop(game);
     let alpha = game.clock.render_alpha();
@@ -536,7 +540,7 @@ pub(crate) fn draw_with_performance(
     draw_touch_box(game, input);
     draw_long_press_ring(input);
     draw_salvage_tooltip(game, input);
-    draw_hud(game, sprites, input, bindings, performance);
+    draw_hud(game, sprites, input, bindings, &hud, performance);
     if game.presentation.overlay {
         draw_overlay_info(game);
     }

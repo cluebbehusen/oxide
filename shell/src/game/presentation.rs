@@ -74,12 +74,12 @@ pub struct Presentation {
     /// never touch the GPU). A `RefCell` because drawing borrows presentation.
     pub minimap_layer: std::cell::RefCell<Option<crate::render::MinimapLayer>>,
     pub boundary_fog: crate::boundary_fog::BoundaryFog,
-    /// The chrome geometry the renderer computed last frame. Hit-testing
+    /// The chrome geometry of the latest HUD layout pass. Hit-testing
     /// reads this same model so drawn and clickable regions cannot
     /// disagree. A `Cell` because drawing borrows presentation.
     pub layout: std::cell::Cell<crate::layout::LayoutModel>,
-    /// The frame's command panel, built once in `draw_hud` and read by
-    /// the tooltip pass.
+    /// The command panel of the latest HUD layout pass, published with
+    /// `layout` and read by input and the tooltip pass.
     pub panel_model: std::cell::RefCell<Option<crate::panel::Panel>>,
     /// The selection's programs through the staged commands, shared by the
     /// orders dock and the waypoint chain. A `RefCell` because drawing
