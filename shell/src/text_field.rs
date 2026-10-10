@@ -46,7 +46,7 @@ impl Layout {
 pub fn layout(view: Vec2, s: f32) -> Layout {
     let width = (420.0 * s).min(view.x - 32.0 * s);
     let x = (view.x - width) * 0.5;
-    let field = Rect::new(x, 92.0 * s, width, crate::layout::MIN_TOUCH_TARGET * s);
+    let field = Rect::new(x, 92.0 * s, width, crate::theme::MIN_TOUCH_TARGET * s);
     let gap = 12.0 * s;
     let button_w = (width - gap) * 0.5;
     let buttons_y = field.y + field.h + gap;
@@ -54,12 +54,12 @@ pub fn layout(view: Vec2, s: f32) -> Layout {
         title_y: 56.0 * s,
         hint_y: 80.0 * s,
         field,
-        cancel: Rect::new(x, buttons_y, button_w, crate::layout::MIN_TOUCH_TARGET * s),
+        cancel: Rect::new(x, buttons_y, button_w, crate::theme::MIN_TOUCH_TARGET * s),
         confirm: Rect::new(
             x + button_w + gap,
             buttons_y,
             button_w,
-            crate::layout::MIN_TOUCH_TARGET * s,
+            crate::theme::MIN_TOUCH_TARGET * s,
         ),
     }
 }
@@ -210,7 +210,7 @@ impl TextField {
             field.y,
             field.w,
             field.h,
-            2.0 * s,
+            crate::theme::Stroke::Focus.at(s),
             crate::theme::TEXT_ACCENT,
         );
         let text = format!("{}_", self.value);

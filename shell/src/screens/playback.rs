@@ -8,8 +8,8 @@ use crate::game::{self, GameReplay, Presentation, Scene};
 use crate::numeric;
 use crate::numeric::Fit;
 use crate::press::{Fed, Press};
-use crate::render;
 use crate::render::prim::{fill_rect, stroke_rect};
+use crate::{render, theme};
 use anyhow::{Context, Result};
 use macroquad::prelude::*;
 #[cfg(test)]
@@ -158,7 +158,7 @@ pub fn playback_hud(pb: &PlaybackSession, bindings: &BindingMap, viewport: Vec2,
     // The timeline: played track, live position, and the ghost of a
     // seek in flight.
     let bar = scrub_rect(&pb.view(), viewport);
-    fill_rect(bar, Color::from_rgba(15, 15, 18, 235));
+    fill_rect(bar, theme::SURFACE_CAPTION);
     let total = (pb.engine.total() - pb.engine.start()).max(1) as f32;
     let frac = (pb.engine.position() - pb.engine.start()) as f32 / total;
     draw_rectangle(
@@ -175,10 +175,10 @@ pub fn playback_hud(pb: &PlaybackSession, bindings: &BindingMap, viewport: Vec2,
             bar.y - 2.0 * s,
             3.0 * s,
             bar.h + 4.0 * s,
-            Color::new(0.92, 0.5, 0.45, 1.0),
+            theme::TEXT_ALERT,
         );
     }
-    stroke_rect(bar, 1.2 * s, Color::new(0.45, 0.45, 0.52, 0.8));
+    stroke_rect(bar, theme::Stroke::Edge.at(s), theme::EDGE_CHIP);
     if pb.show_stats
         && let Some(stats) = &pb.stats
     {
@@ -196,7 +196,7 @@ pub fn playback_hud(pb: &PlaybackSession, bindings: &BindingMap, viewport: Vec2,
             y - size,
             width + 20.0 * s,
             size + 10.0 * s,
-            macroquad::prelude::Color::from_rgba(15, 15, 18, 235),
+            theme::SURFACE_CAPTION,
         );
         draw_text(&line, x, y, size, crate::theme::TEXT_PRIMARY);
         return;
@@ -239,7 +239,7 @@ pub fn playback_hud(pb: &PlaybackSession, bindings: &BindingMap, viewport: Vec2,
         y - size,
         width + 20.0 * s,
         size + 10.0 * s,
-        Color::from_rgba(15, 15, 19, 220),
+        theme::SURFACE_CAPTION,
     );
     draw_text(&line, x, y, size, crate::theme::TEXT_PRIMARY);
 }
@@ -304,7 +304,7 @@ fn composition_band(
     let named: Vec<&'static str> = ranked.iter().take(8).map(|(kind, _)| *kind).collect();
 
     let band = macroquad::prelude::Rect::new(bar.x, bar.y - 96.0 * s, bar.w, 72.0 * s);
-    fill_rect(band, Color::from_rgba(15, 15, 18, 220));
+    fill_rect(band, theme::SURFACE_CAPTION);
     for (column, counts) in pooled.iter().enumerate() {
         let (left, right) = composition_interval(&stats.sample_ticks, column);
         let column_w = band.w * (right - left);
@@ -343,7 +343,7 @@ fn composition_band(
         band.y,
         2.0 * s,
         band.h,
-        Color::new(0.95, 0.95, 0.95, 0.9),
+        theme::EDGE_FOCUS,
     );
     // Legend across the top edge.
     let mut x = band.x + 4.0 * s;
@@ -353,7 +353,7 @@ fn composition_band(
         draw_text(&label, x, band.y - 4.0 * s, size, BAND_COLORS[index]);
         x += measure_text(&label, None, numeric::font_size(size), 1.0).width + 6.0 * s;
     }
-    stroke_rect(band, 1.2 * s, Color::new(0.45, 0.45, 0.52, 0.8));
+    stroke_rect(band, theme::Stroke::Edge.at(s), theme::EDGE_CHIP);
 }
 
 impl PlaybackSession {

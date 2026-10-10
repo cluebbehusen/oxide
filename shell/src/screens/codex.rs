@@ -14,7 +14,9 @@ use crate::panel::{
     unit_flavor, unit_stat_line, weapon_lines,
 };
 use crate::render;
-use crate::theme::{SURFACE_MENU, TEXT_ACCENT, TEXT_BODY, TEXT_PRIMARY, TEXT_SECONDARY};
+use crate::theme::{
+    BORDER_STRONG, CHIP, SURFACE_MENU, Stroke, TEXT_ACCENT, TEXT_BODY, TEXT_PRIMARY, TEXT_SECONDARY,
+};
 use crate::typography::entity_name;
 use macroquad::prelude::*;
 use oxide_protocol::{Key, RawEvent};
@@ -261,16 +263,10 @@ impl CodexScreen {
             top,
             w,
             box_bottom - top,
-            1.5,
-            Color::new(0.6, 0.6, 0.65, 0.4),
+            Stroke::Edge.at(s),
+            BORDER_STRONG,
         );
-        draw_rectangle(
-            plate_x,
-            plate_y,
-            plates_w,
-            plate,
-            Color::from_rgba(35, 35, 41, 255),
-        );
+        draw_rectangle(plate_x, plate_y, plates_w, plate, CHIP);
         for (i, faction) in sprite_factions.iter().enumerate() {
             let dest = Rect::new(
                 plate_x + i as f32 * (plate + 6.0 * s),

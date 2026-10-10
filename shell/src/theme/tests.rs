@@ -62,3 +62,29 @@ fn disabled_reads_as_disabled_and_the_tiers_stay_ordered() {
     assert!(on_card(TEXT_SECONDARY) < on_card(TEXT_BODY));
     assert!(on_card(TEXT_BODY) < on_card(TEXT_PRIMARY));
 }
+
+#[test]
+fn chrome_text_clears_its_tier_on_every_plate_and_card() {
+    let plates = [SURFACE_PLATE, SURFACE_CAPTION, SURFACE_BAND, VEIL, BADGE];
+    let cards = [CARD_IDLE, CARD_HOVER, CARD_ARMED, CHIP];
+    for field in plates.into_iter().chain(cards) {
+        assert!(contrast(TEXT_PRIMARY, field) >= 7.0, "{field:?}");
+        assert!(contrast(TEXT_BODY, field) >= 4.5, "{field:?}");
+    }
+    // Hotkey corners on a hovered (4.4:1) or armed (4.2:1) card fall just
+    // short of AA; every other field clears it.
+    for field in plates.into_iter().chain([CARD_IDLE, CHIP]) {
+        assert!(contrast(TEXT_SECONDARY, field) >= 4.5, "{field:?}");
+    }
+    for field in plates {
+        assert!(contrast(TEXT_ALERT, field) >= 4.5, "{field:?}");
+    }
+}
+
+#[test]
+fn strokes_scale_and_never_vanish() {
+    assert_eq!(Stroke::Edge.at(2.0), 3.0);
+    assert_eq!(Stroke::Hairline.at(0.75), 1.0, "a device pixel at least");
+    let widths = [Stroke::Hairline, Stroke::Edge, Stroke::Focus, Stroke::Heavy].map(|s| s.at(1.0));
+    assert!(widths.windows(2).all(|pair| pair[0] < pair[1]));
+}

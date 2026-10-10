@@ -768,13 +768,7 @@ fn veil() {
     // Dark enough that the game behind reads as backdrop texture, not
     // as competing UI — the HUD's own text lines must not fight the
     // menu's.
-    draw_rectangle(
-        0.0,
-        0.0,
-        screen_width(),
-        screen_height(),
-        Color::new(0.04, 0.04, 0.06, 0.96),
-    );
+    draw_rectangle(0.0, 0.0, screen_width(), screen_height(), theme::VEIL);
 }
 
 #[cfg(test)]

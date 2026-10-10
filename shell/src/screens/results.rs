@@ -94,7 +94,7 @@ pub(crate) fn action_rects(viewport: Vec2, scale: f32) -> [Rect; ResultAction::A
             x + (width + gap) * index as f32,
             y,
             width,
-            crate::layout::MIN_TOUCH_TARGET * scale,
+            crate::theme::MIN_TOUCH_TARGET * scale,
         )
     })
 }
@@ -452,13 +452,7 @@ impl ResultsScreen {
     pub fn draw(&self, game: &Game) {
         let viewport = render::viewport();
         let s = render::ui_scale();
-        draw_rectangle(
-            0.0,
-            0.0,
-            viewport.x,
-            viewport.y,
-            Color::new(0.025, 0.025, 0.035, 0.92),
-        );
+        draw_rectangle(0.0, 0.0, viewport.x, viewport.y, theme::VEIL);
         let panel = Rect::new(
             12.0 * s,
             10.0 * s,
@@ -471,8 +465,8 @@ impl ResultsScreen {
             panel.y,
             panel.w,
             panel.h,
-            1.5 * s,
-            Color::new(0.65, 0.52, 0.34, 0.72),
+            theme::Stroke::Edge.at(s),
+            theme::EDGE_WARM,
         );
 
         let player_count = game.state.players().len();

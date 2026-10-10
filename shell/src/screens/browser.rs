@@ -13,12 +13,11 @@ use crate::numeric;
 use crate::press::{ScrollPress, Swipe};
 use crate::render::prim::{fill_rect, stroke_rect};
 use macroquad::prelude::{
-    Color, DrawTextureParams, Rect, Vec2, draw_rectangle, draw_text, draw_texture_ex, measure_text,
-    vec2,
+    DrawTextureParams, Rect, Vec2, draw_rectangle, draw_text, draw_texture_ex, measure_text, vec2,
 };
 use oxide_protocol::{Key, RawEvent};
 
-use crate::theme::{SURFACE_MENU, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TITLE};
+use crate::theme::{BORDER_FAINT, SURFACE_MENU, Stroke, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TITLE};
 
 /// What a frame of browser input decided.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -496,8 +495,8 @@ impl Browser {
                 rect.x + dims.width + 14.0 * ui,
                 rect.y + rect.h * 0.5,
                 rect.w - dims.width - 14.0 * ui,
-                1.0,
-                Color::new(0.6, 0.6, 0.65, 0.25),
+                Stroke::Hairline.at(ui),
+                BORDER_FAINT,
             );
         }
         for (entry_idx, rect) in &layout.cards {
@@ -531,9 +530,14 @@ impl Browser {
             } else if hovered {
                 TEXT_SECONDARY
             } else {
-                Color::new(0.6, 0.6, 0.65, 0.25)
+                BORDER_FAINT
             };
-            stroke_rect(*rect, if selected { 3.0 } else { 1.5 }, border);
+            let stroke = if selected {
+                Stroke::Heavy
+            } else {
+                Stroke::Edge
+            };
+            stroke_rect(*rect, stroke.at(ui), border);
             let name_size = 17.0 * ui;
             let name = measure_text(&entry.label, None, numeric::font_size(name_size), 1.0);
             draw_text(

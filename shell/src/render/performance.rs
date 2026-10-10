@@ -107,7 +107,7 @@ pub(super) fn draw(view: &PerformanceView, performance: &PerformanceLayout) {
     } = performance;
     let panel = layout.panel;
     if panel.w > 0.0 {
-        fill_rect(panel, Color::from_rgba(15, 15, 19, 230));
+        fill_rect(panel, crate::theme::SURFACE_CAPTION);
     }
     typography::draw(fps, layout.fps.x, layout.fps.y, size, theme::TEXT_SECONDARY);
     if view.mode != PerformanceDisplay::Detailed {

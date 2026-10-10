@@ -38,7 +38,7 @@ fn corner_slots_are_fingertip_sized_and_never_overlap() {
     for s in [0.75, 1.0, 1.5] {
         let first = corner_slot(0, s);
         let second = corner_slot(1, s);
-        assert!(first.h >= crate::layout::MIN_TOUCH_TARGET * s);
+        assert!(first.h >= crate::theme::MIN_TOUCH_TARGET * s);
         assert!(first.x > 0.0 && first.y > 0.0);
         assert!(first.x + first.w < second.x, "slots keep a gap at {s}");
     }

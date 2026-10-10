@@ -15,7 +15,7 @@ fn actions_fit_small_and_large_viewports() {
         assert!(
             rects
                 .iter()
-                .all(|rect| rect.h >= crate::layout::MIN_TOUCH_TARGET)
+                .all(|rect| rect.h >= crate::theme::MIN_TOUCH_TARGET)
         );
         assert!(
             rects

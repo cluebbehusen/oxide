@@ -102,9 +102,7 @@ impl Default for LayoutModel {
 /// and drawing.
 pub const TOP_BAR_H: f32 = 40.0;
 
-/// Minimum touch target edge in logical px (platform guidance says a
-/// fingertip needs ~44).
-pub const MIN_TOUCH_TARGET: f32 = 44.0;
+use crate::theme::MIN_TOUCH_TARGET;
 
 /// Pads a hit rect out to the minimum touch target, centered. Touch
 /// paths hit-test through this so small chrome stays tappable; mouse

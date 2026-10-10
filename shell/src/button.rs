@@ -17,7 +17,7 @@ pub(crate) fn corner_slot(index: usize, s: f32) -> Rect {
         16.0 * s + index as f32 * (width + 8.0 * s),
         16.0 * s,
         width,
-        crate::layout::MIN_TOUCH_TARGET * s,
+        crate::theme::MIN_TOUCH_TARGET * s,
     )
 }
 
@@ -39,7 +39,12 @@ pub(crate) fn draw(rect: Rect, label: &str, active: bool, s: f32) {
         rect.y,
         rect.w,
         rect.h,
-        if active { 2.0 * s } else { 1.0 * s },
+        if active {
+            theme::Stroke::Focus
+        } else {
+            theme::Stroke::Hairline
+        }
+        .at(s),
         if active {
             theme::TEXT_ACCENT
         } else {

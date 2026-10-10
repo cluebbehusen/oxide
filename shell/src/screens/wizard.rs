@@ -16,7 +16,7 @@ use crate::press::{Fed, Press};
 use crate::screens::browser::{Browser, Out as BrowserOut};
 use anyhow::{Context, Result};
 use macroquad::prelude::{
-    Color, DrawTextureParams, Rect, Vec2, draw_circle, draw_circle_lines, draw_rectangle,
+    DrawTextureParams, Rect, Vec2, draw_circle, draw_circle_lines, draw_rectangle,
     draw_rectangle_lines, draw_text, draw_texture_ex, measure_text, vec2,
 };
 use oxide_protocol::{Key, RawEvent};
@@ -24,7 +24,10 @@ use oxide_sim::Scenario;
 use oxide_sim::scenario::{BotDifficulty, BotStance};
 use std::path::PathBuf;
 
-use crate::theme::{SURFACE_MENU, TEXT_DANGER, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TITLE};
+use crate::theme::{
+    BORDER_FAINT, BORDER_STRONG, CARD_IDLE, CHIP, MIN_TOUCH_TARGET, SURFACE_MENU, SURFACE_PLATE,
+    Stroke, TEXT_DANGER, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TITLE,
+};
 
 /// One seat's editable choices in the draft.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -206,7 +209,6 @@ impl NewMatchDraft {
 /// The setup cards' faction chip values, aligned with
 /// [`faction_override`].
 const FACTION_CHIP_ITEMS: [&str; 3] = ["Auto", "Ferrous", "Cupric"];
-const MIN_TOUCH_TARGET: f32 = 44.0;
 const COMPACT_PAGE_ITEMS: usize = 5;
 
 /// The setup screen's coaching line. The keyboard hint follows the
@@ -751,7 +753,7 @@ pub fn draw_seat_markers(
             px - tw * 0.5,
             py + 4.5 * ui,
             13.0 * ui,
-            Color::from_rgba(20, 20, 24, 255),
+            SURFACE_PLATE,
         );
     }
 }
@@ -1092,8 +1094,8 @@ impl Wizard {
                 rect.x + dims.width + 12.0 * ui,
                 rect.y + rect.h * 0.55,
                 rect.w - dims.width - 12.0 * ui,
-                1.0,
-                Color::new(0.6, 0.6, 0.65, 0.25),
+                Stroke::Hairline.at(ui),
+                BORDER_FAINT,
             );
         }
         for (pos, card) in layout.cards.iter().enumerate() {
@@ -1112,12 +1114,13 @@ impl Wizard {
                 rect.y,
                 rect.w,
                 rect.h,
-                if selected { 2.5 } else { 1.0 },
                 if selected {
-                    TEXT_TITLE
+                    Stroke::Focus
                 } else {
-                    Color::new(0.6, 0.6, 0.65, 0.3)
-                },
+                    Stroke::Hairline
+                }
+                .at(ui),
+                if selected { TEXT_TITLE } else { BORDER_FAINT },
             );
             let accent = crate::render::faction_accent(effective_faction(scenario, draft, seat));
             let cy = rect.y + rect.h * 0.5;
@@ -1137,7 +1140,7 @@ impl Wizard {
                 chip_x - ndims.width * 0.5,
                 cy + num_font * 0.35,
                 num_font,
-                Color::from_rgba(20, 20, 24, 255),
+                SURFACE_PLATE,
             );
             let mut name_font = (16.0 * ui).min(rect.h * 0.62);
             let text_right = card
@@ -1181,19 +1184,18 @@ impl Wizard {
                     continue;
                 };
                 let on_cell = selected && self.setup_cell == cell;
-                draw_rectangle(
-                    control.x,
-                    control.y,
-                    control.w,
-                    control.h,
-                    Color::from_rgba(27, 37, 39, 255),
-                );
+                draw_rectangle(control.x, control.y, control.w, control.h, CARD_IDLE);
                 draw_rectangle_lines(
                     control.x,
                     control.y,
                     control.w,
                     control.h,
-                    if on_cell { 2.0 } else { 1.0 },
+                    if on_cell {
+                        Stroke::Focus
+                    } else {
+                        Stroke::Hairline
+                    }
+                    .at(ui),
                     if on_cell { TEXT_TITLE } else { accent },
                 );
                 let mut font = 13.0 * ui;
@@ -1221,24 +1223,19 @@ impl Wizard {
                 (Cell::Team, card.team, team_label.as_str()),
             ] {
                 let on_cell = selected && self.setup_cell == cell;
-                draw_rectangle(
-                    chip.x,
-                    chip.y,
-                    chip.w,
-                    chip.h,
-                    Color::from_rgba(32, 32, 38, 255),
-                );
+                draw_rectangle(chip.x, chip.y, chip.w, chip.h, CHIP);
                 draw_rectangle_lines(
                     chip.x,
                     chip.y,
                     chip.w,
                     chip.h,
-                    if on_cell { 2.0 } else { 1.0 },
                     if on_cell {
-                        TEXT_TITLE
+                        Stroke::Focus
                     } else {
-                        Color::new(0.6, 0.6, 0.65, 0.35)
-                    },
+                        Stroke::Hairline
+                    }
+                    .at(ui),
+                    if on_cell { TEXT_TITLE } else { BORDER_STRONG },
                 );
                 // The label fits its chip: squeezed cards shrink the type
                 // instead of spilling text across neighbors.
@@ -1283,9 +1280,14 @@ impl Wizard {
                 start.y,
                 start.w,
                 start.h,
-                if start_selected { 3.0 } else { 1.5 },
+                if start_selected {
+                    Stroke::Heavy
+                } else {
+                    Stroke::Edge
+                }
+                .at(ui),
                 if one_team {
-                    Color::new(0.6, 0.6, 0.65, 0.4)
+                    BORDER_STRONG
                 } else if start_selected {
                     TEXT_TITLE
                 } else {
@@ -1321,7 +1323,14 @@ impl Wizard {
                 continue;
             };
             draw_rectangle(rect.x, rect.y, rect.w, rect.h, SURFACE_MENU);
-            draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.5, TEXT_SECONDARY);
+            draw_rectangle_lines(
+                rect.x,
+                rect.y,
+                rect.w,
+                rect.h,
+                Stroke::Edge.at(ui),
+                TEXT_SECONDARY,
+            );
             let mut size = 16.0 * ui;
             let mut dims = measure_text(&label, None, numeric::font_size(size), 1.0);
             if dims.width > rect.w - 8.0 {

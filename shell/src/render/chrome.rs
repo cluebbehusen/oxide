@@ -9,10 +9,6 @@ use crate::numeric::Fit;
 use crate::render::prim::{fill_rect, line_between, stroke_rect};
 use crate::theme::TEXT_ACCENT;
 
-/// Fill shared by the top bar's badges: the idle count, the alert, and
-/// the menu button.
-const TOP_BAR_BADGE: Color = color_u8!(57, 45, 30, 255);
-
 /// The paused status names the pause key where one exists. A
 /// touch-only build has no key to name, and an unbound key reads bare.
 fn paused_status(key: &str, touch_only: bool) -> String {
@@ -64,7 +60,7 @@ fn draw_group_slot(
     let number = slot.number();
     match slot {
         crate::layout::GroupSlot::Recall(_) => {
-            fill_rect(rect, TOP_BAR_BADGE);
+            fill_rect(rect, crate::theme::BADGE);
             let text = count.to_string();
             let mut size = 17.0 * s;
             while measure_text(&text, None, numeric::font_size(size), 1.0).width > rect.w - 14.0 * s
@@ -84,15 +80,19 @@ fn draw_group_slot(
             );
         }
         crate::layout::GroupSlot::Assign(_) => {
-            fill_rect(rect, Color::from_rgba(20, 20, 24, 255));
-            stroke_rect(rect, 1.0 * s, TEXT_DISABLED);
+            fill_rect(rect, crate::theme::SURFACE_PLATE);
+            stroke_rect(rect, crate::theme::Stroke::Hairline.at(s), TEXT_DISABLED);
             let c = rect.center();
             let arm = 6.0 * s;
             line_between(c - vec2(arm, 0.0), c + vec2(arm, 0.0), 2.0 * s, SCRAP_COLOR);
             line_between(c - vec2(0.0, arm), c + vec2(0.0, arm), 2.0 * s, SCRAP_COLOR);
         }
         crate::layout::GroupSlot::Empty(_) => {
-            stroke_rect(rect, 1.0 * s, Color::new(0.9, 0.9, 0.85, 0.12));
+            stroke_rect(
+                rect,
+                crate::theme::Stroke::Hairline.at(s),
+                crate::theme::BORDER_FAINT,
+            );
         }
     }
     draw_text(
@@ -107,7 +107,7 @@ fn draw_group_slot(
         },
     );
     if current {
-        stroke_rect(rect, 1.5 * s, TEXT_ACCENT);
+        stroke_rect(rect, crate::theme::Stroke::Edge.at(s), TEXT_ACCENT);
     }
 }
 
@@ -153,8 +153,12 @@ pub(super) fn group_column_layout(
 }
 
 fn draw_group_column(column: &GroupColumnLayout, s: f32) {
-    fill_rect(column.plate, Color::from_rgba(20, 20, 24, 255));
-    stroke_rect(column.plate, 1.5 * s, Color::new(0.6, 0.6, 0.65, 0.4));
+    fill_rect(column.plate, crate::theme::SURFACE_PLATE);
+    stroke_rect(
+        column.plate,
+        crate::theme::Stroke::Edge.at(s),
+        crate::theme::BORDER_STRONG,
+    );
     for (rect, slot, count) in column.slots {
         draw_group_slot(rect, slot, count, column.current == Some(slot.number()), s);
     }
@@ -163,7 +167,7 @@ fn draw_group_column(column: &GroupColumnLayout, s: f32) {
 /// Three bars on the badge fill: the glyph needs no font coverage or
 /// atlas entry, and whole-rect fills stay crisp at any scale.
 fn draw_menu_button(rect: Rect, s: f32) {
-    fill_rect(rect, TOP_BAR_BADGE);
+    fill_rect(rect, crate::theme::BADGE);
     let bar_w = 16.0 * s;
     let bar_h = (2.0 * s).max(1.0);
     let x = rect.x + (rect.w - bar_w) * 0.5;
@@ -314,7 +318,7 @@ fn ribbon_width(viewport: Vec2, scale: f32, label_width: f32) -> f32 {
 /// sliding left only when it would run off the window or into the
 /// minimap.
 fn ribbon_geometry(viewport: Vec2, scale: f32, panel_top: f32, width: f32, minimap: Rect) -> Rect {
-    let height = crate::layout::MIN_TOUCH_TARGET * scale;
+    let height = crate::theme::MIN_TOUCH_TARGET * scale;
     let y = ribbon_row_y(viewport, scale, panel_top, height);
     let blocks_row = minimap.w > 0.0 && minimap.y < y + height && minimap.y + minimap.h > y;
     let right = if blocks_row {
@@ -350,7 +354,7 @@ pub(super) fn queue_toggle_shown(
 /// orders dock's column, so it never moves as orders queue up; the dock
 /// stacks above it instead.
 pub(super) fn queue_toggle_rect(viewport: Vec2, scale: f32, regions: &[Rect; 2]) -> Rect {
-    let size = crate::layout::MIN_TOUCH_TARGET * scale;
+    let size = crate::theme::MIN_TOUCH_TARGET * scale;
     let x = 8.0 * scale;
     let floor = regions
         .iter()
@@ -362,7 +366,7 @@ pub(super) fn queue_toggle_rect(viewport: Vec2, scale: f32, regions: &[Rect; 2])
 
 /// How far the orders dock rises to clear the QUEUE toggle.
 pub(super) fn queue_dock_lift(scale: f32) -> f32 {
-    (crate::layout::MIN_TOUCH_TARGET + 16.0) * scale
+    (crate::theme::MIN_TOUCH_TARGET + 16.0) * scale
 }
 
 /// The QUEUE toggle: a chain of queued waypoints, lit while queueing so
@@ -372,8 +376,12 @@ fn draw_queue_toggle(rect: Rect, on: bool, s: f32) {
     if on {
         fill_rect(rect, TEXT_ACCENT);
     } else {
-        fill_rect(rect, Color::from_rgba(20, 20, 24, 255));
-        stroke_rect(rect, 1.5 * s, Color::new(0.6, 0.6, 0.65, 0.4));
+        fill_rect(rect, crate::theme::SURFACE_PLATE);
+        stroke_rect(
+            rect,
+            crate::theme::Stroke::Edge.at(s),
+            crate::theme::BORDER_STRONG,
+        );
     }
     let c = rect.center();
     let points = [
@@ -456,8 +464,8 @@ fn draw_mode_ribbon(
     } = layout;
     let (ribbon, building, label_w, icon_w) = (*ribbon, *building, *label_w, *icon_w);
     let (label_size, cost_size) = (18.0 * s, 16.0 * s);
-    fill_rect(ribbon, Color::from_rgba(20, 20, 24, 248));
-    stroke_rect(ribbon, 1.5 * s, SCRAP_COLOR);
+    fill_rect(ribbon, crate::theme::SURFACE_PLATE);
+    stroke_rect(ribbon, crate::theme::Stroke::Edge.at(s), SCRAP_COLOR);
     let mut x = ribbon.x + 10.0 * s;
     if let Some(kind) = building {
         let faction = game.state.player(game.presentation.human).faction;
@@ -649,7 +657,7 @@ fn draw_top_bar(top: &TopBarLayout, s: f32) {
     crate::typography::draw("UNITS", bar.units_x, 26.0 * s, 13.0 * s, TEXT_SECONDARY);
     crate::typography::draw(units, bar.count_x, 27.0 * s, 21.0 * s, TEXT_PRIMARY);
     if let Some(text) = idle {
-        fill_rect(bar.idle_badge, TOP_BAR_BADGE);
+        fill_rect(bar.idle_badge, crate::theme::BADGE);
         draw_text(
             text,
             bar.idle_badge.x + 9.0 * s,
@@ -659,7 +667,7 @@ fn draw_top_bar(top: &TopBarLayout, s: f32) {
         );
     }
     if let Some(text) = alert {
-        fill_rect(bar.alert_badge, TOP_BAR_BADGE);
+        fill_rect(bar.alert_badge, crate::theme::BADGE);
         draw_text(
             text,
             bar.alert_badge.x + 9.0 * s,
@@ -741,7 +749,10 @@ pub(crate) fn draw_hud(
         {
             size -= 1.0 * s;
         }
-        let color = Color::new(0.92, 0.5, 0.45, fade);
+        let color = Color {
+            a: fade,
+            ..crate::theme::TEXT_ALERT
+        };
         draw_text(&toast.text, origin.x, origin.y, size, color);
     }
 

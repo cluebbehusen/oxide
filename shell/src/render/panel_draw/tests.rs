@@ -262,8 +262,8 @@ fn production_cards_stay_inside_the_band_across_layouts_and_actions() {
                                             && rect.y + rect.h <= viewport.y + 0.001
                                     );
                                     assert!(
-                                        rect.w >= crate::layout::MIN_TOUCH_TARGET * scale
-                                            && rect.h >= crate::layout::MIN_TOUCH_TARGET * scale
+                                        rect.w >= crate::theme::MIN_TOUCH_TARGET * scale
+                                            && rect.h >= crate::theme::MIN_TOUCH_TARGET * scale
                                     );
                                     assert!(
                                         slots[..index].iter().all(|other| !rect.overlaps(other))
@@ -303,8 +303,8 @@ fn construction_catalog_keeps_every_choice_and_minimap_at_supported_sizes() {
         assert!(band.y >= crate::layout::TOP_BAR_H);
         assert!(band.w < minimap.x);
         for (i, rect) in slots.iter().enumerate() {
-            assert!(rect.w >= crate::layout::MIN_TOUCH_TARGET);
-            assert!(rect.h >= crate::layout::MIN_TOUCH_TARGET);
+            assert!(rect.w >= crate::theme::MIN_TOUCH_TARGET);
+            assert!(rect.h >= crate::theme::MIN_TOUCH_TARGET);
             assert!(band.contains(vec2(rect.x, rect.y)));
             assert!(rect.y + rect.h <= viewport.y);
             assert!(slots[..i].iter().all(|other| !rect.overlaps(other)));

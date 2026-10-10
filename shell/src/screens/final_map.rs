@@ -107,7 +107,7 @@ impl FinalMapScreen {
             y - size,
             width + 20.0 * scale,
             size + 10.0 * scale,
-            Color::from_rgba(15, 15, 19, 220),
+            theme::SURFACE_CAPTION,
         );
         draw_text(&line, x, y, size, theme::TEXT_PRIMARY);
     }

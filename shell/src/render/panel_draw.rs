@@ -34,7 +34,7 @@ fn card_metrics(viewport: Vec2, scale: f32) -> (f32, f32, f32, f32) {
 
 fn rally_group_width(card_width: f32, scale: f32) -> f32 {
     RALLY_CONTEXT_WIDTH * scale
-        + card_width.max((2.0 * crate::layout::MIN_TOUCH_TARGET + 6.0) * scale)
+        + card_width.max((2.0 * crate::theme::MIN_TOUCH_TARGET + 6.0) * scale)
 }
 
 fn panel_packing_at_right(
@@ -190,7 +190,7 @@ fn command_card_geometry(
                 - RALLY_CONTEXT_WIDTH * scale
                 - gap * rally_count.saturating_sub(1) as f32)
                 / rally_count.max(1) as f32)
-                .max(crate::layout::MIN_TOUCH_TARGET * scale);
+                .max(crate::theme::MIN_TOUCH_TARGET * scale);
             let rally = index < rally_count;
             Rect::new(
                 left + CARD_LEFT_INSET * scale
@@ -490,14 +490,8 @@ fn draw_catalog(
 ) {
     use crate::panel::CardAction;
     let s = ui_scale();
-    fill_rect(band, Color::from_rgba(20, 24, 26, 255));
-    draw_rectangle(
-        band.x,
-        band.y,
-        band.w,
-        s,
-        Color::from_rgba(119, 107, 79, 180),
-    );
+    fill_rect(band, crate::theme::SURFACE_BAND);
+    draw_rectangle(band.x, band.y, band.w, s, crate::theme::EDGE_WARM);
     if !grouped {
         crate::typography::draw("BUILD", 12.0 * s, band.y + 20.0 * s, 15.0 * s, TEXT_PRIMARY);
     }
@@ -540,11 +534,11 @@ fn draw_catalog(
         fill_rect(
             rect,
             if armed {
-                Color::from_rgba(67, 57, 37, 255)
+                crate::theme::CARD_ARMED
             } else if hot {
-                Color::from_rgba(48, 57, 58, 255)
+                crate::theme::CARD_HOVER
             } else {
-                Color::from_rgba(29, 35, 38, 255)
+                crate::theme::CARD_IDLE
             },
         );
         if armed || hot {
@@ -947,7 +941,14 @@ pub(crate) fn draw_panel(
             badge,
             badge,
         );
-        fill_rect(plate, Color::new(0.05, 0.05, 0.07, tint.a * 0.85));
+        let base = crate::theme::ICON_PLATE;
+        fill_rect(
+            plate,
+            Color {
+                a: base.a * tint.a,
+                ..base
+            },
+        );
         blit(plate, sprites.verb_icon(*verb), tint);
     };
 
@@ -981,14 +982,8 @@ pub(crate) fn draw_panel(
         if rect.w == 0.0 {
             continue;
         }
-        fill_rect(rect, Color::from_rgba(20, 24, 26, 255));
-        draw_rectangle(
-            rect.x,
-            rect.y,
-            rect.w,
-            s,
-            Color::from_rgba(119, 107, 79, 180),
-        );
+        fill_rect(rect, crate::theme::SURFACE_BAND);
+        draw_rectangle(rect.x, rect.y, rect.w, s, crate::theme::EDGE_WARM);
     }
     draw_icon(
         Rect::new(10.0 * s, top + 6.0 * s, 32.0 * s, 32.0 * s),
@@ -1039,14 +1034,14 @@ pub(crate) fn draw_panel(
             y + 19.0 * s,
             cards_x - 24.0 * s,
             3.0 * s,
-            Color::from_rgba(49, 61, 49, 255),
+            crate::theme::HEALTH_TRACK,
         );
         draw_rectangle(
             12.0 * s,
             y + 19.0 * s,
             (cards_x - 24.0 * s) * (hp as f32 / max_hp.max(1) as f32).clamp(0.0, 1.0),
             3.0 * s,
-            Color::from_rgba(165, 180, 142, 255),
+            crate::theme::HEALTH_FILL,
         );
     }
     for line in &measured.lines {
@@ -1105,18 +1100,23 @@ pub(crate) fn draw_panel(
             fill_rect(
                 rect,
                 if hovered {
-                    Color::from_rgba(48, 57, 58, 255)
+                    crate::theme::CARD_HOVER
                 } else {
-                    Color::new(0.13, 0.13, 0.17, 1.0)
+                    crate::theme::CHIP
                 },
             );
             stroke_rect(
                 rect,
-                if hovered { 2.0 * s } else { 1.2 * s },
                 if hovered {
-                    BONE
+                    crate::theme::Stroke::Focus
                 } else {
-                    Color::new(0.48, 0.48, 0.56, 0.9)
+                    crate::theme::Stroke::Edge
+                }
+                .at(s),
+                if hovered {
+                    crate::theme::EDGE_FOCUS
+                } else {
+                    crate::theme::EDGE_CHIP
                 },
             );
             let icon_size = (if small { 28.0 } else { 42.0 }) * s;
@@ -1167,23 +1167,23 @@ pub(crate) fn draw_panel(
         let selected = matches!(card.action, CardAction::ArmBuild(kind) if input.placing == Some(kind))
             || (card.action == CardAction::ArmRally && !input.rallying.is_empty());
         let bg = if selected {
-            Color::from_rgba(61, 47, 31, 255)
+            crate::theme::CARD_ARMED
         } else if hovered && card.enabled {
-            Color::from_rgba(48, 57, 58, 255)
+            crate::theme::CARD_HOVER
         } else {
-            Color::from_rgba(29, 35, 38, 255)
+            crate::theme::CARD_IDLE
         };
         fill_rect(rect, bg);
         let border = if selected {
             SCRAP_COLOR
         } else if !card.enabled {
-            Color::new(0.4, 0.4, 0.45, 0.5)
+            crate::theme::BORDER_FAINT
         } else if hovered {
-            BONE
+            crate::theme::EDGE_FOCUS
         } else {
-            Color::from_rgba(55, 65, 66, 180)
+            crate::theme::EDGE_CARD
         };
-        stroke_rect(rect, 1.5 * s, border);
+        stroke_rect(rect, crate::theme::Stroke::Edge.at(s), border);
         let tint = if card.enabled {
             WHITE
         } else {
@@ -1327,8 +1327,8 @@ fn draw_dock(
     } = layout;
     // Plates border their open sides; the screen edge closes the left.
     let plate = |rect: Rect, bottom: bool| {
-        let edge = Color::new(0.6, 0.6, 0.65, 0.4);
-        fill_rect(rect, Color::from_rgba(20, 20, 24, 255));
+        let edge = crate::theme::BORDER_STRONG;
+        fill_rect(rect, crate::theme::SURFACE_PLATE);
         draw_rectangle(rect.x, rect.y, rect.w, 1.5 * s, edge);
         draw_rectangle(rect.right() - 1.5 * s, rect.y, 1.5 * s, rect.h, edge);
         if bottom {
@@ -1351,14 +1351,14 @@ fn draw_dock(
         // Named where the chips beneath it are.
         plate(stop_plate, true);
         let named = rect.w >= 150.0 * s;
-        fill_rect(rect, Color::new(0.14, 0.14, 0.18, 1.0));
+        fill_rect(rect, crate::theme::CHIP);
         stroke_rect(
             rect,
-            1.2 * s,
+            crate::theme::Stroke::Edge.at(s),
             if rect.contains(input.mouse) {
-                BONE
+                crate::theme::EDGE_FOCUS
             } else {
-                Color::new(0.45, 0.45, 0.52, 0.8)
+                crate::theme::EDGE_CHIP
             },
         );
         let isz = 34.0 * s;
@@ -1378,14 +1378,14 @@ fn draw_dock(
                 rect.x + 42.0 * s,
                 rect.y + 27.0 * s,
                 13.0 * s,
-                BONE,
+                TEXT_PRIMARY,
             );
         }
     }
     let orders_dock = panel.queue_label == "Orders";
     for (i, (card, &rect)) in panel.queue.iter().zip(chips).enumerate() {
         let hovered = rect.contains(input.mouse);
-        fill_rect(rect, Color::new(0.14, 0.14, 0.18, 1.0));
+        fill_rect(rect, crate::theme::CHIP);
         // The active order or production head wears the bright border;
         // a ready-but-blocked head remains the queue's current job.
         let group = panel.queue_groups.get(i);
@@ -1393,11 +1393,16 @@ fn draw_dock(
         let wide_group = group.is_some() && rect.w >= 150.0 * s;
         stroke_rect(
             rect,
-            if active { 2.0 * s } else { 1.2 * s },
-            if hovered || active {
-                BONE
+            if active {
+                crate::theme::Stroke::Focus
             } else {
-                Color::new(0.45, 0.45, 0.52, 0.8)
+                crate::theme::Stroke::Edge
+            }
+            .at(s),
+            if hovered || active {
+                crate::theme::EDGE_FOCUS
+            } else {
+                crate::theme::EDGE_CHIP
             },
         );
         // Order chips carry the same numbers as the world
@@ -1438,14 +1443,14 @@ fn draw_dock(
                 rect.y + 2.0 * s,
                 width,
                 14.0 * s,
-                Color::from_rgba(20, 20, 24, 235),
+                crate::theme::SURFACE_CARD,
             );
             draw_text(
                 label,
                 rect.right() - width,
                 rect.y + 13.0 * s,
                 12.0 * s,
-                BONE,
+                TEXT_PRIMARY,
             );
         }
         if let Some(group) = group.filter(|_| wide_group) {
@@ -1458,7 +1463,7 @@ fn draw_dock(
                 rect.x + 42.0 * s,
                 rect.y + 18.0 * s,
                 13.0 * s,
-                BONE,
+                TEXT_PRIMARY,
             );
             draw_text(
                 match group.next_ticks {
@@ -1620,14 +1625,14 @@ pub(crate) fn draw_panel_tooltip(game: &crate::game::Scene<'_>, input: &InputSta
         6.0 * s,
     );
     let (x, y) = (origin.x, origin.y);
-    draw_rectangle(x, y, width, height, Color::from_rgba(12, 12, 16, 240));
+    draw_rectangle(x, y, width, height, crate::theme::SURFACE_CARD);
     draw_rectangle_lines(
         x,
         y,
         width,
         height,
-        1.2 * s,
-        Color::from_rgba(55, 65, 66, 180),
+        crate::theme::Stroke::Edge.at(s),
+        crate::theme::EDGE_CARD,
     );
     for (i, (line, color)) in lines.iter().enumerate() {
         draw_text(
@@ -1649,7 +1654,7 @@ pub(crate) fn draw_panel_tooltip(game: &crate::game::Scene<'_>, input: &InputSta
             table_y + line_h,
             table_width,
             s,
-            Color::from_rgba(55, 65, 66, 180),
+            crate::theme::EDGE_CARD,
         );
         for (i, row) in comparison.rows.iter().enumerate() {
             let baseline = table_y + (i as f32 + 1.8) * line_h;

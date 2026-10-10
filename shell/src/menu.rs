@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use crate::press::{ScrollPress, Swipe};
 use crate::theme::{
-    SURFACE_MENU, TEXT_BODY, TEXT_DISABLED, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TITLE,
+    SURFACE_MENU, Stroke, TEXT_BODY, TEXT_DISABLED, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TITLE,
 };
 
 const ITEM_HEIGHT: f32 = 44.0;
@@ -630,9 +630,23 @@ impl<R: Clone> Menu<R> {
             let hovered = self.hover == Some(index) && !busy;
             if selected {
                 draw_rectangle(rect.x, rect.y, rect.w, rect.h, SURFACE_MENU);
-                draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 2.0, TEXT_TITLE);
+                draw_rectangle_lines(
+                    rect.x,
+                    rect.y,
+                    rect.w,
+                    rect.h,
+                    Stroke::Focus.at(s),
+                    TEXT_TITLE,
+                );
             } else if hovered {
-                draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, TEXT_SECONDARY);
+                draw_rectangle_lines(
+                    rect.x,
+                    rect.y,
+                    rect.w,
+                    rect.h,
+                    Stroke::Hairline.at(s),
+                    TEXT_SECONDARY,
+                );
             }
             let color = match (busy, selected) {
                 (true, _) => TEXT_DISABLED,
@@ -724,7 +738,7 @@ impl<R: Clone> Menu<R> {
 /// every row a full fingertip target and scrolls sooner.
 fn row_pitch(avail: f32, rows: usize, s: f32, touch_only: bool) -> f32 {
     let (min, max) = if touch_only {
-        let pitch = crate::layout::MIN_TOUCH_TARGET + ROW_GAP;
+        let pitch = crate::theme::MIN_TOUCH_TARGET + ROW_GAP;
         (pitch, pitch)
     } else {
         (MIN_ROW, ITEM_HEIGHT)
