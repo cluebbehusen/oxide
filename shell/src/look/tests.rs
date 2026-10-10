@@ -93,3 +93,22 @@ fn markers_name_each_kind_for_what_it_does_on_the_field() {
         );
     }
 }
+
+#[test]
+fn defense_looks_agree_with_each_rung_of_the_ladder() {
+    for kind in BuildingKind::ALL {
+        let rungs = kind.tiers();
+        let armed = rungs.iter().any(|stats| !stats.weapons.is_empty());
+        let look = defense(kind);
+        assert_eq!(look.is_some(), armed, "{kind:?}");
+        let Some(look) = look else { continue };
+        let direct = rungs
+            .iter()
+            .flat_map(|stats| stats.weapons)
+            .all(|weapon| weapon.projectile.is_none());
+        assert_eq!(look.report.is_some(), direct, "{kind:?}");
+        if let Some(report) = look.report {
+            assert_eq!(report.shots.len(), rungs.len(), "{kind:?}: a shot per rung");
+        }
+    }
+}

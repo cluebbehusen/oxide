@@ -242,7 +242,15 @@ pub(crate) fn selection_info(game: &Scene<'_>, panel: &Panel) -> SelectionInfo {
                     None,
                 );
             }
-            _ => {}
+            BuildingKind::Foundry
+            | BuildingKind::Turret
+            | BuildingKind::Fabricator
+            | BuildingKind::FlakTurret
+            | BuildingKind::Bastion
+            | BuildingKind::Reclaimer
+            | BuildingKind::Extractor
+            | BuildingKind::Airworks
+            | BuildingKind::Barricade => {}
         }
         info.weapons(stats.weapons);
     } else if game.presentation.selection.units.len() == 1 {

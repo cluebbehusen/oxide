@@ -2,6 +2,10 @@ use super::*;
 use crate::game::Game;
 use oxide_sim::{BuildingId, BuildingKind, Target, UnitId, UnitKind};
 
+fn defense_report(kind: BuildingKind) -> crate::look::DefenseReport {
+    crate::look::defense(kind).unwrap().report.unwrap()
+}
+
 #[test]
 fn lethal_scuttler_bite_retains_the_visible_unit_surface() {
     let scenario = serde_json::from_value(serde_json::json!({
@@ -1177,21 +1181,21 @@ fn every_weapon_family_uses_its_physical_report() {
         ShotStyle::ForgeSpot
     );
     assert_eq!(
-        defense_shot_style(BuildingKind::FlakTurret, 0),
+        defense_report(BuildingKind::FlakTurret).shot(0),
         ShotStyle::FlakBurst {
             yoke_delay: FlakYokeDelay::OneAndHalfTicks,
             rounds_per_yoke: 2,
         }
     );
     assert_eq!(
-        defense_shot_style(BuildingKind::FlakTurret, 1),
+        defense_report(BuildingKind::FlakTurret).shot(1),
         ShotStyle::FlakBurst {
             yoke_delay: FlakYokeDelay::OneAndHalfTicks,
             rounds_per_yoke: 3,
         }
     );
     assert_eq!(
-        defense_shot_style(BuildingKind::Turret, 0),
+        defense_report(BuildingKind::Turret).shot(0),
         ShotStyle::ForgeSpot
     );
 }
@@ -1465,7 +1469,7 @@ fn approved_combatants_use_their_own_reports() {
         SoundKind::WispFire
     );
     assert_eq!(
-        defense_fire_sound(BuildingKind::FlakTurret),
+        defense_report(BuildingKind::FlakTurret).sound,
         SoundKind::FlakTurretFire
     );
     assert_eq!(
@@ -1485,7 +1489,7 @@ fn generic_combatants_keep_the_generic_report() {
         None,
         "an unarmed worker has no report"
     );
-    assert_eq!(defense_fire_sound(BuildingKind::Turret), SoundKind::Laser);
+    assert_eq!(defense_report(BuildingKind::Turret).sound, SoundKind::Laser);
 }
 
 #[test]
@@ -1597,9 +1601,6 @@ fn shot_visuals_begin_at_the_authored_muzzle_not_chassis_center() {
     assert_eq!(
         unit_muzzle_reach(UnitKind::Breaker).unwrap(),
         40.0 / 128.0 * crate::render::unit_draw_scale(UnitKind::Breaker)
-    );
-    assert!(
-        defense_muzzle_reach(BuildingKind::Bastion) > defense_muzzle_reach(BuildingKind::Turret)
     );
 }
 

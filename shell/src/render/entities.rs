@@ -845,15 +845,8 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                 );
             }
         }
-        if building.built {
-            match building.kind {
-                oxide_sim::BuildingKind::Turret
-                | oxide_sim::BuildingKind::FlakTurret
-                | oxide_sim::BuildingKind::Bastion => {
-                    draw_defense_mount(game, sprites, building, frame.mount_action);
-                }
-                _ => {}
-            }
+        if building.built && crate::look::defense(building.kind).is_some() {
+            draw_defense_mount(game, sprites, building, frame.mount_action);
         }
         if !building.built {
             // Construction progress in bone, distinct from training amber.

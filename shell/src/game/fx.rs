@@ -407,23 +407,6 @@ fn unit_shot_style(kind: oxide_sim::UnitKind, _weapon: usize) -> Option<ShotStyl
         .map(|(style, _)| style)
 }
 
-fn defense_shot_style(kind: oxide_sim::BuildingKind, tier: u8) -> ShotStyle {
-    debug_assert!(
-        kind.base_stats()
-            .weapons
-            .iter()
-            .all(|weapon| weapon.projectile.is_none()),
-        "real shell weapons must arrive through ShellLaunched"
-    );
-    match kind {
-        oxide_sim::BuildingKind::FlakTurret => ShotStyle::FlakBurst {
-            yoke_delay: FlakYokeDelay::OneAndHalfTicks,
-            rounds_per_yoke: if tier == 0 { 2 } else { 3 },
-        },
-        _ => ShotStyle::ForgeSpot,
-    }
-}
-
 fn visual_shot_origin(from: Vec2, to: Vec2, reach: f32) -> Vec2 {
     let direction = to - from;
     if direction.length_squared() <= f32::EPSILON {
@@ -454,25 +437,9 @@ fn unit_shot_origin(kind: oxide_sim::UnitKind, from: Vec2, to: Vec2) -> Vec2 {
     origin
 }
 
-fn defense_muzzle_reach(kind: oxide_sim::BuildingKind) -> f32 {
-    match kind {
-        oxide_sim::BuildingKind::Bastion => kind.size().0 as f32 * 0.49,
-        oxide_sim::BuildingKind::FlakTurret => 0.47,
-        _ => 0.44,
-    }
-}
-
 /// The report a unit's weapon makes; an unarmed kind makes none.
 fn unit_fire_sound(kind: oxide_sim::UnitKind) -> Option<SoundKind> {
     crate::look::unit(kind).weapon.map(|weapon| weapon.sound)
-}
-
-fn defense_fire_sound(kind: oxide_sim::BuildingKind) -> SoundKind {
-    match kind {
-        oxide_sim::BuildingKind::Bastion => SoundKind::BastionFire,
-        oxide_sim::BuildingKind::FlakTurret => SoundKind::FlakTurretFire,
-        _ => SoundKind::Laser,
-    }
 }
 
 fn shell_fire_sound(shooter: oxide_sim::Target) -> SoundKind {
@@ -1085,8 +1052,13 @@ impl Presentation {
                     }
                     // The kind comes from the event because the turret may
                     // have been destroyed the tick it fired; its shot still
-                    // gets the right report and burst.
-                    let sound = defense_fire_sound(*kind);
+                    // gets the right report and burst. Only a direct-fire
+                    // defense fires this way; shells launch as their own
+                    // event.
+                    let Some(report) = crate::look::defense(*kind).and_then(|look| look.report)
+                    else {
+                        continue;
+                    };
                     let splash = kind
                         .tier_stats(*tier)
                         .weapons
@@ -1099,16 +1071,17 @@ impl Presentation {
                         } else {
                             *target_pos
                         };
-                        self.sounds_pending.push((sound, Some(world_vec(at))));
+                        self.sounds_pending
+                            .push((report.sound, Some(world_vec(at))));
                     }
                     let surface = self.hit_surface(state, *target);
                     push_direct_report(
                         &mut self.fx,
-                        defense_shot_style(*kind, *tier),
+                        report.shot(*tier),
                         visual_shot_origin(
                             world_vec(*turret_pos),
                             world_vec(*target_pos),
-                            defense_muzzle_reach(*kind),
+                            report.muzzle,
                         ),
                         world_vec(*target_pos),
                         splash,

@@ -765,24 +765,21 @@ impl AnimationController {
             }
         });
         let activity = if facts.built {
+            let production = |period| {
+                facts
+                    .production
+                    .map_or(BuildingActivity::Idle, |(unit, progress, total)| {
+                        BuildingActivity::Production {
+                            unit,
+                            progress: ratio(progress, total),
+                            cycle: clock.cycle(facts.id.0, period, options.reduced_motion),
+                        }
+                    })
+            };
             match facts.kind {
-                BuildingKind::Foundry | BuildingKind::Fabricator | BuildingKind::Crucible => {
-                    let period = match facts.kind {
-                        BuildingKind::Foundry => FOUNDRY_PRODUCTION_PERIOD,
-                        BuildingKind::Fabricator => FABRICATOR_PRODUCTION_PERIOD,
-                        BuildingKind::Crucible => CRUCIBLE_PRODUCTION_PERIOD,
-                        _ => unreachable!("production match narrowed the building kind"),
-                    };
-                    facts
-                        .production
-                        .map_or(BuildingActivity::Idle, |(unit, progress, total)| {
-                            BuildingActivity::Production {
-                                unit,
-                                progress: ratio(progress, total),
-                                cycle: clock.cycle(facts.id.0, period, options.reduced_motion),
-                            }
-                        })
-                }
+                BuildingKind::Foundry => production(FOUNDRY_PRODUCTION_PERIOD),
+                BuildingKind::Fabricator => production(FABRICATOR_PRODUCTION_PERIOD),
+                BuildingKind::Crucible => production(CRUCIBLE_PRODUCTION_PERIOD),
                 BuildingKind::Airworks => self.airworks_activity(facts, clock, options),
                 BuildingKind::Array => BuildingActivity::ArraySweep {
                     cycle: clock.cycle(facts.id.0, ARRAY_SWEEP_PERIOD, options.reduced_motion),
@@ -794,7 +791,11 @@ impl AnimationController {
                     cycle: clock.cycle(facts.id.0, RECLAIMER_PERIOD, options.reduced_motion),
                 },
                 BuildingKind::RepairBay => self.repair_activity(facts.id, clock),
-                _ => BuildingActivity::Idle,
+                BuildingKind::Turret
+                | BuildingKind::FlakTurret
+                | BuildingKind::Bastion
+                | BuildingKind::Barricade
+                | BuildingKind::ScuttleCharge => BuildingActivity::Idle,
             }
         } else {
             BuildingActivity::Idle
@@ -864,7 +865,7 @@ impl AnimationController {
     ) -> Option<AttackPhase> {
         let stamp = self.building_attacks.get(&building)?;
         let elapsed = clock.elapsed_since(stamp.completed_tick)?;
-        attack_phase(elapsed, stamp.weapon, building_attack_timing(kind))
+        attack_phase(elapsed, stamp.weapon, building_attack_timing(kind)?)
     }
 
     fn repair_activity(&self, building: BuildingId, clock: AnimationClock) -> BuildingActivity {
@@ -986,21 +987,28 @@ fn unit_attack_timing(kind: UnitKind) -> AttackTiming {
     }
 }
 
-fn building_attack_timing(kind: BuildingKind) -> AttackTiming {
-    match kind {
-        BuildingKind::FlakTurret => AttackTiming {
-            report_ticks: FLAK_TURRET_REPORT_TICKS,
-            recover_ticks: 3.0,
-        },
-        BuildingKind::Bastion => AttackTiming {
-            report_ticks: 1.0,
-            recover_ticks: 3.0,
-        },
-        _ => AttackTiming {
-            report_ticks: 2.0,
-            recover_ticks: 3.0,
-        },
-    }
+/// How long a defense's report and recovery last; none for a building
+/// without guns.
+fn building_attack_timing(kind: BuildingKind) -> Option<AttackTiming> {
+    let report_ticks = match kind {
+        BuildingKind::Turret => 2.0,
+        BuildingKind::FlakTurret => FLAK_TURRET_REPORT_TICKS,
+        BuildingKind::Bastion => 1.0,
+        BuildingKind::Foundry
+        | BuildingKind::Fabricator
+        | BuildingKind::Array
+        | BuildingKind::Reclaimer
+        | BuildingKind::RepairBay
+        | BuildingKind::Extractor
+        | BuildingKind::Airworks
+        | BuildingKind::Crucible
+        | BuildingKind::Barricade
+        | BuildingKind::ScuttleCharge => return None,
+    };
+    Some(AttackTiming {
+        report_ticks,
+        recover_ticks: 3.0,
+    })
 }
 
 fn attack_phase(elapsed: f32, weapon: usize, timing: AttackTiming) -> Option<AttackPhase> {

@@ -35,25 +35,6 @@ pub struct Sprites {
     peak_barriers: [Rect; 32],
     /// The derelict 2x2 Extractor frame bed, drawn on unclaimed frames.
     extractor_frame: Rect,
-    /// Tier hulls, keyed by (kind, tier-1) through [`Sprites::building_tiered`].
-    turret_t1: [Rect; 3],
-    turret_t2: [Rect; 3],
-    flak_turret_t1: [Rect; 3],
-    reclaimer_t1: [Rect; 3],
-    reclaimer_t1_work: [[Rect; 3]; 12],
-    array_t1: [Rect; 3],
-    turret_barrel: [Rect; 3],
-    turret_barrel_t1: [Rect; 3],
-    turret_barrel_t2: [Rect; 3],
-    flak_mount: [Rect; 3],
-    flak_mount_t1: [Rect; 3],
-    bastion_mount: [Rect; 3],
-    turret_barrel_action: [[Rect; 3]; 4],
-    turret_barrel_t1_action: [[Rect; 3]; 4],
-    turret_barrel_t2_action: [[Rect; 3]; 4],
-    flak_mount_action: [[Rect; 3]; 8],
-    flak_mount_t1_action: [[Rect; 3]; 8],
-    bastion_mount_action: [[Rect; 3]; 9],
     rock_skirt: Rect,
     decals: [Rect; 4],
     /// Six flat ground-dressing variants for each shipped theme.
@@ -70,14 +51,13 @@ pub struct Sprites {
     wreck_pile: Rect,
     air_shadow: Rect,
     burst: Rect,
-    bastion_action: [[Rect; 3]; 9],
-    array_t1_work: [[Rect; 3]; 6],
     construction: [[Rect; 3]; SITE_FRAME_COUNT * BUILDING_KIND_COUNT],
     harvester_cargo: [[Rect; 3]; 5],
     harvester_cargo_scoop: [[[Rect; 3]; 2]; 5],
     harvester_cargo_tread: [[[Rect; 3]; 2]; 5],
-    /// Hull and tier-zero work art per building kind, indexed the same way.
-    buildings: Vec<BuildingArt>,
+    /// Each building kind's art at every rung of its upgrade ladder,
+    /// indexed by discriminant then tier.
+    buildings: Vec<Vec<RungArt>>,
     /// Chassis art per unit kind, indexed by the kind's discriminant.
     units: Vec<UnitArt>,
     scaffold: [Rect; 2],
@@ -173,7 +153,11 @@ fn unit_rigs(rects: &Manifest) -> Result<std::collections::HashMap<UnitKind, Uni
     let mut rigs = std::collections::HashMap::new();
     for kind in UnitKind::ALL {
         if crate::look::unit(kind).rig
-            && let Some(rig) = unit_rig(rects, unit_stem(kind), unit_action_suffixes(kind).len())?
+            && let Some(rig) = unit_rig(
+                rects,
+                unit_stem(kind),
+                numbered_suffixes(rects, unit_stem(kind), "action")?.len(),
+            )?
         {
             rigs.insert(kind, rig);
         }
@@ -426,36 +410,10 @@ const SCAFFOLD_KEYS: [&str; 2] = ["scaffold_dense", "scaffold_sparse"];
 
 const DEBRIS_KEYS: [&str; 3] = ["debris_0", "debris_1", "debris_2"];
 
-/// The Turret's gun is faction-varied like a unit, but belongs to no kind.
-const TURRET_BARREL_STEM: &str = "turret_barrel";
-const TURRET_BARREL_T1_STEM: &str = "turret_barrel_t1";
-const TURRET_BARREL_T2_STEM: &str = "turret_barrel_t2";
-const FLAK_MOUNT_STEM: &str = "flak_mount";
-const FLAK_MOUNT_T1_STEM: &str = "flak_mount_t1";
-const BASTION_MOUNT_STEM: &str = "bastion_mount";
-
 /// The Harvester's dig frames hang off its own stem.
 const SCOOP_SUFFIXES: [&str; 2] = ["_scoop1", "_scoop2"];
 const TREAD_SUFFIXES: [&str; 2] = ["_tread1", "_tread2"];
 const MOVE_SUFFIXES: [&str; 2] = ["_move1", "_move2"];
-const ACTION_SUFFIXES_3: [&str; 3] = ["_action1", "_action2", "_action3"];
-const ACTION_SUFFIXES_4: [&str; 4] = ["_action1", "_action2", "_action3", "_action4"];
-const ACTION_SUFFIXES_6: [&str; 6] = [
-    "_action1", "_action2", "_action3", "_action4", "_action5", "_action6",
-];
-const ACTION_SUFFIXES_8: [&str; 8] = [
-    "_action1", "_action2", "_action3", "_action4", "_action5", "_action6", "_action7", "_action8",
-];
-const ACTION_SUFFIXES_9: [&str; 9] = [
-    "_action1", "_action2", "_action3", "_action4", "_action5", "_action6", "_action7", "_action8",
-    "_action9",
-];
-const WORK_SUFFIXES_4: [&str; 4] = ["_work1", "_work2", "_work3", "_work4"];
-const WORK_SUFFIXES_6: [&str; 6] = ["_work1", "_work2", "_work3", "_work4", "_work5", "_work6"];
-const WORK_SUFFIXES_12: [&str; 12] = [
-    "_work1", "_work2", "_work3", "_work4", "_work5", "_work6", "_work7", "_work8", "_work9",
-    "_work10", "_work11", "_work12",
-];
 const HARVESTER_CARGO_LEVELS: usize = 5;
 const EXCAVATOR_CARGO_LEVELS: usize = 5;
 const SITE_STAGES: usize = 3;
@@ -568,6 +526,52 @@ fn variant_rows<const N: usize>(
     Ok(out)
 }
 
+/// The `_{label}1`, `_{label}2`, ... suffixes of the consecutive complete
+/// rows the atlas ships under `stem`: the generated art, not a hand-typed
+/// count, says how many frames a family has. A row with only some of its
+/// variants is an error.
+pub(crate) fn numbered_suffixes(rects: &Manifest, stem: &str, label: &str) -> Result<Vec<String>> {
+    let mut suffixes = Vec::new();
+    for frame in 1.. {
+        let suffix = format!("_{label}{frame}");
+        let present = variant_keys(stem, &suffix)
+            .iter()
+            .filter(|key| rects.contains_key(key.as_str()))
+            .count();
+        match present {
+            0 => break,
+            3 => suffixes.push(suffix),
+            _ => anyhow::bail!("{stem}{suffix} ships only some of its variants"),
+        }
+    }
+    Ok(suffixes)
+}
+
+/// How many `_{label}N` frames the shipped atlas holds under `stem`.
+#[cfg(test)]
+pub(crate) fn shipped_frames(stem: &str, label: &str) -> usize {
+    static SHIPPED: std::sync::LazyLock<Manifest> = std::sync::LazyLock::new(|| {
+        serde_json::from_str(include_str!("../../assets/sprites/atlas.json"))
+            .expect("the shipped atlas parses")
+    });
+    numbered_suffixes(&SHIPPED, stem, label)
+        .expect("complete rows")
+        .len()
+}
+
+/// How many action frames a unit kind's shipped atlas bank holds.
+#[cfg(test)]
+pub(crate) fn unit_action_frames(kind: UnitKind) -> usize {
+    shipped_frames(unit_stem(kind), "action")
+}
+
+fn numbered_rows(rects: &Manifest, stem: &str, label: &str) -> Result<Vec<[Rect; 3]>> {
+    numbered_suffixes(rects, stem, label)?
+        .iter()
+        .map(|suffix| variant_row(rects, stem, suffix))
+        .collect()
+}
+
 fn harvester_cargo_rows(rects: &Manifest) -> Result<[[Rect; 3]; HARVESTER_CARGO_LEVELS]> {
     let empty = [Rect::new(0.0, 0.0, 0.0, 0.0); 3];
     let mut out = [empty; HARVESTER_CARGO_LEVELS];
@@ -622,10 +626,7 @@ fn unit_art(rects: &Manifest) -> Result<Vec<UnitArt>> {
             Ok(UnitArt {
                 base: variant_row(rects, stem, "")?,
                 moving: variant_rows(rects, stem, unit_move_suffixes(kind))?,
-                action: unit_action_suffixes(kind)
-                    .iter()
-                    .map(|suffix| variant_row(rects, stem, suffix))
-                    .collect::<Result<_>>()?,
+                action: numbered_rows(rects, stem, "action")?,
             })
         })
         .collect()
@@ -640,48 +641,30 @@ fn unit_move_suffixes(kind: UnitKind) -> [&'static str; 2] {
     }
 }
 
-/// How many action frames a kind's atlas bank ships.
-#[cfg(test)]
-pub(crate) fn unit_action_frames(kind: UnitKind) -> usize {
-    unit_action_suffixes(kind).len()
+/// A building's art at one rung of its upgrade ladder.
+struct RungArt {
+    hull: [Rect; 3],
+    /// Activity frames after the hull.
+    work: Vec<[Rect; 3]>,
+    /// The hull's charge-rack frames, synchronized with its mount.
+    charge: Vec<[Rect; 3]>,
+    /// A defense's rotating mount and its firing frames.
+    mount: Option<([Rect; 3], Vec<[Rect; 3]>)>,
 }
 
-fn unit_action_suffixes(kind: UnitKind) -> &'static [&'static str] {
-    match kind {
-        UnitKind::Harvester => &[],
-        UnitKind::Sentinel
-        | UnitKind::Scuttler
-        | UnitKind::Stinger
-        | UnitKind::Buzzard
-        | UnitKind::Darter
-        | UnitKind::Talon
-        | UnitKind::Wisp => &ACTION_SUFFIXES_4,
-        UnitKind::Lancer | UnitKind::Bombard => &ACTION_SUFFIXES_6,
-        UnitKind::Flakhound => &ACTION_SUFFIXES_9,
-        UnitKind::Warden
-        | UnitKind::Shrike
-        | UnitKind::Sylph
-        | UnitKind::Tender
-        | UnitKind::Excavator
-        | UnitKind::Condor
-        | UnitKind::Breaker
-        | UnitKind::Avalanche
-        | UnitKind::Skyhook => &ACTION_SUFFIXES_4,
-        UnitKind::Sapper => &ACTION_SUFFIXES_3,
-        UnitKind::Moth => &ACTION_SUFFIXES_6,
-        UnitKind::Kestrel | UnitKind::Gnat => &[],
+/// The atlas stem of a building's hull or mount at `tier`: every upgraded
+/// rung ships its own art.
+pub(crate) fn rung_stem(stem: &str, tier: usize) -> String {
+    if tier == 0 {
+        stem.to_owned()
+    } else {
+        format!("{stem}_t{tier}")
     }
 }
 
-/// One building kind's base hull and the activity frames its tier-zero bank
-/// ships. Upgraded hulls and their work rows stay named fields.
-struct BuildingArt {
-    base: [Rect; 3],
-    work: Vec<[Rect; 3]>,
-}
-
-/// Loads every kind's art in discriminant order, like [`unit_art`].
-fn building_art(rects: &Manifest) -> Result<Vec<BuildingArt>> {
+/// Loads every kind's art at every rung of its ladder in discriminant
+/// order, like [`unit_art`].
+fn building_art(rects: &Manifest) -> Result<Vec<Vec<RungArt>>> {
     BuildingKind::ALL
         .iter()
         .enumerate()
@@ -690,34 +673,35 @@ fn building_art(rects: &Manifest) -> Result<Vec<BuildingArt>> {
                 kind as usize == index,
                 "BuildingKind::ALL must list {kind:?} at its discriminant"
             );
-            let stem = building_stem(kind);
-            Ok(BuildingArt {
-                base: variant_row(rects, stem, "")?,
-                work: building_work_suffixes(kind)
-                    .iter()
-                    .map(|suffix| variant_row(rects, stem, suffix))
-                    .collect::<Result<_>>()?,
-            })
+            let defense = crate::look::defense(kind);
+            (0..kind.tiers().len())
+                .map(|tier| {
+                    let hull = rung_stem(building_stem(kind), tier);
+                    let charge = if defense.is_some_and(|defense| defense.charge_rack) {
+                        let charge = numbered_rows(rects, &hull, "action")?;
+                        anyhow::ensure!(!charge.is_empty(), "{hull} ships no charge rack");
+                        charge
+                    } else {
+                        Vec::new()
+                    };
+                    let mount = defense
+                        .map(|defense| {
+                            let stem = rung_stem(defense.mount, tier);
+                            let action = numbered_rows(rects, &stem, "action")?;
+                            anyhow::ensure!(!action.is_empty(), "{stem} ships no firing frames");
+                            Ok((variant_row(rects, &stem, "")?, action))
+                        })
+                        .transpose()?;
+                    Ok(RungArt {
+                        hull: variant_row(rects, &hull, "")?,
+                        work: numbered_rows(rects, &hull, "work")?,
+                        charge,
+                        mount,
+                    })
+                })
+                .collect()
         })
         .collect()
-}
-
-fn building_work_suffixes(kind: BuildingKind) -> &'static [&'static str] {
-    match kind {
-        BuildingKind::Fabricator | BuildingKind::RepairBay | BuildingKind::Extractor => {
-            &WORK_SUFFIXES_4
-        }
-        BuildingKind::Array => &WORK_SUFFIXES_6,
-        BuildingKind::Reclaimer => &WORK_SUFFIXES_12,
-        BuildingKind::Crucible => &WORK_SUFFIXES_4,
-        BuildingKind::Foundry => &WORK_SUFFIXES_12,
-        BuildingKind::Airworks => &WORK_SUFFIXES_4,
-        BuildingKind::Turret
-        | BuildingKind::FlakTurret
-        | BuildingKind::Bastion
-        | BuildingKind::Barricade
-        | BuildingKind::ScuttleCharge => &[],
-    }
 }
 
 fn construction_rows(
@@ -781,7 +765,11 @@ fn atlas_keys(atlas: &Manifest) -> Vec<String> {
     for (stem, action_count) in UnitKind::ALL
         .into_iter()
         .filter(|kind| crate::look::unit(*kind).rig)
-        .map(|kind| (unit_stem(kind), unit_action_suffixes(kind).len()))
+        .map(|kind| {
+            let stem = unit_stem(kind);
+            let actions = numbered_suffixes(atlas, stem, "action").expect("complete rows");
+            (stem, actions.len())
+        })
     {
         for suffix in ["", "_move1", "_move2"] {
             keys.extend(variant_keys(&format!("rig_{stem}_hull"), suffix));
@@ -800,56 +788,14 @@ fn atlas_keys(atlas: &Manifest) -> Vec<String> {
         }
     }
 
-    for stem in [
-        TURRET_BARREL_STEM,
-        TURRET_BARREL_T1_STEM,
-        TURRET_BARREL_T2_STEM,
-    ] {
-        keys.extend(variant_keys(stem, ""));
-    }
-    for stem in [
-        "turret_t1",
-        "turret_t2",
-        "flak_turret_t1",
-        "reclaimer_t1",
-        "array_t1",
-    ] {
-        keys.extend(variant_keys(stem, ""));
-    }
-    for suffix in WORK_SUFFIXES_12 {
-        keys.extend(variant_keys("reclaimer_t1", suffix));
-    }
-    for suffix in WORK_SUFFIXES_6 {
-        keys.extend(variant_keys("array_t1", suffix));
-    }
-    keys.extend(variant_keys(FLAK_MOUNT_STEM, ""));
-    keys.extend(variant_keys(FLAK_MOUNT_T1_STEM, ""));
-    keys.extend(variant_keys(BASTION_MOUNT_STEM, ""));
-    for stem in [
-        TURRET_BARREL_STEM,
-        TURRET_BARREL_T1_STEM,
-        TURRET_BARREL_T2_STEM,
-    ] {
-        for suffix in ACTION_SUFFIXES_4 {
-            keys.extend(variant_keys(stem, suffix));
-        }
-    }
-    for suffix in ACTION_SUFFIXES_8 {
-        keys.extend(variant_keys(FLAK_MOUNT_STEM, suffix));
-        keys.extend(variant_keys(FLAK_MOUNT_T1_STEM, suffix));
-    }
-    for suffix in ACTION_SUFFIXES_9 {
-        keys.extend(variant_keys(BASTION_MOUNT_STEM, suffix));
-        keys.extend(variant_keys(building_stem(BuildingKind::Bastion), suffix));
-    }
     for kind in UnitKind::ALL {
         let stem = unit_stem(kind);
         keys.extend(variant_keys(stem, ""));
         for suffix in unit_move_suffixes(kind) {
             keys.extend(variant_keys(stem, suffix));
         }
-        for suffix in unit_action_suffixes(kind) {
-            keys.extend(variant_keys(stem, suffix));
+        for suffix in numbered_suffixes(atlas, stem, "action").expect("complete rows") {
+            keys.extend(variant_keys(stem, &suffix));
         }
     }
     for suffix in SCOOP_SUFFIXES {
@@ -865,9 +811,24 @@ fn atlas_keys(atlas: &Manifest) -> Vec<String> {
         keys.push(format!("excavator_cargo{level}"));
     }
     for kind in BuildingKind::ALL {
-        keys.extend(variant_keys(building_stem(kind), ""));
-        for suffix in building_work_suffixes(kind) {
-            keys.extend(variant_keys(building_stem(kind), suffix));
+        let defense = crate::look::defense(kind);
+        for tier in 0..kind.tiers().len() {
+            let hull = rung_stem(building_stem(kind), tier);
+            let mut families = vec![(hull.clone(), "work")];
+            if defense.is_some_and(|defense| defense.charge_rack) {
+                families.push((hull.clone(), "action"));
+            }
+            keys.extend(variant_keys(&hull, ""));
+            if let Some(defense) = defense {
+                let mount = rung_stem(defense.mount, tier);
+                keys.extend(variant_keys(&mount, ""));
+                families.push((mount, "action"));
+            }
+            for (stem, label) in families {
+                for suffix in numbered_suffixes(atlas, &stem, label).expect("complete rows") {
+                    keys.extend(variant_keys(&stem, &suffix));
+                }
+            }
         }
         for stage in 0..SITE_STAGES {
             for phase in 0..SITE_PHASES {
@@ -978,32 +939,6 @@ impl Sprites {
             rock: pick(&rects, ROCK_KEYS)?,
             peak_barriers: pick(&rects, PEAK_BARRIER_KEYS)?,
             extractor_frame,
-            turret_t1: variant_row(&rects, "turret_t1", "")?,
-            turret_t2: variant_row(&rects, "turret_t2", "")?,
-            flak_turret_t1: variant_row(&rects, "flak_turret_t1", "")?,
-            reclaimer_t1: variant_row(&rects, "reclaimer_t1", "")?,
-            reclaimer_t1_work: variant_rows(&rects, "reclaimer_t1", WORK_SUFFIXES_12)?,
-            array_t1: variant_row(&rects, "array_t1", "")?,
-            turret_barrel: variant_row(&rects, TURRET_BARREL_STEM, "")?,
-            turret_barrel_t1: variant_row(&rects, TURRET_BARREL_T1_STEM, "")?,
-            turret_barrel_t2: variant_row(&rects, TURRET_BARREL_T2_STEM, "")?,
-            flak_mount: variant_row(&rects, FLAK_MOUNT_STEM, "")?,
-            flak_mount_t1: variant_row(&rects, FLAK_MOUNT_T1_STEM, "")?,
-            bastion_mount: variant_row(&rects, BASTION_MOUNT_STEM, "")?,
-            turret_barrel_action: variant_rows(&rects, TURRET_BARREL_STEM, ACTION_SUFFIXES_4)?,
-            turret_barrel_t1_action: variant_rows(
-                &rects,
-                TURRET_BARREL_T1_STEM,
-                ACTION_SUFFIXES_4,
-            )?,
-            turret_barrel_t2_action: variant_rows(
-                &rects,
-                TURRET_BARREL_T2_STEM,
-                ACTION_SUFFIXES_4,
-            )?,
-            flak_mount_action: variant_rows(&rects, FLAK_MOUNT_STEM, ACTION_SUFFIXES_8)?,
-            flak_mount_t1_action: variant_rows(&rects, FLAK_MOUNT_T1_STEM, ACTION_SUFFIXES_8)?,
-            bastion_mount_action: variant_rows(&rects, BASTION_MOUNT_STEM, ACTION_SUFFIXES_9)?,
             rock_skirt,
             decals: pick(&rects, DECAL_KEYS)?,
             theme_props: pick(&rects, THEME_PROP_KEYS)?,
@@ -1017,8 +952,6 @@ impl Sprites {
             wreck_pile,
             air_shadow,
             burst,
-            bastion_action: variant_rows(&rects, "bastion", ACTION_SUFFIXES_9)?,
-            array_t1_work: variant_rows(&rects, "array_t1", WORK_SUFFIXES_6)?,
             construction: construction_rows(&rects)?,
             harvester_cargo: harvester_cargo_rows(&rects)?,
             harvester_cargo_scoop: harvester_cargo_motion_rows(&rects, SCOOP_SUFFIXES)?,
@@ -1183,12 +1116,10 @@ impl Sprites {
         self.ground_blockers[variant % self.ground_blockers.len()]
     }
 
-    fn turret_mount_row(&self, tier: u8) -> &[Rect; 3] {
-        match tier {
-            1 => &self.turret_barrel_t1,
-            2 => &self.turret_barrel_t2,
-            _ => &self.turret_barrel,
-        }
+    /// A building's art at its upgrade-ladder rung.
+    fn rung(&self, kind: BuildingKind, tier: u8) -> &RungArt {
+        let rungs = &self.buildings[kind as usize];
+        &rungs[usize::from(tier).min(rungs.len() - 1)]
     }
 
     /// A defense's tier-appropriate directional mount, if its base art ships bare.
@@ -1198,25 +1129,13 @@ impl Sprites {
         tier: u8,
         faction: oxide_sim::Faction,
     ) -> Option<Rect> {
-        let row = match kind {
-            BuildingKind::Turret => self.turret_mount_row(tier),
-            BuildingKind::FlakTurret if tier == 1 => &self.flak_mount_t1,
-            BuildingKind::FlakTurret => &self.flak_mount,
-            BuildingKind::Bastion => &self.bastion_mount,
-            _ => return None,
-        };
+        let (row, _) = self.rung(kind, tier).mount.as_ref()?;
         Some(row[faction_index(faction)])
     }
 
     /// The allegiance-accent mask matched to [`Self::defense_mount`].
     pub fn defense_mount_accent(&self, kind: BuildingKind, tier: u8) -> Option<Rect> {
-        let row = match kind {
-            BuildingKind::Turret => self.turret_mount_row(tier),
-            BuildingKind::FlakTurret if tier == 1 => &self.flak_mount_t1,
-            BuildingKind::FlakTurret => &self.flak_mount,
-            BuildingKind::Bastion => &self.bastion_mount,
-            _ => return None,
-        };
+        let (row, _) = self.rung(kind, tier).mount.as_ref()?;
         Some(row[ACCENT])
     }
 
@@ -1226,17 +1145,8 @@ impl Sprites {
         tier: u8,
         frame: usize,
     ) -> Option<&[Rect; 3]> {
-        match kind {
-            BuildingKind::Turret => match tier {
-                1 => self.turret_barrel_t1_action.get(frame),
-                2 => self.turret_barrel_t2_action.get(frame),
-                _ => self.turret_barrel_action.get(frame),
-            },
-            BuildingKind::FlakTurret if tier == 1 => self.flak_mount_t1_action.get(frame),
-            BuildingKind::FlakTurret => self.flak_mount_action.get(frame),
-            BuildingKind::Bastion => self.bastion_mount_action.get(frame),
-            _ => None,
-        }
+        let (_, action) = self.rung(kind, tier).mount.as_ref()?;
+        action.get(frame)
     }
 
     /// A defense mount's zero-based authored action frame. An out-of-range
@@ -1328,24 +1238,11 @@ impl Sprites {
 
     /// The building sprite region for a kind and faction.
     fn building_row(&self, kind: oxide_sim::BuildingKind) -> &[Rect; 3] {
-        &self.buildings[kind as usize].base
+        &self.rung(kind, 0).hull
     }
 
     pub fn building(&self, kind: oxide_sim::BuildingKind, faction: Faction) -> Rect {
         self.building_row(kind)[faction_index(faction)]
-    }
-
-    /// A tier's hull row, when the ladder rung has authored art;
-    /// otherwise the base hull carries every rung.
-    fn tier_row(&self, kind: BuildingKind, tier: u8) -> Option<&[Rect; 3]> {
-        match (kind, tier) {
-            (BuildingKind::Turret, 1) => Some(&self.turret_t1),
-            (BuildingKind::Turret, 2) => Some(&self.turret_t2),
-            (BuildingKind::FlakTurret, 1) => Some(&self.flak_turret_t1),
-            (BuildingKind::Reclaimer, 1) => Some(&self.reclaimer_t1),
-            (BuildingKind::Array, 1) => Some(&self.array_t1),
-            _ => None,
-        }
     }
 
     /// The hull for a building at its upgrade-ladder rung.
@@ -1355,14 +1252,12 @@ impl Sprites {
         tier: u8,
         faction: Faction,
     ) -> Rect {
-        self.tier_row(kind, tier)
-            .unwrap_or_else(|| self.building_row(kind))[faction_index(faction)]
+        self.rung(kind, tier).hull[faction_index(faction)]
     }
 
     /// The allegiance mask matched to [`Self::building_tiered`].
     pub fn building_tiered_accent(&self, kind: oxide_sim::BuildingKind, tier: u8) -> Rect {
-        self.tier_row(kind, tier)
-            .unwrap_or_else(|| self.building_row(kind))[ACCENT]
+        self.rung(kind, tier).hull[ACCENT]
     }
 
     /// The allegiance-accent mask over a building's faction-colored
@@ -1371,34 +1266,28 @@ impl Sprites {
         self.building_row(kind)[ACCENT]
     }
 
-    fn building_action_row(&self, kind: BuildingKind, frame: usize) -> Option<&[Rect; 3]> {
-        match kind {
-            BuildingKind::Bastion => self.bastion_action.get(frame),
-            _ => None,
-        }
+    fn building_action_row(&self, kind: BuildingKind, frame: usize) -> &[Rect; 3] {
+        let rung = self.rung(kind, 0);
+        rung.charge.get(frame).unwrap_or(&rung.hull)
     }
 
     /// A building base's zero-based authored action frame. Bastion charge
     /// cells live here; other building bases and invalid frames stay ready.
     pub fn building_action(&self, kind: BuildingKind, faction: Faction, frame: usize) -> Rect {
-        self.building_action_row(kind, frame)
-            .unwrap_or_else(|| self.building_row(kind))[faction_index(faction)]
+        self.building_action_row(kind, frame)[faction_index(faction)]
     }
 
     /// The allegiance mask matched to [`Self::building_action`].
     pub fn building_action_accent(&self, kind: BuildingKind, frame: usize) -> Rect {
-        self.building_action_row(kind, frame)
-            .unwrap_or_else(|| self.building_row(kind))[ACCENT]
+        self.building_action_row(kind, frame)[ACCENT]
     }
 
-    fn building_work_row(&self, kind: BuildingKind, tier: u8, frame: usize) -> Option<&[Rect; 3]> {
-        let rows: &[[Rect; 3]] = match (kind, tier) {
-            (BuildingKind::Reclaimer, 1) => &self.reclaimer_t1_work,
-            (BuildingKind::Array, 1) => &self.array_t1_work,
-            (_, 0) => &self.buildings[kind as usize].work,
-            _ => return None,
-        };
-        frame.checked_sub(1).and_then(|index| rows.get(index))
+    fn building_work_row(&self, kind: BuildingKind, tier: u8, frame: usize) -> &[Rect; 3] {
+        let rung = self.rung(kind, tier);
+        frame
+            .checked_sub(1)
+            .and_then(|index| rung.work.get(index))
+            .unwrap_or(&rung.hull)
     }
 
     /// A complete authored activity frame for a working building. Frame 0
@@ -1410,16 +1299,12 @@ impl Sprites {
         faction: Faction,
         frame: usize,
     ) -> Rect {
-        self.building_work_row(kind, tier, frame)
-            .or_else(|| self.tier_row(kind, tier))
-            .unwrap_or_else(|| self.building_row(kind))[faction_index(faction)]
+        self.building_work_row(kind, tier, frame)[faction_index(faction)]
     }
 
     /// The allegiance mask matched to [`Self::building_working`].
     pub fn building_working_accent(&self, kind: BuildingKind, tier: u8, frame: usize) -> Rect {
-        self.building_work_row(kind, tier, frame)
-            .or_else(|| self.tier_row(kind, tier))
-            .unwrap_or_else(|| self.building_row(kind))[ACCENT]
+        self.building_work_row(kind, tier, frame)[ACCENT]
     }
 
     fn construction_row(&self, kind: BuildingKind, stage: usize, phase: usize) -> &[Rect; 3] {

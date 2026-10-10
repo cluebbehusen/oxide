@@ -39,13 +39,13 @@ fn is_entity_source(name: &str) -> bool {
                 .iter()
                 .map(|&k| crate::assets::building_stem(k)),
         )
-        .chain([
-            "flak_mount",
-            "scrap",
-            "wreck_pile",
-            "extractor_frame",
-            "scout_radar",
-        ])
+        .chain(
+            oxide_sim::BuildingKind::ALL
+                .iter()
+                .filter_map(|&k| crate::look::defense(k))
+                .map(|defense| defense.mount),
+        )
+        .chain(["scrap", "wreck_pile", "extractor_frame", "scout_radar"])
         .any(|stem| {
             name == stem
                 || name
