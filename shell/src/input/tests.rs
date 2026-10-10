@@ -180,6 +180,10 @@ fn touch_up(id: u64, p: Vec2) -> RawEvent {
     RawEvent::TouchUp { id, x: p.x, y: p.y }
 }
 
+fn touch_cancel(id: u64) -> RawEvent {
+    RawEvent::TouchCancel { id }
+}
+
 fn key_down(key: Key) -> RawEvent {
     RawEvent::KeyDown { key }
 }
@@ -3074,123 +3078,6 @@ fn a_card_that_changes_under_a_resting_finger_activates_nothing() {
 }
 
 #[test]
-fn a_re_reported_landing_is_the_same_finger() {
-    let mut game = headless_game();
-    let mut input = InputState::new();
-    let start = vec2(400.0, 300.0);
-    input.now = 1.0;
-    apply_events(&mut game, &mut input, &[touch_down(1, start)]);
-    apply_events(
-        &mut game,
-        &mut input,
-        &[touch_move(1, start - vec2(60.0, 0.0))],
-    );
-    let panned = game.presentation.camera.center;
-    // iOS repeats the landing of a finger already down; the pan must
-    // carry on without a fresh slop circle.
-    apply_events(
-        &mut game,
-        &mut input,
-        &[touch_down(1, start - vec2(60.0, 0.0))],
-    );
-    apply_events(
-        &mut game,
-        &mut input,
-        &[touch_move(1, start - vec2(65.0, 0.0))],
-    );
-    assert_ne!(game.presentation.camera.center, panned, "the pan continues");
-    apply_events(
-        &mut game,
-        &mut input,
-        &[touch_up(1, start - vec2(65.0, 0.0))],
-    );
-
-    // A re-reported still finger is still a tap.
-    let unit = game
-        .state
-        .units()
-        .iter()
-        .find(|u| u.player == game.presentation.human)
-        .map(|u| (u.id, vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>())))
-        .expect("an own unit");
-    let p = game.presentation.camera.to_screen(unit.1);
-    input.now = 5.0;
-    apply_events(&mut game, &mut input, &[touch_down(2, p), touch_down(2, p)]);
-    apply_events(&mut game, &mut input, &[touch_up(2, p)]);
-    assert_eq!(game.presentation.selection.units, vec![unit.0]);
-}
-
-#[test]
-fn a_pair_finger_falsely_reported_lifted_keeps_panning() {
-    let mut game = headless_game();
-    let mut input = InputState::new();
-    let a = vec2(400.0, 300.0);
-    let b = vec2(600.0, 360.0);
-    input.now = 1.0;
-    apply_events(&mut game, &mut input, &[touch_down(1, a)]);
-    apply_events(&mut game, &mut input, &[touch_down(2, b), touch_down(1, a)]);
-    // Finger 2 lifts, and iOS reports both lifted, survivor first.
-    apply_events(&mut game, &mut input, &[touch_up(1, a), touch_up(2, b)]);
-    assert!(input.touches.is_empty(), "premise: both reported lifted");
-    let before = game.presentation.camera.center;
-    apply_events(&mut game, &mut input, &[touch_move(1, a - vec2(4.0, 0.0))]);
-    assert_eq!(
-        game.presentation.camera.center, before,
-        "no pan inside the slop"
-    );
-    apply_events(&mut game, &mut input, &[touch_move(1, a - vec2(80.0, 0.0))]);
-    assert_ne!(game.presentation.camera.center, before, "the survivor pans");
-    let units = game.presentation.selection.units.clone();
-    let buildings = game.presentation.selection.buildings.clone();
-    apply_events(&mut game, &mut input, &[touch_up(1, a - vec2(80.0, 0.0))]);
-    assert_eq!(game.presentation.selection.units, units, "and never taps");
-    assert_eq!(game.presentation.selection.buildings, buildings);
-    // The real lift forgets it: that id never moves the camera again.
-    let after = game.presentation.camera.center;
-    apply_events(
-        &mut game,
-        &mut input,
-        &[touch_move(1, a - vec2(200.0, 0.0))],
-    );
-    assert_eq!(game.presentation.camera.center, after);
-}
-
-#[test]
-fn a_falsely_lifted_minimap_finger_keeps_steering_and_never_pans() {
-    let on_map = vec2(1100.0, 650.0);
-    let drag = [vec2(1200.0, 700.0), vec2(900.0, 400.0), vec2(500.0, 400.0)];
-    // One minimap finger that is never interrupted...
-    let mut steady = headless_game();
-    let mut input = InputState::new();
-    publish_minimap(&steady);
-    apply_events(&mut steady, &mut input, &[touch_down(1, on_map)]);
-    for p in drag {
-        apply_events(&mut steady, &mut input, &[touch_move(1, p)]);
-    }
-    // ...and the same finger after iOS reported it lifted along with a
-    // second finger, off the minimap where a world finger would pan.
-    let mut game = headless_game();
-    let mut input = InputState::new();
-    publish_minimap(&game);
-    let world = vec2(400.0, 300.0);
-    input.now = 1.0;
-    apply_events(&mut game, &mut input, &[touch_down(1, on_map)]);
-    apply_events(&mut game, &mut input, &[touch_down(2, world)]);
-    apply_events(
-        &mut game,
-        &mut input,
-        &[touch_up(2, world), touch_up(1, on_map)],
-    );
-    for p in drag {
-        apply_events(&mut game, &mut input, &[touch_move(1, p)]);
-    }
-    assert_eq!(
-        game.presentation.camera.center,
-        steady.presentation.camera.center
-    );
-}
-
-#[test]
 fn a_move_from_an_unknown_finger_does_nothing() {
     let mut game = headless_game();
     let mut input = InputState::new();
@@ -3202,6 +3089,111 @@ fn a_move_from_an_unknown_finger_does_nothing() {
     apply_events(&mut game, &mut input, &[touch_up(7, vec2(560.0, 300.0))]);
     assert_eq!(game.presentation.camera.center, before);
     assert!(input.touches.is_empty());
+}
+
+#[test]
+fn a_cancelled_finger_neither_taps_nor_long_presses() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let (unit, pos) = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.presentation.human)
+        .map(|u| (u.id, vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>())))
+        .expect("an own unit");
+    let before = game.presentation.selection.units.clone();
+    let on_unit = game.presentation.camera.to_screen(pos);
+    input.now = 5.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, on_unit)]);
+    input.now = 5.1;
+    apply_events(&mut game, &mut input, &[touch_cancel(1)]);
+    assert_eq!(
+        game.presentation.selection.units, before,
+        "a cancelled still touch is no tap"
+    );
+
+    game.presentation.selection.units = vec![unit];
+    let ground = game.presentation.camera.to_screen(pos + vec2(4.0, 2.0));
+    input.now = 6.0;
+    apply_events(&mut game, &mut input, &[touch_down(2, ground)]);
+    input.now = 6.2;
+    update_touch(&mut game, &mut input);
+    apply_events(&mut game, &mut input, &[touch_cancel(2)]);
+    input.now = 7.0;
+    update_touch(&mut game, &mut input);
+    assert!(
+        game.pending.is_empty(),
+        "a hold cancelled before the window orders nothing: {:?}",
+        game.pending
+    );
+    assert!(input.touches.is_empty());
+}
+
+#[test]
+fn a_cancelled_finger_on_the_ghost_builds_nothing() {
+    let kind = oxide_sim::BuildingKind::Turret;
+    let (mut game, mut input, _) = armed_placement(kind);
+    let foundry = game.state.buildings()[0].anchor;
+    tap_world(
+        &mut game,
+        &mut input,
+        vec2(foundry.x as f32 + 3.5, foundry.y as f32 + 3.5),
+    );
+    let ghost = input.ghost_anchor().expect("a ghost is down");
+    let on_ghost = game
+        .presentation
+        .camera
+        .to_screen(vec2(ghost.x as f32 + 0.5, ghost.y as f32 + 0.5));
+    input.now += 1.0;
+    apply_events(
+        &mut game,
+        &mut input,
+        &[touch_down(1, on_ghost), touch_cancel(1)],
+    );
+    assert!(
+        staged_anchors(&game).is_empty(),
+        "no build: {:?}",
+        game.pending
+    );
+    assert_eq!(input.ghost_anchor(), Some(ghost), "the ghost stays down");
+    assert_eq!(input.placing, Some(kind), "and placement stays armed");
+}
+
+#[test]
+fn a_cancelled_finger_on_a_card_activates_nothing() {
+    let (mut game, attack, _) = two_card_band();
+    let mut input = InputState::new();
+    input.now = 2.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, attack.center())]);
+    input.now = 2.05;
+    apply_events(&mut game, &mut input, &[touch_cancel(1)]);
+    assert!(!input.armed(ClickVerb::Hunt));
+    assert!(game.pending.is_empty());
+}
+
+#[test]
+fn a_cancelled_box_corner_selects_nothing_and_spends_its_partner() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let a = game.presentation.camera.to_screen(vec2(2.0, 2.0));
+    let b = game.presentation.camera.to_screen(vec2(4.0, 4.0));
+    let before = game.presentation.selection.units.clone();
+    input.now = 1.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, a), touch_down(2, b)]);
+    input.now = 1.0 + (touch::BOX_REST_MS + 10.0) / 1000.0;
+    update_touch(&mut game, &mut input);
+    let far = game.presentation.camera.to_screen(vec2(12.0, 10.0));
+    apply_events(&mut game, &mut input, &[touch_move(2, far)]);
+    assert_eq!(touch_box(&input), Some((a, far)), "premise: a drawn box");
+    apply_events(&mut game, &mut input, &[touch_cancel(2)]);
+    assert_eq!(game.presentation.selection.units, before, "no box commits");
+    assert_eq!(touch_box(&input), None);
+    assert!(input.pair.is_none());
+    let [(_, partner)] = input.touches.as_slice() else {
+        panic!("the partner is still down: {:?}", input.touches);
+    };
+    assert!(partner.spent, "the partner's lift must not tap");
 }
 
 #[test]
@@ -4122,12 +4114,10 @@ fn hardware_touch_phases_speak_the_funnel_vocabulary() {
         touch_event(TouchPhase::Ended, 3, 1.0, 2.0),
         Some(RawEvent::TouchUp { id: 3, .. })
     ));
-    assert!(
-        matches!(
-            touch_event(TouchPhase::Cancelled, 3, 1.0, 2.0),
-            Some(RawEvent::TouchUp { id: 3, .. })
-        ),
-        "a cancelled finger lifts — gesture state must not wait for it"
+    assert_eq!(
+        touch_event(TouchPhase::Cancelled, 3, 1.0, 2.0),
+        Some(RawEvent::TouchCancel { id: 3 }),
+        "a cancelled finger is not a lift: nothing it started may complete"
     );
     assert!(
         touch_event(TouchPhase::Stationary, 3, 1.0, 2.0).is_none(),

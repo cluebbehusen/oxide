@@ -113,9 +113,7 @@ impl ViewerHands {
                 ..
             } => self.middle_anchor = None,
             RawEvent::TouchDown { id, .. } => {
-                if self.minimap_finger == Some(id) {
-                    // A platform's repeat report of the steering finger.
-                } else if self.minimap_finger.is_none()
+                if self.minimap_finger.is_none()
                     && let Some(world) = minimap.under
                 {
                     self.minimap_finger = Some(id);
@@ -131,7 +129,7 @@ impl ViewerHands {
                     self.touch.apply(event, camera, ui);
                 }
             }
-            RawEvent::TouchUp { id, .. } => {
+            RawEvent::TouchUp { id, .. } | RawEvent::TouchCancel { id } => {
                 if self.minimap_finger == Some(id) {
                     self.minimap_finger = None;
                 } else {

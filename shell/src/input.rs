@@ -212,8 +212,6 @@ pub struct InputState {
     pub(crate) queue_toggle: bool,
     /// The live two-finger gesture, if two fingers are down.
     pub(crate) pair: Option<Pair>,
-    /// Pair fingers the platform reported lifted, newest last.
-    pub(crate) lifted_pair: Vec<touch::LiftedFinger>,
     /// The menu button was pressed this frame. Input cannot switch
     /// screens itself, so the frame loop takes this one-shot request.
     pub(crate) menu_requested: bool,
@@ -443,7 +441,6 @@ impl InputState {
             last_tap: None,
             queue_toggle: false,
             pair: None,
-            lifted_pair: Vec::new(),
             menu_requested: false,
             bookmarks: [None; 4],
             resolver: ActionResolver::default(),
@@ -576,7 +573,6 @@ impl InputState {
         self.last_tap = None;
         self.queue_toggle = false;
         self.pair = None;
-        self.lifted_pair.clear();
         self.menu_requested = false;
     }
 
@@ -754,10 +750,8 @@ fn touch_event(phase: mq::TouchPhase, id: u64, x: f32, y: f32) -> Option<RawEven
     match phase {
         mq::TouchPhase::Started => Some(RawEvent::TouchDown { id, x, y }),
         mq::TouchPhase::Moved => Some(RawEvent::TouchMove { id, x, y }),
-        // A cancelled touch (palm rejection, app switch) lifts like any
-        // other: the gesture state must not wait for a finger the OS
-        // already took away.
-        mq::TouchPhase::Ended | mq::TouchPhase::Cancelled => Some(RawEvent::TouchUp { id, x, y }),
+        mq::TouchPhase::Ended => Some(RawEvent::TouchUp { id, x, y }),
+        mq::TouchPhase::Cancelled => Some(RawEvent::TouchCancel { id }),
         mq::TouchPhase::Stationary => None,
     }
 }
@@ -1379,6 +1373,7 @@ fn apply_event(game: &mut Game, input: &mut InputState, bindings: &BindingMap, e
             // consumer — letters reach the world as semantic keys.
         }
         RawEvent::TouchUp { id, x, y } => touch::up(game, input, bindings, id, vec2(x, y)),
+        RawEvent::TouchCancel { id } => touch::cancel(input, id),
     }
     if input.construction_open()
         && !matches!(

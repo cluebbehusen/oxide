@@ -32,14 +32,7 @@ impl ViewerTouch {
     pub(crate) fn apply(&mut self, event: &RawEvent, camera: &mut Camera, ui: f32) {
         match *event {
             RawEvent::TouchDown { id, x, y } => {
-                let p = vec2(x, y);
-                // Some platforms re-report every live finger when
-                // another lands; a repeat start is not a new finger.
-                if let Some(finger) = self.fingers.iter_mut().find(|(known, _)| *known == id) {
-                    finger.1 = p;
-                    return;
-                }
-                self.fingers.push((id, p));
+                self.fingers.push((id, vec2(x, y)));
                 if self.fingers.len() > 2 {
                     self.fingers.remove(0);
                 }
@@ -49,12 +42,6 @@ impl ViewerTouch {
             RawEvent::TouchMove { id, x, y } => {
                 let p = vec2(x, y);
                 let Some(index) = self.fingers.iter().position(|(known, _)| *known == id) else {
-                    // The same platforms report every finger as lifted
-                    // when one lifts; a survivor that keeps moving is
-                    // taken back without a jump.
-                    if self.fingers.len() < 2 {
-                        self.fingers.push((id, p));
-                    }
                     return;
                 };
                 let before = (self.fingers.len() == 2).then(|| spread(&self.fingers));
@@ -82,7 +69,7 @@ impl ViewerTouch {
                     _ => {}
                 }
             }
-            RawEvent::TouchUp { id, .. } => {
+            RawEvent::TouchUp { id, .. } | RawEvent::TouchCancel { id } => {
                 self.fingers.retain(|(known, _)| *known != id);
                 if self.fingers.len() < 2 {
                     self.pinching = false;

@@ -474,10 +474,6 @@ impl PlaybackSession {
                 button: MouseButton::Left,
                 ..
             } => self.scrubbing = false,
-            RawEvent::TouchDown { id, .. } if self.scrub_finger == Some(id) => {
-                // A platform's repeat report of the scrubbing finger.
-                return;
-            }
             RawEvent::TouchDown { id, x, y }
                 if self.scrub_finger.is_none()
                     && crate::layout::touch_pad(bar, ui).contains(vec2(x, y)) =>
@@ -490,7 +486,9 @@ impl PlaybackSession {
                 *seek_to = Some(self.tick_at(bar, x));
                 return;
             }
-            RawEvent::TouchUp { id, .. } if self.scrub_finger == Some(id) => {
+            RawEvent::TouchUp { id, .. } | RawEvent::TouchCancel { id }
+                if self.scrub_finger == Some(id) =>
+            {
                 self.scrub_finger = None;
                 return;
             }
