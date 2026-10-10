@@ -19,7 +19,7 @@ fn a_typed_host_joins_on_the_default_port_and_escape_leaves() {
     assert!(screen.text_entry());
     let typed: Vec<RawEvent> = "10.0.0.2".chars().map(|ch| RawEvent::Text { ch }).collect();
     feed(&mut screen, &typed);
-    assert_eq!(screen.menu.items, vec!["10.0.0.2_"]);
+    assert_eq!(screen.menu.view().items, vec!["10.0.0.2_"]);
     assert_eq!(
         press(&mut screen, Key::Enter),
         Out::Join("10.0.0.2:4200".to_owned())
@@ -37,7 +37,7 @@ fn a_failed_join_returns_to_its_address_with_the_reason() {
     let mut screen = LobbyScreen::waiting(Lobby::Client(ClientLobby::new(unreachable, "abc")));
     assert!(!screen.text_entry());
     assert!(screen.subtitle().starts_with("Connecting to"));
-    assert_eq!(screen.menu.items, vec!["Cancel"]);
+    assert_eq!(screen.menu.view().items, vec!["Cancel"]);
     assert_eq!(press(&mut screen, Key::Escape), Out::Cancel);
     assert_eq!(press(&mut screen, Key::Enter), Out::Cancel);
 
@@ -50,7 +50,7 @@ fn a_failed_join_returns_to_its_address_with_the_reason() {
         assert!(screen.poll(Duration::ZERO, vec2(1280.0, 800.0)).is_none());
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
-    assert_eq!(screen.menu.items, vec!["127.0.0.1:1_"]);
+    assert_eq!(screen.menu.view().items, vec!["127.0.0.1:1_"]);
     assert!(screen.subtitle().starts_with("Cannot reach 127.0.0.1:1"));
     assert_eq!(
         press(&mut screen, Key::Enter),

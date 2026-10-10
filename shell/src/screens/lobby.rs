@@ -38,7 +38,7 @@ enum Face {
 pub struct LobbyScreen {
     face: Face,
     /// The field or the Cancel row, for drawing and the UI report.
-    pub menu: Menu,
+    pub menu: Menu<usize>,
 }
 
 impl LobbyScreen {
@@ -57,8 +57,8 @@ impl LobbyScreen {
 
     fn face(face: Face) -> Self {
         let menu = match &face {
-            Face::Address { field, .. } => field.menu(),
-            Face::Waiting(_) => Menu::new("LAN MATCH", vec!["Cancel".to_owned()]),
+            Face::Address { field, .. } => field.menu(0),
+            Face::Waiting(_) => Menu::list("LAN MATCH", vec!["Cancel".to_owned()]),
         };
         Self { face, menu }
     }
@@ -115,7 +115,7 @@ impl LobbyScreen {
                 Edit::Commit(address) => Out::Join(with_default_port(&address)),
                 Edit::Cancel => Out::Cancel,
                 Edit::Stay => {
-                    self.menu = field.menu();
+                    self.menu = field.menu(0);
                     Out::Stay
                 }
             },

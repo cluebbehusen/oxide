@@ -137,3 +137,81 @@ fn cancel_disarms_mouse_and_touch() {
     assert_eq!(press.mouse_up(Some(4)), None);
     assert!(press.touch_free());
 }
+
+fn touch_down(id: u64, y: f32) -> RawEvent {
+    RawEvent::TouchDown { id, x: 10.0, y }
+}
+
+fn touch_move(id: u64, y: f32) -> RawEvent {
+    RawEvent::TouchMove { id, x: 10.0, y }
+}
+
+fn touch_up(id: u64, y: f32) -> RawEvent {
+    RawEvent::TouchUp { id, x: 10.0, y }
+}
+
+#[test]
+fn a_finger_within_the_slop_still_taps() {
+    let ui = 1.5;
+    let mut press = ScrollPress::default();
+    assert_eq!(press.feed(&touch_down(3, 100.0), ui, zone), Swipe::Held);
+    let inside = 100.0 + 7.9 * ui;
+    assert_eq!(press.feed(&touch_move(3, inside), ui, zone), Swipe::Held);
+    assert_eq!(
+        press.feed(&touch_up(3, inside), ui, zone),
+        Swipe::Activated(1)
+    );
+}
+
+#[test]
+fn crossing_the_slop_scrolls_the_whole_way_and_cancels_the_tap() {
+    let ui = 1.5;
+    let mut press = ScrollPress::default();
+    press.feed(&touch_down(3, 100.0), ui, zone);
+    let past = 100.0 + 8.1 * ui;
+    assert_eq!(
+        press.feed(&touch_move(3, past), ui, zone),
+        Swipe::Scrolled {
+            dy: past - 100.0,
+            began: true
+        },
+        "the first report catches up the travel since touchdown"
+    );
+    assert_eq!(
+        press.feed(&touch_move(3, past - 5.0), ui, zone),
+        Swipe::Scrolled {
+            dy: -5.0,
+            began: false
+        }
+    );
+    assert_eq!(
+        press.feed(&touch_up(3, 100.0), ui, zone),
+        Swipe::Held,
+        "a drag never taps, even back where it began"
+    );
+    assert!(!press.scrolling());
+    assert_eq!(press.feed(&touch_down(4, 100.0), ui, zone), Swipe::Held);
+    assert_eq!(
+        press.feed(&touch_up(4, 100.0), ui, zone),
+        Swipe::Activated(1),
+        "the next finger taps afresh"
+    );
+}
+
+#[test]
+fn a_second_finger_neither_taps_nor_scrolls_while_the_first_drags() {
+    let mut press = ScrollPress::default();
+    press.feed(&touch_down(3, 100.0), 1.0, zone);
+    press.feed(&touch_move(3, 140.0), 1.0, zone);
+    assert!(press.scrolling());
+    assert_eq!(press.feed(&touch_down(4, 100.0), 1.0, zone), Swipe::Held);
+    assert_eq!(press.feed(&touch_move(4, 300.0), 1.0, zone), Swipe::Held);
+    assert_eq!(press.feed(&touch_up(4, 100.0), 1.0, zone), Swipe::Held);
+    assert_eq!(
+        press.feed(&touch_move(3, 150.0), 1.0, zone),
+        Swipe::Scrolled {
+            dy: 10.0,
+            began: false
+        }
+    );
+}

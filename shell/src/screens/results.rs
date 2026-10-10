@@ -4,15 +4,16 @@
 
 use crate::bot_label::{BotLabelStyle, bot_label};
 use crate::game::{Game, SoundKind};
+use crate::nav::{Axis, Nav, step_line};
 use crate::numeric;
 use crate::numeric::Fit;
-use crate::press::Press;
+use crate::press::{Fed, Press};
+use crate::theme::Type;
 use crate::{render, theme};
 use macroquad::prelude::*;
-use oxide_protocol::{Key, MouseButton, RawEvent};
+use oxide_protocol::{Key, RawEvent};
 use oxide_sim::{GameResult, PlayerId, TICKS_PER_SECOND};
 
-const ACTIONS: [&str; 4] = ["REMATCH", "WATCH REPLAY", "VIEW FINAL MAP", "HOME"];
 const WIDE_STAT_HEADERS: [[&str; 2]; 6] = [
     ["PEAK ARMY", "VALUE"],
     ["UNITS", "BUILT"],
@@ -37,20 +38,53 @@ pub enum Out {
     Home,
 }
 
-fn out_for(index: usize) -> Out {
-    match index {
-        0 => Out::Rematch,
-        1 => Out::Watch,
-        2 => Out::ViewFinalMap,
-        _ => Out::Home,
+/// One of the report's next steps, in button order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResultAction {
+    Rematch,
+    Watch,
+    ViewFinalMap,
+    Home,
+}
+
+impl ResultAction {
+    /// Every action, left to right.
+    pub const ALL: [Self; 4] = [Self::Rematch, Self::Watch, Self::ViewFinalMap, Self::Home];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Rematch => "REMATCH",
+            Self::Watch => "WATCH REPLAY",
+            Self::ViewFinalMap => "VIEW FINAL MAP",
+            Self::Home => "HOME",
+        }
+    }
+
+    fn out(self) -> Out {
+        match self {
+            Self::Rematch => Out::Rematch,
+            Self::Watch => Out::Watch,
+            Self::ViewFinalMap => Out::ViewFinalMap,
+            Self::Home => Out::Home,
+        }
+    }
+
+    /// Where the button sits in the row.
+    fn index(self) -> usize {
+        match self {
+            Self::Rematch => 0,
+            Self::Watch => 1,
+            Self::ViewFinalMap => 2,
+            Self::Home => 3,
+        }
     }
 }
 
 /// Touchable action geometry, injected for headless tests.
-pub(crate) fn action_rects(viewport: Vec2, scale: f32) -> [Rect; ACTIONS.len()] {
+pub(crate) fn action_rects(viewport: Vec2, scale: f32) -> [Rect; ResultAction::ALL.len()] {
     let gap = 10.0 * scale;
     let margin = 24.0 * scale;
-    let action_count = ACTIONS.len() as f32;
+    let action_count = ResultAction::ALL.len() as f32;
     let available = (viewport.x - margin * 2.0 - gap * (action_count - 1.0)).max(action_count);
     let width = (available / action_count).min(210.0 * scale);
     let total = width * action_count + gap * (action_count - 1.0);
@@ -61,7 +95,7 @@ pub(crate) fn action_rects(viewport: Vec2, scale: f32) -> [Rect; ACTIONS.len()] 
             x + (width + gap) * index as f32,
             y,
             width,
-            crate::layout::MIN_TOUCH_TARGET * scale,
+            crate::theme::MIN_TOUCH_TARGET * scale,
         )
     })
 }
@@ -87,12 +121,70 @@ struct ResultsLayout {
     graph_bottom: f32,
 }
 
+/// The report's vertical rhythm in logical px, before any fitting.
+#[derive(Debug, Clone, Copy)]
+struct ResultsMetrics {
+    title_y: f32,
+    title_size: f32,
+    meta_y: f32,
+    meta_size: f32,
+    header_y: f32,
+    header_size: f32,
+    rule_offset: f32,
+    row_height: f32,
+    row_size: f32,
+    /// Where in its row a player's text sits, as a fraction of the row.
+    row_baseline: f32,
+    marker_radius: f32,
+    /// Rows of space between the table and the graph.
+    graph_row_padding: f32,
+    graph_padding: f32,
+}
+
+impl ResultsMetrics {
+    /// Six or more players in a short window.
+    const COMPACT: Self = Self {
+        title_y: 43.0,
+        title_size: Type::Title.px(),
+        meta_y: 62.0,
+        meta_size: Type::Small.px(),
+        header_y: 79.0,
+        header_size: Type::Caption.px(),
+        rule_offset: 13.0,
+        row_height: 16.0,
+        row_size: Type::Small.px(),
+        row_baseline: 0.78,
+        marker_radius: 3.4,
+        graph_row_padding: 0.45,
+        graph_padding: 3.0,
+    };
+
+    /// Every other report; a short window packs its rows tighter.
+    fn standard(short: bool) -> Self {
+        Self {
+            title_y: 48.0,
+            title_size: Type::Title.px(),
+            meta_y: 68.0,
+            meta_size: Type::Body.px(),
+            header_y: 91.0,
+            header_size: Type::Body.px(),
+            rule_offset: 16.0,
+            row_height: if short { 22.0 } else { 27.0 },
+            row_size: Type::Label.px(),
+            row_baseline: 0.85,
+            marker_radius: 4.0,
+            graph_row_padding: 1.15,
+            graph_padding: 5.0,
+        }
+    }
+}
+
 fn results_layout(viewport: Vec2, scale: f32, player_count: usize) -> ResultsLayout {
     let logical_width = viewport.x / scale.max(f32::EPSILON);
     let logical_height = viewport.y / scale.max(f32::EPSILON);
     let compact_roster = logical_height <= 480.0 && player_count >= 6;
     let wide_table = !compact_roster && logical_width >= 1_100.0;
-    let (
+    let ResultsMetrics {
         title_y,
         title_size,
         meta_y,
@@ -106,26 +198,10 @@ fn results_layout(viewport: Vec2, scale: f32, player_count: usize) -> ResultsLay
         marker_radius,
         graph_row_padding,
         graph_padding,
-    ) = if compact_roster {
-        (
-            43.0, 32.0, 62.0, 13.0, 79.0, 11.0, 13.0, 16.0, 12.0, 0.78, 3.4, 0.45, 3.0,
-        )
+    } = if compact_roster {
+        ResultsMetrics::COMPACT
     } else {
-        (
-            48.0,
-            40.0,
-            68.0,
-            17.0,
-            91.0,
-            17.0,
-            16.0,
-            if logical_height <= 480.0 { 22.0 } else { 27.0 },
-            18.0,
-            0.85,
-            4.0,
-            1.15,
-            5.0,
-        )
+        ResultsMetrics::standard(logical_height <= 480.0)
     };
     let rule_offset = rule_offset + if wide_table { header_size } else { 0.0 };
     let actions_y = action_rects(viewport, scale)[0].y / scale;
@@ -153,41 +229,53 @@ fn results_layout(viewport: Vec2, scale: f32, player_count: usize) -> ResultsLay
         row_size: row_size * scale,
         row_baseline,
         marker_radius: marker_radius * scale,
-        graph_title_size: (if compact_roster { 14.0 } else { 17.0 }) * scale,
-        graph_label_size: (if compact_roster { 13.0 } else { 16.0 }) * scale,
+        graph_title_size: if compact_roster {
+            Type::Small
+        } else {
+            Type::Body
+        }
+        .at(scale),
+        graph_label_size: if compact_roster {
+            Type::Small
+        } else {
+            Type::Body
+        }
+        .at(scale),
         graph_top: graph_top * scale,
         graph_bottom: graph_bottom * scale,
     }
 }
 
-fn action_at(point: Vec2, viewport: Vec2, scale: f32) -> Option<usize> {
-    action_rects(viewport, scale)
-        .iter()
-        .position(|rect| rect.contains(point))
+fn action_at(point: Vec2, viewport: Vec2, scale: f32) -> Option<ResultAction> {
+    ResultAction::ALL
+        .into_iter()
+        .zip(action_rects(viewport, scale))
+        .find(|(_, rect)| rect.contains(point))
+        .map(|(action, _)| action)
 }
 
-fn table_columns(left: f32, right: f32, wide: bool) -> [f32; 7] {
+/// Where the scoreboard's columns sit: the player name's left edge, then
+/// the six statistics (peak army; units and buildings built; units and
+/// buildings lost; scrap). A wide table centers each statistic on its x.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TableColumns {
+    player: f32,
+    stats: [f32; 6],
+}
+
+fn table_columns(left: f32, right: f32, wide: bool) -> TableColumns {
     let width = right - left;
-    if wide {
+    let stats = if wide {
         let stats_left = player_column_right(left, right, true);
         let stat_width = (right - stats_left) / 6.0;
-        return std::array::from_fn(|index| {
-            if index == 0 {
-                left
-            } else {
-                stats_left + (index as f32 - 0.5) * stat_width
-            }
-        });
+        std::array::from_fn(|index| stats_left + (index as f32 + 0.5) * stat_width)
+    } else {
+        [0.39, 0.50, 0.59, 0.68, 0.77, 0.87].map(|fraction| left + width * fraction)
+    };
+    TableColumns {
+        player: left,
+        stats,
     }
-    [
-        left,
-        left + width * 0.39,
-        left + width * 0.50,
-        left + width * 0.59,
-        left + width * 0.68,
-        left + width * 0.77,
-        left + width * 0.87,
-    ]
 }
 
 fn player_column_right(left: f32, right: f32, wide: bool) -> f32 {
@@ -282,16 +370,16 @@ fn fitted_player_name_with_controller(
 
 /// Stateful pointer/keyboard ownership for the report.
 pub struct ResultsScreen {
-    selected: usize,
-    hover: Option<usize>,
-    press: Press<usize>,
+    selected: ResultAction,
+    hover: Option<ResultAction>,
+    press: Press<ResultAction>,
 }
 
 impl ResultsScreen {
     /// Opens with Rematch selected.
     pub fn open() -> Self {
         Self {
-            selected: 0,
+            selected: ResultAction::Rematch,
             hover: None,
             press: Press::default(),
         }
@@ -299,17 +387,20 @@ impl ResultsScreen {
 
     /// Keyboard cursor for the debug UI surface.
     pub fn selected(&self) -> usize {
-        self.selected
+        self.selected.index()
     }
 
     /// Pointer hover for the debug UI surface.
     pub fn hover(&self) -> Option<usize> {
-        self.hover
+        self.hover.map(ResultAction::index)
     }
 
     /// Stable labels for automation and accessibility.
     pub fn items() -> Vec<String> {
-        ACTIONS.iter().map(|label| (*label).to_string()).collect()
+        ResultAction::ALL
+            .iter()
+            .map(|action| action.label().to_string())
+            .collect()
     }
 
     /// Applies one frame through the same raw-event funnel as every menu.
@@ -322,68 +413,45 @@ impl ResultsScreen {
         sounds: &mut Vec<(SoundKind, Option<Vec2>)>,
     ) -> Out {
         for event in events {
+            if let Fed::Activated(action) =
+                self.press.feed(event, |p, _| action_at(p, viewport, scale))
+            {
+                if let Some(p) = crate::press::position(event) {
+                    *mouse = p;
+                }
+                self.selected = action;
+                sounds.push((SoundKind::Click, None));
+                return action.out();
+            }
             match *event {
                 RawEvent::MouseMove { x, y } => {
                     *mouse = vec2(x, y);
                     self.hover = action_at(*mouse, viewport, scale);
                 }
-                RawEvent::MouseDown {
-                    button: MouseButton::Left,
-                    x,
-                    y,
-                } => {
-                    self.press
-                        .mouse_down(action_at(vec2(x, y), viewport, scale));
-                }
-                RawEvent::MouseUp {
-                    button: MouseButton::Left,
-                    x,
-                    y,
-                } => {
-                    let released = action_at(vec2(x, y), viewport, scale);
-                    if let Some(index) = self.press.mouse_up(released) {
-                        self.selected = index;
-                        sounds.push((SoundKind::Click, None));
-                        return out_for(index);
-                    }
-                }
-                RawEvent::TouchDown { id, x, y } if self.press.touch_free() => {
+                RawEvent::TouchDown { id, x, y } | RawEvent::TouchMove { id, x, y }
+                    if self.press.owns(id) =>
+                {
                     *mouse = vec2(x, y);
                     self.hover = action_at(*mouse, viewport, scale);
-                    self.press.touch_down(id, self.hover);
-                }
-                RawEvent::TouchMove { id, x, y } if self.press.owns(id) => {
-                    *mouse = vec2(x, y);
-                    self.hover = action_at(*mouse, viewport, scale);
-                }
-                RawEvent::TouchUp { id, x, y } if self.press.owns(id) => {
-                    *mouse = vec2(x, y);
-                    let released = action_at(*mouse, viewport, scale);
-                    if let Some(armed) = self.press.touch_up(released) {
-                        self.selected = armed;
-                        sounds.push((SoundKind::Click, None));
-                        return out_for(armed);
-                    }
-                }
-                RawEvent::KeyDown {
-                    key: Key::Left | Key::Up,
-                } => {
-                    self.hover = None;
-                    self.selected = self.selected.checked_sub(1).unwrap_or(ACTIONS.len() - 1);
-                }
-                RawEvent::KeyDown {
-                    key: Key::Right | Key::Down,
-                } => {
-                    self.hover = None;
-                    self.selected = (self.selected + 1) % ACTIONS.len();
                 }
                 RawEvent::KeyDown { key: Key::Enter } => {
                     sounds.push((SoundKind::Click, None));
-                    return out_for(self.selected);
+                    return self.selected.out();
                 }
                 RawEvent::KeyDown { key: Key::Escape } => {
                     sounds.push((SoundKind::Click, None));
                     return Out::Home;
+                }
+                RawEvent::KeyDown { .. } => {
+                    if let Some(next) = Nav::decode(event).and_then(|nav| {
+                        let count = ResultAction::ALL.len();
+                        step_line(count, self.selected.index(), nav, Axis::Both, count, |_| {
+                            true
+                        })
+                    }) {
+                        self.hover = None;
+                        self.selected = ResultAction::ALL[next];
+                    }
                 }
                 _ => {}
             }
@@ -395,13 +463,7 @@ impl ResultsScreen {
     pub fn draw(&self, game: &Game) {
         let viewport = render::viewport();
         let s = render::ui_scale();
-        draw_rectangle(
-            0.0,
-            0.0,
-            viewport.x,
-            viewport.y,
-            Color::new(0.025, 0.025, 0.035, 0.92),
-        );
+        draw_rectangle(0.0, 0.0, viewport.x, viewport.y, theme::VEIL);
         let panel = Rect::new(
             12.0 * s,
             10.0 * s,
@@ -414,8 +476,8 @@ impl ResultsScreen {
             panel.y,
             panel.w,
             panel.h,
-            1.5 * s,
-            Color::new(0.65, 0.52, 0.34, 0.72),
+            theme::Stroke::Edge.at(s),
+            theme::EDGE_WARM,
         );
 
         let player_count = game.state.players().len();
@@ -432,14 +494,9 @@ impl ResultsScreen {
         let stats = game.end_stats.as_ref();
         let duration = stats.map_or(0, |report| report.final_tick);
         let meta = format!("{subtitle}  |  {}", format_duration(duration));
-        let mut meta_size = layout.meta_size;
-        let min_meta_size = 10.0 * s;
-        let max_meta_width = panel.w - 24.0 * s;
-        let mut meta_dims = measure_text(&meta, None, numeric::font_size(meta_size), 1.0);
-        while meta_dims.width > max_meta_width && meta_size > min_meta_size {
-            meta_size = (meta_size - s).max(min_meta_size);
-            meta_dims = measure_text(&meta, None, numeric::font_size(meta_size), 1.0);
-        }
+        let meta_size =
+            crate::typography::fit(&meta, layout.meta_size, panel.w - 24.0 * s, 10.0 * s);
+        let meta_dims = measure_text(&meta, None, numeric::font_size(meta_size), 1.0);
         draw_text(
             &meta,
             (viewport.x - meta_dims.width) * 0.5,
@@ -455,16 +512,13 @@ impl ResultsScreen {
         let columns = table_columns(left, right, layout.wide_table);
         draw_text(
             "PLAYER",
-            columns[0],
+            columns.player,
             header_y,
             layout.header_size,
             theme::TEXT_SECONDARY,
         );
         if layout.wide_table {
-            for (label, x) in WIDE_STAT_HEADERS
-                .into_iter()
-                .zip(columns[1..].iter().copied())
-            {
+            for (label, x) in WIDE_STAT_HEADERS.into_iter().zip(columns.stats) {
                 for (line, text) in label.into_iter().enumerate() {
                     draw_centered_text(
                         text,
@@ -478,37 +532,37 @@ impl ResultsScreen {
         } else {
             draw_text(
                 "PEAK",
-                columns[1],
+                columns.stats[0],
                 header_y,
                 layout.header_size,
                 theme::TEXT_SECONDARY,
             );
             draw_text(
                 "BUILT",
-                f32::midpoint(columns[2], columns[3]) - 17.0 * s,
+                f32::midpoint(columns.stats[1], columns.stats[2]) - 17.0 * s,
                 header_y,
                 layout.header_size,
                 theme::TEXT_SECONDARY,
             );
             draw_text(
                 "LOST",
-                f32::midpoint(columns[4], columns[5]) - 14.0 * s,
+                f32::midpoint(columns.stats[3], columns.stats[4]) - 14.0 * s,
                 header_y,
                 layout.header_size,
                 theme::TEXT_SECONDARY,
             );
             draw_text(
                 "SCRAP",
-                columns[6],
+                columns.stats[5],
                 header_y,
                 layout.header_size,
                 theme::TEXT_SECONDARY,
             );
             for (x, kind) in [
-                (columns[2], StatIcon::Unit),
-                (columns[3], StatIcon::Building),
-                (columns[4], StatIcon::Unit),
-                (columns[5], StatIcon::Building),
+                (columns.stats[1], StatIcon::Unit),
+                (columns.stats[2], StatIcon::Building),
+                (columns.stats[3], StatIcon::Unit),
+                (columns.stats[4], StatIcon::Building),
             ] {
                 draw_stat_icon(
                     vec2(x + 5.0 * s, header_y + 9.0 * s),
@@ -533,7 +587,7 @@ impl ResultsScreen {
                 let y = rule_y + (row as f32 + layout.row_baseline) * row_h;
                 let color = render::seat_identity_color(&game.view(), PlayerId(seat.fit::<u8>()));
                 draw_marker(
-                    columns[0],
+                    columns.player,
                     y - layout.row_size * 0.36,
                     layout.marker_radius,
                     seat,
@@ -551,7 +605,7 @@ impl ResultsScreen {
                     24
                 };
                 let prefix = format!("T{}  ", player.team + 1);
-                let player_text_x = columns[0] + 11.0 * s;
+                let player_text_x = columns.player + 11.0 * s;
                 let player_text_right = player_column_right(left, right, layout.wide_table);
                 let fixed_width = measure_text(
                     format!("{prefix}{crown}"),
@@ -583,12 +637,12 @@ impl ResultsScreen {
                 if let Some(numbers) = numbers {
                     let peak = numbers.army_value.iter().copied().max().unwrap_or(0);
                     for (text, x) in [
-                        (peak.to_string(), columns[1]),
-                        (numbers.units_trained.to_string(), columns[2]),
-                        (numbers.buildings_completed.to_string(), columns[3]),
-                        (numbers.units_lost.to_string(), columns[4]),
-                        (numbers.buildings_lost.to_string(), columns[5]),
-                        (numbers.scrap_collected.to_string(), columns[6]),
+                        (peak.to_string(), columns.stats[0]),
+                        (numbers.units_trained.to_string(), columns.stats[1]),
+                        (numbers.buildings_completed.to_string(), columns.stats[2]),
+                        (numbers.units_lost.to_string(), columns.stats[3]),
+                        (numbers.buildings_lost.to_string(), columns.stats[4]),
+                        (numbers.scrap_collected.to_string(), columns.stats[5]),
                     ] {
                         if layout.wide_table {
                             draw_centered_text(&text, x, y, layout.row_size, theme::TEXT_BODY);
@@ -619,14 +673,14 @@ impl ResultsScreen {
                 "Compiling the final record...",
                 left,
                 header_y + 30.0 * s,
-                16.0 * s,
+                crate::theme::Type::Body.at(s),
                 theme::TEXT_BODY,
             );
         }
 
-        for (index, (label, rect)) in ACTIONS.iter().zip(action_rects(viewport, s)).enumerate() {
-            let active = self.hover == Some(index) || self.selected == index;
-            crate::button::draw(rect, label, active, s);
+        for (action, rect) in ResultAction::ALL.into_iter().zip(action_rects(viewport, s)) {
+            let active = self.hover == Some(action) || self.selected == action;
+            crate::button::draw(rect, action.label(), active, s);
         }
     }
 }

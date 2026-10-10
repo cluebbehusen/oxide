@@ -165,37 +165,90 @@ pub fn press_key(client: &mut Client, key: Key) -> Result<()> {
     inject(client, RawEvent::KeyUp { key })
 }
 
-fn labeled_activation_keys(view: &UiView, needle: &str) -> Result<Vec<Key>> {
-    let lower = needle.to_lowercase();
-    let target = view
-        .items
-        .iter()
-        .position(|item| item.to_lowercase() == lower)
-        .or_else(|| {
-            view.items
-                .iter()
-                .position(|item| item.to_lowercase().contains(&lower))
+/// A walk of the cursor to a labeled row, steered by where each key
+/// press lands rather than by index arithmetic: menus wrap, skip section
+/// headings, and grids move by rows, so only the shell knows where a press
+/// goes. It presses Down until the cursor reaches the row or comes back to
+/// a row it already visited, then Right, which reaches every cell of a
+/// grid in reading order.
+#[derive(Debug)]
+struct Walk {
+    target: usize,
+    key: Key,
+    seen: Vec<usize>,
+    presses: usize,
+    limit: usize,
+}
+
+/// What a walk does next.
+#[derive(Debug, PartialEq, Eq)]
+enum Stride {
+    Press(Key),
+    Arrived,
+    Stuck,
+}
+
+impl Walk {
+    /// A walk to the row whose label equals `needle`, or else contains it
+    /// (case-insensitive).
+    fn to_label(view: &UiView, needle: &str) -> Result<Self> {
+        let lower = needle.to_lowercase();
+        let target = view
+            .items
+            .iter()
+            .position(|item| item.to_lowercase() == lower)
+            .or_else(|| {
+                view.items
+                    .iter()
+                    .position(|item| item.to_lowercase().contains(&lower))
+            })
+            .with_context(|| format!("no row containing '{needle}' in {:?}", view.items))?;
+        Ok(Self {
+            target,
+            key: Key::Down,
+            seen: Vec::new(),
+            presses: 0,
+            limit: 2 * view.items.len() + 2,
         })
-        .with_context(|| format!("no row containing '{needle}' in {:?}", view.items))?;
-    let selected = view.selected.unwrap_or(0);
-    let (key, steps) = if target >= selected {
-        (Key::Down, target - selected)
-    } else {
-        (Key::Up, selected - target)
-    };
-    let mut keys = vec![key; steps];
-    keys.push(Key::Enter);
-    Ok(keys)
+    }
+
+    /// The next key, given the row the cursor rests on.
+    fn next(&mut self, selected: usize) -> Stride {
+        if selected == self.target {
+            return Stride::Arrived;
+        }
+        if self.seen.contains(&selected) {
+            if self.key == Key::Right {
+                return Stride::Stuck;
+            }
+            self.key = Key::Right;
+            self.seen.clear();
+        }
+        if self.presses >= self.limit {
+            return Stride::Stuck;
+        }
+        self.seen.push(selected);
+        self.presses += 1;
+        Stride::Press(self.key)
+    }
 }
 
 /// Selects the row whose label contains `needle` (case-insensitive)
 /// with keyboard navigation, then activates it with Enter.
 pub fn activate_labeled(client: &mut Client, needle: &str) -> Result<()> {
     let view = ui(client)?;
-    for key in labeled_activation_keys(&view, needle)? {
-        press_key(client, key)?;
+    let mut walk = Walk::to_label(&view, needle)?;
+    let mut selected = view.selected.unwrap_or(0);
+    loop {
+        match walk.next(selected) {
+            Stride::Press(key) => {
+                press_key(client, key)?;
+                selected = ui(client)?.selected.unwrap_or(0);
+            }
+            Stride::Arrived => return press_key(client, Key::Enter),
+            Stride::Stuck => bail!("the cursor never reached '{needle}' in {:?}", view.items),
+        }
     }
-    Ok(())
 }
 
 /// Fails loudly when the shell is not on the expected screen.

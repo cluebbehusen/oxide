@@ -145,7 +145,7 @@ pub(super) struct Busy {
     back: Box<Screen>,
     id: Option<u64>,
     presented: bool,
-    pub(super) menu: crate::menu::Menu,
+    pub(super) menu: crate::menu::Menu<usize>,
     quit_after: bool,
 }
 impl Busy {
@@ -174,7 +174,7 @@ impl App {
             id: None,
             presented: false,
             quit_after: false,
-            menu: crate::menu::Menu::new(
+            menu: crate::menu::Menu::list(
                 if loading {
                     "LOADING GAME"
                 } else {

@@ -320,11 +320,16 @@ New Match steps, replay playback, the final map, Settings and Controls, the
 roster, and the replay shelf draw a top-left BACK button instead of a Back row,
 and playback adds Play/Pause. These ride `Press::feed`, which also tells the
 screen when a button claimed an event; the menus share `button::BackButton`,
-which acts as Escape does on each face. Menu lists scroll by touch drag, and the
-read-only viewers pan and pinch through `ViewerTouch`, within the shared
-`camera::controls::ViewerHands`. The save-name field has Save and Cancel; on
-touch-only builds the frame loop raises and hides the on-screen keyboard to
-follow it.
+which acts as Escape does on each face. Menu lists and the map grid scroll by a
+finger dragged past `press::DRAG_SLOP` (`ScrollPress`). Every cursor steps
+through `nav`: arrows wrap at the edges, Home and End land on the first and last
+live cell, and paging stops at the ends. Menu rows stand for typed values
+(`Menu<R>`), so a screen never maps a row index back to its meaning. Chrome
+colors, stroke weights and the eight type sizes come from `theme`; world colors
+stay with the renderer. The read-only viewers pan and pinch through
+`ViewerTouch`, within the shared `camera::controls::ViewerHands`. The save-name
+field has Save and Cancel; on touch-only builds the frame loop raises and hides
+the on-screen keyboard to follow it.
 
 Hints, toasts, card descriptions, and the tutorial speak touch on touch-only
 builds, and panel cards drop their hotkeys. A finger resting on chrome for

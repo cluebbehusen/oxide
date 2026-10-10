@@ -133,7 +133,7 @@ fn fabricator_corner_reaches_wrapped_actions_and_keeps_queue_above_it() {
             rally_card_count(&panel.cards),
         );
         let (left, _, _, _) = card_metrics(viewport, scale);
-        let measured = measure_info(&panel, left, scale, false, |text, size| {
+        let measured = measure_info(&panel, left, scale, false, &|_, text: &str, size: f32| {
             text.len() as f32 * size * 0.5
         });
         let (cards, right) = command_card_geometry(viewport, scale, packing, &panel.cards);
@@ -262,8 +262,8 @@ fn production_cards_stay_inside_the_band_across_layouts_and_actions() {
                                             && rect.y + rect.h <= viewport.y + 0.001
                                     );
                                     assert!(
-                                        rect.w >= crate::layout::MIN_TOUCH_TARGET * scale
-                                            && rect.h >= crate::layout::MIN_TOUCH_TARGET * scale
+                                        rect.w >= crate::theme::MIN_TOUCH_TARGET * scale
+                                            && rect.h >= crate::theme::MIN_TOUCH_TARGET * scale
                                     );
                                     assert!(
                                         slots[..index].iter().all(|other| !rect.overlaps(other))
@@ -303,8 +303,8 @@ fn construction_catalog_keeps_every_choice_and_minimap_at_supported_sizes() {
         assert!(band.y >= crate::layout::TOP_BAR_H);
         assert!(band.w < minimap.x);
         for (i, rect) in slots.iter().enumerate() {
-            assert!(rect.w >= crate::layout::MIN_TOUCH_TARGET);
-            assert!(rect.h >= crate::layout::MIN_TOUCH_TARGET);
+            assert!(rect.w >= crate::theme::MIN_TOUCH_TARGET);
+            assert!(rect.h >= crate::theme::MIN_TOUCH_TARGET);
             assert!(band.contains(vec2(rect.x, rect.y)));
             assert!(rect.y + rect.h <= viewport.y);
             assert!(slots[..i].iter().all(|other| !rect.overlaps(other)));
@@ -536,7 +536,7 @@ fn a_mixed_small_window_selection_keeps_roster_and_queue_in_the_corner() {
     let panel =
         crate::panel::build_for_palette(&game.view(), &crate::action::BindingMap::classic(), false)
             .unwrap();
-    let info = measure_info(&panel, 204.0, 1.0, true, |text, size| {
+    let info = measure_info(&panel, 204.0, 1.0, true, &|_, text: &str, size: f32| {
         text.len() as f32 * size * 0.5
     });
     assert_eq!(panel.roster.len(), 8);

@@ -147,12 +147,7 @@ fn draw_capability_icon(
     let radius = radius.max(2.0);
     let stroke = (radius * 0.18).clamp(1.0, 2.0);
     if plate {
-        draw_circle(
-            center.x,
-            center.y,
-            radius * 1.34,
-            Color::new(0.045, 0.045, 0.060, 0.88),
-        );
+        draw_circle(center.x, center.y, radius * 1.34, crate::theme::ICON_PLATE);
     }
     match icon {
         CapabilityIcon::Weapon | CapabilityIcon::AirWeapon | CapabilityIcon::DeadZone => {

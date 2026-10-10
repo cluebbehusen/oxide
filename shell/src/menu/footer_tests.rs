@@ -12,7 +12,7 @@ fn touch_rows_stay_a_full_fingertip_tall_and_desktop_rows_pack() {
         let long_list_short_window = (300.0 * s, 20);
         let touch = row_pitch(long_list_short_window.0, long_list_short_window.1, s, true);
         assert!(
-            touch - ROW_GAP * s >= crate::layout::MIN_TOUCH_TARGET * s,
+            touch - ROW_GAP * s >= crate::theme::MIN_TOUCH_TARGET * s,
             "a touch row's target is at least a fingertip"
         );
         let desktop = row_pitch(long_list_short_window.0, long_list_short_window.1, s, false);

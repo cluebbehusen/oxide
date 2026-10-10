@@ -9,21 +9,25 @@
 use crate::bot_label::{difficulty_name, stance_name};
 use crate::game::SoundKind;
 use crate::menu::{PreviewCache, ScenarioEntry, discover_scenarios};
+use crate::nav::{Axis, Nav, step_line};
 use crate::numeric;
 use crate::numeric::Fit;
 use crate::press::{Fed, Press};
 use crate::screens::browser::{Browser, Out as BrowserOut};
 use anyhow::{Context, Result};
 use macroquad::prelude::{
-    Color, DrawTextureParams, Rect, Vec2, draw_circle, draw_circle_lines, draw_rectangle,
+    DrawTextureParams, Rect, Vec2, draw_circle, draw_circle_lines, draw_rectangle,
     draw_rectangle_lines, draw_text, draw_texture_ex, measure_text, vec2,
 };
-use oxide_protocol::{Key, MouseButton, RawEvent};
+use oxide_protocol::{Key, RawEvent};
 use oxide_sim::Scenario;
 use oxide_sim::scenario::{BotDifficulty, BotStance};
 use std::path::PathBuf;
 
-use crate::theme::{SURFACE_MENU, TEXT_DANGER, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TITLE};
+use crate::theme::{
+    BORDER_FAINT, BORDER_STRONG, CARD_IDLE, CHIP, MIN_TOUCH_TARGET, SURFACE_MENU, SURFACE_PLATE,
+    Stroke, TEXT_DANGER, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TITLE, Type,
+};
 
 /// One seat's editable choices in the draft.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -205,12 +209,11 @@ impl NewMatchDraft {
 /// The setup cards' faction chip values, aligned with
 /// [`faction_override`].
 const FACTION_CHIP_ITEMS: [&str; 3] = ["Auto", "Ferrous", "Cupric"];
-const MIN_TOUCH_TARGET: f32 = 44.0;
 const COMPACT_PAGE_ITEMS: usize = 5;
 
 /// The setup screen's coaching line. The keyboard hint follows the
 /// cursor; taps move the cursor anyway, so the touch hint is one line.
-fn setup_hint(one_team: bool, on_start: bool, cell: usize, touch_only: bool) -> &'static str {
+fn setup_hint(one_team: bool, on_start: bool, cell: Cell, touch_only: bool) -> &'static str {
     match (touch_only, one_team) {
         (true, true) => "every seat is on one team, nobody to fight - tap a TEAM chip to regroup",
         (true, false) => "tap a seat to take it - tap a chip to change it",
@@ -219,10 +222,12 @@ fn setup_hint(one_team: bool, on_start: bool, cell: usize, touch_only: bool) -> 
         }
         (false, false) if on_start => "{confirm} starts the match - {back} back",
         (false, false) => match cell {
-            1 => "{confirm} cycles difficulty - {left}/{right} move - {back} back",
-            2 => "{confirm} cycles stance - {left}/{right} move - {back} back",
-            3.. => "{confirm} cycles the chip - {left}/{right} move - {back} back",
-            _ => {
+            Cell::Difficulty => "{confirm} cycles difficulty - {left}/{right} move - {back} back",
+            Cell::Stance => "{confirm} cycles stance - {left}/{right} move - {back} back",
+            Cell::Faction | Cell::Team => {
+                "{confirm} cycles the chip - {left}/{right} move - {back} back"
+            }
+            Cell::Seat => {
                 "{confirm} takes this seat - {left}/{right} reach difficulty, stance, faction, and team - {back} back"
             }
         },
@@ -273,14 +278,12 @@ pub struct Wizard {
     /// seat itself, then its controls left to right: 1 difficulty,
     /// 2 stance, 3 faction, and 4 team. The two bot controls are absent
     /// from the human's row.
-    pub setup_cell: usize,
-    /// Setup zone armed by a press: (row, cell); activation on
-    /// release inside the same zone. Rows after Start are compact-page
-    /// navigation controls.
-    setup_press: Press<(usize, usize)>,
-    /// The map grid's corner Back button. Setup routes its own Back
-    /// through `setup_press` as one more zone.
-    back_press: Press<()>,
+    pub setup_cell: Cell,
+    /// Setup zone armed by a press; activation on release inside the
+    /// same zone.
+    setup_press: Press<SetupZone>,
+    /// The corner Back button: Home from the grid, the grid from setup.
+    back: crate::button::BackButton,
     /// Compact setup page. Full-height layouts always clamp this to zero.
     setup_page: usize,
 }
@@ -326,16 +329,11 @@ pub fn seat_display_order(scenario: &Scenario) -> Vec<usize> {
 pub struct SetupLayout {
     /// Team headings and their text rects.
     pub headings: Vec<(String, Rect)>,
-    /// One card rect per DISPLAY position (see [`seat_display_order`]).
-    pub seats: Vec<Rect>,
-    /// Per card, the three interactive zones: the seat itself, its
-    /// faction chip, and its team chip.
-    pub cells: Vec<[Rect; 3]>,
-    /// Per card, the directly editable difficulty and stance controls.
-    /// Both rectangles are empty on the human's card.
-    pub bot_controls: Vec<[Rect; 2]>,
-    /// The Start button.
-    pub start: Rect,
+    /// One card per DISPLAY position (see [`seat_display_order`]);
+    /// `None` while the card sits on another compact page.
+    pub cards: Vec<Option<CardRects>>,
+    /// The Start button; `None` while it sits on another compact page.
+    pub start: Option<Rect>,
     /// Where the map preview draws.
     pub preview: Rect,
     /// Previous compact page control, when another page precedes this one.
@@ -348,6 +346,95 @@ pub struct SetupLayout {
     pub page_count: usize,
     /// Half-open protocol item range actually drawn on this page.
     pub visible_range: [usize; 2],
+}
+
+/// One control on a seat card, left to right as the keyboard walks them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cell {
+    /// The card itself: Enter takes the seat.
+    Seat,
+    Difficulty,
+    Stance,
+    Faction,
+    Team,
+}
+
+impl Cell {
+    /// Every cell, left to right.
+    pub const ALL: [Self; 5] = [
+        Self::Seat,
+        Self::Difficulty,
+        Self::Stance,
+        Self::Faction,
+        Self::Team,
+    ];
+
+    fn index(self) -> usize {
+        match self {
+            Self::Seat => 0,
+            Self::Difficulty => 1,
+            Self::Stance => 2,
+            Self::Faction => 3,
+            Self::Team => 4,
+        }
+    }
+}
+
+/// Where one seat card and its controls sit. Your own card has no
+/// difficulty or stance chip.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CardRects {
+    /// The whole card.
+    pub card: Rect,
+    /// The seat zone left of the chips.
+    pub seat: Rect,
+    pub difficulty: Option<Rect>,
+    pub stance: Option<Rect>,
+    pub faction: Rect,
+    pub team: Rect,
+}
+
+impl CardRects {
+    /// Where `cell` sits, if this card has it.
+    pub fn cell(&self, cell: Cell) -> Option<Rect> {
+        match cell {
+            Cell::Seat => Some(self.seat),
+            Cell::Difficulty => self.difficulty,
+            Cell::Stance => self.stance,
+            Cell::Faction => Some(self.faction),
+            Cell::Team => Some(self.team),
+        }
+    }
+
+    /// A fingertip's target for `cell`: the card's full height, reaching
+    /// halfway to the neighboring controls.
+    fn touch_cell(&self, cell: Cell) -> Option<Rect> {
+        let rect = self.cell(cell)?;
+        let index = cell.index();
+        let left = Cell::ALL[..index]
+            .iter()
+            .rev()
+            .find_map(|candidate| self.cell(*candidate))
+            .map_or(self.card.x, |previous| {
+                (previous.x + previous.w + rect.x) * 0.5
+            });
+        let right = Cell::ALL[index + 1..]
+            .iter()
+            .find_map(|candidate| self.cell(*candidate))
+            .map_or(self.card.x + self.card.w, |next| {
+                (rect.x + rect.w + next.x) * 0.5
+            });
+        Some(Rect::new(left, self.card.y, right - left, self.card.h))
+    }
+}
+
+/// What a press on the setup screen arms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SetupZone {
+    Card { row: usize, cell: Cell },
+    Start,
+    PrevPage,
+    NextPage,
 }
 
 /// Computes [`SetupLayout`]. `seat_choice` marks the human card; every
@@ -412,13 +499,10 @@ fn setup_layout_page(
     }
 
     let mut headings = Vec::new();
-    let mut seats = vec![Rect::new(0.0, 0.0, 0.0, 0.0); n];
-    let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
-    let mut cells = vec![[zero; 3]; n];
-    let mut bot_controls = vec![[zero; 2]; n];
+    let mut cards = Vec::with_capacity(n);
     let mut y = top;
     let mut last_team: Option<u16> = None;
-    for (pos, &seat) in order.iter().enumerate() {
+    for &seat in &order {
         let team = keys[seat];
         if grouped && last_team != Some(team) {
             let label = format!(
@@ -430,10 +514,7 @@ fn setup_layout_page(
             y += heading_h;
         }
         let card = Rect::new(left_x, y, left_w, card_h);
-        seats[pos] = card;
-        let (card_cells, controls) = setup_card_controls(card, seat, seat_choice, ui);
-        cells[pos] = card_cells;
-        bot_controls[pos] = controls;
+        cards.push(Some(setup_card_controls(card, seat, seat_choice, ui)));
         y += card_h + gap;
     }
     let start = Rect::new(left_x, y + 12.0 * ui, 240.0 * ui, start_h);
@@ -441,10 +522,8 @@ fn setup_layout_page(
     let preview = Rect::new(px, top, view.x - px - 40.0 * ui, bottom - top - 20.0 * ui);
     SetupLayout {
         headings,
-        seats,
-        cells,
-        bot_controls,
-        start,
+        cards,
+        start: Some(start),
         preview,
         page_prev: None,
         page_next: None,
@@ -454,17 +533,11 @@ fn setup_layout_page(
     }
 }
 
-fn setup_card_controls(
-    card: Rect,
-    seat: usize,
-    seat_choice: usize,
-    ui: f32,
-) -> ([Rect; 3], [Rect; 2]) {
+fn setup_card_controls(card: Rect, seat: usize, seat_choice: usize, ui: f32) -> CardRects {
     // Controls occupy equal semantic lanes on the right. Their visible
     // rectangles are inset within those lanes, so even the compact 640px
     // layout keeps every mouse and touch target independent and at least
     // 44 logical pixels wide.
-    let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
     let inset = (4.0 * ui).clamp(2.0, 6.0);
     let chip_h = (card.h * 0.72).clamp(10.0, 40.0 * ui);
     let chip_y = card.y + (card.h - chip_h) * 0.5;
@@ -482,16 +555,14 @@ fn setup_card_controls(
                 chip_h,
             )
         };
-        let faction = control(0);
-        let team = control(1);
-        (
-            [
-                Rect::new(card.x, card.y, controls_x - card.x, card.h),
-                faction,
-                team,
-            ],
-            [zero; 2],
-        )
+        CardRects {
+            card,
+            seat: Rect::new(card.x, card.y, controls_x - card.x, card.h),
+            difficulty: None,
+            stance: None,
+            faction: control(0),
+            team: control(1),
+        }
     } else {
         let controls_w = (card.w * 0.72)
             .max(MIN_TOUCH_TARGET * 4.0)
@@ -506,18 +577,14 @@ fn setup_card_controls(
                 chip_h,
             )
         };
-        let difficulty = control(0);
-        let stance = control(1);
-        let faction = control(2);
-        let team = control(3);
-        (
-            [
-                Rect::new(card.x, card.y, controls_x - card.x, card.h),
-                faction,
-                team,
-            ],
-            [difficulty, stance],
-        )
+        CardRects {
+            card,
+            seat: Rect::new(card.x, card.y, controls_x - card.x, card.h),
+            difficulty: Some(control(0)),
+            stance: Some(control(1)),
+            faction: control(2),
+            team: control(3),
+        }
     }
 }
 
@@ -548,22 +615,15 @@ fn compact_setup_layout(
         / COMPACT_PAGE_ITEMS as f32)
         .max(1.0);
 
-    let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
-    let mut seats = vec![zero; n];
-    let mut cells = vec![[zero; 3]; n];
-    let mut bot_controls = vec![[zero; 2]; n];
-    let mut start = zero;
+    let mut cards = vec![None; n];
+    let mut start = None;
     for item in first..past {
         let slot = item - first;
         let rect = Rect::new(left_x, top + slot as f32 * (item_h + gap), left_w, item_h);
         if item == n {
-            start = Rect::new(rect.x, rect.y, (240.0 * ui).min(rect.w), rect.h);
+            start = Some(Rect::new(rect.x, rect.y, (240.0 * ui).min(rect.w), rect.h));
         } else {
-            seats[item] = rect;
-            let seat = order[item];
-            let (card_cells, controls) = setup_card_controls(rect, seat, seat_choice, ui);
-            cells[item] = card_cells;
-            bot_controls[item] = controls;
+            cards[item] = Some(setup_card_controls(rect, order[item], seat_choice, ui));
         }
     }
 
@@ -576,9 +636,7 @@ fn compact_setup_layout(
     let preview = Rect::new(px, top, view.x - px - 40.0 * ui, bottom - top - 20.0);
     SetupLayout {
         headings: Vec::new(),
-        seats,
-        cells,
-        bot_controls,
+        cards,
         start,
         preview,
         page_prev,
@@ -587,32 +645,6 @@ fn compact_setup_layout(
         page_count,
         visible_range: [first, past],
     }
-}
-
-/// Returns one setup control in left-to-right keyboard order.
-fn setup_cell_rect(layout: &SetupLayout, row: usize, cell: usize) -> Option<Rect> {
-    let rect = match cell {
-        0 => *layout.cells.get(row)?.first()?,
-        1 => *layout.bot_controls.get(row)?.first()?,
-        2 => *layout.bot_controls.get(row)?.get(1)?,
-        3 => *layout.cells.get(row)?.get(1)?,
-        4 => *layout.cells.get(row)?.get(2)?,
-        _ => return None,
-    };
-    (rect.w > 0.0).then_some(rect)
-}
-
-fn setup_touch_cell_rect(layout: &SetupLayout, row: usize, cell: usize) -> Option<Rect> {
-    let card = *layout.seats.get(row)?;
-    let rect = setup_cell_rect(layout, row, cell)?;
-    let left = (0..cell)
-        .rev()
-        .find_map(|candidate| setup_cell_rect(layout, row, candidate))
-        .map_or(card.x, |previous| (previous.x + previous.w + rect.x) * 0.5);
-    let right = (cell + 1..5)
-        .find_map(|candidate| setup_cell_rect(layout, row, candidate))
-        .map_or(card.x + card.w, |next| (rect.x + rect.w + next.x) * 0.5);
-    Some(Rect::new(left, card.y, right - left, card.h))
 }
 
 /// Steps the difficulty chip forward: every difficulty, then Remote, then
@@ -715,13 +747,13 @@ pub fn draw_seat_markers(
         }
         draw_circle(px, py, 7.5 * ui, accent);
         let label = format!("{}", seat + 1);
-        let tw = measure_text(&label, None, numeric::font_size(13.0 * ui), 1.0).width;
+        let tw = measure_text(&label, None, numeric::font_size(Type::Small.at(ui)), 1.0).width;
         draw_text(
             &label,
             px - tw * 0.5,
             py + 4.5 * ui,
-            13.0 * ui,
-            Color::from_rgba(20, 20, 24, 255),
+            Type::Small.at(ui),
+            SURFACE_PLATE,
         );
     }
 }
@@ -739,9 +771,9 @@ impl Wizard {
             entries,
             browser,
             setup_sel: 0,
-            setup_cell: 0,
+            setup_cell: Cell::Seat,
             setup_press: Press::default(),
-            back_press: Press::default(),
+            back: crate::button::BackButton::default(),
             setup_page: 0,
         }
     }
@@ -757,7 +789,7 @@ impl Wizard {
 
     fn goto(&mut self, step: Step, draft: &NewMatchDraft) {
         self.step = step;
-        self.back_press.cancel();
+        self.back.cancel();
         match step {
             Step::Map => {
                 self.entries = discover_scenarios();
@@ -769,7 +801,7 @@ impl Wizard {
                 // the map as authored.
                 self.setup_sel = draft.seats.len();
                 self.setup_page = self.setup_sel / COMPACT_PAGE_ITEMS;
-                self.setup_cell = 0;
+                self.setup_cell = Cell::Seat;
                 self.setup_press.cancel();
             }
         }
@@ -785,42 +817,36 @@ impl Wizard {
         draft: &mut NewMatchDraft,
         sounds: &mut Vec<(SoundKind, Option<Vec2>)>,
     ) -> Result<Out> {
-        match self.step {
-            Step::Map => {
-                // The corner Back button sees the pointer first; the grid
-                // only gets the events it leaves alone.
-                let back = crate::button::corner_slot(0, crate::render::ui_scale());
-                let mut grid_events = Vec::with_capacity(events.len());
-                for event in events {
-                    match self
-                        .back_press
-                        .feed(event, |p, _| back.contains(p).then_some(()))
-                    {
-                        Fed::Activated(()) => {
-                            sounds.push((SoundKind::Click, None));
-                            return Ok(Out::Home);
-                        }
-                        Fed::Held => {}
-                        Fed::Ignored => grid_events.push(*event),
-                    }
-                }
-                match self.browser.handle(&self.entries, &grid_events, mouse) {
-                    BrowserOut::Back => return Ok(Out::Home),
-                    BrowserOut::Pick(entry) => {
-                        sounds.push((SoundKind::Click, None));
-                        let scenario = match &self.entries[entry].path {
-                            Some(path) => Scenario::load(path)
-                                .with_context(|| format!("loading {}", path.display()))?,
-                            None => Scenario::skirmish(),
-                        };
-                        draft.set_scenario(scenario, self.entries[entry].path.clone());
-                        self.goto(Step::Setup, draft);
-                    }
-                    BrowserOut::Stay => {}
+        // The corner Back button sees the pointer first; the step only
+        // gets the events it leaves alone.
+        let (back, events) = self.back.route(events);
+        if back {
+            sounds.push((SoundKind::Click, None));
+            match self.step {
+                Step::Map => return Ok(Out::Home),
+                Step::Setup => {
+                    self.goto(Step::Map, draft);
+                    return Ok(Out::Stay);
                 }
             }
+        }
+        match self.step {
+            Step::Map => match self.browser.handle(&self.entries, &events, mouse) {
+                BrowserOut::Back => return Ok(Out::Home),
+                BrowserOut::Pick(entry) => {
+                    sounds.push((SoundKind::Click, None));
+                    let scenario = match &self.entries[entry].path {
+                        Some(path) => Scenario::load(path)
+                            .with_context(|| format!("loading {}", path.display()))?,
+                        None => Scenario::skirmish(),
+                    };
+                    draft.set_scenario(scenario, self.entries[entry].path.clone());
+                    self.goto(Step::Setup, draft);
+                }
+                BrowserOut::Stay => {}
+            },
             Step::Setup => {
-                if let Some(out) = self.update_setup(events, mouse, draft, sounds) {
+                if let Some(out) = self.update_setup(&events, mouse, draft, sounds) {
                     return Ok(out);
                 }
             }
@@ -845,176 +871,141 @@ impl Wizard {
         };
         let order = seat_display_order(scenario);
         let start_index = order.len();
-        let previous_page_index = start_index + 1;
-        let next_page_index = start_index + 2;
-        let back_index = start_index + 3;
-        let back = crate::button::corner_slot(0, crate::render::ui_scale());
         let view = crate::render::viewport();
         let ui = crate::render::ui_scale();
         self.setup_page = self.setup_sel.min(start_index) / COMPACT_PAGE_ITEMS;
         let layout = setup_layout_page(scenario, draft.seat_choice, view, ui, self.setup_page);
         self.setup_page = layout.page;
-        let cell_live = |row: usize, cell: usize| -> bool {
+        let cell_live = |row: usize, cell: Cell| -> bool {
             row < start_index
                 && match cell {
-                    0 | 3 | 4 => true,
-                    1 => order[row] != draft.seat_choice,
-                    2 => order[row] != draft.seat_choice && !draft.seats[order[row]].remote,
-                    _ => false,
+                    Cell::Seat | Cell::Faction | Cell::Team => true,
+                    Cell::Difficulty => order[row] != draft.seat_choice,
+                    Cell::Stance => {
+                        order[row] != draft.seat_choice && !draft.seats[order[row]].remote
+                    }
                 }
         };
-        let zone_at = |p: Vec2, touch: bool| -> Option<(usize, usize)> {
-            if back.contains(p) {
-                return Some((back_index, 0));
-            }
-            for row in 0..layout.cells.len() {
-                for cell in (0..5).filter(|cell| cell_live(row, *cell)) {
+        let zone_at = |p: Vec2, touch: bool| -> Option<SetupZone> {
+            for (row, card) in layout.cards.iter().enumerate() {
+                let Some(card) = card else {
+                    continue;
+                };
+                for cell in Cell::ALL.into_iter().filter(|cell| cell_live(row, *cell)) {
                     let rect = if touch {
-                        setup_touch_cell_rect(&layout, row, cell)
+                        card.touch_cell(cell)
                     } else {
-                        setup_cell_rect(&layout, row, cell)
+                        card.cell(cell)
                     };
                     if rect.is_some_and(|rect| rect.contains(p)) {
-                        return Some((row, cell));
+                        return Some(SetupZone::Card { row, cell });
                     }
                 }
             }
-            if layout.start.w > 0.0 && layout.start.contains(p) {
-                return Some((start_index, 0));
+            if layout.start.is_some_and(|rect| rect.contains(p)) {
+                return Some(SetupZone::Start);
             }
             if layout.page_prev.is_some_and(|rect| rect.contains(p)) {
-                return Some((previous_page_index, 0));
+                return Some(SetupZone::PrevPage);
             }
             layout
                 .page_next
                 .is_some_and(|rect| rect.contains(p))
-                .then_some((next_page_index, 0))
+                .then_some(SetupZone::NextPage)
         };
-        let mut activate: Option<(usize, usize)> = None;
+        let mut activate: Option<SetupZone> = None;
         for event in events {
+            if let Fed::Activated(zone) = self.setup_press.feed(event, zone_at) {
+                if let Some(p) = crate::press::position(event) {
+                    *mouse = p;
+                }
+                match zone {
+                    SetupZone::Card { row, cell } => {
+                        self.setup_sel = row;
+                        if cell_live(row, cell) {
+                            self.setup_cell = cell;
+                        }
+                    }
+                    SetupZone::Start => self.setup_sel = start_index,
+                    SetupZone::PrevPage | SetupZone::NextPage => {}
+                }
+                activate = Some(zone);
+                break;
+            }
             match *event {
                 RawEvent::KeyDown { key: Key::Escape } => {
                     self.goto(Step::Map, draft);
                     return None;
                 }
-                RawEvent::KeyDown { key: Key::Up } => {
-                    self.setup_sel = self.setup_sel.checked_sub(1).unwrap_or(start_index);
-                    self.setup_page = self.setup_sel / COMPACT_PAGE_ITEMS;
-                }
-                RawEvent::KeyDown { key: Key::Down } => {
-                    self.setup_sel = (self.setup_sel + 1) % (start_index + 1);
-                    self.setup_page = self.setup_sel / COMPACT_PAGE_ITEMS;
-                }
-                RawEvent::KeyDown { key: Key::Left } => {
-                    let mut c = self.setup_cell;
-                    while c > 0 {
-                        c -= 1;
-                        if cell_live(self.setup_sel, c) {
-                            break;
-                        }
-                    }
-                    self.setup_cell = c;
-                }
-                RawEvent::KeyDown { key: Key::Right } => {
-                    let mut c = self.setup_cell + 1;
-                    while c <= 4 && !cell_live(self.setup_sel, c) {
-                        c += 1;
-                    }
-                    if c <= 4 && cell_live(self.setup_sel, c) {
-                        self.setup_cell = c;
-                    }
-                }
-                RawEvent::KeyDown { key: Key::Home } => {
-                    self.setup_sel = 0;
-                    self.setup_page = 0;
-                }
-                RawEvent::KeyDown { key: Key::End } => {
-                    self.setup_sel = start_index;
-                    self.setup_page = start_index / COMPACT_PAGE_ITEMS;
-                }
                 RawEvent::KeyDown { key: Key::Enter } => {
-                    // The sticky column falls back to the seat zone on
-                    // rows where its cell is dead.
-                    let cell = if cell_live(self.setup_sel, self.setup_cell) {
-                        self.setup_cell
+                    activate = Some(if self.setup_sel >= start_index {
+                        SetupZone::Start
                     } else {
-                        0
-                    };
-                    activate = Some((self.setup_sel, cell));
+                        // The sticky column falls back to the seat zone
+                        // on rows where its cell is dead.
+                        let cell = if cell_live(self.setup_sel, self.setup_cell) {
+                            self.setup_cell
+                        } else {
+                            Cell::Seat
+                        };
+                        SetupZone::Card {
+                            row: self.setup_sel,
+                            cell,
+                        }
+                    });
                     break;
                 }
+                RawEvent::KeyDown { .. } => {
+                    let Some(nav) = Nav::decode(event) else {
+                        continue;
+                    };
+                    let rows = start_index + 1;
+                    if let Some(row) = step_line(
+                        rows,
+                        self.setup_sel,
+                        nav,
+                        Axis::Vertical,
+                        COMPACT_PAGE_ITEMS,
+                        |_| true,
+                    ) {
+                        self.setup_sel = row;
+                        self.setup_page = row / COMPACT_PAGE_ITEMS;
+                    } else if let Some(cell) = step_line(
+                        Cell::ALL.len(),
+                        self.setup_cell.index(),
+                        nav,
+                        Axis::Horizontal,
+                        1,
+                        |cell| cell_live(self.setup_sel, Cell::ALL[cell]),
+                    ) {
+                        self.setup_cell = Cell::ALL[cell];
+                    }
+                }
                 RawEvent::MouseMove { x, y } => *mouse = vec2(x, y),
-                RawEvent::MouseDown {
-                    button: MouseButton::Left,
-                    x,
-                    y,
-                } => {
-                    self.setup_press.mouse_down(zone_at(vec2(x, y), false));
-                }
-                RawEvent::MouseUp {
-                    button: MouseButton::Left,
-                    x,
-                    y,
-                } => {
-                    let released = zone_at(vec2(x, y), false);
-                    if let Some(a) = self.setup_press.mouse_up(released) {
-                        if a.0 <= start_index {
-                            self.setup_sel = a.0;
-                            if cell_live(a.0, a.1) {
-                                self.setup_cell = a.1;
-                            }
-                        }
-                        activate = Some(a);
-                        break;
-                    }
-                }
-                RawEvent::TouchDown { id, x, y } if self.setup_press.touch_free() => {
+                RawEvent::TouchDown { id, x, y } | RawEvent::TouchMove { id, x, y }
+                    if self.setup_press.owns(id) =>
+                {
                     *mouse = vec2(x, y);
-                    self.setup_press.touch_down(id, zone_at(*mouse, true));
-                }
-                RawEvent::TouchMove { id, x, y } if self.setup_press.owns(id) => {
-                    *mouse = vec2(x, y);
-                }
-                RawEvent::TouchUp { id, x, y } if self.setup_press.owns(id) => {
-                    *mouse = vec2(x, y);
-                    let released = zone_at(*mouse, true);
-                    if let Some(armed) = self.setup_press.touch_up(released) {
-                        let (row, cell) = armed;
-                        if row <= start_index {
-                            self.setup_sel = row;
-                            if cell_live(row, cell) {
-                                self.setup_cell = cell;
-                            }
-                        }
-                        activate = Some(armed);
-                        break;
-                    }
                 }
                 _ => {}
             }
         }
-        if let Some((row, cell)) = activate {
-            self.setup_press.cancel();
-            if row == back_index {
-                sounds.push((SoundKind::Click, None));
-                self.goto(Step::Map, draft);
-                return None;
-            }
-            if row == previous_page_index {
+        let zone = activate?;
+        self.setup_press.cancel();
+        match zone {
+            SetupZone::PrevPage => {
                 self.setup_page = self.setup_page.saturating_sub(1);
                 self.setup_sel = self.setup_page * COMPACT_PAGE_ITEMS;
-                self.setup_cell = 0;
+                self.setup_cell = Cell::Seat;
                 sounds.push((SoundKind::Click, None));
-                return None;
             }
-            if row == next_page_index {
+            SetupZone::NextPage => {
                 self.setup_page = (self.setup_page + 1).min(layout.page_count - 1);
                 self.setup_sel = (self.setup_page * COMPACT_PAGE_ITEMS).min(start_index);
-                self.setup_cell = 0;
+                self.setup_cell = Cell::Seat;
                 sounds.push((SoundKind::Click, None));
-                return None;
             }
-            if row == start_index {
+            SetupZone::Start => {
                 // Refuse an all-one-team draft here so the reason shows
                 // inline instead of a failed-launch notice.
                 if draft_one_team(draft) {
@@ -1024,27 +1015,23 @@ impl Wizard {
                 sounds.push((SoundKind::Click, None));
                 return Some(Out::Launch);
             }
-            sounds.push((SoundKind::Click, None));
-            let seat = order[row];
-            match cell {
-                // Seat choice never permutes seats or their other
-                // choices; it moves the human's chair.
-                0 => draft.seat_choice = seat,
-                1 => cycle_controller(&mut draft.seats[seat]),
-                2 => {
-                    let plan = &mut draft.seats[seat];
-                    plan.stance = cycle_stance(plan.stance, 1);
-                }
-                3 => {
-                    let plan = &mut draft.seats[seat];
-                    plan.faction_choice = (plan.faction_choice + 1) % FACTION_CHIP_ITEMS.len();
-                }
-                _ => {
+            SetupZone::Card { row, cell } => {
+                sounds.push((SoundKind::Click, None));
+                let seat = order[row];
+                let plan = &mut draft.seats[seat];
+                match cell {
+                    // Seat choice never permutes seats or their other
+                    // choices; it moves the human's chair.
+                    Cell::Seat => draft.seat_choice = seat,
+                    Cell::Difficulty => cycle_controller(plan),
+                    Cell::Stance => plan.stance = cycle_stance(plan.stance, 1),
+                    Cell::Faction => {
+                        plan.faction_choice = (plan.faction_choice + 1) % FACTION_CHIP_ITEMS.len();
+                    }
                     // FFA, then every team up to the seat count
                     // (start_index is the full roster's length),
                     // wrapping back to FFA.
-                    let plan = &mut draft.seats[seat];
-                    plan.team_choice = (plan.team_choice + 1) % (start_index + 1);
+                    Cell::Team => plan.team_choice = (plan.team_choice + 1) % (start_index + 1),
                 }
             }
         }
@@ -1069,9 +1056,9 @@ impl Wizard {
         let title = "MATCH SETUP";
         let compact = layout.page_count > 1;
         let tsize = if compact {
-            (56.0 * ui).min(42.0)
+            Type::Title.at(ui).min(42.0)
         } else {
-            56.0 * ui
+            Type::Title.at(ui)
         };
         let tdims = measure_text(title, None, numeric::font_size(tsize), 1.0);
         draw_text(
@@ -1090,31 +1077,38 @@ impl Wizard {
             } else {
                 scenario.name.clone()
             };
-            let sdims = measure_text(&sub, None, numeric::font_size(18.0 * ui), 1.0);
+            let sdims = measure_text(&sub, None, numeric::font_size(Type::Label.at(ui)), 1.0);
             draw_text(
                 &sub,
                 (view.x - sdims.width) * 0.5,
                 92.0 * ui,
-                18.0 * ui,
+                Type::Label.at(ui),
                 TEXT_SECONDARY,
             );
         }
 
         for (label, rect) in &layout.headings {
-            draw_text(label, rect.x, rect.y + rect.h * 0.7, 17.0 * ui, TEXT_TITLE);
-            let dims = measure_text(label, None, numeric::font_size(17.0 * ui), 1.0);
+            draw_text(
+                label,
+                rect.x,
+                rect.y + rect.h * 0.7,
+                Type::Body.at(ui),
+                TEXT_TITLE,
+            );
+            let dims = measure_text(label, None, numeric::font_size(Type::Body.at(ui)), 1.0);
             draw_rectangle(
                 rect.x + dims.width + 12.0 * ui,
                 rect.y + rect.h * 0.55,
                 rect.w - dims.width - 12.0 * ui,
-                1.0,
-                Color::new(0.6, 0.6, 0.65, 0.25),
+                Stroke::Hairline.at(ui),
+                BORDER_FAINT,
             );
         }
-        for (pos, rect) in layout.seats.iter().enumerate() {
-            if rect.w <= 0.0 {
+        for (pos, card) in layout.cards.iter().enumerate() {
+            let Some(card) = card else {
                 continue;
-            }
+            };
+            let rect = &card.card;
             let seat = order[pos];
             let display = effective_name(scenario, draft, seat);
             let selected = self.setup_sel == pos;
@@ -1126,12 +1120,13 @@ impl Wizard {
                 rect.y,
                 rect.w,
                 rect.h,
-                if selected { 2.5 } else { 1.0 },
                 if selected {
-                    TEXT_TITLE
+                    Stroke::Focus
                 } else {
-                    Color::new(0.6, 0.6, 0.65, 0.3)
-                },
+                    Stroke::Hairline
+                }
+                .at(ui),
+                if selected { TEXT_TITLE } else { BORDER_FAINT },
             );
             let accent = crate::render::faction_accent(effective_faction(scenario, draft, seat));
             let cy = rect.y + rect.h * 0.5;
@@ -1144,26 +1139,25 @@ impl Wizard {
             }
             draw_circle(chip_x, cy, disc, accent);
             let num = format!("{}", seat + 1);
-            let num_font = (14.0 * ui).min(rect.h * 0.55);
+            let num_font = Type::Small.at(ui).min(rect.h * 0.55);
             let ndims = measure_text(&num, None, numeric::font_size(num_font), 1.0);
             draw_text(
                 &num,
                 chip_x - ndims.width * 0.5,
                 cy + num_font * 0.35,
                 num_font,
-                Color::from_rgba(20, 20, 24, 255),
+                SURFACE_PLATE,
             );
-            let mut name_font = (16.0 * ui).min(rect.h * 0.62);
-            let text_right = if layout.bot_controls[pos][0].w > 0.0 {
-                layout.bot_controls[pos][0].x
-            } else {
-                layout.cells[pos][0].x + layout.cells[pos][0].w
-            };
+            let text_right = card
+                .difficulty
+                .map_or(card.seat.x + card.seat.w, |difficulty| difficulty.x);
             let name_room = (text_right - rect.x - 48.0 * ui).max(20.0);
-            let nw = measure_text(&display, None, numeric::font_size(name_font), 1.0).width;
-            if nw > name_room {
-                name_font = (name_font * name_room / nw).max(8.0);
-            }
+            let name_font = crate::typography::fit(
+                &display,
+                Type::Body.at(ui).min(rect.h * 0.62),
+                name_room,
+                8.0,
+            );
             draw_text(
                 &display,
                 rect.x + 44.0 * ui,
@@ -1173,9 +1167,9 @@ impl Wizard {
             );
             if is_you {
                 let tag = "your seat";
-                let tag_font = (14.0 * ui).min(rect.h * 0.55);
+                let tag_font = Type::Small.at(ui).min(rect.h * 0.55);
                 let tdims = measure_text(tag, None, numeric::font_size(tag_font), 1.0);
-                let fac = layout.cells[pos][1];
+                let fac = card.faction;
                 draw_text(
                     tag,
                     fac.x - tdims.width - 14.0 * ui,
@@ -1189,34 +1183,30 @@ impl Wizard {
             } else {
                 [difficulty_name(plan.difficulty), stance_name(plan.stance)]
             };
-            for (index, (control, label)) in
-                layout.bot_controls[pos].iter().zip(bot_labels).enumerate()
-            {
-                if control.w <= 0.0 || label.is_empty() {
+            for (cell, control, label) in [
+                (Cell::Difficulty, card.difficulty, bot_labels[0]),
+                (Cell::Stance, card.stance, bot_labels[1]),
+            ] {
+                let Some(control) = control.filter(|_| !label.is_empty()) else {
                     continue;
-                }
-                let on_cell = selected && self.setup_cell == index + 1;
-                draw_rectangle(
-                    control.x,
-                    control.y,
-                    control.w,
-                    control.h,
-                    Color::from_rgba(27, 37, 39, 255),
-                );
+                };
+                let on_cell = selected && self.setup_cell == cell;
+                draw_rectangle(control.x, control.y, control.w, control.h, CARD_IDLE);
                 draw_rectangle_lines(
                     control.x,
                     control.y,
                     control.w,
                     control.h,
-                    if on_cell { 2.0 } else { 1.0 },
+                    if on_cell {
+                        Stroke::Focus
+                    } else {
+                        Stroke::Hairline
+                    }
+                    .at(ui),
                     if on_cell { TEXT_TITLE } else { accent },
                 );
-                let mut font = 13.0 * ui;
-                let mut dims = measure_text(label, None, numeric::font_size(font), 1.0);
-                if dims.width > control.w - 6.0 {
-                    font = (font * (control.w - 6.0) / dims.width).max(8.0);
-                    dims = measure_text(label, None, numeric::font_size(font), 1.0);
-                }
+                let font = crate::typography::fit(label, Type::Small.at(ui), control.w - 6.0, 8.0);
+                let dims = measure_text(label, None, numeric::font_size(font), 1.0);
                 draw_text(
                     label,
                     control.x + (control.w - dims.width) * 0.5,
@@ -1227,40 +1217,33 @@ impl Wizard {
             }
             // Boxed editable chips; the cursor's cell wears the accent.
             let team_label = team_chip_label(plan.team_choice);
-            let labels = [FACTION_CHIP_ITEMS[plan.faction_choice], team_label.as_str()];
-            for (ci, label) in labels.iter().enumerate() {
-                let chip = layout.cells[pos][ci + 1];
-                if chip.w <= 0.0 {
-                    continue;
-                }
-                let on_cell = selected && self.setup_cell == ci + 3;
-                draw_rectangle(
-                    chip.x,
-                    chip.y,
-                    chip.w,
-                    chip.h,
-                    Color::from_rgba(32, 32, 38, 255),
-                );
+            for (cell, chip, label) in [
+                (
+                    Cell::Faction,
+                    card.faction,
+                    FACTION_CHIP_ITEMS[plan.faction_choice],
+                ),
+                (Cell::Team, card.team, team_label.as_str()),
+            ] {
+                let on_cell = selected && self.setup_cell == cell;
+                draw_rectangle(chip.x, chip.y, chip.w, chip.h, CHIP);
                 draw_rectangle_lines(
                     chip.x,
                     chip.y,
                     chip.w,
                     chip.h,
-                    if on_cell { 2.0 } else { 1.0 },
                     if on_cell {
-                        TEXT_TITLE
+                        Stroke::Focus
                     } else {
-                        Color::new(0.6, 0.6, 0.65, 0.35)
-                    },
+                        Stroke::Hairline
+                    }
+                    .at(ui),
+                    if on_cell { TEXT_TITLE } else { BORDER_STRONG },
                 );
                 // The label fits its chip: squeezed cards shrink the type
                 // instead of spilling text across neighbors.
-                let mut font = 13.0 * ui;
-                let mut ldims = measure_text(label, None, numeric::font_size(font), 1.0);
-                if ldims.width > chip.w - 6.0 {
-                    font = (font * (chip.w - 6.0) / ldims.width).max(8.0);
-                    ldims = measure_text(label, None, numeric::font_size(font), 1.0);
-                }
+                let font = crate::typography::fit(label, Type::Small.at(ui), chip.w - 6.0, 8.0);
+                let ldims = measure_text(label, None, numeric::font_size(font), 1.0);
                 draw_text(
                     label,
                     chip.x + (chip.w - ldims.width) * 0.5,
@@ -1275,8 +1258,8 @@ impl Wizard {
             }
             // The seat-zone cell cursor: a soft inner line under
             // the name, so "Enter takes this chair" reads.
-            if selected && self.setup_cell == 0 && !is_you {
-                let zone = layout.cells[pos][0];
+            if selected && self.setup_cell == Cell::Seat && !is_you {
+                let zone = card.seat;
                 draw_rectangle(
                     zone.x + 44.0 * ui,
                     cy + name_font * 0.55,
@@ -1288,23 +1271,22 @@ impl Wizard {
         }
         // Start button, disabled for an all-one-team draft.
         let one_team = draft_one_team(draft);
-        let start_selected = self.setup_sel == layout.seats.len();
-        if layout.start.w > 0.0 {
-            draw_rectangle(
-                layout.start.x,
-                layout.start.y,
-                layout.start.w,
-                layout.start.h,
-                SURFACE_MENU,
-            );
+        let start_selected = self.setup_sel == layout.cards.len();
+        if let Some(start) = layout.start {
+            draw_rectangle(start.x, start.y, start.w, start.h, SURFACE_MENU);
             draw_rectangle_lines(
-                layout.start.x,
-                layout.start.y,
-                layout.start.w,
-                layout.start.h,
-                if start_selected { 3.0 } else { 1.5 },
+                start.x,
+                start.y,
+                start.w,
+                start.h,
+                if start_selected {
+                    Stroke::Heavy
+                } else {
+                    Stroke::Edge
+                }
+                .at(ui),
                 if one_team {
-                    Color::new(0.6, 0.6, 0.65, 0.4)
+                    BORDER_STRONG
                 } else if start_selected {
                     TEXT_TITLE
                 } else {
@@ -1312,12 +1294,12 @@ impl Wizard {
                 },
             );
             let label = start_label(draft);
-            let ldims = measure_text(label, None, numeric::font_size(20.0 * ui), 1.0);
+            let ldims = measure_text(label, None, numeric::font_size(Type::Heading.at(ui)), 1.0);
             draw_text(
                 label,
-                layout.start.x + (layout.start.w - ldims.width) * 0.5,
-                layout.start.y + layout.start.h * 0.66,
-                20.0 * ui,
+                start.x + (start.w - ldims.width) * 0.5,
+                start.y + start.h * 0.66,
+                Type::Heading.at(ui),
                 if !one_team && start_selected {
                     TEXT_PRIMARY
                 } else {
@@ -1340,13 +1322,16 @@ impl Wizard {
                 continue;
             };
             draw_rectangle(rect.x, rect.y, rect.w, rect.h, SURFACE_MENU);
-            draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.5, TEXT_SECONDARY);
-            let mut size = 16.0 * ui;
-            let mut dims = measure_text(&label, None, numeric::font_size(size), 1.0);
-            if dims.width > rect.w - 8.0 {
-                size = (size * (rect.w - 8.0) / dims.width).max(8.0);
-                dims = measure_text(&label, None, numeric::font_size(size), 1.0);
-            }
+            draw_rectangle_lines(
+                rect.x,
+                rect.y,
+                rect.w,
+                rect.h,
+                Stroke::Edge.at(ui),
+                TEXT_SECONDARY,
+            );
+            let size = crate::typography::fit(&label, Type::Body.at(ui), rect.w - 8.0, 8.0);
+            let dims = measure_text(&label, None, numeric::font_size(size), 1.0);
             draw_text(
                 &label,
                 rect.x + (rect.w - dims.width) * 0.5,
@@ -1399,12 +1384,12 @@ impl Wizard {
                 crate::platform::TOUCH_ONLY,
             );
             let hint = crate::menu::binding_hint(hint);
-            let hdims = measure_text(&hint, None, numeric::font_size(16.0 * ui), 1.0);
+            let hdims = measure_text(&hint, None, numeric::font_size(Type::Body.at(ui)), 1.0);
             draw_text(
                 &hint,
                 (view.x - hdims.width) * 0.5,
                 view.y - 20.0 * ui,
-                16.0 * ui,
+                Type::Body.at(ui),
                 // The one-team warning is information, not coaching.
                 if one_team {
                     TEXT_DANGER

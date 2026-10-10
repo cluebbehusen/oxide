@@ -30,14 +30,17 @@ pub(super) fn measure_info(
     width: f32,
     scale: f32,
     compact: bool,
-    measure: impl Fn(&str, f32) -> f32,
+    measure: super::hud::Measure<'_>,
 ) -> InfoLayout {
-    let font = if compact { 14.0 } else { 15.0 } * scale;
+    use super::hud::Face;
+    use crate::theme::Type;
+    let measure_body = |text: &str, size: f32| measure(Face::Body, text, size);
+    let font = if compact { Type::Small } else { Type::Body }.at(scale);
     let line_h = if compact { 18.0 } else { 22.0 } * scale;
     let inner = width - 24.0 * scale;
     let title = wrap_words(
         &panel.title,
-        |s| measure(s, 15.0 * scale),
+        |s| measure(Face::Display, s, Type::Body.at(scale)),
         width - 64.0 * scale,
     );
     let mut y = (44.0 * scale).max(14.0 * scale + title.len() as f32 * 17.0 * scale);
@@ -45,7 +48,7 @@ pub(super) fn measure_info(
         .info
         .status
         .iter()
-        .flat_map(|text| wrap_words(text, |s| measure(s, font), inner))
+        .flat_map(|text| wrap_words(text, |s| measure_body(s, font), inner))
         .collect();
     y += status.len() as f32 * line_h;
     let health_y = y;
@@ -58,7 +61,9 @@ pub(super) fn measure_info(
             y += 4.0 * scale;
         }
         let text_width = inner - 20.0 * scale;
-        if measure(&row.label, font) + measure(&row.value, font) + 10.0 * scale <= text_width {
+        if measure_body(&row.label, font) + measure_body(&row.value, font) + 10.0 * scale
+            <= text_width
+        {
             lines.push(InfoLine {
                 label: row.label.clone(),
                 value: row.value.clone(),
@@ -68,7 +73,7 @@ pub(super) fn measure_info(
             });
             y += line_h;
         } else {
-            for (index, label) in wrap_words(&row.label, |s| measure(s, font), text_width)
+            for (index, label) in wrap_words(&row.label, |s| measure_body(s, font), text_width)
                 .into_iter()
                 .enumerate()
             {
@@ -81,7 +86,7 @@ pub(super) fn measure_info(
                 });
                 y += line_h;
             }
-            for value in wrap_words(&row.value, |s| measure(s, font), text_width) {
+            for value in wrap_words(&row.value, |s| measure_body(s, font), text_width) {
                 lines.push(InfoLine {
                     label: String::new(),
                     value,

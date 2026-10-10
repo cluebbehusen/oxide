@@ -1,4 +1,5 @@
 use super::*;
+use oxide_protocol::MouseButton;
 
 #[test]
 fn the_map_hint_speaks_touch_on_touch_only_builds() {
@@ -50,6 +51,50 @@ fn arrows_walk_the_grid_by_row_and_column() {
 }
 
 #[test]
+fn the_grid_wraps_at_its_edges() {
+    let entries = shelf();
+    let mut b = Browser::new();
+    press(&mut b, &entries, Key::Left);
+    assert_eq!(b.selected, 10, "left from the first card wraps to the last");
+    press(&mut b, &entries, Key::Right);
+    assert_eq!(b.selected, 0, "right from the last card wraps to the first");
+    press(&mut b, &entries, Key::Right);
+    press(&mut b, &entries, Key::Up);
+    assert_eq!(
+        b.selected, 10,
+        "up from the top row wraps to the bottom row"
+    );
+    press(&mut b, &entries, Key::Down);
+    assert_eq!(b.selected, 1, "down from the bottom row wraps to the top");
+    press(&mut b, &entries, Key::Right);
+    press(&mut b, &entries, Key::Right);
+    press(&mut b, &entries, Key::Right);
+    assert_eq!(
+        b.selected, 4,
+        "right from a row's end takes the next row's first"
+    );
+}
+
+#[test]
+fn paging_moves_whole_rows_and_stops_at_the_ends() {
+    let entries = shelf();
+    let mut b = Browser::new();
+    press(&mut b, &entries, Key::PageDown);
+    assert!(b.selected > 0);
+    for _ in 0..4 {
+        press(&mut b, &entries, Key::PageDown);
+    }
+    assert!(b.selected >= 9, "paging settles on the bottom row");
+    let bottom = b.selected;
+    press(&mut b, &entries, Key::PageDown);
+    assert_eq!(b.selected, bottom, "and stops there");
+    for _ in 0..5 {
+        press(&mut b, &entries, Key::PageUp);
+    }
+    assert_eq!(b.selected, 0, "paging back stops on the top row");
+}
+
+#[test]
 fn wheel_scroll_moves_the_window_and_only_the_window() {
     let entries = shelf();
     let mut b = Browser::new();
@@ -70,7 +115,11 @@ fn wheel_scroll_moves_the_window_and_only_the_window() {
     // only the second Enter commits — it never fires blind.
     let view = crate::render::viewport();
     let ui = crate::render::ui_scale();
-    let (_, _, _, _, _, shelf_top, shelf_bottom) = metrics(view, ui);
+    let GridMetrics {
+        top: shelf_top,
+        bottom: shelf_bottom,
+        ..
+    } = metrics(view, ui);
     assert!(
         !b.layout(&entries, view, ui)
             .cards
@@ -120,7 +169,7 @@ fn the_wheel_stops_at_the_last_full_screenful() {
     }
     let end = b.layout(&entries, view, ui);
     assert!(!end.more_below, "the shelf's tail is on screen");
-    let (_, _, _, _, _, _, shelf_bottom) = metrics(view, ui);
+    let shelf_bottom = metrics(view, ui).bottom;
     let tail_bottom = end
         .cards
         .iter()
@@ -338,4 +387,17 @@ fn the_remembered_pick_is_found_by_path() {
     assert_eq!(b.selected, 7);
     b.select_path(&entries, Some(std::path::Path::new("gone.json")));
     assert_eq!(b.selected, 7, "a vanished file keeps the old ground");
+}
+
+#[test]
+fn enter_commits_a_card_scrolled_flush_with_the_shelf_bottom() {
+    crate::render::set_viewport(640.0, 400.0);
+    let entries: Vec<ScenarioEntry> = (0..33).map(|i| entry(&format!("m{i}"), 2)).collect();
+    let mut b = Browser::new();
+    press(&mut b, &entries, Key::End);
+    let out = (0..2)
+        .map(|_| press(&mut b, &entries, Key::Enter))
+        .find(|out| *out != Out::Stay);
+    crate::render::set_viewport(1280.0, 800.0);
+    assert_eq!(out, Some(Out::Pick(32)));
 }

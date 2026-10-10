@@ -11,12 +11,25 @@ fn drive(screen: &mut CodexScreen, key: Key) -> Out {
     )
 }
 
+/// Every row's page, in list order.
+fn pages(screen: &CodexScreen) -> Vec<Entry> {
+    screen
+        .menu
+        .lines()
+        .iter()
+        .filter_map(|line| match line {
+            crate::menu::Line::Row(_, entry) => Some(*entry),
+            crate::menu::Line::Header(_) => None,
+        })
+        .collect()
+}
+
 #[test]
 fn every_kind_has_exactly_one_page() {
     let screen = CodexScreen::open();
     let mut units = 0;
     let mut buildings = 0;
-    for entry in screen.entries.iter().flatten() {
+    for entry in pages(&screen) {
         match entry {
             Entry::Unit(_) => units += 1,
             Entry::Building(_) => buildings += 1,
@@ -26,7 +39,7 @@ fn every_kind_has_exactly_one_page() {
     assert_eq!(buildings, oxide_sim::stats::BuildingKind::ALL.len());
     // No machine is listed under two factories.
     let mut seen = std::collections::BTreeSet::new();
-    for entry in screen.entries.iter().flatten() {
+    for entry in pages(&screen) {
         assert!(seen.insert(format!("{entry:?}")), "{entry:?} listed twice");
     }
 }
@@ -51,8 +64,8 @@ fn opens_on_a_page_and_escape_leaves() {
 #[test]
 fn the_back_button_leaves_and_no_row_does() {
     let mut screen = CodexScreen::open();
-    assert!(!screen.menu.items.iter().any(|item| item == "Back"));
-    let last = screen.menu.items.len() - 1;
+    assert!(!screen.menu.view().items.iter().any(|item| item == "Back"));
+    let last = screen.menu.view().items.len() - 1;
     screen.menu.select(last);
     assert!(screen.selected_entry().is_some(), "the last row is a page");
     assert_eq!(drive(&mut screen, Key::Enter), Out::Stay);

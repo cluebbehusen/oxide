@@ -91,7 +91,11 @@ pub(super) fn layout(
     let fps = view
         .fps
         .map_or_else(|| "-- FPS".to_string(), |fps| format!("{fps:.0} FPS"));
-    let width = measure(super::hud::Face::Display, &fps, 14.0 * env.ui);
+    let width = measure(
+        super::hud::Face::Display,
+        &fps,
+        crate::theme::Type::Small.at(env.ui),
+    );
     Some(PerformanceLayout {
         geometry: geometry(env.viewport, env.ui, view.mode, width, status_space),
         fps,
@@ -100,14 +104,14 @@ pub(super) fn layout(
 
 pub(super) fn draw(view: &PerformanceView, performance: &PerformanceLayout) {
     let s = super::ui_scale();
-    let size = 14.0 * s;
+    let size = crate::theme::Type::Small.at(s);
     let PerformanceLayout {
         geometry: layout,
         fps,
     } = performance;
     let panel = layout.panel;
     if panel.w > 0.0 {
-        fill_rect(panel, Color::from_rgba(15, 15, 19, 230));
+        fill_rect(panel, crate::theme::SURFACE_CAPTION);
     }
     typography::draw(fps, layout.fps.x, layout.fps.y, size, theme::TEXT_SECONDARY);
     if view.mode != PerformanceDisplay::Detailed {
@@ -165,7 +169,7 @@ pub(super) fn draw(view: &PerformanceView, performance: &PerformanceLayout) {
         "5s  |  16.7 / 33.3  |  0-50 ms",
         x,
         graph.y + graph.h + 14.0 * s,
-        11.0 * s,
+        crate::theme::Type::Caption.at(s),
         theme::TEXT_SECONDARY,
     );
 }
