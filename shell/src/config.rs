@@ -200,8 +200,8 @@ pub struct Config {
     /// rings, muzzle flashes). Informational motion — unit movement,
     /// shell arcs — always stays.
     pub reduced_motion: bool,
-    /// Accessibility: colorblind-safe allegiance accents (indicator
-    /// colors only; sprite art is untouched).
+    /// Accessibility: colorblind-safe ownership colors (base sprite art
+    /// is untouched).
     pub colorblind: bool,
     /// Show the control-group column above the minimap. Hiding it
     /// leaves keyboard groups working.

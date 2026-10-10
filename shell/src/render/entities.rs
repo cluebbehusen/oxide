@@ -607,12 +607,11 @@ fn draw_defense_mount(
         Some(frame) => sprites.defense_mount_action_accent(building.kind, building.tier, frame),
         None => sprites.defense_mount_accent(building.kind, building.tier),
     };
-    if let (Some(accent), Some(source)) = (seat_identity_tint(game, building.player), accent_source)
-    {
+    if let Some(source) = accent_source {
         draw(
             screen.x,
             screen.y,
-            accent,
+            seat_identity_color(game, building.player),
             DrawTextureParams {
                 dest_size: Some(dest),
                 source: Some(source),
@@ -696,12 +695,11 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                     GHOST_TINT.a * 0.5 * fade,
                 )
             };
-            // The memory keeps its allegiance accent at the memory's
-            // own alpha: a translucent own-faction sprite is also how
-            // the player's own construction sites draw, and a memory
-            // must never masquerade as one of those.
-            let accent_tint =
-                seat_identity_tint(game, ghost.owner).map(|c| Color::new(c.r, c.g, c.b, tint.a));
+            // The memory keeps its owner's accent at the memory's own
+            // alpha, so it never masquerades as one of the player's own
+            // translucent construction sites.
+            let owner = seat_identity_color(game, ghost.owner);
+            let accent_tint = Color::new(owner.r, owner.g, owner.b, tint.a);
             let dest = vec2(w as f32 * zoom, h as f32 * zoom);
             let body = if ghost.built {
                 sprites.building(ghost.kind)
@@ -713,24 +711,19 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
             } else {
                 sprites.construction_accent(ghost.kind, 0, 0)
             };
-            let mut layers = vec![(body, tint)];
-            if let Some(accent) = accent_tint {
-                layers.push((body_accent, accent));
-            }
+            let mut layers = vec![(body, tint), (body_accent, accent_tint)];
             if ghost.built
                 && let Some(mount) = sprites.defense_mount(ghost.kind, 0)
             {
                 // Defense bases ship bare; memories retain a static,
                 // north-facing silhouette without inventing live aim.
                 layers.push((mount, tint));
-                if let Some(accent) = accent_tint {
-                    layers.push((
-                        sprites
-                            .defense_mount_accent(ghost.kind, 0)
-                            .expect("a defense mount has an accent"),
-                        accent,
-                    ));
-                }
+                layers.push((
+                    sprites
+                        .defense_mount_accent(ghost.kind, 0)
+                        .expect("a defense mount has an accent"),
+                    accent_tint,
+                ));
             }
             for (source, color) in layers {
                 draw(
@@ -799,19 +792,17 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                 ..Default::default()
             },
         );
-        let accent_tint = seat_identity_tint(game, building.player);
-        if let Some(accent) = accent_tint {
-            draw(
-                screen.x,
-                screen.y,
-                accent,
-                DrawTextureParams {
-                    dest_size: Some(dest),
-                    source: Some(accent_source),
-                    ..Default::default()
-                },
-            );
-        }
+        let accent_tint = seat_identity_color(game, building.player);
+        draw(
+            screen.x,
+            screen.y,
+            accent_tint,
+            DrawTextureParams {
+                dest_size: Some(dest),
+                source: Some(accent_source),
+                ..Default::default()
+            },
+        );
         if let Some(layers) = array_layers {
             let cycle = match animation.activity {
                 crate::presentation_animation::BuildingActivity::ArraySweep { cycle } => cycle,
@@ -822,9 +813,7 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
             let pivot = screen + local_pivot;
             let layer_origin = pivot - local_pivot;
             let (source, accent) = layers[1];
-            for (source, tint) in
-                std::iter::once((source, WHITE)).chain(accent_tint.map(|tint| (accent, tint)))
-            {
+            for (source, tint) in [(source, WHITE), (accent, accent_tint)] {
                 draw(
                     layer_origin.x,
                     layer_origin.y,
@@ -862,7 +851,7 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                 dest.x + 4.0,
                 dest.y + 4.0,
                 3.0,
-                BONE,
+                accent_tint,
             );
         }
         // A site's partial hp is what the construction ramp grants, so the
@@ -883,7 +872,14 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
             building.hp < max_hp
         };
         if wounded {
-            hp_bar(screen.x, screen.y - 8.0, dest.x, building.hp, max_hp);
+            hp_bar(
+                screen.x,
+                screen.y - 8.0,
+                dest.x,
+                building.hp,
+                max_hp,
+                accent_tint,
+            );
         }
         // Production progress, drawn under the works.
         if production_progress_visible(game, building)
@@ -1822,22 +1818,21 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                             ..Default::default()
                         },
                     );
-                    if let Some(mut tint) = seat_identity_tint(game, player) {
-                        tint.a *= fade;
-                        sprites.draw(
-                            body.x - size * 0.5,
-                            body.y - size * 0.5,
-                            tint,
-                            DrawTextureParams {
-                                dest_size: Some(body_size),
-                                source: Some(
-                                    sprites.unit_action_accent(oxide_sim::UnitKind::Sapper, 2),
-                                ),
-                                rotation,
-                                ..Default::default()
-                            },
-                        );
-                    }
+                    let mut tint = seat_identity_color(game, player);
+                    tint.a *= fade;
+                    sprites.draw(
+                        body.x - size * 0.5,
+                        body.y - size * 0.5,
+                        tint,
+                        DrawTextureParams {
+                            dest_size: Some(body_size),
+                            source: Some(
+                                sprites.unit_action_accent(oxide_sim::UnitKind::Sapper, 2),
+                            ),
+                            rotation,
+                            ..Default::default()
+                        },
+                    );
                 }
                 if visibility.bloom {
                     draw_splash_bloom(
@@ -2775,11 +2770,11 @@ pub(crate) fn draw_pings(game: &crate::game::Scene<'_>) {
             game.presentation.camera.zoom * (0.65 * (1.0 - progress) + 0.12)
         };
         let base = match kind {
-            crate::game::PingKind::Move => color_u8!(120, 200, 130, 255),
+            crate::game::PingKind::Move => BONE,
             crate::game::PingKind::Attack => DANGER,
             crate::game::PingKind::Harvest => SCRAP_COLOR,
             crate::game::PingKind::Rally => BONE,
-            crate::game::PingKind::Spawn => color_u8!(150, 210, 235, 255),
+            crate::game::PingKind::Spawn => crate::render::self_color(),
         };
         let color = Color::new(base.r, base.g, base.b, 1.0 - progress * 0.7);
         stroke_circle(center, radius, 2.5, color);
@@ -2906,7 +2901,10 @@ fn draw_selection_rect(game: &crate::game::Scene<'_>, corner: Vec2, other: Vec2,
                 screen,
                 unit.kind.stats().radius.to_num::<f32>() * game.presentation.camera.zoom + 3.0,
                 1.5,
-                BONE_FAINT,
+                Color {
+                    a: 0.5,
+                    ..crate::render::self_color()
+                },
             );
         }
     }

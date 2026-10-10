@@ -21,9 +21,12 @@ bot execution stay with the live session. Rendering and read-only UI queries
 receive a borrowed `Scene`: the active world, scenario, pending commands,
 presentation, and clock. Neither `Presentation` nor `Scene` owns or advances a
 simulation. Each view prepares a small stack-resident seat-style table from the
-current viewer, teams, and colorblind setting. World, minimap, and result
-rendering share those lookups; no per-entity player scan or mutable identity
-cache is needed. The table supports the scenario seat limit.
+current viewer, teams, and colorblind setting. Color means ownership only: the
+viewer's own seats wear a fixed self color, allies a cool family, and hostiles a
+warm family, each ranked by seat order. Sprite accent masks, selection rings,
+health bars, panel art, and minimap marks all wear the owner's color. World,
+minimap, and result rendering share those lookups; no per-entity player scan or
+mutable identity cache is needed. The table supports the scenario seat limit.
 
 `Game::do_tick` is the only local live-shell path that advances state. It
 collects pending human/debug commands and bot commands, records them at the

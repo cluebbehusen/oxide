@@ -86,8 +86,15 @@ fn fill_circle(pixmap: &mut Pixmap, cx: f32, cy: f32, r: f32, color: u32) {
     }
 }
 
-/// Draws `state` to a fresh pixmap at [`TILE_PX`] resolution.
+/// Draws `state` to a fresh pixmap at [`TILE_PX`] resolution, each seat in
+/// its own fill.
 pub fn render_state(state: &State) -> Pixmap {
+    render_state_colored(state, seat_color)
+}
+
+/// Draws `state` like [`render_state`], with `seat_fill` choosing each
+/// seat's fill as `0xRRGGBB`.
+pub fn render_state_colored(state: &State, seat_fill: impl Fn(PlayerId) -> u32) -> Pixmap {
     let width = u32::try_from(state.map().width()).expect("map extents are positive") * TILE_PIXELS;
     let height =
         u32::try_from(state.map().height()).expect("map extents are positive") * TILE_PIXELS;
@@ -169,7 +176,7 @@ pub fn render_state(state: &State) -> Pixmap {
     }
 
     for building in state.buildings() {
-        let color = seat_color(building.player);
+        let color = seat_fill(building.player);
         let (w, h) = building.kind.size();
         let (x, y) = (
             building.anchor.x as f32 * TILE_PX,
@@ -192,7 +199,7 @@ pub fn render_state(state: &State) -> Pixmap {
     }
 
     for unit in state.units() {
-        let color = seat_color(unit.player);
+        let color = seat_fill(unit.player);
         let cx = unit.pos.x.to_num::<f32>() * TILE_PX;
         let cy = unit.pos.y.to_num::<f32>() * TILE_PX;
         let r = unit.kind.stats().radius.to_num::<f32>() * TILE_PX;

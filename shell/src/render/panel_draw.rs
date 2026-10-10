@@ -880,12 +880,33 @@ pub(crate) fn draw_panel(
     };
     // Defense art is authored as a base plus a north-facing live mount.
     // Static cards compose the same silhouette without inventing aim.
-    let blit_building = |dest: Rect, kind: oxide_sim::BuildingKind, tier: u8, tint: Color| {
-        let mut layers = vec![(sprites.building_tiered(kind, tier), tint)];
-        if let Some(mount) = sprites.defense_mount(kind, tier) {
-            layers.push((mount, tint));
-        }
-        sprites.draw_portrait(dest, &layers);
+    // Card art wears its owner's color on the same accent masks the world
+    // tints, dimmed with the card.
+    let shade = |owner: Color, tint: Color| {
+        Color::new(owner.r * tint.r, owner.g * tint.g, owner.b * tint.b, tint.a)
+    };
+    let building_layers =
+        |kind: oxide_sim::BuildingKind, tier: u8, mount: bool, tint: Color, owner: Color| {
+            let mut layers = vec![
+                (sprites.building_tiered(kind, tier), tint),
+                (
+                    sprites.building_tiered_accent(kind, tier),
+                    shade(owner, tint),
+                ),
+            ];
+            if mount && let Some(mount) = sprites.defense_mount(kind, tier) {
+                layers.push((mount, tint));
+                if let Some(accent) = sprites.defense_mount_accent(kind, tier) {
+                    layers.push((accent, shade(owner, tint)));
+                }
+            }
+            layers
+        };
+    let unit_layers = |kind: oxide_sim::UnitKind, tint: Color, owner: Color| {
+        vec![
+            (sprites.unit(kind), tint),
+            (sprites.unit_accent(kind), shade(owner, tint)),
+        ]
     };
     // An order chip is two composed draws: the subject's own silhouette
     // (translucent under a scaffold while its site is still rising) and
@@ -900,9 +921,14 @@ pub(crate) fn draw_panel(
         else {
             match icon {
                 CardIcon::Unit(kind) => {
-                    sprites.draw_portrait(dest, &[(sprites.unit(*kind), tint)]);
+                    sprites.draw_portrait(dest, &unit_layers(*kind, tint, panel.owner));
                 }
-                CardIcon::Building(kind, tier) => blit_building(dest, *kind, *tier, tint),
+                CardIcon::Building(kind, tier) => {
+                    sprites.draw_portrait(
+                        dest,
+                        &building_layers(*kind, *tier, true, tint, panel.owner),
+                    );
+                }
                 CardIcon::Verb(v) => blit(dest, sprites.verb_icon(*v), tint),
                 CardIcon::Salvage { wreck } => blit(
                     dest,
@@ -926,13 +952,9 @@ pub(crate) fn draw_panel(
             tint
         };
         let mut layers = match subject {
-            crate::panel::OrderSubject::Unit(kind) => vec![(sprites.unit(*kind), hull)],
-            crate::panel::OrderSubject::Building(kind) => {
-                let mut layers = vec![(sprites.building(*kind), hull)];
-                if !*ghost && let Some(mount) = sprites.defense_mount(*kind, 0) {
-                    layers.push((mount, hull));
-                }
-                layers
+            crate::panel::OrderSubject::Unit(kind, owner) => unit_layers(*kind, hull, *owner),
+            crate::panel::OrderSubject::Building(kind, owner) => {
+                building_layers(*kind, 0, !*ghost, hull, *owner)
             }
         };
         if *ghost {
@@ -1021,7 +1043,7 @@ pub(crate) fn draw_panel(
             TEXT_SECONDARY,
         );
     }
-    if let Some((hp, max_hp)) = panel.info.health {
+    if let Some(crate::panel::info::Health { hp, max_hp, color }) = panel.info.health {
         let y = top + measured.health_y;
         let value = format!("{hp}/{max_hp}");
         draw_text(
@@ -1052,7 +1074,7 @@ pub(crate) fn draw_panel(
             y + 19.0 * s,
             (cards_x - 24.0 * s) * (hp as f32 / max_hp.max(1) as f32).clamp(0.0, 1.0),
             3.0 * s,
-            crate::theme::HEALTH_FILL,
+            color,
         );
     }
     for line in &measured.lines {

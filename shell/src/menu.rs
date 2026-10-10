@@ -852,7 +852,9 @@ fn render_preview(path: Option<&std::path::Path>) -> Option<PreviewPixels> {
         None => Scenario::skirmish(),
     };
     let state = scenario.build().ok()?;
-    let pixmap = oxide_kit::render::render_state(&state);
+    // Seats draw in one neutral tone: the setup screen's seat markers carry
+    // ownership, and a preview has no viewer to be relative to.
+    let pixmap = oxide_kit::render::render_state_colored(&state, |_| 0x96_94_8C);
     Some(PreviewPixels {
         width: pixmap.width().fit::<u16>(),
         height: pixmap.height().fit::<u16>(),

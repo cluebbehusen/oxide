@@ -57,6 +57,31 @@ pub fn team_override(choice: usize) -> Option<u8> {
     choice.checked_sub(1).map(|team| team.fit::<u8>())
 }
 
+/// How the human's chair will see every seat once the draft launches: the
+/// match's own self, ally, and hostile colors, from the chosen teams.
+fn draft_styles(scenario: &Scenario, draft: &NewMatchDraft) -> crate::seat_style::SeatStyles {
+    use crate::seat_style::AllegianceCue;
+    let team = |seat: usize| {
+        draft
+            .seats
+            .get(seat)
+            .and_then(|plan| team_override(plan.team_choice))
+    };
+    let mine = team(draft.seat_choice);
+    crate::seat_style::SeatStyles::from_cues(
+        (0..scenario.players.len()).map(|seat| {
+            if seat == draft.seat_choice {
+                AllegianceCue::Mine
+            } else if mine.is_some() && team(seat) == mine {
+                AllegianceCue::Ally
+            } else {
+                AllegianceCue::Hostile
+            }
+        }),
+        crate::render::colorblind(),
+    )
+}
+
 /// The team chip's display label, aligned with [`team_override`].
 pub fn team_chip_label(choice: usize) -> String {
     match choice {
@@ -676,15 +701,16 @@ pub fn seat_anchors(map: &[String]) -> Vec<(usize, (i32, i32))> {
 }
 
 /// Marks every seat's foundry on a drawn preview rect: numbered discs
-/// in the roster accent, a white ring for the human's chair, an accent
-/// ring for the focused seat.
+/// in the seat's ownership color as the human's chair will see it, a
+/// white ring for that chair, an accent ring for the focused seat.
 pub fn draw_seat_markers(
     scenario: &Scenario,
+    draft: &NewMatchDraft,
     rect: Rect,
-    seat_choice: usize,
     focus_seat: Option<usize>,
     ui: f32,
 ) {
+    let styles = draft_styles(scenario, draft);
     let map_w = scenario.map.first().map_or(1, |r| r.chars().count()) as f32;
     let map_h = scenario.map.len() as f32;
     for (seat, (ax, ay)) in seat_anchors(&scenario.map) {
@@ -694,8 +720,8 @@ pub fn draw_seat_markers(
         // Foundry anchors are the 2x2's top-left; mark its center.
         let px = rect.x + (ax as f32 + 1.0) / map_w * rect.w;
         let py = rect.y + (ay as f32 + 1.0) / map_h * rect.h;
-        let accent = crate::render::roster_accent();
-        if seat == seat_choice {
+        let accent = styles.get(oxide_sim::PlayerId::from_index(seat));
+        if seat == draft.seat_choice {
             draw_circle_lines(px, py, 10.0 * ui, 2.5, macroquad::prelude::WHITE);
         } else if focus_seat == Some(seat) {
             draw_circle_lines(px, py, 10.0 * ui, 2.0, accent);
@@ -1053,6 +1079,7 @@ impl Wizard {
                 BORDER_FAINT,
             );
         }
+        let styles = draft_styles(scenario, draft);
         for (pos, card) in layout.cards.iter().enumerate() {
             let Some(card) = card else {
                 continue;
@@ -1077,7 +1104,7 @@ impl Wizard {
                 .at(ui),
                 if selected { TEXT_TITLE } else { BORDER_FAINT },
             );
-            let accent = crate::render::roster_accent();
+            let accent = styles.get(oxide_sim::PlayerId::from_index(seat));
             let cy = rect.y + rect.h * 0.5;
             let chip_x = rect.x + 22.0 * ui;
             // Everything on a card scales to the card, so a compressed
@@ -1307,13 +1334,7 @@ impl Wizard {
                 },
             );
             let focus = (self.setup_sel < order.len()).then(|| order[self.setup_sel]);
-            draw_seat_markers(
-                scenario,
-                Rect::new(x, y, pw, ph),
-                draft.seat_choice,
-                focus,
-                ui,
-            );
+            draw_seat_markers(scenario, draft, Rect::new(x, y, pw, ph), focus, ui);
         }
 
         if !compact {

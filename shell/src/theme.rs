@@ -75,9 +75,8 @@ pub const BADGE: Color = color_u8!(57, 45, 30, 255);
 /// The plate behind a capability or stat icon.
 pub const ICON_PLATE: Color = color_u8!(13, 13, 18, 217);
 
-/// A health bar's empty track and its fill.
-pub const HEALTH_TRACK: Color = color_u8!(49, 61, 49, 255);
-pub const HEALTH_FILL: Color = color_u8!(165, 180, 142, 255);
+/// A health bar's empty track; the fill wears its owner's color.
+pub const HEALTH_TRACK: Color = color_u8!(38, 38, 46, 255);
 
 /// The command band's top edge and the match report's frame.
 pub const EDGE_WARM: Color = color_u8!(119, 107, 79, 180);
