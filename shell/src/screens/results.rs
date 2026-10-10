@@ -13,7 +13,6 @@ use macroquad::prelude::*;
 use oxide_protocol::{Key, RawEvent};
 use oxide_sim::{GameResult, PlayerId, TICKS_PER_SECOND};
 
-const ACTIONS: [&str; 4] = ["REMATCH", "WATCH REPLAY", "VIEW FINAL MAP", "HOME"];
 const WIDE_STAT_HEADERS: [[&str; 2]; 6] = [
     ["PEAK ARMY", "VALUE"],
     ["UNITS", "BUILT"],
@@ -38,20 +37,53 @@ pub enum Out {
     Home,
 }
 
-fn out_for(index: usize) -> Out {
-    match index {
-        0 => Out::Rematch,
-        1 => Out::Watch,
-        2 => Out::ViewFinalMap,
-        _ => Out::Home,
+/// One of the report's next steps, in button order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResultAction {
+    Rematch,
+    Watch,
+    ViewFinalMap,
+    Home,
+}
+
+impl ResultAction {
+    /// Every action, left to right.
+    pub const ALL: [Self; 4] = [Self::Rematch, Self::Watch, Self::ViewFinalMap, Self::Home];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Rematch => "REMATCH",
+            Self::Watch => "WATCH REPLAY",
+            Self::ViewFinalMap => "VIEW FINAL MAP",
+            Self::Home => "HOME",
+        }
+    }
+
+    fn out(self) -> Out {
+        match self {
+            Self::Rematch => Out::Rematch,
+            Self::Watch => Out::Watch,
+            Self::ViewFinalMap => Out::ViewFinalMap,
+            Self::Home => Out::Home,
+        }
+    }
+
+    /// Where the button sits in the row.
+    fn index(self) -> usize {
+        match self {
+            Self::Rematch => 0,
+            Self::Watch => 1,
+            Self::ViewFinalMap => 2,
+            Self::Home => 3,
+        }
     }
 }
 
 /// Touchable action geometry, injected for headless tests.
-pub(crate) fn action_rects(viewport: Vec2, scale: f32) -> [Rect; ACTIONS.len()] {
+pub(crate) fn action_rects(viewport: Vec2, scale: f32) -> [Rect; ResultAction::ALL.len()] {
     let gap = 10.0 * scale;
     let margin = 24.0 * scale;
-    let action_count = ACTIONS.len() as f32;
+    let action_count = ResultAction::ALL.len() as f32;
     let available = (viewport.x - margin * 2.0 - gap * (action_count - 1.0)).max(action_count);
     let width = (available / action_count).min(210.0 * scale);
     let total = width * action_count + gap * (action_count - 1.0);
@@ -88,12 +120,70 @@ struct ResultsLayout {
     graph_bottom: f32,
 }
 
+/// The report's vertical rhythm in logical px, before any fitting.
+#[derive(Debug, Clone, Copy)]
+struct ResultsMetrics {
+    title_y: f32,
+    title_size: f32,
+    meta_y: f32,
+    meta_size: f32,
+    header_y: f32,
+    header_size: f32,
+    rule_offset: f32,
+    row_height: f32,
+    row_size: f32,
+    /// Where in its row a player's text sits, as a fraction of the row.
+    row_baseline: f32,
+    marker_radius: f32,
+    /// Rows of space between the table and the graph.
+    graph_row_padding: f32,
+    graph_padding: f32,
+}
+
+impl ResultsMetrics {
+    /// Six or more players in a short window.
+    const COMPACT: Self = Self {
+        title_y: 43.0,
+        title_size: 32.0,
+        meta_y: 62.0,
+        meta_size: 13.0,
+        header_y: 79.0,
+        header_size: 11.0,
+        rule_offset: 13.0,
+        row_height: 16.0,
+        row_size: 12.0,
+        row_baseline: 0.78,
+        marker_radius: 3.4,
+        graph_row_padding: 0.45,
+        graph_padding: 3.0,
+    };
+
+    /// Every other report; a short window packs its rows tighter.
+    fn standard(short: bool) -> Self {
+        Self {
+            title_y: 48.0,
+            title_size: 40.0,
+            meta_y: 68.0,
+            meta_size: 17.0,
+            header_y: 91.0,
+            header_size: 17.0,
+            rule_offset: 16.0,
+            row_height: if short { 22.0 } else { 27.0 },
+            row_size: 18.0,
+            row_baseline: 0.85,
+            marker_radius: 4.0,
+            graph_row_padding: 1.15,
+            graph_padding: 5.0,
+        }
+    }
+}
+
 fn results_layout(viewport: Vec2, scale: f32, player_count: usize) -> ResultsLayout {
     let logical_width = viewport.x / scale.max(f32::EPSILON);
     let logical_height = viewport.y / scale.max(f32::EPSILON);
     let compact_roster = logical_height <= 480.0 && player_count >= 6;
     let wide_table = !compact_roster && logical_width >= 1_100.0;
-    let (
+    let ResultsMetrics {
         title_y,
         title_size,
         meta_y,
@@ -107,26 +197,10 @@ fn results_layout(viewport: Vec2, scale: f32, player_count: usize) -> ResultsLay
         marker_radius,
         graph_row_padding,
         graph_padding,
-    ) = if compact_roster {
-        (
-            43.0, 32.0, 62.0, 13.0, 79.0, 11.0, 13.0, 16.0, 12.0, 0.78, 3.4, 0.45, 3.0,
-        )
+    } = if compact_roster {
+        ResultsMetrics::COMPACT
     } else {
-        (
-            48.0,
-            40.0,
-            68.0,
-            17.0,
-            91.0,
-            17.0,
-            16.0,
-            if logical_height <= 480.0 { 22.0 } else { 27.0 },
-            18.0,
-            0.85,
-            4.0,
-            1.15,
-            5.0,
-        )
+        ResultsMetrics::standard(logical_height <= 480.0)
     };
     let rule_offset = rule_offset + if wide_table { header_size } else { 0.0 };
     let actions_y = action_rects(viewport, scale)[0].y / scale;
@@ -161,34 +235,36 @@ fn results_layout(viewport: Vec2, scale: f32, player_count: usize) -> ResultsLay
     }
 }
 
-fn action_at(point: Vec2, viewport: Vec2, scale: f32) -> Option<usize> {
-    action_rects(viewport, scale)
-        .iter()
-        .position(|rect| rect.contains(point))
+fn action_at(point: Vec2, viewport: Vec2, scale: f32) -> Option<ResultAction> {
+    ResultAction::ALL
+        .into_iter()
+        .zip(action_rects(viewport, scale))
+        .find(|(_, rect)| rect.contains(point))
+        .map(|(action, _)| action)
 }
 
-fn table_columns(left: f32, right: f32, wide: bool) -> [f32; 7] {
+/// Where the scoreboard's columns sit: the player name's left edge, then
+/// the six statistics (peak army; units and buildings built; units and
+/// buildings lost; scrap). A wide table centers each statistic on its x.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TableColumns {
+    player: f32,
+    stats: [f32; 6],
+}
+
+fn table_columns(left: f32, right: f32, wide: bool) -> TableColumns {
     let width = right - left;
-    if wide {
+    let stats = if wide {
         let stats_left = player_column_right(left, right, true);
         let stat_width = (right - stats_left) / 6.0;
-        return std::array::from_fn(|index| {
-            if index == 0 {
-                left
-            } else {
-                stats_left + (index as f32 - 0.5) * stat_width
-            }
-        });
+        std::array::from_fn(|index| stats_left + (index as f32 + 0.5) * stat_width)
+    } else {
+        [0.39, 0.50, 0.59, 0.68, 0.77, 0.87].map(|fraction| left + width * fraction)
+    };
+    TableColumns {
+        player: left,
+        stats,
     }
-    [
-        left,
-        left + width * 0.39,
-        left + width * 0.50,
-        left + width * 0.59,
-        left + width * 0.68,
-        left + width * 0.77,
-        left + width * 0.87,
-    ]
 }
 
 fn player_column_right(left: f32, right: f32, wide: bool) -> f32 {
@@ -283,16 +359,16 @@ fn fitted_player_name_with_controller(
 
 /// Stateful pointer/keyboard ownership for the report.
 pub struct ResultsScreen {
-    selected: usize,
-    hover: Option<usize>,
-    press: Press<usize>,
+    selected: ResultAction,
+    hover: Option<ResultAction>,
+    press: Press<ResultAction>,
 }
 
 impl ResultsScreen {
     /// Opens with Rematch selected.
     pub fn open() -> Self {
         Self {
-            selected: 0,
+            selected: ResultAction::Rematch,
             hover: None,
             press: Press::default(),
         }
@@ -300,17 +376,20 @@ impl ResultsScreen {
 
     /// Keyboard cursor for the debug UI surface.
     pub fn selected(&self) -> usize {
-        self.selected
+        self.selected.index()
     }
 
     /// Pointer hover for the debug UI surface.
     pub fn hover(&self) -> Option<usize> {
-        self.hover
+        self.hover.map(ResultAction::index)
     }
 
     /// Stable labels for automation and accessibility.
     pub fn items() -> Vec<String> {
-        ACTIONS.iter().map(|label| (*label).to_string()).collect()
+        ResultAction::ALL
+            .iter()
+            .map(|action| action.label().to_string())
+            .collect()
     }
 
     /// Applies one frame through the same raw-event funnel as every menu.
@@ -323,15 +402,15 @@ impl ResultsScreen {
         sounds: &mut Vec<(SoundKind, Option<Vec2>)>,
     ) -> Out {
         for event in events {
-            if let Fed::Activated(index) =
+            if let Fed::Activated(action) =
                 self.press.feed(event, |p, _| action_at(p, viewport, scale))
             {
                 if let Some(p) = crate::press::position(event) {
                     *mouse = p;
                 }
-                self.selected = index;
+                self.selected = action;
                 sounds.push((SoundKind::Click, None));
-                return out_for(index);
+                return action.out();
             }
             match *event {
                 RawEvent::MouseMove { x, y } => {
@@ -346,7 +425,7 @@ impl ResultsScreen {
                 }
                 RawEvent::KeyDown { key: Key::Enter } => {
                     sounds.push((SoundKind::Click, None));
-                    return out_for(self.selected);
+                    return self.selected.out();
                 }
                 RawEvent::KeyDown { key: Key::Escape } => {
                     sounds.push((SoundKind::Click, None));
@@ -354,17 +433,13 @@ impl ResultsScreen {
                 }
                 RawEvent::KeyDown { .. } => {
                     if let Some(next) = Nav::decode(event).and_then(|nav| {
-                        step_line(
-                            ACTIONS.len(),
-                            self.selected,
-                            nav,
-                            Axis::Both,
-                            ACTIONS.len(),
-                            |_| true,
-                        )
+                        let count = ResultAction::ALL.len();
+                        step_line(count, self.selected.index(), nav, Axis::Both, count, |_| {
+                            true
+                        })
                     }) {
                         self.hover = None;
-                        self.selected = next;
+                        self.selected = ResultAction::ALL[next];
                     }
                 }
                 _ => {}
@@ -437,16 +512,13 @@ impl ResultsScreen {
         let columns = table_columns(left, right, layout.wide_table);
         draw_text(
             "PLAYER",
-            columns[0],
+            columns.player,
             header_y,
             layout.header_size,
             theme::TEXT_SECONDARY,
         );
         if layout.wide_table {
-            for (label, x) in WIDE_STAT_HEADERS
-                .into_iter()
-                .zip(columns[1..].iter().copied())
-            {
+            for (label, x) in WIDE_STAT_HEADERS.into_iter().zip(columns.stats) {
                 for (line, text) in label.into_iter().enumerate() {
                     draw_centered_text(
                         text,
@@ -460,37 +532,37 @@ impl ResultsScreen {
         } else {
             draw_text(
                 "PEAK",
-                columns[1],
+                columns.stats[0],
                 header_y,
                 layout.header_size,
                 theme::TEXT_SECONDARY,
             );
             draw_text(
                 "BUILT",
-                f32::midpoint(columns[2], columns[3]) - 17.0 * s,
+                f32::midpoint(columns.stats[1], columns.stats[2]) - 17.0 * s,
                 header_y,
                 layout.header_size,
                 theme::TEXT_SECONDARY,
             );
             draw_text(
                 "LOST",
-                f32::midpoint(columns[4], columns[5]) - 14.0 * s,
+                f32::midpoint(columns.stats[3], columns.stats[4]) - 14.0 * s,
                 header_y,
                 layout.header_size,
                 theme::TEXT_SECONDARY,
             );
             draw_text(
                 "SCRAP",
-                columns[6],
+                columns.stats[5],
                 header_y,
                 layout.header_size,
                 theme::TEXT_SECONDARY,
             );
             for (x, kind) in [
-                (columns[2], StatIcon::Unit),
-                (columns[3], StatIcon::Building),
-                (columns[4], StatIcon::Unit),
-                (columns[5], StatIcon::Building),
+                (columns.stats[1], StatIcon::Unit),
+                (columns.stats[2], StatIcon::Building),
+                (columns.stats[3], StatIcon::Unit),
+                (columns.stats[4], StatIcon::Building),
             ] {
                 draw_stat_icon(
                     vec2(x + 5.0 * s, header_y + 9.0 * s),
@@ -515,7 +587,7 @@ impl ResultsScreen {
                 let y = rule_y + (row as f32 + layout.row_baseline) * row_h;
                 let color = render::seat_identity_color(&game.view(), PlayerId(seat.fit::<u8>()));
                 draw_marker(
-                    columns[0],
+                    columns.player,
                     y - layout.row_size * 0.36,
                     layout.marker_radius,
                     seat,
@@ -533,7 +605,7 @@ impl ResultsScreen {
                     24
                 };
                 let prefix = format!("T{}  ", player.team + 1);
-                let player_text_x = columns[0] + 11.0 * s;
+                let player_text_x = columns.player + 11.0 * s;
                 let player_text_right = player_column_right(left, right, layout.wide_table);
                 let fixed_width = measure_text(
                     format!("{prefix}{crown}"),
@@ -565,12 +637,12 @@ impl ResultsScreen {
                 if let Some(numbers) = numbers {
                     let peak = numbers.army_value.iter().copied().max().unwrap_or(0);
                     for (text, x) in [
-                        (peak.to_string(), columns[1]),
-                        (numbers.units_trained.to_string(), columns[2]),
-                        (numbers.buildings_completed.to_string(), columns[3]),
-                        (numbers.units_lost.to_string(), columns[4]),
-                        (numbers.buildings_lost.to_string(), columns[5]),
-                        (numbers.scrap_collected.to_string(), columns[6]),
+                        (peak.to_string(), columns.stats[0]),
+                        (numbers.units_trained.to_string(), columns.stats[1]),
+                        (numbers.buildings_completed.to_string(), columns.stats[2]),
+                        (numbers.units_lost.to_string(), columns.stats[3]),
+                        (numbers.buildings_lost.to_string(), columns.stats[4]),
+                        (numbers.scrap_collected.to_string(), columns.stats[5]),
                     ] {
                         if layout.wide_table {
                             draw_centered_text(&text, x, y, layout.row_size, theme::TEXT_BODY);
@@ -606,9 +678,9 @@ impl ResultsScreen {
             );
         }
 
-        for (index, (label, rect)) in ACTIONS.iter().zip(action_rects(viewport, s)).enumerate() {
-            let active = self.hover == Some(index) || self.selected == index;
-            crate::button::draw(rect, label, active, s);
+        for (action, rect) in ResultAction::ALL.into_iter().zip(action_rects(viewport, s)) {
+            let active = self.hover == Some(action) || self.selected == action;
+            crate::button::draw(rect, action.label(), active, s);
         }
     }
 }

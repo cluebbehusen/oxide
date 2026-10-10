@@ -51,8 +51,9 @@ fn wide_results_use_room_for_readable_table_copy() {
     assert_eq!(layout.header_size, 17.0);
     assert_eq!(layout.row_size, 18.0);
     assert_eq!(layout.graph_label_size, 16.0);
-    assert!(columns.windows(2).all(|pair| pair[0] < pair[1]));
-    assert!(columns[6] < 1248.0);
+    assert!(columns.player < columns.stats[0]);
+    assert!(columns.stats.windows(2).all(|pair| pair[0] < pair[1]));
+    assert!(columns.stats[5] < 1248.0);
     assert!(layout.rule_offset > layout.header_size * 1.5);
 }
 
@@ -75,9 +76,10 @@ fn maximum_roster_stays_readable_above_the_actions() {
 #[test]
 fn compact_columns_and_names_fit_without_breaking_unicode() {
     let columns = table_columns(20.0, 620.0, false);
-    assert_eq!(columns[0], 20.0);
-    assert!(columns.windows(2).all(|pair| pair[0] < pair[1]));
-    assert!(columns[6] < 620.0);
+    assert_eq!(columns.player, 20.0);
+    assert!(columns.player < columns.stats[0]);
+    assert!(columns.stats.windows(2).all(|pair| pair[0] < pair[1]));
+    assert!(columns.stats[5] < 620.0);
     assert_eq!(clipped_name("short", 8), "short");
     assert_eq!(clipped_name("cupréous", 7), "cupr...");
 }
@@ -199,7 +201,7 @@ fn long_names_and_the_longest_bot_profile_stay_inside_the_player_column() {
         let columns = table_columns(left, right, layout.wide_table);
         let player = &game.state.players()[1];
         let prefix = format!("T{}  ", player.team + 1);
-        let player_text_x = columns[0] + 11.0;
+        let player_text_x = columns.player + 11.0;
         let column_right = player_column_right(left, right, layout.wide_table);
         let measure = |text: &str| text.chars().count() as f32 * layout.row_size * 0.58;
         let fixed_width = measure(&prefix);
@@ -269,7 +271,7 @@ fn touch_activation_requires_the_arming_finger_and_same_action() {
         ),
         Out::Stay
     );
-    assert_eq!(screen.press.armed_touch(), Some((7, 1)));
+    assert_eq!(screen.press.armed_touch(), Some((7, ResultAction::Watch)));
 
     // A second finger cannot move or resolve the first finger's gesture.
     assert_eq!(
@@ -293,7 +295,7 @@ fn touch_activation_requires_the_arming_finger_and_same_action() {
         ),
         Out::Stay
     );
-    assert_eq!(screen.press.armed_touch(), Some((7, 1)));
+    assert_eq!(screen.press.armed_touch(), Some((7, ResultAction::Watch)));
     assert_eq!(mouse, watch);
 
     // The owning finger releases on another action, canceling the press.
