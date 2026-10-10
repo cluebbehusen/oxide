@@ -24,7 +24,7 @@ fn apply_events_with(
     bindings: &BindingMap,
     events: &[RawEvent],
 ) {
-    super::apply_events(game, input, bindings, events);
+    super::apply_events(game, input, bindings, events, |_, _| {});
 }
 
 fn update_touch(game: &mut Game, input: &mut InputState) {
@@ -4292,6 +4292,7 @@ fn chrome_born_touches_never_drive_world_gestures() {
 }
 
 mod order_chips;
+mod relayout;
 mod top_bar;
 
 #[test]
