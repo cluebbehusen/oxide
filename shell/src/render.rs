@@ -14,9 +14,9 @@ use crate::numeric::Fit;
 pub(crate) mod tracks;
 static COLORBLIND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Colorblind accents: swaps allegiance indicator colors (minimap dots,
-/// alert pulses, allegiance tints) for colorblind-safe palettes. Sprite
-/// art is unchanged.
+/// Colorblind palettes: swaps every ownership color (sprite accents, rings,
+/// health bars, minimap marks) for colorblind-safe ones. Base sprite art is
+/// unchanged.
 pub fn set_colorblind(on: bool) {
     COLORBLIND.store(on, std::sync::atomic::Ordering::Relaxed);
 }
@@ -36,20 +36,16 @@ pub(crate) fn control_groups() -> bool {
     CONTROL_GROUPS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// The roster art's colorblind-aware accent, which own seats keep.
-pub fn roster_accent() -> Color {
-    crate::seat_style::roster_accent(colorblind())
+/// The viewer's own colorblind-aware seat color.
+pub fn self_color() -> Color {
+    crate::seat_style::self_color(colorblind())
 }
 
+/// The seat's ownership color as the viewer sees it: the self color, or its
+/// stable ally- or enemy-family tint. Sprite accents, rings, health bars,
+/// and minimap marks all wear it.
 pub(crate) fn seat_identity_color(game: &Scene<'_>, owner: oxide_sim::PlayerId) -> Color {
-    game.seat_styles.get(owner).color
-}
-
-/// The seat-aware sprite/minimap accent. Own machines keep the roster's
-/// art; every other seat receives its stable ally- or enemy-family tint.
-pub(crate) fn seat_identity_tint(game: &Scene<'_>, owner: oxide_sim::PlayerId) -> Option<Color> {
-    let style = game.seat_styles.get(owner);
-    (style.cue != crate::seat_style::AllegianceCue::Mine).then_some(style.color)
+    game.seat_styles.get(owner)
 }
 
 /// How faded a memory draws after `age` seconds unseen: 0 when fresh,
@@ -1010,23 +1006,25 @@ fn draw_unit_pass(
         }
         let body = screen;
         if game.presentation.selection.units.contains(&unit.id) {
+            let owner = seat_identity_color(game, unit.player);
             if unit.player == game.presentation.human {
                 draw_circle_lines(
                     screen.x,
                     screen.y,
                     unit_selection_radius(unit.kind, zoom, 4.0),
                     2.0,
-                    BONE,
+                    owner,
                 );
             } else {
-                // Inspected, not commanded: a fainter ring outside the
-                // allegiance cue, so "selected" and "mine" stay distinct.
+                // Inspected, not commanded: a thinner, wider ring, so a
+                // selection the player cannot order never reads as one
+                // they can.
                 draw_circle_lines(
                     screen.x,
                     screen.y,
                     unit_selection_radius(unit.kind, zoom, 5.5),
                     1.5,
-                    BONE_FAINT,
+                    Color { a: 0.8, ..owner },
                 );
             }
         }
@@ -1074,18 +1072,16 @@ fn draw_unit_pass(
                 draw_scale,
             );
         }
-        if let Some(tint) = seat_identity_tint(game, unit.player) {
-            sprites.draw_unit(
-                body.x - body_size.x * 0.5,
-                body.y - body_size.y * 0.5,
-                tint,
-                DrawTextureParams {
-                    source: Some(accent),
-                    ..params
-                },
-                zoom,
-            );
-        }
+        sprites.draw_unit(
+            body.x - body_size.x * 0.5,
+            body.y - body_size.y * 0.5,
+            seat_identity_color(game, unit.player),
+            DrawTextureParams {
+                source: Some(accent),
+                ..params
+            },
+            zoom,
+        );
         if worker_body {
             worker::draw(
                 game,
@@ -1135,9 +1131,10 @@ fn draw_unit_pass(
                 _ => None,
             };
             let (mount, accent) = rig.mount(action);
-            for (source, tint) in std::iter::once((mount, WHITE))
-                .chain(seat_identity_tint(game, unit.player).map(|tint| (accent, tint)))
-            {
+            for (source, tint) in [
+                (mount, WHITE),
+                (accent, seat_identity_color(game, unit.player)),
+            ] {
                 sprites.draw_unit(
                     body.x - dest * 0.5,
                     body.y - dest * 0.5,
@@ -1180,6 +1177,7 @@ fn draw_unit_pass(
                 w,
                 unit.hp,
                 max_hp,
+                seat_identity_color(game, unit.player),
             );
         }
     }
@@ -1202,11 +1200,11 @@ fn draw_rally_flag(game: &crate::game::Scene<'_>, rally: TilePos, zoom: f32) {
     draw_circle(base.x, base.y, 3.0, BONE);
 }
 
-fn hp_bar(x: f32, y: f32, w: f32, hp: u32, max_hp: u32) {
+/// A health bar in its owner's color; the length alone shows the damage.
+fn hp_bar(x: f32, y: f32, w: f32, hp: u32, max_hp: u32, owner: Color) {
     let fraction = hp as f32 / max_hp as f32;
     draw_rectangle(x, y, w, 3.0, HP_BACK);
-    let color = if fraction < 0.34 { DANGER } else { BONE };
-    draw_rectangle(x, y, w * fraction, 3.0, color);
+    draw_rectangle(x, y, w * fraction, 3.0, owner);
 }
 
 /// How many selected units draw their rings and programs, so a large

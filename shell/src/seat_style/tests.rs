@@ -49,13 +49,15 @@ fn every_supported_ffa_seat_has_a_distinct_hostile_identity_for_every_viewer() {
                 let styles = SeatStyles::new(&state, PlayerId(viewer.fit::<u8>()), colorblind);
                 let mut colors = Vec::new();
                 for owner in 0..count {
-                    let style = styles.get(PlayerId(owner.fit::<u8>()));
+                    let seat = PlayerId(owner.fit::<u8>());
+                    let style = styles.get(seat);
+                    let cue = AllegianceCue::of(&state, PlayerId(viewer.fit::<u8>()), seat);
                     if owner == viewer {
-                        assert_eq!(style.cue, AllegianceCue::Mine);
-                        assert_eq!(style.color, roster_accent(colorblind));
+                        assert_eq!(cue, AllegianceCue::Mine);
+                        assert_eq!(style, self_color(colorblind));
                     } else {
-                        assert_eq!(style.cue, AllegianceCue::Hostile);
-                        let color = rgb(style.color);
+                        assert_eq!(cue, AllegianceCue::Hostile);
+                        let color = rgb(style);
                         assert!(color.0 > color.2, "hostiles stay warm");
                         assert!(
                             !colors.contains(&color),
@@ -78,24 +80,23 @@ fn large_allied_team_preserves_identity_families_and_refreshes_the_viewer() {
         let enemy = SeatStyles::new(&state, PlayerId(15), colorblind);
         let mut colors = Vec::new();
         for owner in 1..15 {
-            let style = allied.get(PlayerId(owner));
-            assert_eq!(style.cue, AllegianceCue::Ally);
-            assert!(!colors.contains(&rgb(style.color)));
-            colors.push(rgb(style.color));
-            if !colorblind {
-                assert!(style.color.b > style.color.r);
-            }
-            assert_eq!(enemy.get(PlayerId(owner)).cue, AllegianceCue::Hostile);
+            let color = allied.get(PlayerId(owner));
+            assert_eq!(
+                AllegianceCue::of(&state, PlayerId(0), PlayerId(owner)),
+                AllegianceCue::Ally
+            );
+            assert!(!colors.contains(&rgb(color)));
+            colors.push(rgb(color));
+            assert!(color.b > color.r, "allies stay cool");
+            assert_eq!(
+                AllegianceCue::of(&state, PlayerId(15), PlayerId(owner)),
+                AllegianceCue::Hostile
+            );
         }
-        assert_eq!(enemy.get(PlayerId(15)).cue, AllegianceCue::Mine);
-        let first_ally = allied.get(PlayerId(1)).color;
-        let first_enemy = enemy.get(PlayerId(0)).color;
-        if colorblind {
-            let lum = |c: Color| 0.299 * c.r + 0.587 * c.g + 0.114 * c.b;
-            assert!(lum(first_ally) - lum(first_enemy) > 0.3);
-        } else {
-            assert_eq!(rgb(first_ally), (100, 160, 245));
-            assert_eq!(rgb(first_enemy), (228, 44, 58));
+        assert_eq!(enemy.get(PlayerId(15)), self_color(colorblind));
+        if !colorblind {
+            assert_eq!(rgb(allied.get(PlayerId(1))), (100, 160, 245));
+            assert_eq!(rgb(enemy.get(PlayerId(0))), (228, 44, 58));
         }
     }
 }
@@ -121,9 +122,57 @@ fn live_and_replay_views_share_prepared_styles_after_viewer_changes() {
                 crate::render::seat_identity_color(&replay, owner)
             );
             assert_eq!(
-                crate::render::seat_identity_tint(&live, owner).is_none(),
+                crate::render::seat_identity_color(&live, owner) == crate::render::self_color(),
                 owner == PlayerId(viewer)
             );
         }
+    }
+}
+
+fn hue(color: Color) -> f32 {
+    let (r, g, b) = (color.r, color.g, color.b);
+    let max = r.max(g).max(b);
+    let chroma = max - r.min(g).min(b);
+    let sector = if max == r {
+        ((g - b) / chroma).rem_euclid(6.0)
+    } else if max == g {
+        (b - r) / chroma + 2.0
+    } else {
+        (r - g) / chroma + 4.0
+    };
+    sector * 60.0
+}
+
+fn chroma(color: Color) -> f32 {
+    color.r.max(color.g).max(color.b) - color.r.min(color.g).min(color.b)
+}
+
+#[test]
+fn the_self_color_never_reads_as_a_friend_or_a_foe() {
+    let mine = self_color(false);
+    for color in ally_palette(false)
+        .into_iter()
+        .chain(hostile_palette(false))
+    {
+        let apart = (hue(mine) - hue(color)).abs();
+        assert!(
+            apart.min(360.0 - apart) >= 30.0,
+            "{:?} sits within 30 degrees of the self color",
+            rgb(color)
+        );
+    }
+    // Colorblind play separates by saturation instead of hue: an
+    // achromatic self color stays white under every color-vision type,
+    // while both families keep strong color.
+    let mine = self_color(true);
+    assert!(chroma(mine) < 0.05);
+    let lum = |c: Color| 0.299 * c.r + 0.587 * c.g + 0.114 * c.b;
+    for color in ally_palette(true).into_iter().chain(hostile_palette(true)) {
+        assert!(chroma(color) > 0.3, "{:?} is too gray", rgb(color));
+        assert!(
+            lum(mine) > lum(color),
+            "{:?} outshines the self color",
+            rgb(color)
+        );
     }
 }

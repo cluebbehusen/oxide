@@ -1,6 +1,6 @@
 //! Rigid casualties, ballistic fragments, and ground-contact effects.
 
-use super::{air_presentation, reduced_motion, seat_identity_tint, unit_draw_scale};
+use super::{air_presentation, reduced_motion, seat_identity_color, unit_draw_scale};
 use crate::assets::Sprites;
 use crate::game::{EffectKind, Scene, UnitBody};
 use crate::numeric;
@@ -260,7 +260,7 @@ struct RigidSprite {
     rotation: f32,
     source: Rect,
     accent: Rect,
-    tint: Option<Color>,
+    tint: Color,
 }
 
 impl RigidSprite {
@@ -269,8 +269,7 @@ impl RigidSprite {
             (vec2(part.x + part.w * 0.5, part.y + part.h * 0.5) - vec2(0.5, 0.5)) * self.size;
         let center = self.center + rotate(local_center, self.rotation) + pose.offset * zoom;
         let size = vec2(part.w, part.h) * self.size;
-        for (source, tint) in [(self.source, Some(WHITE)), (self.accent, self.tint)] {
-            let Some(tint) = tint else { continue };
+        for (source, tint) in [(self.source, WHITE), (self.accent, self.tint)] {
             sprites.draw(
                 center.x - size.x * 0.5,
                 center.y - size.y * 0.5,
@@ -331,7 +330,7 @@ fn draw_unit_wreck(
         rotation: body.rotation,
         source: sprites.unit(body.kind),
         accent: sprites.unit_accent(body.kind),
-        tint: seat_identity_tint(game, body.player),
+        tint: seat_identity_color(game, body.player),
     };
     for (i, part) in HULL_PIECES.into_iter().enumerate() {
         let h = hash(seed, i.fit::<u32>());
@@ -487,7 +486,7 @@ fn draw_air_fragments(
             rotation: body.rotation,
             source: sprites.unit(body.kind),
             accent: sprites.unit_accent(body.kind),
-            tint: seat_identity_tint(game, body.player),
+            tint: seat_identity_color(game, body.player),
         };
         hull.piece(
             sprites,
@@ -603,7 +602,7 @@ pub(super) fn draw_falling(
         rotation: pose.rotation,
         source: sprites.unit(body.kind),
         accent: sprites.unit_accent(body.kind),
-        tint: seat_identity_tint(game, body.player),
+        tint: seat_identity_color(game, body.player),
     };
     hull.piece(
         sprites,
@@ -733,7 +732,7 @@ pub(super) fn draw_ground_effects(game: &Scene<'_>, sprites: &Sprites) {
                     size,
                     source: sprites.building_tiered(body.kind, body.tier),
                     accent: sprites.building_tiered_accent(body.kind, body.tier),
-                    tint: seat_identity_tint(game, body.player),
+                    tint: seat_identity_color(game, body.player),
                 };
                 for column in 0..3 {
                     let x = [0.0, 0.25, 0.75][column];

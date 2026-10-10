@@ -471,9 +471,17 @@ fn draw_mode_ribbon(sprites: &Sprites, layout: &RibbonLayout, s: f32) {
     stroke_rect(ribbon, crate::theme::Stroke::Edge.at(s), SCRAP_COLOR);
     let mut x = ribbon.x + 10.0 * s;
     if let Some(kind) = building {
-        let mut layers = vec![(sprites.building_tiered(kind, 0), WHITE)];
+        // The works being placed is the viewer's own.
+        let owner = crate::render::self_color();
+        let mut layers = vec![
+            (sprites.building_tiered(kind, 0), WHITE),
+            (sprites.building_tiered_accent(kind, 0), owner),
+        ];
         if let Some(mount) = sprites.defense_mount(kind, 0) {
             layers.push((mount, WHITE));
+            if let Some(accent) = sprites.defense_mount_accent(kind, 0) {
+                layers.push((accent, owner));
+            }
         }
         let icon = Rect::new(
             x,

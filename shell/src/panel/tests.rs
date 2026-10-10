@@ -659,7 +659,10 @@ fn the_harvester_panel_is_the_same_grammar() {
             .iter()
             .any(|row| matches!(row.label.as_str(), "Ground" | "Air"))
     );
-    assert_eq!(panel.info.health, Some((60, 60)));
+    assert_eq!(
+        panel.info.health.map(|health| (health.hp, health.max_hp)),
+        Some((60, 60))
+    );
     assert_eq!(stat(&panel, "Speed").value, "2.5 tiles/s");
     assert!(panel.cards.iter().any(|card| card.title == "Build"));
     assert!(
@@ -775,22 +778,22 @@ fn build_chips_wear_the_works_they_are_raising() {
     assert_eq!(panel.queue.len(), 2, "two legs of one program");
     // Two Build chips look different: each carries its own works,
     // ghosted while the site is still rising.
-    assert_eq!(
+    assert!(matches!(
         panel.queue[0].icon,
         CardIcon::Order {
-            subject: OrderSubject::Building(BuildingKind::Turret),
+            subject: OrderSubject::Building(BuildingKind::Turret, _),
             verb: VerbIcon::Build,
             ghost: true,
         }
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         panel.queue[1].icon,
         CardIcon::Order {
-            subject: OrderSubject::Building(BuildingKind::Array),
+            subject: OrderSubject::Building(BuildingKind::Array, _),
             verb: VerbIcon::Build,
             ghost: true,
         }
-    );
+    ));
     assert!(
         panel.queue[0].title.starts_with("Build - Turret"),
         "{}",

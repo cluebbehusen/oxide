@@ -20,7 +20,7 @@ fn every_unit_exposes_health_sight_and_its_weapon_reload() {
     for kind in UnitKind::ALL {
         let panel = selected(kind, false);
         assert_eq!(
-            panel.info.health,
+            panel.info.health.map(|health| (health.hp, health.max_hp)),
             Some((kind.stats().max_hp, kind.stats().max_hp))
         );
         assert!(

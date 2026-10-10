@@ -23,9 +23,27 @@ pub(crate) struct StatRow {
     pub section: bool,
 }
 
+/// A single selection's health and the ownership color its bar wears.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Health {
+    pub hp: u32,
+    pub max_hp: u32,
+    pub color: macroquad::prelude::Color,
+}
+
+impl Health {
+    fn of(game: &Scene<'_>, owner: oxide_sim::PlayerId, hp: u32, max_hp: u32) -> Self {
+        Self {
+            hp,
+            max_hp,
+            color: crate::render::seat_identity_color(game, owner),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct SelectionInfo {
-    pub health: Option<(u32, u32)>,
+    pub health: Option<Health>,
     pub status: Vec<String>,
     pub rows: Vec<StatRow>,
     pub upgrade: Option<super::upgrade::UpgradeComparison>,
@@ -130,7 +148,7 @@ pub(crate) fn selection_info(game: &Scene<'_>, panel: &Panel) -> SelectionInfo {
         if b.player == game.presentation.human && b.built() {
             info.upgrade = super::upgrade::comparison(b.kind, b.tier);
         }
-        info.health = Some((b.hp, stats.max_hp));
+        info.health = Some(Health::of(game, b.player, b.hp, stats.max_hp));
         info.ownership(game, b.player);
         if !b.built() {
             info.status.push(
@@ -255,7 +273,7 @@ pub(crate) fn selection_info(game: &Scene<'_>, panel: &Panel) -> SelectionInfo {
             return info;
         };
         let stats = u.kind.stats();
-        info.health = Some((u.hp, stats.max_hp));
+        info.health = Some(Health::of(game, u.player, u.hp, stats.max_hp));
         info.ownership(game, u.player);
         if u.landed() {
             info.status.push("Landed".into());

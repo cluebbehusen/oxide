@@ -172,7 +172,7 @@ pub fn draw_markers(game: &Scene<'_>, alpha: f32) {
                     center.y - 12.0,
                     14.0 * unit.hp as f32 / unit.kind.stats().max_hp as f32,
                     2.0,
-                    ink,
+                    color,
                 );
             }
         }

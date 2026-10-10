@@ -24,84 +24,89 @@ impl AllegianceCue {
     }
 }
 
+/// Every seat's ownership color as one viewer sees it.
 #[derive(Clone, Copy)]
-pub(crate) struct SeatStyle {
-    pub cue: AllegianceCue,
-    pub color: Color,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct SeatStyles([SeatStyle; MAX_PLAYERS]);
+pub(crate) struct SeatStyles([Color; MAX_PLAYERS]);
 
 impl SeatStyles {
     pub fn new(state: &State, viewer: PlayerId, colorblind: bool) -> Self {
+        Self::from_cues(
+            (0..state.players().len())
+                .map(|seat| AllegianceCue::of(state, viewer, PlayerId::from_index(seat))),
+            colorblind,
+        )
+    }
+
+    /// Styles for seats in seat order whose relationship to the viewer is
+    /// already known. Allies and hostiles each rank by seat order within
+    /// their own family.
+    pub fn from_cues(cues: impl IntoIterator<Item = AllegianceCue>, colorblind: bool) -> Self {
         let mut allies = 0;
         let mut hostiles = 0;
-        let mut styles = [SeatStyle {
-            cue: AllegianceCue::Mine,
-            color: WHITE,
-        }; MAX_PLAYERS];
-        for (seat, style) in styles.iter_mut().enumerate().take(state.players().len()) {
-            let owner = PlayerId::from_index(seat);
-            let cue = AllegianceCue::of(state, viewer, owner);
-            let color = match cue {
-                AllegianceCue::Mine => roster_accent(colorblind),
+        let mut styles = [WHITE; MAX_PLAYERS];
+        for (style, cue) in styles.iter_mut().zip(cues) {
+            *style = match cue {
+                AllegianceCue::Mine => self_color(colorblind),
                 AllegianceCue::Ally => {
-                    let color = identity_color(cue, allies, colorblind);
                     allies += 1;
-                    color
+                    family_color(&ally_palette(colorblind), allies - 1)
                 }
                 AllegianceCue::Hostile => {
-                    let color = identity_color(cue, hostiles, colorblind);
                     hostiles += 1;
-                    color
+                    family_color(&hostile_palette(colorblind), hostiles - 1)
                 }
             };
-            *style = SeatStyle { cue, color };
         }
         Self(styles)
     }
 
-    pub fn get(&self, owner: PlayerId) -> SeatStyle {
+    pub fn get(&self, owner: PlayerId) -> Color {
         self.0[usize::from(owner.0)]
     }
 }
 
-/// The accent the roster's art wears, which own seats keep.
-pub(crate) fn roster_accent(colorblind: bool) -> Color {
+/// Your own seat's color: a hue neither the ally nor the hostile family
+/// uses, so "mine" never reads as a friend or a foe.
+pub(crate) fn self_color(colorblind: bool) -> Color {
+    // Near-white holds apart from both families under deutan, protan,
+    // and tritan vision, where every green collapses toward a warm hue.
     if colorblind {
-        color_u8!(230, 120, 30, 255)
+        color_u8!(245, 245, 240, 255)
     } else {
-        color_u8!(196, 87, 59, 255)
+        color_u8!(40, 190, 110, 255)
     }
 }
 
-/// Stable hues by rank within the ally or the hostile family.
-fn identity_color(cue: AllegianceCue, rank: usize, colorblind: bool) -> Color {
-    let allies = if colorblind {
+/// Cool blues and violets, clear of the self green.
+fn ally_palette(colorblind: bool) -> [Color; 8] {
+    if colorblind {
         [
-            color_u8!(238, 234, 222, 255),
-            color_u8!(112, 184, 238, 255),
-            color_u8!(181, 158, 232, 255),
-            color_u8!(145, 207, 190, 255),
-            color_u8!(107, 148, 224, 255),
-            color_u8!(137, 207, 229, 255),
-            color_u8!(200, 181, 239, 255),
-            color_u8!(111, 188, 174, 255),
+            color_u8!(120, 190, 255, 255),
+            color_u8!(150, 160, 255, 255),
+            color_u8!(100, 215, 255, 255),
+            color_u8!(185, 165, 255, 255),
+            color_u8!(90, 160, 245, 255),
+            color_u8!(170, 205, 255, 255),
+            color_u8!(130, 135, 240, 255),
+            color_u8!(150, 225, 255, 255),
         ]
     } else {
         [
             color_u8!(100, 160, 245, 255),
-            color_u8!(68, 190, 205, 255),
             color_u8!(165, 139, 235, 255),
-            color_u8!(132, 201, 170, 255),
-            color_u8!(64, 119, 221, 255),
             color_u8!(113, 203, 239, 255),
+            color_u8!(64, 119, 221, 255),
             color_u8!(196, 162, 242, 255),
-            color_u8!(72, 174, 157, 255),
+            color_u8!(140, 150, 250, 255),
+            color_u8!(120, 96, 214, 255),
+            color_u8!(160, 200, 250, 255),
         ]
-    };
-    let hostiles = if colorblind {
+    }
+}
+
+/// Warm reds, oranges, and magentas.
+fn hostile_palette(colorblind: bool) -> [Color; 8] {
+    if colorblind {
         [
             color_u8!(211, 65, 60, 255),
             color_u8!(232, 128, 35, 255),
@@ -123,12 +128,12 @@ fn identity_color(cue: AllegianceCue, rank: usize, colorblind: bool) -> Color {
             color_u8!(196, 124, 37, 255),
             color_u8!(154, 50, 85, 255),
         ]
-    };
-    let palette = match cue {
-        AllegianceCue::Ally => allies,
-        AllegianceCue::Hostile => hostiles,
-        AllegianceCue::Mine => unreachable!("own seats use the roster accent"),
-    };
+    }
+}
+
+/// The `rank`th seat's color within a family; a family larger than its
+/// palette reuses it lightened.
+fn family_color(palette: &[Color; 8], rank: usize) -> Color {
     let base = palette[rank % palette.len()];
     if rank < palette.len() {
         base
