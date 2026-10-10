@@ -194,6 +194,13 @@ fn metrics(view: Vec2, ui: f32) -> GridMetrics {
     }
 }
 
+/// Whether a card shows whole on the shelf. A card scrolled flush with an
+/// edge lands there only to within float rounding.
+fn on_shelf(card: Rect, grid: GridMetrics) -> bool {
+    const SLACK: f32 = 0.5;
+    card.y >= grid.top - SLACK && card.y + card.h <= grid.bottom + SLACK
+}
+
 /// The map grid's coaching line.
 fn browser_hint(touch_only: bool) -> &'static str {
     if touch_only {
@@ -353,11 +360,10 @@ impl Browser {
             let max = max_scroll(&lines(entries, cols), view, ui);
             self.scroll_y = self.scroll_y.clamp(0.0, max);
             let layout = self.layout(entries, view, ui);
-            let selected_fully_visible = layout.cards.iter().any(|(entry, rect)| {
-                *entry == self.selected
-                    && rect.y >= metrics(view, ui).top
-                    && rect.y + rect.h <= metrics(view, ui).bottom
-            });
+            let selected_fully_visible = layout
+                .cards
+                .iter()
+                .any(|(entry, rect)| *entry == self.selected && on_shelf(*rect, metrics(view, ui)));
             if !layout.cards.is_empty() && !selected_fully_visible {
                 self.ensure_visible(entries);
             }
@@ -418,9 +424,7 @@ impl Browser {
                     // and the second Enter commits.
                     let shown = self.layout(entries, view, ui);
                     if shown.cards.iter().any(|(entry, rect)| {
-                        *entry == self.selected
-                            && rect.y >= shelf_top
-                            && rect.y + rect.h <= shelf_bottom
+                        *entry == self.selected && on_shelf(*rect, metrics(view, ui))
                     }) {
                         return Out::Pick(self.selected);
                     }

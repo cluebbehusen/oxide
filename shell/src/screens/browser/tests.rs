@@ -388,3 +388,16 @@ fn the_remembered_pick_is_found_by_path() {
     b.select_path(&entries, Some(std::path::Path::new("gone.json")));
     assert_eq!(b.selected, 7, "a vanished file keeps the old ground");
 }
+
+#[test]
+fn enter_commits_a_card_scrolled_flush_with_the_shelf_bottom() {
+    crate::render::set_viewport(640.0, 400.0);
+    let entries: Vec<ScenarioEntry> = (0..33).map(|i| entry(&format!("m{i}"), 2)).collect();
+    let mut b = Browser::new();
+    press(&mut b, &entries, Key::End);
+    let out = (0..2)
+        .map(|_| press(&mut b, &entries, Key::Enter))
+        .find(|out| *out != Out::Stay);
+    crate::render::set_viewport(1280.0, 800.0);
+    assert_eq!(out, Some(Out::Pick(32)));
+}
