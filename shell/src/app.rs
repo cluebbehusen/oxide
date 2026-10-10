@@ -141,6 +141,9 @@ fn live_playback(game: &Game) -> Result<PlaybackSession> {
 
 #[expect(clippy::too_many_lines, reason = "startup and the native frame loop")]
 pub(crate) async fn run(args: Args) -> Result<()> {
+    // miniquad paces iOS at 60 fps unless asked for the display's full
+    // rate, 120 Hz on ProMotion iPads. Other platforms ignore the request.
+    macroquad::miniquad::window::set_preferred_frame_rate(None);
     let review_font = std::env::var_os("OXIDE_REVIEW_FONT")
         .map(std::fs::read)
         .transpose()
