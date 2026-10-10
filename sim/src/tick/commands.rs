@@ -729,16 +729,7 @@ fn apply_build_inner(
         }) {
             return Err(RejectReason::QueueFull);
         }
-        let site = state.place_site(player, kind, anchor);
-        let index = state
-            .buildings
-            .iter()
-            .position(|b| b.id == site)
-            .expect("new site");
-        state.stamp_building_occupancy(index, false);
-        state.building_mut(site).expect("new site").provisional = true;
-        // A provisional site may overlap a hidden physical building.
-        state.rebuild_building_occupancy();
+        state.place_provisional_site(player, kind, anchor);
         state.player_mut(player).scrap -= cost;
         let mut landed = 0;
         for id in crew {

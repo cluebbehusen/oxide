@@ -101,6 +101,17 @@ fn building_blocks_passability() {
 }
 
 #[test]
+fn a_provisional_site_over_a_hidden_building_leaves_its_ground_blocked() {
+    let mut state = tiny_state();
+    state.place_building(PlayerId(0), BuildingKind::Foundry, TilePos::new(1, 1));
+    let before = state.building_occupancy.clone();
+    state.place_provisional_site(PlayerId(0), BuildingKind::Turret, TilePos::new(1, 1));
+    assert_eq!(state.building_occupancy, before);
+    state.rebuild_building_occupancy();
+    assert_eq!(state.building_occupancy, before);
+}
+
+#[test]
 fn building_geometry() {
     let mut state = tiny_state();
     let id = state.place_building(PlayerId(0), BuildingKind::Foundry, TilePos::new(1, 1));

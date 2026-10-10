@@ -2165,9 +2165,15 @@ impl State {
         kind: BuildingKind,
         anchor: TilePos,
     ) -> BuildingId {
+        let building = self.mint_building(player, kind, anchor);
+        self.insert_building(building)
+    }
+
+    /// A complete, full-health building with the next id, not yet placed.
+    fn mint_building(&mut self, player: PlayerId, kind: BuildingKind, anchor: TilePos) -> Building {
         let id = BuildingId(self.next_building_id);
         self.next_building_id += 1;
-        self.buildings.push(Building {
+        Building {
             id,
             player,
             kind,
@@ -2183,7 +2189,13 @@ impl State {
             cooldown: 0,
             salvage_drained: 0,
             salvage_credited: 0,
-        });
+        }
+    }
+
+    /// Appends a minted building and marks its occupancy.
+    fn insert_building(&mut self, building: Building) -> BuildingId {
+        let id = building.id;
+        self.buildings.push(building);
         self.stamp_building_occupancy(self.buildings.len() - 1, true);
         id
     }
@@ -2197,11 +2209,25 @@ impl State {
         kind: BuildingKind,
         anchor: TilePos,
     ) -> BuildingId {
-        let id = self.place_building(player, kind, anchor);
-        let b = self.building_mut(id).expect("just placed");
-        b.built = false;
-        b.hp = kind.base_stats().max_hp / 5;
-        id
+        let mut site = self.mint_building(player, kind, anchor);
+        site.built = false;
+        site.hp = kind.base_stats().max_hp / 5;
+        self.insert_building(site)
+    }
+
+    /// Records a paid blueprint whose ground is not yet verified. It claims
+    /// no occupancy, so it may sit over a building its owner cannot see.
+    pub(crate) fn place_provisional_site(
+        &mut self,
+        player: PlayerId,
+        kind: BuildingKind,
+        anchor: TilePos,
+    ) -> BuildingId {
+        let mut site = self.mint_building(player, kind, anchor);
+        site.built = false;
+        site.provisional = true;
+        site.hp = kind.base_stats().max_hp / 5;
+        self.insert_building(site)
     }
 
     /// Undoes a just-placed site completely, id counter included — for
