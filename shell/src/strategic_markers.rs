@@ -4,7 +4,7 @@ use crate::game::Scene;
 use crate::numeric;
 use crate::render::prim::{fill_circle, stroke_circle};
 use macroquad::prelude::*;
-use oxide_sim::{Unit, UnitKind};
+use oxide_sim::Unit;
 
 thread_local! {
     static PREFS: std::cell::Cell<crate::config::MarkerPrefs> =
@@ -38,36 +38,6 @@ fn transition(zoom: f32, start: f32, end: f32) -> f32 {
 
 pub(crate) fn replaces_units(zoom: f32) -> bool {
     marker_alpha(zoom) >= 1.0
-}
-
-#[derive(Clone, Copy)]
-enum Role {
-    Worker,
-    Gun,
-    Siege,
-    AntiAir,
-    Scout,
-    Support,
-    Transport,
-    Demolition,
-}
-
-fn role(kind: UnitKind) -> Role {
-    use UnitKind::{
-        Avalanche, Bombard, Breaker, Buzzard, Condor, Darter, Excavator, Flakhound, Gnat,
-        Harvester, Kestrel, Lancer, Moth, Sapper, Scuttler, Sentinel, Shrike, Skyhook, Stinger,
-        Sylph, Talon, Tender, Warden, Wisp,
-    };
-    match kind {
-        Harvester | Excavator => Role::Worker,
-        Sentinel | Lancer | Buzzard | Darter | Warden | Breaker => Role::Gun,
-        Bombard | Condor | Moth | Avalanche => Role::Siege,
-        Flakhound | Stinger | Wisp | Talon | Shrike | Sylph => Role::AntiAir,
-        Kestrel | Gnat => Role::Scout,
-        Tender => Role::Support,
-        Skyhook => Role::Transport,
-        Scuttler | Sapper => Role::Demolition,
-    }
 }
 
 pub(crate) fn visible(game: &Scene<'_>, unit: &Unit) -> bool {
@@ -136,41 +106,41 @@ pub fn draw_markers(game: &Scene<'_>, alpha: f32) {
                     ink,
                 );
             };
-            match role(unit.kind) {
-                Role::Worker => {
+            match crate::look::unit(unit.kind).marker {
+                crate::look::MarkerRole::Worker => {
                     line((-3.0, -3.0), (-3.0, 3.0));
                     line((3.0, -3.0), (3.0, 3.0));
                     line((-3.0, 3.0), (3.0, 3.0));
                 }
-                Role::Gun => {
+                crate::look::MarkerRole::Gun => {
                     draw_circle_lines(center.x, center.y + 1.0, 2.4, 1.3, ink);
                     line((0.0, 0.0), (0.0, -4.5));
                 }
-                Role::Siege => {
+                crate::look::MarkerRole::Siege => {
                     line((-3.5, 2.0), (0.0, -2.0));
                     line((0.0, -2.0), (3.5, 2.0));
                     line((-3.5, 4.0), (3.5, 4.0));
                 }
-                Role::AntiAir => {
+                crate::look::MarkerRole::AntiAir => {
                     line((-3.5, 1.5), (0.0, -2.0));
                     line((0.0, -2.0), (3.5, 1.5));
                     line((0.0, -2.0), (0.0, 4.0));
                 }
-                Role::Scout => {
+                crate::look::MarkerRole::Scout => {
                     stroke_circle(center, 3.0, 1.3, ink);
                     fill_circle(center, 1.0, ink);
                 }
-                Role::Support => {
+                crate::look::MarkerRole::Support => {
                     line((-3.5, 0.0), (3.5, 0.0));
                     line((0.0, -3.5), (0.0, 3.5));
                 }
-                Role::Transport => {
+                crate::look::MarkerRole::Transport => {
                     line((-3.0, -2.0), (-3.0, 2.0));
                     line((3.0, -2.0), (3.0, 2.0));
                     line((-3.0, 2.0), (3.0, 2.0));
                     line((-3.0, -2.0), (3.0, -2.0));
                 }
-                Role::Demolition => {
+                crate::look::MarkerRole::Demolition => {
                     line((-3.0, -3.0), (3.0, 3.0));
                     line((-3.0, 3.0), (3.0, -3.0));
                 }

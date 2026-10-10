@@ -8,12 +8,15 @@ fn every_production_pose_resolves_to_authored_work_art() {
     use crate::presentation_animation::{BuildingActivity, BuildingAnimationState};
     let atlas: serde_json::Value =
         serde_json::from_str(include_str!("../../../../assets/sprites/atlas.json")).unwrap();
-    for kind in [
-        BuildingKind::Foundry,
-        BuildingKind::Fabricator,
-        BuildingKind::Crucible,
-        BuildingKind::Airworks,
-    ] {
+    for kind in BuildingKind::ALL {
+        assert_eq!(
+            production_frames(kind).is_some(),
+            !kind.base_stats().produces.is_empty(),
+            "{kind:?}"
+        );
+        if production_frames(kind).is_none() {
+            continue;
+        }
         for step in 0..=120 {
             let state = BuildingAnimationState {
                 construction: None,
@@ -652,32 +655,42 @@ fn bastion_body_and_mount_actions_never_drift() {
 
 #[test]
 fn defense_rows_cover_report_recovery_and_charge_boundaries() {
-    let counts = [
-        (BuildingKind::Turret, 4),
-        (BuildingKind::FlakTurret, 8),
-        (BuildingKind::Bastion, 9),
-    ];
-    for (kind, count) in counts {
+    use crate::assets::{building_stem, rung_stem, shipped_frames};
+    for kind in BuildingKind::ALL {
+        let Some(look) = crate::look::defense(kind) else {
+            assert_eq!(defense_preparation_frame(kind, 0.5), None, "{kind:?}");
+            continue;
+        };
+        // Every rung's mount, and a charge rack on the hull, must hold
+        // every frame the gun selects.
+        let mut counts: Vec<usize> = (0..kind.tiers().len())
+            .map(|tier| shipped_frames(&rung_stem(look.mount, tier), "action"))
+            .collect();
+        if look.charge_rack {
+            counts.push(shipped_frames(building_stem(kind), "action"));
+        }
+        let count = counts.into_iter().min().unwrap();
         for progress in [0.0, 0.25, 0.5, 0.75, 1.0] {
-            assert!(defense_preparation_frame(kind, progress) < count);
-            assert!(
+            let frames = [
+                defense_preparation_frame(kind, progress),
                 defense_attack_frame(
                     kind,
                     AttackPhase::Report {
                         weapon: 0,
                         progress,
                     },
-                ) < count
-            );
-            assert!(
+                ),
                 defense_attack_frame(
                     kind,
                     AttackPhase::Recover {
                         weapon: 0,
                         progress,
                     },
-                ) < count
-            );
+                ),
+            ];
+            for frame in frames {
+                assert!(frame.unwrap() < count, "{kind:?} at {progress}");
+            }
         }
     }
 }

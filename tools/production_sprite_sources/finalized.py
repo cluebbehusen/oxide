@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -47,249 +46,63 @@ Registry = dict[str, Image.Image]
 SequenceBuilder = Callable[[], ground_base.GroundUnitSequence]
 
 
-@dataclass(frozen=True)
-class FrameSet:
-    """One atlas row's suffixes, events, and authored frame durations."""
-
-    suffixes: tuple[str, ...]
-    events: tuple[str, ...]
-    durations_ms: tuple[int, ...]
-
-
-UNIT_MOVEMENT: dict[str, FrameSet] = {
-    "sentinel": FrameSet(("_move1", "_move2"), ("travel_1", "travel_2"), (150, 150)),
-    "scuttler": FrameSet(
-        ("_move1", "_move2"), ("leg_step_a", "leg_step_b"), (130, 130)
-    ),
-    "lancer": FrameSet(("_move1", "_move2"), ("travel_1", "travel_2"), (150, 150)),
-    "bombard": FrameSet(("_move1", "_move2"), ("travel_1", "travel_2"), (170, 170)),
-    "flakhound": FrameSet(("_tread1", "_tread2"), ("travel_1", "travel_2"), (150, 150)),
-    "stinger": FrameSet(
-        ("_move1", "_move2"), ("wheel_step_a", "wheel_step_b"), (130, 130)
-    ),
-    "buzzard": FrameSet(
-        ("_move1", "_move2"),
-        ("rotor_phase_a", "rotor_phase_b"),
-        (160, 160),
-    ),
-    "darter": FrameSet(
-        ("_move1", "_move2"),
-        ("internal_propulsion_a", "internal_propulsion_b"),
-        (150, 150),
-    ),
-    "talon": FrameSet(
-        ("_move1", "_move2"),
-        ("internal_propulsion_a", "internal_propulsion_b"),
-        (150, 150),
-    ),
-    "wisp": FrameSet(
-        ("_move1", "_move2"), ("rotor_phase_a", "rotor_phase_b"), (150, 150)
-    ),
+UNIT_MOVEMENT: dict[str, tuple[str, ...]] = {
+    "sentinel": ("_move1", "_move2"),
+    "scuttler": ("_move1", "_move2"),
+    "lancer": ("_move1", "_move2"),
+    "bombard": ("_move1", "_move2"),
+    "flakhound": ("_tread1", "_tread2"),
+    "stinger": ("_move1", "_move2"),
+    "buzzard": ("_move1", "_move2"),
+    "darter": ("_move1", "_move2"),
+    "talon": ("_move1", "_move2"),
+    "wisp": ("_move1", "_move2"),
 }
 
-UNIT_ACTIONS: dict[str, FrameSet] = {
-    "sentinel": FrameSet(
-        tuple(f"_action{i}" for i in range(1, 5)),
-        ("breech_lock", "damage+barrel_report", "breech_return", "attack_settle"),
-        (140, 100, 150, 460),
-    ),
-    "scuttler": FrameSet(
-        tuple(f"_action{i}" for i in range(1, 5)),
-        ("shear_open", "damage+shear_bite", "shear_release", "attack_settle"),
-        (150, 120, 180, 440),
-    ),
-    "lancer": FrameSet(
-        tuple(f"_action{i}" for i in range(1, 7)),
-        (
-            "charge_cell_1",
-            "charge_cell_2",
-            "charge_cell_3",
-            "damage+rail_report",
-            "rail_return",
-            "attack_settle",
-        ),
-        (140, 140, 170, 100, 180, 480),
-    ),
-    "bombard": FrameSet(
-        tuple(f"_action{i}" for i in range(1, 7)),
-        (
-            "rack_shell_selected",
-            "shell_on_loading_tray",
-            "shell_ram+breech_lock+spades_plant",
-            "damage+artillery_launch",
-            "gun_return",
-            "attack_settle",
-        ),
-        (230, 230, 260, 160, 240, 540),
-    ),
-    "flakhound": FrameSet(
-        tuple(f"_action{i}" for i in range(1, 10)),
-        (
-            "charge_0",
-            "charge_1",
-            "charge_2",
-            "charge_3",
-            "charge_4",
-            "report_left_yoke",
-            "damage+report_right_yoke",
-            "paired_yokes_recover",
-            "attack_settle",
-        ),
-        (120, 120, 120, 120, 180, 100, 110, 180, 500),
-    ),
-    "stinger": FrameSet(
-        tuple(f"_action{i}" for i in range(1, 5)),
-        (
-            "paired_yoke_lock",
-            "damage+paired_aa_burst",
-            "paired_yoke_return",
-            "attack_settle",
-        ),
-        (160, 100, 150, 460),
-    ),
-    "buzzard": FrameSet(
-        tuple(f"_action{i}" for i in range(1, 5)),
-        (
-            "forward_gun_charges",
-            "damage+forward_gun_report",
-            "forward_gun_recovers",
-            "attack_settle",
-        ),
-        (170, 90, 150, 520),
-    ),
-    "darter": FrameSet(
-        tuple(f"_action{i}" for i in range(1, 5)),
-        (
-            "forward_needle_arms",
-            "damage+forward_needle_report",
-            "forward_needle_recovers",
-            "attack_settle",
-        ),
-        (170, 100, 170, 480),
-    ),
-    "talon": FrameSet(
-        tuple(f"_action{i}" for i in range(1, 5)),
-        (
-            "pursuit_forks_converge",
-            "damage+interceptor_cannon_report",
-            "pursuit_forks_release",
-            "attack_settle",
-        ),
-        (170, 100, 170, 480),
-    ),
-    "wisp": FrameSet(
-        tuple(f"_action{i}" for i in range(1, 5)),
-        (
-            "relay_striker_arms",
-            "damage+relay_striker_snap",
-            "relay_striker_returns",
-            "attack_settle",
-        ),
-        (170, 100, 170, 480),
-    ),
+UNIT_ACTIONS: dict[str, tuple[str, ...]] = {
+    "sentinel": tuple(f"_action{i}" for i in range(1, 5)),
+    "scuttler": tuple(f"_action{i}" for i in range(1, 5)),
+    "lancer": tuple(f"_action{i}" for i in range(1, 7)),
+    "bombard": tuple(f"_action{i}" for i in range(1, 7)),
+    "flakhound": tuple(f"_action{i}" for i in range(1, 10)),
+    "stinger": tuple(f"_action{i}" for i in range(1, 5)),
+    "buzzard": tuple(f"_action{i}" for i in range(1, 5)),
+    "darter": tuple(f"_action{i}" for i in range(1, 5)),
+    "talon": tuple(f"_action{i}" for i in range(1, 5)),
+    "wisp": tuple(f"_action{i}" for i in range(1, 5)),
 }
 
-HARVESTER_ACTIONS = FrameSet(
-    ("", "_scoop1", "_scoop2", "_scoop1", ""),
-    (
-        "ready",
-        "pincers_deploy",
-        "bucket_advance",
-        "bucket_retract",
-        "pincers_home",
-    ),
-    (360, 180, 220, 180, 260),
-)
+HARVESTER_ACTIONS = ("", "_scoop1", "_scoop2", "_scoop1", "")
 
-BUILDING_WORK: dict[str, FrameSet] = {
-    "foundry": FrameSet(
-        ("_work1", "_work2", "_work3", "_work4"),
-        (
-            "crane_left+light_1+eye_warm",
-            "crane_center+light_2+eye_peak",
-            "crane_right+light_3+eye_cool",
-            "crane_home+light_4+eye_rest",
-        ),
-        (500, 500, 500, 500),
-    ),
-    "fabricator": FrameSet(
-        ("_work1", "_work2", "_work3", "_work4"),
-        ("carriage_left", "tool_press", "carriage_right", "carriage_home"),
-        (190, 240, 190, 260),
-    ),
-    "array": FrameSet(
-        tuple(f"_work{i}" for i in range(1, 7)),
-        tuple(f"sweep_{i}" for i in range(1, 6)) + ("sweep_home",),
-        (180, 180, 180, 180, 180, 260),
-    ),
-    "reclaimer": FrameSet(
-        ("_work1", "_work2", "_work3"),
-        ("drum_turn_1", "drum_turn_2", "drum_turn_3"),
-        (180, 180, 180),
-    ),
-    "repair_bay": FrameSet(
-        ("_work1", "_work2", "_work3", "_work4"),
-        ("arm_unfold", "weld_contact", "arm_recover", "arm_home"),
-        (210, 250, 190, 280),
-    ),
-    "airworks": FrameSet(
-        ("_work1", "_work2", "_work3", "_work4"),
-        ("systems_sequence", "exit_armed", "doors_opening", "doors_open"),
-        (260, 260, 240, 520),
-    ),
+BUILDING_WORK: dict[str, tuple[str, ...]] = {
+    "foundry": ("_work1", "_work2", "_work3", "_work4"),
+    "fabricator": ("_work1", "_work2", "_work3", "_work4"),
+    "array": tuple(f"_work{i}" for i in range(1, 7)),
+    "reclaimer": ("_work1", "_work2", "_work3"),
+    "repair_bay": ("_work1", "_work2", "_work3", "_work4"),
+    "airworks": ("_work1", "_work2", "_work3", "_work4"),
 }
 
-TURRET_ACTIONS = FrameSet(
-    tuple(f"_action{i}" for i in range(1, 5)),
-    ("damage+muzzle", "recoil", "reload", "ready"),
-    (90, 130, 190, 270),
-)
+TURRET_ACTIONS = tuple(f"_action{i}" for i in range(1, 5))
 
-DEFENSE_ACTIONS: dict[str, FrameSet] = {
+DEFENSE_ACTIONS: dict[str, tuple[str, ...]] = {
     "turret_barrel": TURRET_ACTIONS,
     "turret_barrel_t1": TURRET_ACTIONS,
     "turret_barrel_t2": TURRET_ACTIONS,
-    "flak_mount": FrameSet(
-        tuple(f"_action{i}" for i in range(1, 9)),
-        (
-            "charge_1",
-            "charge_2",
-            "charge_3",
-            "charge_4",
-            "muzzle_left",
-            "damage+muzzle_right",
-            "recovery",
-            "ready",
-        ),
-        (260, 260, 260, 260, 100, 100, 180, 500),
-    ),
-    "bastion_mount": FrameSet(
-        tuple(f"_action{i}" for i in range(1, 10)),
-        (
-            "charge_1",
-            "charge_2",
-            "charge_3",
-            "charge_4",
-            "charge_5",
-            "damage+muzzle",
-            "recoil",
-            "breech_settle",
-            "ready",
-        ),
-        (300, 300, 300, 300, 360, 50, 100, 100, 480),
-    ),
+    "flak_mount": tuple(f"_action{i}" for i in range(1, 9)),
+    "bastion_mount": tuple(f"_action{i}" for i in range(1, 10)),
 }
 
-DEFENSE_BASE_ACTIONS: dict[str, FrameSet] = {
+DEFENSE_BASE_ACTIONS: dict[str, tuple[str, ...]] = {
     "bastion": DEFENSE_ACTIONS["bastion_mount"],
 }
 
 ACTION_COUNTS = {
-    **{stem: len(frames.suffixes) for stem, frames in UNIT_ACTIONS.items()},
-    "harvester": len(HARVESTER_ACTIONS.suffixes),
-    **{stem: len(frames.suffixes) for stem, frames in BUILDING_WORK.items()},
-    **{stem: len(frames.suffixes) for stem, frames in DEFENSE_ACTIONS.items()},
-    **{stem: len(frames.suffixes) for stem, frames in DEFENSE_BASE_ACTIONS.items()},
+    **{stem: len(frames) for stem, frames in UNIT_ACTIONS.items()},
+    "harvester": len(HARVESTER_ACTIONS),
+    **{stem: len(frames) for stem, frames in BUILDING_WORK.items()},
+    **{stem: len(frames) for stem, frames in DEFENSE_ACTIONS.items()},
+    **{stem: len(frames) for stem, frames in DEFENSE_BASE_ACTIONS.items()},
 }
 
 WISP_CONTINUOUS_IDLE_SUFFIXES = ("_move1", "_move2")
@@ -372,13 +185,11 @@ def _install_units(registry: Registry, out: Path, faction: str) -> None:
             sequence = builder()
             _put(registry, out, f"{stem}_{faction}", sequence.frames[0].image)
             for suffix, frame in zip(
-                UNIT_MOVEMENT[stem].suffixes, sequence.frames[1:3], strict=True
+                UNIT_MOVEMENT[stem], sequence.frames[1:3], strict=True
             ):
                 _put(registry, out, f"{stem}_{faction}{suffix}", frame.image)
             action_frames = sequence.frames[4:]
-            for suffix, frame in zip(
-                UNIT_ACTIONS[stem].suffixes, action_frames, strict=True
-            ):
+            for suffix, frame in zip(UNIT_ACTIONS[stem], action_frames, strict=True):
                 _put(registry, out, f"{stem}_{faction}{suffix}", frame.image)
 
 
@@ -548,7 +359,7 @@ def _install_working_buildings(registry: Registry, out: Path, faction: str) -> N
         fabricator = air_support_final.fabricator_frames()
         _put(registry, out, f"fabricator_{faction}", fabricator[0].image)
         for suffix, frame in zip(
-            BUILDING_WORK["fabricator"].suffixes, fabricator[1:], strict=True
+            BUILDING_WORK["fabricator"], fabricator[1:], strict=True
         ):
             _put(registry, out, f"fabricator_{faction}{suffix}", frame.image)
 
@@ -557,9 +368,7 @@ def _install_working_buildings(registry: Registry, out: Path, faction: str) -> N
             for frame in structures_base.repair_bay_frames()
         )
         _put(registry, out, f"repair_bay_{faction}", repair[0])
-        for suffix, image in zip(
-            BUILDING_WORK["repair_bay"].suffixes, repair[1:], strict=True
-        ):
+        for suffix, image in zip(BUILDING_WORK["repair_bay"], repair[1:], strict=True):
             _put(registry, out, f"repair_bay_{faction}{suffix}", image)
 
         headings = (225, 285, 345, 405, 465, 525, 585)
@@ -567,9 +376,7 @@ def _install_working_buildings(registry: Registry, out: Path, faction: str) -> N
             structures_base._array_sprite(heading=heading) for heading in headings
         )
         _put(registry, out, f"array_{faction}", array_frames[0])
-        for suffix, image in zip(
-            BUILDING_WORK["array"].suffixes, array_frames[1:], strict=True
-        ):
+        for suffix, image in zip(BUILDING_WORK["array"], array_frames[1:], strict=True):
             _put(registry, out, f"array_{faction}{suffix}", image)
 
         reclaimer_frames = tuple(
@@ -577,7 +384,7 @@ def _install_working_buildings(registry: Registry, out: Path, faction: str) -> N
         )
         _put(registry, out, f"reclaimer_{faction}", reclaimer_frames[0])
         for suffix, image in zip(
-            BUILDING_WORK["reclaimer"].suffixes, reclaimer_frames[1:], strict=True
+            BUILDING_WORK["reclaimer"], reclaimer_frames[1:], strict=True
         ):
             _put(registry, out, f"reclaimer_{faction}{suffix}", image)
 
@@ -585,7 +392,7 @@ def _install_working_buildings(registry: Registry, out: Path, faction: str) -> N
     sources.append(sources[0])
     tuned = tuple(_family_tuned_foundry(source, faction) for source in sources)
     _put(registry, out, f"foundry_{faction}", tuned[0])
-    for suffix, image in zip(BUILDING_WORK["foundry"].suffixes, tuned[1:], strict=True):
+    for suffix, image in zip(BUILDING_WORK["foundry"], tuned[1:], strict=True):
         _put(registry, out, f"foundry_{faction}{suffix}", image)
 
 
@@ -647,9 +454,7 @@ def _install_defenses(registry: Registry, out: Path, faction: str) -> None:
             turret_family.turret_mount(faction, tier, phase) for phase in range(5)
         )
         _put(registry, out, f"{mount_stem}_{faction}", mounts[0])
-        for suffix, mount in zip(
-            DEFENSE_ACTIONS[mount_stem].suffixes, mounts[1:], strict=True
-        ):
+        for suffix, mount in zip(DEFENSE_ACTIONS[mount_stem], mounts[1:], strict=True):
             _put(registry, out, f"{mount_stem}_{faction}{suffix}", mount)
 
     flak_specs = (
@@ -670,7 +475,7 @@ def _install_defenses(registry: Registry, out: Path, faction: str) -> None:
     _put(registry, out, f"flak_turret_{faction}", flak_frames[0][0])
     _put(registry, out, f"flak_mount_{faction}", flak_frames[0][1])
     for suffix, (_, mount) in zip(
-        DEFENSE_ACTIONS["flak_mount"].suffixes, flak_frames[1:], strict=True
+        DEFENSE_ACTIONS["flak_mount"], flak_frames[1:], strict=True
     ):
         _put(registry, out, f"flak_mount_{faction}{suffix}", mount)
 
@@ -688,7 +493,7 @@ def _install_defenses(registry: Registry, out: Path, faction: str) -> None:
     _put(registry, out, f"bastion_{faction}", bastion_frames[0][0])
     _put(registry, out, f"bastion_mount_{faction}", bastion_frames[0][1])
     for suffix, (base, mount) in zip(
-        DEFENSE_ACTIONS["bastion_mount"].suffixes, bastion_frames[1:], strict=True
+        DEFENSE_ACTIONS["bastion_mount"], bastion_frames[1:], strict=True
     ):
         _put(registry, out, f"bastion_{faction}{suffix}", base)
         _put(registry, out, f"bastion_mount_{faction}{suffix}", mount)
