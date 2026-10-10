@@ -115,7 +115,11 @@ fn wheel_scroll_moves_the_window_and_only_the_window() {
     // only the second Enter commits — it never fires blind.
     let view = crate::render::viewport();
     let ui = crate::render::ui_scale();
-    let (_, _, _, _, _, shelf_top, shelf_bottom) = metrics(view, ui);
+    let GridMetrics {
+        top: shelf_top,
+        bottom: shelf_bottom,
+        ..
+    } = metrics(view, ui);
     assert!(
         !b.layout(&entries, view, ui)
             .cards
@@ -165,7 +169,7 @@ fn the_wheel_stops_at_the_last_full_screenful() {
     }
     let end = b.layout(&entries, view, ui);
     assert!(!end.more_below, "the shelf's tail is on screen");
-    let (_, _, _, _, _, _, shelf_bottom) = metrics(view, ui);
+    let shelf_bottom = metrics(view, ui).bottom;
     let tail_bottom = end
         .cards
         .iter()

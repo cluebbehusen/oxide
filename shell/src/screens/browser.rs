@@ -137,14 +137,34 @@ fn content_height(all: &[Line], card_h: f32, heading_h: f32, gap: f32) -> f32 {
 /// bottom of the window, so scrolling can never park one row above an
 /// otherwise empty screen.
 fn max_scroll(all: &[Line], view: Vec2, ui: f32) -> f32 {
-    let (_, _, _, card_h, heading_h, top, bottom) = metrics(view, ui);
+    let GridMetrics {
+        card_h,
+        heading_h,
+        top,
+        bottom,
+        ..
+    } = metrics(view, ui);
     let gap = 16.0 * ui;
     (content_height(all, card_h, heading_h, gap) - (bottom - top)).max(0.0)
 }
 
 /// Card and band sizes at this viewport. Returns
 /// (`band_x`, `band_w`, `card_w`, `card_h`, `heading_h`, top, bottom).
-fn metrics(view: Vec2, ui: f32) -> (f32, f32, f32, f32, f32, f32, f32) {
+/// The grid's geometry in a window.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct GridMetrics {
+    /// The card band's left edge and width.
+    band_x: f32,
+    band_w: f32,
+    card_w: f32,
+    card_h: f32,
+    heading_h: f32,
+    /// The scrolling shelf's top and bottom edges.
+    top: f32,
+    bottom: f32,
+}
+
+fn metrics(view: Vec2, ui: f32) -> GridMetrics {
     let cols = columns(view.x, ui) as f32;
     let band_w = (view.x - 96.0 * ui).min(1120.0 * ui);
     let band_x = (view.x - band_w) * 0.5;
@@ -163,7 +183,15 @@ fn metrics(view: Vec2, ui: f32) -> (f32, f32, f32, f32, f32, f32, f32) {
     let card_h = (card_w * 0.5 + 26.0 * ui)
         .min(bottom - top - heading_h - 16.0 * ui)
         .max(40.0);
-    (band_x, band_w, card_w, card_h, heading_h, top, bottom)
+    GridMetrics {
+        band_x,
+        band_w,
+        card_w,
+        card_h,
+        heading_h,
+        top,
+        bottom,
+    }
 }
 
 /// The map grid's coaching line.
@@ -205,7 +233,15 @@ impl Browser {
 
     /// The frame's visible geometry.
     pub fn layout(&self, entries: &[ScenarioEntry], view: Vec2, ui: f32) -> Layout {
-        let (band_x, band_w, card_w, card_h, heading_h, top, bottom) = metrics(view, ui);
+        let GridMetrics {
+            band_x,
+            band_w,
+            card_w,
+            card_h,
+            heading_h,
+            top,
+            bottom,
+        } = metrics(view, ui);
         let cols = columns(view.x, ui);
         let gap = 16.0 * ui;
         let all = lines(entries, cols);
@@ -266,7 +302,13 @@ impl Browser {
         let ui = crate::render::ui_scale();
         let cols = columns(view.x, ui);
         let all = lines(entries, cols);
-        let (_, _, _, card_h, heading_h, top, bottom) = metrics(view, ui);
+        let GridMetrics {
+            card_h,
+            heading_h,
+            top,
+            bottom,
+            ..
+        } = metrics(view, ui);
         let gap = 16.0 * ui;
         let (li, _) = Self::locate(entries, cols, self.selected);
         let mut line_top = 0.0;
@@ -313,14 +355,18 @@ impl Browser {
             let layout = self.layout(entries, view, ui);
             let selected_fully_visible = layout.cards.iter().any(|(entry, rect)| {
                 *entry == self.selected
-                    && rect.y >= metrics(view, ui).5
-                    && rect.y + rect.h <= metrics(view, ui).6
+                    && rect.y >= metrics(view, ui).top
+                    && rect.y + rect.h <= metrics(view, ui).bottom
             });
             if !layout.cards.is_empty() && !selected_fully_visible {
                 self.ensure_visible(entries);
             }
         }
-        let (_, _, _, _, _, shelf_top, shelf_bottom) = metrics(view, ui);
+        let GridMetrics {
+            top: shelf_top,
+            bottom: shelf_bottom,
+            ..
+        } = metrics(view, ui);
         let card_at = |browser: &Self, p: Vec2| {
             if p.y < shelf_top || p.y >= shelf_bottom {
                 return None;
@@ -391,7 +437,12 @@ impl Browser {
                             Line::Heading(_) => None,
                         })
                         .collect();
-                    let (_, _, _, card_h, _, top, bottom) = metrics(view, ui);
+                    let GridMetrics {
+                        card_h,
+                        top,
+                        bottom,
+                        ..
+                    } = metrics(view, ui);
                     let page_rows =
                         numeric::to_usize(((bottom - top) / (card_h + 16.0 * ui)).floor());
                     if let Some(next) = step_grid(&rows, self.selected, nav, page_rows) {
@@ -496,7 +547,13 @@ impl Browser {
         // Edge rows stay at their true translated positions so wheel
         // and touch input move continuously. Opaque chrome masks clip
         // the portions outside the shelf.
-        let (band_x, band_w, _, _, _, top, bottom) = metrics(view, ui);
+        let GridMetrics {
+            band_x,
+            band_w,
+            top,
+            bottom,
+            ..
+        } = metrics(view, ui);
         draw_rectangle(0.0, 0.0, view.x, top, crate::render::OUTSIDE);
         draw_rectangle(
             0.0,
