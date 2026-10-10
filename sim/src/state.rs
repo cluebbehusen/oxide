@@ -539,8 +539,39 @@ impl Unit {
     }
 }
 
+/// Where a building stands in its life, with the meter that phase runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "phase", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BuildingPhase {
+    /// A paid blueprint awaiting full footprint visibility. It has no
+    /// physical occupancy and cannot take damage or receive construction
+    /// work.
+    Provisional,
+    /// A verified construction site: it blocks ground and takes damage but
+    /// doesn't see, fight, or produce.
+    Site {
+        /// Ticks of construction work done.
+        #[serde(default, skip_serializing_if = "crate::is_default")]
+        progress: u32,
+    },
+    /// Climbing to its `tier`, whose stats already apply, out of service
+    /// like a site until the upgrade completes.
+    Upgrading {
+        /// Ticks of upgrade work done.
+        #[serde(default, skip_serializing_if = "crate::is_default")]
+        progress: u32,
+    },
+    /// Complete and in service.
+    Built {
+        /// Ticks of training on the front of the queue.
+        #[serde(default, skip_serializing_if = "crate::is_default")]
+        training: u32,
+    },
+}
+
 /// A static entity occupying a rectangle of tiles.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Building {
     /// Stable id; `buildings` is sorted by it.
     pub id: BuildingId,
@@ -554,8 +585,8 @@ pub struct Building {
     pub hp: u32,
     /// Units waiting to be produced, front first.
     pub queue: std::collections::VecDeque<UnitKind>,
-    /// Ticks of progress on `queue[0]`.
-    pub progress: u32,
+    /// Construction, upgrade, or service, with that phase's meter.
+    pub phase: BuildingPhase,
     /// Where finished units report: harvesters mine a rallied scrap node,
     /// combat units hunt there, everyone else walks. `None` means
     /// stand at the doorstep.
@@ -567,21 +598,10 @@ pub struct Building {
     /// not erase it or suppress ordinary fallback acquisition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focus: Option<crate::AttackTarget>,
-    /// Whether construction has finished. Verified sites block ground and
-    /// take damage but don't see, fight, or produce.
-    #[serde(
-        default = "default_true",
-        skip_serializing_if = "core::clone::Clone::clone"
-    )]
-    pub built: bool,
-    /// Paid blueprint awaiting full footprint visibility. It has no physical
-    /// occupancy and cannot take damage or receive construction work.
-    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
-    pub provisional: bool,
     /// Position on the kind's upgrade ladder (zero = base). An accepted
-    /// [`crate::Command::UpgradeBuilding`] advances it immediately while
-    /// setting `built` false; every stats read follows the committed tier
-    /// through [`Building::stats`].
+    /// [`crate::Command::UpgradeBuilding`] advances it immediately and
+    /// starts [`BuildingPhase::Upgrading`]; every stats read follows the
+    /// committed tier through [`Building::stats`].
     #[serde(default, skip_serializing_if = "crate::is_default")]
     pub tier: u8,
     /// Ticks until this building may fire again (turrets).
@@ -628,16 +648,105 @@ impl ExtractorIncome {
     }
 }
 
-fn default_true() -> bool {
-    true
-}
-
 impl Building {
     /// This building's stats at its current tier — the accessor every
     /// live read goes through; [`crate::stats::BuildingKind::base_stats`]
     /// answers only tier-invariant questions.
     pub fn stats(&self) -> &'static crate::stats::BuildingStats {
         self.kind.tier_stats(self.tier)
+    }
+
+    /// Whether the building is complete and in service: only a built
+    /// building sees, fights, trains, or works.
+    pub fn built(&self) -> bool {
+        matches!(self.phase, BuildingPhase::Built { .. })
+    }
+
+    /// Whether this is a paid blueprint still awaiting its ground.
+    pub fn provisional(&self) -> bool {
+        self.phase == BuildingPhase::Provisional
+    }
+
+    /// Whether an upgrade is under way.
+    pub fn upgrading(&self) -> bool {
+        matches!(self.phase, BuildingPhase::Upgrading { .. })
+    }
+
+    /// Whether the building was paid for but never finished: a provisional
+    /// blueprint or a site. An upgrading building is not: it already stood
+    /// complete at its previous rung.
+    pub fn under_construction(&self) -> bool {
+        matches!(
+            self.phase,
+            BuildingPhase::Provisional | BuildingPhase::Site { .. }
+        )
+    }
+
+    /// Whether construction has not begun, so cancelling refunds in full.
+    pub fn unstarted(&self) -> bool {
+        matches!(
+            self.phase,
+            BuildingPhase::Provisional | BuildingPhase::Site { progress: 0 }
+        )
+    }
+
+    /// Ticks of construction or upgrade work done; none once built.
+    pub fn construction_progress(&self) -> Option<u32> {
+        match self.phase {
+            BuildingPhase::Site { progress } | BuildingPhase::Upgrading { progress } => {
+                Some(progress)
+            }
+            BuildingPhase::Provisional => Some(0),
+            BuildingPhase::Built { .. } => None,
+        }
+    }
+
+    /// Ticks of training on the front of the queue; zero unless built.
+    pub fn training_progress(&self) -> u32 {
+        match self.phase {
+            BuildingPhase::Built { training } => training,
+            BuildingPhase::Provisional
+            | BuildingPhase::Site { .. }
+            | BuildingPhase::Upgrading { .. } => 0,
+        }
+    }
+
+    /// Adds `work` ticks to a site's or an upgrade's meter, capped at the
+    /// rung's `build_ticks`, and returns the meter before and after; none
+    /// for a building that runs no such meter.
+    pub(crate) fn add_construction_work(
+        &mut self,
+        work: u32,
+        build_ticks: u32,
+    ) -> Option<(u32, u32)> {
+        match &mut self.phase {
+            BuildingPhase::Site { progress } | BuildingPhase::Upgrading { progress } => {
+                let before = *progress;
+                *progress = before.saturating_add(work).min(build_ticks);
+                Some((before, *progress))
+            }
+            BuildingPhase::Provisional | BuildingPhase::Built { .. } => None,
+        }
+    }
+
+    /// Turns a provisional blueprint whose ground checked out into a site.
+    pub(crate) fn activate(&mut self) {
+        debug_assert!(self.provisional());
+        self.phase = BuildingPhase::Site { progress: 0 };
+    }
+
+    /// Finishes construction or an upgrade.
+    pub(crate) fn complete(&mut self) {
+        debug_assert!(self.under_construction() || self.upgrading());
+        self.phase = BuildingPhase::Built { training: 0 };
+    }
+
+    /// Commits the next rung, whose stats apply at once, and starts the
+    /// upgrade clock.
+    pub(crate) fn begin_upgrade(&mut self) {
+        debug_assert!(self.built());
+        self.tier += 1;
+        self.phase = BuildingPhase::Upgrading { progress: 0 };
     }
 
     /// Iterates the footprint tiles row-major.
@@ -854,7 +963,7 @@ impl State {
             && (self.mode == crate::scenario::ScenarioMode::Sandbox
                 || self.buildings.iter().any(|building| {
                     building.player == player
-                        && !building.provisional
+                        && !building.provisional()
                         && building.kind == crate::stats::BuildingKind::Foundry
                 }))
     }
@@ -868,7 +977,7 @@ impl State {
             && self.buildings.iter().any(|building| {
                 building.player == player
                     && building.hp > 0
-                    && building.built
+                    && building.built()
                     && building.kind == BuildingKind::Foundry
             })
             && !self
@@ -879,7 +988,7 @@ impl State {
             && !self.buildings.iter().any(|building| {
                 building.player == player
                     && building.hp > 0
-                    && building.built
+                    && building.built()
                     && building.queue.iter().any(|kind| harvests(*kind))
             })
     }
@@ -952,7 +1061,7 @@ impl State {
     /// supporting Foundries never stack and unfinished sites confer nothing.
     pub fn extractor_income(&self, id: BuildingId) -> Option<ExtractorIncome> {
         let extractor = self.building(id)?;
-        if extractor.kind != BuildingKind::Extractor || !extractor.built || extractor.hp == 0 {
+        if extractor.kind != BuildingKind::Extractor || !extractor.built() || extractor.hp == 0 {
             return None;
         }
 
@@ -978,10 +1087,10 @@ impl State {
             return false;
         };
         extractor.kind == BuildingKind::Extractor
-            && extractor.built
+            && extractor.built()
             && extractor.hp > 0
             && foundry.kind == BuildingKind::Foundry
-            && foundry.built
+            && foundry.built()
             && foundry.hp > 0
             && foundry.player == extractor.player
             && footprint_distance(extractor, foundry) <= crate::stats::EXTRACTOR_SUPPORT_RADIUS
@@ -1034,7 +1143,8 @@ impl State {
     ///   [`crate::stats::ORDER_QUEUE_CAP`], every coordinate inside the
     ///   envelope, every anchored Harvest source inside its work zone,
     ///   every entity named by an order actually minted.
-    /// - Buildings: the same, plus a queue this kind can produce for this
+    /// - Buildings: the same, plus a phase that fits the tier, a queue
+    ///   only once built and only of what this kind produces for this
     ///   seat's faction, and a coherent salvage ledger.
     /// - Shells: coordinates inside the envelope, shooter minted.
     /// - Vision: ghost owners in the table and hostile to the viewer;
@@ -1285,7 +1395,7 @@ impl State {
                 || !self.minted(Target::Building(release.foundry))
                 || self
                     .building(release.foundry)
-                    .is_some_and(|b| b.player != *player || !b.kind.is_drop_off() || !b.built))
+                    .is_some_and(|b| b.player != *player || !b.kind.is_drop_off() || !b.built()))
         {
             return Err(E::InvalidUnloading(id));
         }
@@ -1512,11 +1622,9 @@ impl State {
             anchor,
             hp,
             queue,
-            progress,
+            phase,
             rally,
             focus,
-            built,
-            provisional,
             tier,
             cooldown,
             salvage_drained,
@@ -1529,14 +1637,19 @@ impl State {
         if usize::from(*tier) >= kind.tiers().len() {
             return Err(E::TierBeyondLadder(id));
         }
+        // Construction starts at the base rung; an upgrade climbs above it.
+        let phase_fits_tier = match phase {
+            BuildingPhase::Provisional | BuildingPhase::Site { .. } => *tier == 0,
+            BuildingPhase::Upgrading { .. } => *tier > 0,
+            BuildingPhase::Built { .. } => true,
+        };
+        if !phase_fits_tier {
+            return Err(E::InvalidBuildingPhase(id));
+        }
         let stats = b.stats();
-        if *provisional
-            && (*built
-                || *tier != 0
-                || *progress != 0
-                || *hp != stats.max_hp / 5
+        if *phase == BuildingPhase::Provisional
+            && (*hp != stats.max_hp / 5
                 || stats.construction.is_none()
-                || !queue.is_empty()
                 || rally.is_some()
                 || focus.is_some()
                 || *cooldown != 0
@@ -1552,16 +1665,15 @@ impl State {
         if *hp == 0 || *hp > stats.max_hp {
             return Err(E::BuildingHpOutOfRange(id));
         }
-        if *progress > PROGRESS_ENVELOPE {
-            return Err(E::BuildingProgressOutOfRange(id));
-        }
-        if !built
-            && *tier > 0
-            && stats
+        let meter_overrun = match *phase {
+            BuildingPhase::Provisional => false,
+            BuildingPhase::Site { progress } | BuildingPhase::Upgrading { progress } => stats
                 .construction
-                .is_none_or(|construction| *progress > construction.build_ticks)
-        {
-            return Err(E::UpgradeProgressOutOfRange(id));
+                .is_none_or(|construction| progress > construction.build_ticks),
+            BuildingPhase::Built { training } => training > PROGRESS_ENVELOPE,
+        };
+        if meter_overrun {
+            return Err(E::BuildingProgressOutOfRange(id));
         }
         // A building fires its first weapon and nothing else.
         if *cooldown
@@ -1586,7 +1698,7 @@ impl State {
                 Target::Unit(id) => self.unit(id).is_some(),
                 Target::Building(id) => self.building(id).is_some(),
             });
-            if !built
+            if !b.built()
                 || stats.weapons.is_empty()
                 || ((live_entity || target.entity().is_none()) && current_domain.is_none())
                 || current_domain.is_some_and(|domain| {
@@ -1600,9 +1712,13 @@ impl State {
             return Err(E::OverlongBuildingQueue(id));
         }
         let faction = self.players[usize::from(player.0)].faction;
-        if queue.iter().any(|kind| {
-            !stats.produces.contains(kind) || kind.faction().is_some_and(|f| f != faction)
-        }) {
+        // Training needs a complete building, and an upgrade keeps the queue
+        // only of a kind that trains nothing.
+        if (!queue.is_empty() && !b.built())
+            || queue.iter().any(|kind| {
+                !stats.produces.contains(kind) || kind.faction().is_some_and(|f| f != faction)
+            })
+        {
             return Err(E::UnproducibleQueueEntry(id));
         }
         // The footprint needs no separate check: sizes are single digits,
@@ -1627,7 +1743,7 @@ impl State {
         for b in self
             .buildings
             .iter()
-            .filter(|b| !b.kind.is_stealthy() && !b.provisional)
+            .filter(|b| !b.kind.is_stealthy() && !b.provisional())
         {
             let (w, h) = b.kind.size();
             for tile in (0..h).flat_map(|dy| (0..w).map(move |dx| b.anchor.offset(dx, dy))) {
@@ -1888,7 +2004,7 @@ impl State {
             .iter()
             .map(|building| {
                 building.focus.is_none_or(|target| {
-                    building.built
+                    building.built()
                         && self
                             .attack_view(building.player, target)
                             .is_some_and(|view| {
@@ -2035,7 +2151,7 @@ impl State {
     /// Stealthy kinds never mark: a buried charge blocks nothing.
     pub(crate) fn stamp_building_occupancy(&mut self, building_index: usize, present: bool) {
         let b = &self.buildings[building_index];
-        if b.kind.is_stealthy() || b.provisional {
+        if b.kind.is_stealthy() || b.provisional() {
             return;
         }
         let (anchor, kind) = (b.anchor, b.kind);
@@ -2099,10 +2215,12 @@ impl State {
     /// Every fog-honest surface — ghosts, targeting, views, rendering —
     /// must consult this before showing a hostile building.
     pub fn building_apparent(&self, viewer: PlayerId, building: &Building) -> bool {
-        if building.provisional {
+        if building.provisional() {
             return !self.hostile(viewer, building.player);
         }
-        if !building.kind.is_stealthy() || !building.built || !self.hostile(viewer, building.player)
+        if !building.kind.is_stealthy()
+            || !building.built()
+            || !self.hostile(viewer, building.player)
         {
             return true;
         }
@@ -2125,7 +2243,7 @@ impl State {
         let base_r = crate::stats::CHARGE_BASE_ARRAY_DETECT_RADIUS;
         self.buildings.iter().any(|b| {
             b.hp > 0
-                && b.built
+                && b.built()
                 && b.kind == BuildingKind::Array
                 && !self.hostile(viewer, b.player)
                 && {
@@ -2201,11 +2319,9 @@ impl State {
             anchor,
             hp: kind.base_stats().max_hp,
             queue: std::collections::VecDeque::new(),
-            progress: 0,
+            phase: BuildingPhase::Built { training: 0 },
             rally: None,
             focus: None,
-            built: true,
-            provisional: false,
             tier: 0,
             cooldown: 0,
             salvage_drained: 0,
@@ -2231,7 +2347,7 @@ impl State {
         anchor: TilePos,
     ) -> BuildingId {
         let mut site = self.mint_building(player, kind, anchor);
-        site.built = false;
+        site.phase = BuildingPhase::Site { progress: 0 };
         site.hp = kind.base_stats().max_hp / 5;
         self.insert_building(site)
     }
@@ -2245,8 +2361,7 @@ impl State {
         anchor: TilePos,
     ) -> BuildingId {
         let mut site = self.mint_building(player, kind, anchor);
-        site.built = false;
-        site.provisional = true;
+        site.phase = BuildingPhase::Provisional;
         site.hp = kind.base_stats().max_hp / 5;
         self.insert_building(site)
     }
@@ -2291,9 +2406,10 @@ fn footprint_distance(a: &Building, b: &Building) -> i32 {
 /// inside [`Fx`]'s integer range.
 const COORD_ENVELOPE: i32 = 8 * MAX_MAP_EDGE as i32;
 
-/// Ceiling on the tick meters a snapshot may carry ([`Unit::progress`],
-/// [`Building::progress`]), far above any meter a match of playable length
-/// reaches. The live weld/salvage meters saturate just short of here (the
+/// Ceiling on the tick meters a snapshot may carry ([`Unit::progress`] and
+/// a built building's training meter), far above any meter a match of
+/// playable length reaches. Construction and upgrade meters are bounded
+/// tighter, by their rung's build time. The live weld/salvage meters saturate just short of here (the
 /// economy brain's `metered` read), so a torch held on one job for millions
 /// of ticks keeps billing at its marginal rate and its meter never wraps.
 pub(crate) const PROGRESS_ENVELOPE: u32 = 1 << 21;
@@ -2613,12 +2729,13 @@ pub enum StateIntegrityError {
     /// A building's hit points sit outside `(0, max_hp]`.
     #[error("building {0} carries hit points its kind cannot hold")]
     BuildingHpOutOfRange(BuildingId),
-    /// A building's progress meter is past the ceiling.
-    #[error("building {0} carries a progress meter past the ceiling")]
+    /// A construction or upgrade meter is past its rung's build time, or
+    /// a training meter is past the ceiling.
+    #[error("building {0} carries a progress meter past its ceiling")]
     BuildingProgressOutOfRange(BuildingId),
-    /// An automatic upgrade's progress exceeds its tier-specific timer.
-    #[error("building {0} carries upgrade progress past its construction timer")]
-    UpgradeProgressOutOfRange(BuildingId),
+    /// A site sits above the base rung, or an upgrade climbs to it.
+    #[error("building {0} is in a phase its tier cannot hold")]
+    InvalidBuildingPhase(BuildingId),
     /// A building's cooldown is longer than its weapon's period.
     #[error("building {0} carries a cooldown its weapon never sets")]
     BuildingCooldownOutOfRange(BuildingId),
@@ -2632,8 +2749,8 @@ pub enum StateIntegrityError {
     /// [`crate::stats::QUEUE_CAP`].
     #[error("building {0} queues more units than the cap allows")]
     OverlongBuildingQueue(BuildingId),
-    /// A building queues a unit its kind cannot train, or one belonging to
-    /// the other faction's roster.
+    /// A building queues a unit its kind cannot train, one belonging to the
+    /// other faction's roster, or anything at all before it is built.
     #[error("building {0} queues a unit it could never train")]
     UnproducibleQueueEntry(BuildingId),
     /// A building's anchor or rally point sits outside the sanity

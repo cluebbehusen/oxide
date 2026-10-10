@@ -403,7 +403,7 @@ fn return_cargo_refuses_empty_workers_and_unfinished_foundries_without_changing_
         if empty {
             data["units"][0]["carrying"] = json!(0);
         } else {
-            data["buildings"][0]["built"] = json!(false);
+            data["buildings"][0]["phase"] = json!({"phase": "site"});
             data["buildings"][0]["hp"] = json!(1);
         }
         let mut state: State = serde_json::from_value(data).unwrap();

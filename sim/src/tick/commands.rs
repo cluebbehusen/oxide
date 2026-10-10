@@ -10,7 +10,7 @@ use super::goals::{self, spread_scan_reversed};
 use crate::command::{Command, PlayerCommand, RejectReason};
 use crate::event::Event;
 use crate::ids::{AttackTarget, BuildingId, PlayerId, UnitId};
-use crate::state::{Goal, Order, OrderKey, State, Unit};
+use crate::state::{BuildingPhase, Goal, Order, OrderKey, State, Unit};
 use crate::stats::{Domain, GOAL_SNAP_RADIUS, ORDER_QUEUE_CAP, QUEUE_CAP};
 use chassis::grid::TilePos;
 
@@ -123,7 +123,7 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
                 if ids.is_empty()
                     || ids.iter().any(|id| {
                         state.building(*id).is_none_or(|b| {
-                            b.player != pc.player || !b.built || b.stats().weapons.is_empty()
+                            b.player != pc.player || !b.built() || b.stats().weapons.is_empty()
                         })
                     })
                 {
@@ -675,11 +675,11 @@ fn apply_build_inner(
         .buildings
         .iter()
         .find(|b| {
-            b.anchor == anchor && b.kind == kind && b.player == player && !b.built && b.tier == 0
+            b.anchor == anchor && b.kind == kind && b.player == player && b.under_construction()
         })
         .map(|b| b.id);
     if let Some(site) = existing {
-        let provisional = state.building(site).expect("found site").provisional;
+        let provisional = state.building(site).expect("found site").provisional();
         let mut landed = 0;
         for id in crew {
             if let Some(unit) = state.unit_mut(id)
@@ -869,18 +869,18 @@ fn apply_cancel(
         if b.player != player {
             return Err(RejectReason::NotYourBuilding);
         }
-        if b.built {
+        if b.built() {
             return Err(RejectReason::BadSite);
         }
         // An upgrading works (tier already lifted, offline) is committed:
         // cancelling would demolish a standing machine for its site
         // refund. Only fresh tier-zero sites can be scrapped.
-        if b.tier > 0 {
+        if b.upgrading() {
             return Err(RejectReason::InvalidTarget);
         }
         let stats = b.stats();
         let cost = stats.construction.expect("sites are buildable kinds").cost;
-        if b.progress == 0 {
+        if b.unstarted() {
             cost
         } else {
             cost * b.hp / stats.max_hp
@@ -945,7 +945,7 @@ fn apply_return_cargo(
         if building.player != player {
             return Err(RejectReason::NotYourBuilding);
         }
-        if !building.built || building.hp == 0 || !building.kind.is_drop_off() {
+        if !building.built() || building.hp == 0 || !building.kind.is_drop_off() {
             return Err(RejectReason::InvalidTarget);
         }
     }
@@ -1000,7 +1000,7 @@ fn apply_repair(
     if b.player != player {
         return Err(RejectReason::NotYourBuilding);
     }
-    if !b.built || b.hp >= b.stats().max_hp {
+    if !b.built() || b.hp >= b.stats().max_hp {
         return Err(RejectReason::InvalidTarget);
     }
     let mut landed = 0;
@@ -1038,7 +1038,7 @@ fn apply_salvage(
     if b.player != player {
         return Err(RejectReason::NotYourBuilding);
     }
-    if !b.built || b.kind == crate::stats::BuildingKind::Foundry {
+    if !b.built() || b.kind == crate::stats::BuildingKind::Foundry {
         return Err(RejectReason::InvalidTarget);
     }
     let mut landed = 0;
@@ -1221,10 +1221,12 @@ fn apply_cancel_train(
     };
     let b = state.building_mut(building).expect("checked above");
     b.queue.remove(index as usize);
-    if index == 0 {
-        // The next in line starts fresh; progress does not transfer between
-        // machines.
-        b.progress = 0;
+    // The next in line starts fresh; progress does not transfer between
+    // machines.
+    if index == 0
+        && let BuildingPhase::Built { training } = &mut b.phase
+    {
+        *training = 0;
     }
     let bank = &mut state.player_mut(player).scrap;
     *bank = bank.saturating_add(kind.stats().cost);
@@ -1298,9 +1300,9 @@ pub(super) fn apply_cancel_found(
         .buildings
         .iter()
         .find(|b| {
-            b.player == player && b.kind == kind && b.anchor == anchor && !b.built && b.tier == 0
+            b.player == player && b.kind == kind && b.anchor == anchor && b.under_construction()
         })
-        .map(|b| (b.id, b.progress > 0))
+        .map(|b| (b.id, !b.unstarted()))
     {
         // A site placed by a command still in flight can be under way by
         // the time this lands; it then cancels like any started site.
@@ -1341,7 +1343,7 @@ fn apply_train(
         if b.player != player {
             return Err(RejectReason::NotYourBuilding);
         }
-        if !b.built || !b.stats().produces.contains(&kind) {
+        if !b.built() || !b.stats().produces.contains(&kind) {
             return Err(RejectReason::CannotProduce);
         }
         // The produces lists carry every faction's variant of a role; the
@@ -1360,7 +1362,7 @@ fn apply_train(
             state
                 .buildings
                 .iter()
-                .any(|owned| owned.player == player && owned.kind == *required && owned.built)
+                .any(|owned| owned.player == player && owned.kind == *required && owned.built())
         });
         if !met {
             return Err(RejectReason::MissingPrerequisite);
@@ -1404,7 +1406,7 @@ fn apply_set_rally(
     if b.player != player {
         return Err(RejectReason::NotYourBuilding);
     }
-    if !b.built || b.stats().produces.is_empty() {
+    if !b.built() || b.stats().produces.is_empty() {
         return Err(RejectReason::InvalidTarget);
     }
     // Any tile on the map is a legal rally: each newborn resolves it like a
@@ -1432,7 +1434,7 @@ fn apply_focus_fire(
         if building.player != player {
             return Err(RejectReason::NotYourBuilding);
         }
-        if !building.built {
+        if !building.built() {
             return Err(RejectReason::InvalidTarget);
         }
         let weapon = building
@@ -1478,7 +1480,7 @@ fn apply_upgrade(
     if b.player != player {
         return Err(RejectReason::NotYourBuilding);
     }
-    if !b.built {
+    if !b.built() {
         return Err(RejectReason::InvalidTarget);
     }
     let kind = b.kind;
@@ -1490,7 +1492,7 @@ fn apply_upgrade(
         state
             .buildings
             .iter()
-            .any(|owned| owned.player == player && owned.kind == *required && owned.built)
+            .any(|owned| owned.player == player && owned.kind == *required && owned.built())
     });
     if !met {
         return Err(RejectReason::MissingPrerequisite);
@@ -1501,9 +1503,7 @@ fn apply_upgrade(
     state.players[player.0 as usize].scrap -= upgrade.cost;
     let b = state.building_mut(building).expect("validated above");
     let old_max = b.stats().max_hp;
-    b.tier += 1;
-    b.built = false;
-    b.progress = 0;
+    b.begin_upgrade();
     // The commitment re-founds the machine as a fresh site of the new
     // tier: hp restarts at the new tier's construction floor, scaled by
     // the previous tier's condition, so an undamaged input completes at

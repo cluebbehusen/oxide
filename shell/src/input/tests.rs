@@ -1606,7 +1606,7 @@ fn a_right_click_anywhere_on_an_own_site_resumes_it() {
         game.state
             .buildings()
             .iter()
-            .any(|b| b.anchor == anchor && !b.built),
+            .any(|b| b.anchor == anchor && !b.built()),
         "premise: the site stands"
     );
     // Select the harvester, then right-click the site's far corner.
@@ -3909,12 +3909,9 @@ fn an_allied_site_under_fog_refuses_selection() {
         "test premise: the claim landed instantly"
     );
     for _ in 0..100 {
-        if game
-            .state
-            .buildings()
-            .iter()
-            .any(|b| b.kind == oxide_sim::BuildingKind::Turret && b.progress > 0)
-        {
+        if game.state.buildings().iter().any(|b| {
+            b.kind == oxide_sim::BuildingKind::Turret && b.construction_progress().unwrap_or(0) > 0
+        }) {
             break;
         }
         game.state.tick(&[]);
@@ -3940,7 +3937,7 @@ fn an_allied_site_under_fog_refuses_selection() {
             .iter()
             .find(|b| b.kind == oxide_sim::BuildingKind::Turret)
             .expect("the ally claimed the site");
-        assert!(!site.built, "test premise: unfinished");
+        assert!(!site.built(), "test premise: unfinished");
         assert!(
             !site.tiles().any(|t| game.my_vision().visible(t)),
             "test premise: the site sits under fog"
@@ -3961,7 +3958,7 @@ fn an_allied_site_under_fog_refuses_selection() {
             .state
             .buildings()
             .iter()
-            .find(|b| b.player == oxide_sim::PlayerId(1) && b.built)
+            .find(|b| b.player == oxide_sim::PlayerId(1) && b.built())
             .unwrap();
         (
             foundry.id,
@@ -6761,8 +6758,8 @@ fn a_plain_placement_replaces_the_selected_claim_while_shift_preserves_it() {
         .iter()
         .find(|b| b.anchor == old_spot)
         .unwrap();
-    assert!(!site.built);
-    assert_eq!(site.progress, 0);
+    assert!(!site.built());
+    assert_eq!(site.construction_progress(), Some(0));
     assert_eq!(
         game.state.unit(builder).unwrap().order,
         oxide_sim::Order::Build { site: site.id }
@@ -6919,7 +6916,7 @@ fn an_automatic_upgrade_is_not_a_worker_target_or_a_scrappable_site() {
     let center = game.state.building(turret).expect("upgrade lives").center();
     assert_eq!(
         (
-            game.state.building(turret).unwrap().built,
+            game.state.building(turret).unwrap().built(),
             game.state.building(turret).unwrap().tier,
         ),
         (false, 1),
@@ -7390,12 +7387,12 @@ fn selecting_an_unfinished_mine_does_not_reveal_its_condition_after_concealment(
     apply_events(&mut game, &mut input, &click(point.x, point.y));
     assert_eq!(game.presentation.selection.buildings, vec![mine]);
     for _ in 0..200 {
-        if game.state.building(mine).unwrap().built {
+        if game.state.building(mine).unwrap().built() {
             break;
         }
         game.do_tick();
     }
-    assert!(game.state.building(mine).unwrap().built);
+    assert!(game.state.building(mine).unwrap().built());
     assert!(game.presentation.selection.buildings.is_empty());
     assert!(
         game.my_vision()

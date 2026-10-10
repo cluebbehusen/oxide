@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use chassis::fx::Vec2Fx;
 use oxide_sim::stats::{Domain, MAX_WEAPONS};
 use oxide_sim::{
-    Building, BuildingId, BuildingKind, Event, Order, State, Unit, UnitId, UnitKind,
+    Building, BuildingId, BuildingKind, BuildingPhase, Event, Order, State, Unit, UnitId, UnitKind,
     UnitRepairSource,
 };
 
@@ -430,11 +430,11 @@ impl BuildingAnimationFacts {
     /// world. Render visibility remains the caller's responsibility.
     pub(crate) fn capture(state: &State, building: &Building) -> Self {
         let production = building
-            .built
+            .built()
             .then_some(())
             .and_then(|()| building.queue.front().copied())
-            .filter(|kind| building.progress < kind.stats().train_ticks)
-            .map(|kind| (kind, building.progress, kind.stats().train_ticks));
+            .filter(|kind| building.training_progress() < kind.stats().train_ticks)
+            .map(|kind| (kind, building.training_progress(), kind.stats().train_ticks));
         // The active tier's clock: a committed upgrade rebuilds on the
         // new tier's labor budget, and a base denominator would show the
         // scaffold complete early.
@@ -443,10 +443,10 @@ impl BuildingAnimationFacts {
             id: building.id,
             kind: building.kind,
             tier: building.tier,
-            built: building.built,
-            progress: building.progress,
+            built: building.built(),
+            progress: building.construction_progress().unwrap_or(0),
             construction_total,
-            construction_active: !building.built && active_site_construction(state, building),
+            construction_active: !building.built() && active_site_construction(state, building),
             production,
             cooldown: building.cooldown,
         }
@@ -1117,8 +1117,9 @@ fn active_unit_construction(state: &State, unit: &Unit) -> Option<(BuildingId, V
         return None;
     };
     state.building(site).and_then(|building| {
-        (!building.built
-            && building.progress > 0
+        (building
+            .construction_progress()
+            .is_some_and(|progress| progress > 0)
             && building.player == unit.player
             && unit.kind.stats().harvest.is_some()
             && unit.work_stopped()
@@ -1134,7 +1135,7 @@ fn active_unit_repair(state: &State, unit: &Unit) -> Option<Vec2Fx> {
     match unit.order {
         Order::Repair { building } => state.building(building).and_then(|patient| {
             (patient.player == unit.player
-                && patient.built
+                && patient.built()
                 && patient.hp > 0
                 && patient.hp < patient.stats().max_hp
                 && state.in_building_work_reach(unit, patient.id))
@@ -1164,7 +1165,7 @@ fn active_unit_salvage(state: &State, unit: &Unit) -> Option<Vec2Fx> {
     };
     state.building(building).and_then(|target| {
         (target.player == unit.player
-            && target.built
+            && target.built()
             && target.hp > 0
             && target.kind != BuildingKind::Foundry
             && state.in_building_work_reach(unit, target.id))
@@ -1173,13 +1174,10 @@ fn active_unit_salvage(state: &State, unit: &Unit) -> Option<Vec2Fx> {
 }
 
 fn active_site_construction(state: &State, building: &Building) -> bool {
-    if building.built {
-        return false;
-    }
-    if building.tier > 0 {
-        return true;
-    }
-    building.progress > 0
+    let BuildingPhase::Site { progress } = building.phase else {
+        return building.upgrading();
+    };
+    progress > 0
         && state.units().iter().any(|unit| {
             unit.player == building.player
                 && unit.kind.stats().harvest.is_some()

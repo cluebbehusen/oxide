@@ -644,7 +644,7 @@ fn rally_rejects_non_producers_and_unfinished_producers() {
         .iter()
         .find(|building| building.kind == BuildingKind::Fabricator)
         .expect("the legal site was placed");
-    assert!(!site.built);
+    assert!(!site.built());
     let site = site.id;
 
     for building in [turret, site] {
@@ -793,7 +793,7 @@ fn fabricator_gates_the_advanced_roster() {
         }
     )));
     run_until(&mut state, 900, |s, _| {
-        s.building(fab).is_some_and(|b| b.built)
+        s.building(fab).is_some_and(oxide_sim::Building::built)
     });
     // Finished: lancers roll out; sentinels are still Foundry-only.
     let report = state.tick(&[
@@ -854,7 +854,9 @@ fn harvesters_deposit_only_at_built_foundries() {
         },
     )]);
     run_until(&mut state, 700, |s, _| {
-        s.buildings().iter().any(|b| b.anchor == anchor && b.built)
+        s.buildings()
+            .iter()
+            .any(|b| b.anchor == anchor && b.built())
     });
     state.tick(&[cmd(
         0,
@@ -924,7 +926,7 @@ fn cancel_train_refunds_and_resets_the_head() {
     }
     let b = state.building(foundry).unwrap();
     assert_eq!(b.queue.len(), 2);
-    assert!(b.progress > 0, "the head has been training");
+    assert!(b.training_progress() > 0, "the head has been training");
     // Cancel the head: full refund, progress resets, the sentinel steps up.
     state.tick(&[cmd(
         0,
@@ -938,7 +940,10 @@ fn cancel_train_refunds_and_resets_the_head() {
     assert_eq!(b.queue[0], UnitKind::Sentinel);
     // The cancel tick's own production phase already advances the
     // fresh head by one — without the reset this would still read 11+.
-    assert!(b.progress <= 1, "the next machine starts from parts");
+    assert!(
+        b.training_progress() <= 1,
+        "the next machine starts from parts"
+    );
     let cost_h = UnitKind::Harvester.stats().cost;
     let cost_s = UnitKind::Sentinel.stats().cost;
     assert_eq!(

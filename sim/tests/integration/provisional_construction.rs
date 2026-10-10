@@ -59,7 +59,7 @@ fn one_paid_nonphysical_site_survives_until_the_final_worker_abandons_it() {
         .collect();
     assert_eq!(sites.len(), 1);
     let id = sites[0].id;
-    assert!(sites[0].provisional);
+    assert!(sites[0].provisional());
     assert!(!state.can_see(PlayerId(0), anchor));
     assert!(state.passable(anchor));
     assert!(!state.building_apparent(PlayerId(1), sites[0]));
@@ -124,7 +124,7 @@ fn replacement_spends_the_refund_and_rejection_preserves_the_paid_program() {
         state
             .buildings()
             .iter()
-            .any(|b| b.anchor == next && b.provisional)
+            .any(|b| b.anchor == next && b.provisional())
     );
 }
 
@@ -144,10 +144,17 @@ fn visibility_activates_the_same_site_without_another_payment() {
         .id;
     let bank = state.player(PlayerId(0)).scrap;
     run_until(&mut state, 600, |s, _| {
-        s.building(id).is_some_and(|b| !b.provisional)
+        s.building(id).is_some_and(|b| !b.provisional())
     });
     assert!(!state.passable(anchor));
-    assert_eq!(state.building(id).unwrap().progress, 0);
+    assert_eq!(
+        state
+            .building(id)
+            .unwrap()
+            .construction_progress()
+            .unwrap_or(0),
+        0
+    );
     assert!(state.map().wreck_at(anchor) > 0);
     assert!(state.player(PlayerId(0)).scrap >= bank);
     assert!(
@@ -161,7 +168,7 @@ fn visibility_activates_the_same_site_without_another_payment() {
 }
 
 #[test]
-fn forged_provisional_scaffolds_cannot_hold_progress_or_physical_state() {
+fn forged_provisional_scaffolds_cannot_hold_a_rung_or_physical_state() {
     let (mut state, crew, anchor) = fixture();
     state.tick(&[cmd(0, plan(crew, anchor, true))]);
     let clean = serde_json::to_value(&state).unwrap();
@@ -169,21 +176,18 @@ fn forged_provisional_scaffolds_cannot_hold_progress_or_physical_state() {
         .as_array()
         .unwrap()
         .iter()
-        .position(|b| b["provisional"] == true)
+        .position(|b| b["phase"]["phase"] == "provisional")
         .unwrap();
-    for (key, value) in [
-        ("built", serde_json::json!(true)),
-        ("progress", serde_json::json!(1)),
-        ("hp", serde_json::json!(1)),
+    for (key, value, refusal) in [
+        ("tier", serde_json::json!(1), "phase its tier cannot hold"),
+        ("hp", serde_json::json!(1), "invalid provisional state"),
     ] {
         let mut forged = clean.clone();
         forged["buildings"][i][key] = value;
-        assert!(
-            serde_json::from_value::<State>(forged)
-                .unwrap_err()
-                .to_string()
-                .contains("invalid provisional state")
-        );
+        let error = serde_json::from_value::<State>(forged)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(refusal), "{key}: {error}");
     }
 }
 
@@ -229,8 +233,7 @@ fn a_provisional_site_cannot_shield_a_physical_building_from_blind_fire() {
     // remembers a removed mine whose owner differs from the physical building.
     for building in snapshot["buildings"].as_array_mut().unwrap() {
         if building["id"] == serde_json::json!(provisional) {
-            building["provisional"] = true.into();
-            building["built"] = false.into();
+            building["phase"] = serde_json::json!({"phase": "provisional"});
             building["hp"] = (BuildingKind::Barricade.base_stats().max_hp / 5).into();
         }
         if building["id"] == serde_json::json!(physical) {
@@ -317,7 +320,7 @@ fn a_provisional_site_cannot_shield_a_physical_building_from_blind_fire() {
         );
         if include_provisional {
             let site = state.building(provisional).unwrap();
-            assert!(site.provisional);
+            assert!(site.provisional());
             assert_eq!(site.hp, site.stats().max_hp / 5);
         }
         state.validate_invariants().unwrap();

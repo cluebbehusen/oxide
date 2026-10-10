@@ -258,9 +258,14 @@ fn construction() -> BTreeMap<String, String> {
         p.state.player(PlayerId(0)).scrap,
         bank - BuildingKind::Turret.base_stats().construction.unwrap().cost
     );
-    assert!(!p.state.building(site).unwrap().built);
+    assert!(!p.state.building(site).unwrap().built());
     p.until("construction progress", 100, |p| {
-        p.state.building(site).unwrap().progress > 0
+        p.state
+            .building(site)
+            .unwrap()
+            .construction_progress()
+            .unwrap_or(0)
+            > 0
     });
     p.command(
         0,
@@ -268,26 +273,38 @@ fn construction() -> BTreeMap<String, String> {
             units: vec![worker],
         },
     );
-    let progress = p.state.building(site).unwrap().progress;
+    let progress = p
+        .state
+        .building(site)
+        .unwrap()
+        .construction_progress()
+        .unwrap_or(0);
     for _ in 0..10 {
         p.step(&[], false);
     }
-    assert_eq!(p.state.building(site).unwrap().progress, progress);
+    assert_eq!(
+        p.state
+            .building(site)
+            .unwrap()
+            .construction_progress()
+            .unwrap_or(0),
+        progress
+    );
     p.mark("interrupted");
     let bank = p.state.player(PlayerId(0)).scrap;
     p.command(0, build);
     assert_eq!(p.state.player(PlayerId(0)).scrap, bank);
     p.until("resumed construction", 600, |p| {
-        p.state.building(site).unwrap().built
+        p.state.building(site).unwrap().built()
     });
     p.mark("completed");
     let bank = p.state.player(PlayerId(0)).scrap;
     let upgrade = BuildingKind::Turret.upgrade_from(0).unwrap();
     p.command(0, Command::UpgradeBuilding { building: site });
-    assert!(!p.state.building(site).unwrap().built);
+    assert!(!p.state.building(site).unwrap().built());
     assert_eq!(p.state.player(PlayerId(0)).scrap, bank - upgrade.cost);
     p.until("upgrade completion", u64::from(upgrade.build_ticks), |p| {
-        p.state.building(site).unwrap().built
+        p.state.building(site).unwrap().built()
     });
     assert_eq!(p.state.building(site).unwrap().tier, 1);
     p.mark("upgraded");

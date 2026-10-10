@@ -40,13 +40,13 @@ pub(super) fn advance_upgrades(state: &mut State, builds: &mut Vec<PendingHpGain
     let sites: Vec<BuildingId> = state
         .buildings
         .iter()
-        .filter(|building| !building.built && building.tier > 0 && building.hp > 0)
+        .filter(|building| building.upgrading() && building.hp > 0)
         .map(|building| building.id)
         .collect();
 
     for site in sites {
         let building = state.building(site).expect("upgrade id came from state");
-        let (player, kind, progress) = (building.player, building.kind, building.progress);
+        let (player, kind) = (building.player, building.kind);
         let stats = building.stats();
         let build_ticks = stats
             .construction
@@ -54,13 +54,12 @@ pub(super) fn advance_upgrades(state: &mut State, builds: &mut Vec<PendingHpGain
             .build_ticks;
         let start_hp = stats.max_hp / 5;
         let ramp = stats.max_hp - start_hp;
-        let advanced = progress.saturating_add(1).min(build_ticks);
-        let step = ramp_step(ramp, progress, advanced, build_ticks);
-
-        state
+        let (progress, advanced) = state
             .building_mut(site)
             .expect("upgrade id came from state")
-            .progress = advanced;
+            .add_construction_work(1, build_ticks)
+            .expect("an upgrading building runs its upgrade meter");
+        let step = ramp_step(ramp, progress, advanced, build_ticks);
         let completes = advanced >= build_ticks;
         if step > 0 || completes {
             builds.push(PendingHpGain {
@@ -93,7 +92,7 @@ pub(super) fn build(
     // the destruction event.
     let Some(b) = state
         .building(site)
-        .filter(|b| b.player == me && !b.built && b.tier == 0 && b.hp > 0)
+        .filter(|b| b.player == me && b.under_construction() && b.hp > 0)
     else {
         // Finished, cancelled, or destroyed: the job is over either way.
         state.unit_mut(id).expect("caller checked").advance_queue();
@@ -107,7 +106,7 @@ pub(super) fn build(
         .expect("sites only exist for buildable kinds")
         .build_ticks;
     let unit = state.unit(id).expect("caller checked");
-    if !b.provisional && unit.work_stopped() && state.in_building_work_reach(unit, site) {
+    if !b.provisional() && unit.work_stopped() && state.in_building_work_reach(unit, site) {
         let start_hp = stats.max_hp / 5;
         let ramp = stats.max_hp - start_hp;
         // An Excavator's crew-tick counts double: same ramp, half the wall
@@ -118,15 +117,17 @@ pub(super) fn build(
             .kind
             .stats()
             .build_rate;
-        let b = state.building_mut(site).expect("just seen");
-        let starts = b.progress == 0;
-        let advanced = (b.progress + rate).min(build_ticks);
-        let step = ramp_step(ramp, b.progress, advanced, build_ticks);
-        b.progress = advanced;
+        let (progress, advanced) = state
+            .building_mut(site)
+            .expect("just seen")
+            .add_construction_work(rate, build_ticks)
+            .expect("a site past its blueprint runs its construction meter");
+        let starts = progress == 0;
+        let step = ramp_step(ramp, progress, advanced, build_ticks);
         // Both the hp gain and the completion are buffered and applied
         // after damage — see PendingHpGain. The builder learns the site is
         // done next tick, through the built-site branch above.
-        let completes = b.progress >= build_ticks;
+        let completes = advanced >= build_ticks;
         if starts {
             // Before the first work, a full-refund cancellation must preserve salvage.
             for dy in 0..size.1 {
@@ -175,7 +176,7 @@ pub(super) fn found(
         .buildings
         .iter()
         .find(|b| b.player == player && b.kind == kind && b.anchor == anchor && b.hp > 0)
-        .map(|b| (b.id, b.provisional));
+        .map(|b| (b.id, b.provisional()));
     let Some((site, provisional)) = site else {
         state.unit_mut(id).expect("caller checked").advance_queue();
         return;
@@ -219,7 +220,7 @@ pub(super) fn repair(
     let me = state.unit(id).expect("caller checked").player;
     let Some(b) = state
         .building(building)
-        .filter(|b| b.player == me && b.built && b.hp > 0 && b.hp < b.stats().max_hp)
+        .filter(|b| b.player == me && b.built() && b.hp > 0 && b.hp < b.stats().max_hp)
     else {
         // Healed, destroyed, or never a patient: the job is over.
         state.unit_mut(id).expect("caller checked").advance_queue();
@@ -558,7 +559,7 @@ pub(super) fn salvage(
 ) {
     let me = state.unit(id).expect("caller checked").player;
     let Some(b) = state.building(building).filter(|b| {
-        b.player == me && b.built && b.hp > 0 && b.kind != crate::stats::BuildingKind::Foundry
+        b.player == me && b.built() && b.hp > 0 && b.kind != crate::stats::BuildingKind::Foundry
     }) else {
         // Stripped bare, destroyed, or never salvageable: the job is
         // over either way — the program plays on.
@@ -1569,7 +1570,7 @@ pub(super) fn return_cargo(
     if let Some(building) = state.building(foundry).filter(|building| {
         building.player == unit.player
             && building.hp > 0
-            && building.built
+            && building.built()
             && building.kind.is_drop_off()
     }) {
         if state.in_building_work_reach(unit, foundry) {
@@ -1706,7 +1707,7 @@ fn drop_offs_by_distance(state: &State, id: UnitId) -> Vec<BuildingId> {
         .filter(|building| {
             building.player == unit.player
                 && building.hp > 0
-                && building.built
+                && building.built()
                 && building.kind.is_drop_off()
         })
         .map(|building| (unit.pos.dist_sq(building.center()), building.id))

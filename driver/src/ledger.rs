@@ -376,9 +376,9 @@ fn snapshot(state: &State) -> Vec<Body> {
             vision: stats.vision,
             class: Class::Building,
             unit: None,
-            building: Some((building.kind, building.tier, building.built)),
+            building: Some((building.kind, building.tier, building.built())),
             carrier: None,
-            progress: building.progress,
+            progress: building.construction_progress().unwrap_or(0),
             build_ticks: stats
                 .construction
                 .as_ref()
@@ -420,7 +420,7 @@ fn smelters(state: &State) -> Vec<Key> {
     let mut taken: BTreeMap<(i32, i32), u32> = BTreeMap::new();
     let mut smelting = Vec::new();
     for building in state.buildings() {
-        if !building.built || building.hp == 0 || building.kind != BuildingKind::Crucible {
+        if !building.built() || building.hp == 0 || building.kind != BuildingKind::Crucible {
             continue;
         }
         let (w, h) = building.kind.size();
@@ -1047,7 +1047,7 @@ impl ImpactLedger {
         }
         for building in state.buildings() {
             if building.kind != BuildingKind::Extractor
-                || !building.built
+                || !building.built()
                 || building.hp == 0
                 || state.player(building.player).resigned
             {

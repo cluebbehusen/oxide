@@ -581,7 +581,9 @@ fn losing_the_last_foundry_ends_the_match_despite_other_buildings() {
         },
     )]);
     run_until(&mut state, 700, |s, _| {
-        s.buildings().iter().any(|b| b.anchor == anchor && b.built)
+        s.buildings()
+            .iter()
+            .any(|b| b.anchor == anchor && b.built())
     });
     // Raze the foundry (hunt onto it; fire-at-will besieges).
     let attackers: Vec<UnitId> = state

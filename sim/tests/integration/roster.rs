@@ -85,10 +85,10 @@ fn the_excavator_waits_on_the_fabricator_and_builds_at_double_pace() {
         for tick in 0..2_000u64 {
             state.tick(&[]);
             let building = state.building(site).unwrap();
-            if building.progress > 0 {
+            if building.construction_progress().unwrap_or(0) > 0 {
                 started.get_or_insert(tick);
             }
-            if building.built {
+            if building.built() {
                 return tick - started.expect("construction started") + 1;
             }
         }

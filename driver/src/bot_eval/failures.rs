@@ -7,7 +7,7 @@
 use chassis::grid::TilePos;
 use oxide_opponent::MissionStatus;
 use oxide_sim::stats::Domain;
-use oxide_sim::{Building, BuildingKind, Event, PlayerId, State, UnitId, UnitKind};
+use oxide_sim::{Building, BuildingKind, BuildingPhase, Event, PlayerId, State, UnitId, UnitKind};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -375,7 +375,7 @@ impl FailureDetectors {
             let completed: Vec<BuildingKind> = state
                 .buildings()
                 .iter()
-                .filter(|building| building.player == player && building.built)
+                .filter(|building| building.player == player && building.built())
                 .map(|building| building.kind)
                 .collect();
             let bank = state
@@ -390,8 +390,8 @@ impl FailureDetectors {
                 .iter()
                 .filter(|building| building.player == player && building.hp > 0)
             {
-                if !building.built && !building.provisional && building.tier == 0 {
-                    let watch = observe(&mut detector.sites, building, now, building.progress);
+                if let BuildingPhase::Site { progress } = building.phase {
+                    let watch = observe(&mut detector.sites, building, now, progress);
                     if !watch.flagged && now - watch.since >= FAILURE_WINDOW_TICKS {
                         watch.flagged = true;
                         detector.failures.abandoned_sites.record(
@@ -400,7 +400,7 @@ impl FailureDetectors {
                             building.kind.name(),
                         );
                     }
-                } else if building.built && !building.stats().produces.is_empty() {
+                } else if building.built() && !building.stats().produces.is_empty() {
                     producers += 1;
                     let idle = building.queue.is_empty();
                     all_idle &= idle;

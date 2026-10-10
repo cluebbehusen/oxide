@@ -694,7 +694,7 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
             state
                 .buildings()
                 .iter()
-                .filter(|building| building.player.0 as usize == seat && building.built)
+                .filter(|building| building.player.0 as usize == seat && building.built())
                 .map(|building| building.kind)
                 .collect()
         })
@@ -1203,7 +1203,9 @@ fn built_count(state: &State, seat: u8, kind: BuildingKind) -> u32 {
         state
             .buildings()
             .iter()
-            .filter(|building| building.player.0 == seat && building.kind == kind && building.built)
+            .filter(|building| {
+                building.player.0 == seat && building.kind == kind && building.built()
+            })
             .count(),
     )
     .expect("seat indices fit in u32")
@@ -1280,7 +1282,7 @@ fn capture_digest(
                 state
                     .buildings()
                     .iter()
-                    .filter(|building| building.player.0 == seat_id && building.built)
+                    .filter(|building| building.player.0 == seat_id && building.built())
                     .count(),
             )
             .expect("seat indices fit in u32");
@@ -1377,7 +1379,7 @@ fn minimap(state: &State) -> Vec<String> {
     }
     let mut foundry: Vec<Option<u8>> = vec![None; cols * rows];
     for building in state.buildings() {
-        if !building.built {
+        if !building.built() {
             continue;
         }
         let seat = building.player.0;

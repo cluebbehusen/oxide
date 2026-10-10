@@ -269,7 +269,13 @@ fn builders_reach_a_stance_past_a_neighboring_footprint_corner() {
         let mut started = false;
         for _ in 0..300 {
             state.tick(&[]);
-            if state.building(site).unwrap().progress > 0 {
+            if state
+                .building(site)
+                .unwrap()
+                .construction_progress()
+                .unwrap_or(0)
+                > 0
+            {
                 started = true;
                 break;
             }
@@ -310,10 +316,10 @@ fn paid_site(
     let site = state
         .buildings()
         .iter()
-        .find(|b| b.anchor == anchor && !b.built)
+        .find(|b| b.anchor == anchor && !b.built())
         .unwrap_or_else(|| panic!("{:?}", report.events))
         .id;
-    assert!(!state.building(site).unwrap().provisional);
+    assert!(!state.building(site).unwrap().provisional());
     (state, id, site)
 }
 
@@ -419,7 +425,12 @@ fn a_builder_in_reach_works_where_it_stands_from_every_side_and_corner() {
             }
             let unit = state.unit(id).unwrap();
             assert!(
-                state.building(site).unwrap().progress > 0,
+                state
+                    .building(site)
+                    .unwrap()
+                    .construction_progress()
+                    .unwrap_or(0)
+                    > 0,
                 "{kind:?} from {side:?} never started: {unit:?}"
             );
             assert!(state.in_building_work_reach(unit, site));
@@ -447,7 +458,13 @@ fn a_builder_chooses_again_when_new_ground_spoils_its_position() {
     let mut started = false;
     for _ in 0..100 {
         state.tick(&[]);
-        if state.building(site).unwrap().progress > 0 {
+        if state
+            .building(site)
+            .unwrap()
+            .construction_progress()
+            .unwrap_or(0)
+            > 0
+        {
             started = true;
             break;
         }

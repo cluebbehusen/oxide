@@ -344,7 +344,7 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::ForeignBuildingOwner(_) => 24,
         E::BuildingHpOutOfRange(_) => 25,
         E::BuildingProgressOutOfRange(_) => 26,
-        E::UpgradeProgressOutOfRange(_) => 27,
+        E::InvalidBuildingPhase(_) => 27,
         E::BuildingCooldownOutOfRange(_) => 28,
         E::UnmintedBuildingFocus(_) => 29,
         E::InvalidBuildingFocus(_) => 30,
@@ -444,7 +444,7 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::ForeignBuildingOwner(BuildingId(0)),
         E::BuildingHpOutOfRange(BuildingId(0)),
         E::BuildingProgressOutOfRange(BuildingId(0)),
-        E::UpgradeProgressOutOfRange(BuildingId(0)),
+        E::InvalidBuildingPhase(BuildingId(0)),
         E::BuildingCooldownOutOfRange(BuildingId(0)),
         E::UnmintedBuildingFocus(BuildingId(0)),
         E::InvalidBuildingFocus(BuildingId(0)),
@@ -1063,8 +1063,8 @@ fn every_checklist_row_refuses_its_forgery() {
             "unit u0 is ordered against an id the run never minted",
         ),
         (
-            "a completed building marked provisional",
-            |d| d["buildings"][0]["provisional"] = json!(true),
+            "a standing Foundry recast as an unverified blueprint",
+            |d| d["buildings"][0]["phase"] = json!({"phase": "provisional"}),
             "building b0 has invalid provisional state",
         ),
         (
@@ -1078,18 +1078,38 @@ fn every_checklist_row_refuses_its_forgery() {
             "building b0 carries hit points its kind cannot hold",
         ),
         (
-            "a progress meter past the ceiling",
-            |d| d["buildings"][0]["progress"] = json!(u32::MAX),
-            "building b0 carries a progress meter past the ceiling",
+            "a training meter past the ceiling",
+            |d| d["buildings"][0]["phase"] = json!({"phase": "built", "training": u32::MAX}),
+            "building b0 carries a progress meter past its ceiling",
         ),
         (
             "an automatic upgrade past its tier timer",
             |d| {
-                d["buildings"][3]["built"] = json!(false);
                 d["buildings"][3]["tier"] = json!(1);
-                d["buildings"][3]["progress"] = json!(301);
+                d["buildings"][3]["phase"] = json!({"phase": "upgrading", "progress": 301});
             },
-            "building b3 carries upgrade progress past its construction timer",
+            "building b3 carries a progress meter past its ceiling",
+        ),
+        (
+            "an upgrade that climbs to the base rung",
+            |d| d["buildings"][3]["phase"] = json!({"phase": "upgrading"}),
+            "building b3 is in a phase its tier cannot hold",
+        ),
+        (
+            "a construction site above the base rung",
+            |d| {
+                d["buildings"][3]["tier"] = json!(1);
+                d["buildings"][3]["phase"] = json!({"phase": "site"});
+            },
+            "building b3 is in a phase its tier cannot hold",
+        ),
+        (
+            "a production queue on an unfinished Fabricator",
+            |d| {
+                d["buildings"][2]["phase"] = json!({"phase": "site"});
+                d["buildings"][2]["queue"] = json!(["lancer"]);
+            },
+            "building b2 queues a unit it could never train",
         ),
         (
             "a cooldown on a Foundry, which carries no weapon",
@@ -1707,7 +1727,7 @@ fn a_full_verb_run_stays_valid_every_tick() {
         );
         saw_shell |= !state.shells().is_empty();
         saw_haul |= state.units().iter().any(|u| u.carrying > 0);
-        saw_site |= state.buildings().iter().any(|b| !b.built);
+        saw_site |= state.buildings().iter().any(|b| !b.built());
         let hp = state.building(fabricator).map(|b| b.hp);
         saw_strip |= matches!((last_hp, hp), (Some(was), Some(now)) if now < was);
         saw_weld |= matches!((last_hp, hp), (Some(was), Some(now)) if now > was);

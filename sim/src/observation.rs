@@ -333,29 +333,32 @@ impl ObservationData {
             if b.player == me {
                 obs.my_buildings.push(own_building(b));
                 obs.my_queues.push(b.queue.iter().copied().collect());
-                obs.my_queue_progress
-                    .push(if b.queue.is_empty() { 0 } else { b.progress });
+                obs.my_queue_progress.push(if b.queue.is_empty() {
+                    0
+                } else {
+                    b.training_progress()
+                });
             } else if !state.hostile(me, b.player) {
                 obs.ally_buildings.push(BuildingObs {
-                    provisional: b.provisional,
+                    provisional: b.provisional(),
                     id: b.id,
                     player: b.player,
                     kind: b.kind,
                     anchor: b.anchor,
                     hp: b.hp,
-                    built: b.built,
+                    built: b.built(),
                     seen: true,
                     tier: b.tier,
                 });
             } else {
                 obs.enemy_buildings.push(BuildingObs {
-                    provisional: b.provisional,
+                    provisional: b.provisional(),
                     id: b.id,
                     player: b.player,
                     kind: b.kind,
                     anchor: b.anchor,
                     hp: b.hp,
-                    built: b.built,
+                    built: b.built(),
                     seen: true,
                     tier: b.tier,
                 });
@@ -426,29 +429,32 @@ impl ObservationData {
             if b.player == me {
                 obs.my_buildings.push(own_building(b));
                 obs.my_queues.push(b.queue.iter().copied().collect());
-                obs.my_queue_progress
-                    .push(if b.queue.is_empty() { 0 } else { b.progress });
+                obs.my_queue_progress.push(if b.queue.is_empty() {
+                    0
+                } else {
+                    b.training_progress()
+                });
             } else if !state.hostile(me, b.player) {
                 obs.ally_buildings.push(BuildingObs {
-                    provisional: b.provisional,
+                    provisional: b.provisional(),
                     id: b.id,
                     player: b.player,
                     kind: b.kind,
                     anchor: b.anchor,
                     hp: b.hp,
-                    built: b.built,
+                    built: b.built(),
                     seen: true,
                     tier: b.tier,
                 });
             } else if b.tiles().any(|t| vision.visible(t)) && state.building_apparent(me, b) {
                 obs.enemy_buildings.push(BuildingObs {
-                    provisional: b.provisional,
+                    provisional: b.provisional(),
                     id: b.id,
                     player: b.player,
                     kind: b.kind,
                     anchor: b.anchor,
                     hp: b.hp,
-                    built: b.built,
+                    built: b.built(),
                     seen: true,
                     tier: b.tier,
                 });
@@ -607,7 +613,7 @@ fn own_unit(state: &State, u: &crate::state::Unit) -> UnitObs {
         Order::Found { kind, anchor } => state
             .buildings()
             .iter()
-            .find(|b| b.player == u.player && b.kind == kind && b.anchor == anchor && !b.built)
+            .find(|b| b.player == u.player && b.kind == kind && b.anchor == anchor && !b.built())
             .map(|b| b.id),
         _ => None,
     };
@@ -659,13 +665,13 @@ fn enemy_unit(u: &crate::state::Unit) -> UnitObs {
 
 fn own_building(b: &crate::state::Building) -> BuildingObs {
     BuildingObs {
-        provisional: b.provisional,
+        provisional: b.provisional(),
         id: b.id,
         player: b.player,
         kind: b.kind,
         anchor: b.anchor,
         hp: b.hp,
-        built: b.built,
+        built: b.built(),
         seen: true,
         tier: b.tier,
     }

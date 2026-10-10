@@ -11,7 +11,7 @@
 
 use crate::event::Event;
 use crate::ids::{BuildingId, Target, UnitId};
-use crate::state::{Order, State};
+use crate::state::{Building, Order, State};
 
 /// A shot decided this tick, applied after every brain has acted.
 struct PendingHit {
@@ -337,7 +337,7 @@ fn resolve_hits(
                 }
             }
             Target::Building(bid) => {
-                if state.building(bid).is_some_and(|b| b.provisional) {
+                if state.building(bid).is_some_and(Building::provisional) {
                     continue;
                 }
                 let incident_tile = state.building(bid).and_then(|b| {
@@ -479,8 +479,7 @@ fn resolve_hits(
                 .expect("clamped to a u32 max_hp");
         b.hp = after;
         if let Some((player, kind)) = w.completes {
-            b.built = true;
-            b.progress = 0;
+            b.complete();
             events.push(Event::BuildingCompleted {
                 building: w.building,
                 player,
@@ -604,7 +603,7 @@ fn repair_bay_aura(
     let bays: Vec<crate::ids::BuildingId> = state
         .buildings
         .iter()
-        .filter(|b| b.built && b.hp > 0 && b.kind == BuildingKind::RepairBay)
+        .filter(|b| b.built() && b.hp > 0 && b.kind == BuildingKind::RepairBay)
         .map(|b| b.id)
         .collect();
     let radius = crate::stats::REPAIR_BAY_RADIUS;
@@ -694,7 +693,7 @@ fn repair_bay_aura(
                 target.id != bay
                     && !salvage_targets.contains(&target.id)
                     && target.player == owner
-                    && target.built
+                    && target.built()
                     && target.hp > 0
                     && target.hp < target.stats().max_hp
                     && building_distance_sq(source, target) <= radius * radius
@@ -769,7 +768,7 @@ fn crucible_smelter(state: &mut State) {
     let crucibles: Vec<crate::ids::BuildingId> = state
         .buildings
         .iter()
-        .filter(|b| b.built && b.hp > 0 && b.kind == BuildingKind::Crucible)
+        .filter(|b| b.built() && b.hp > 0 && b.kind == BuildingKind::Crucible)
         .map(|b| b.id)
         .collect();
     let radius = crate::stats::CRUCIBLE_SMELT_RADIUS;

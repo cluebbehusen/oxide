@@ -133,7 +133,7 @@ impl State {
                 self.buildings.iter().any(|building| {
                     building.player == player
                         && building.hp > 0
-                        && building.built
+                        && building.built()
                         && building.kind == *required
                 })
             })

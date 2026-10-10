@@ -1248,7 +1248,7 @@ fn an_unbuilt_site_is_no_sandbag() {
         .iter()
         .find(|b| b.kind == BuildingKind::Array)
         .expect("the site must have been placed");
-    assert!(!site.built, "the blocker must be an unbuilt foundation");
+    assert!(!site.built(), "the blocker must be an unbuilt foundation");
     let events = state
         .tick(&[cmd(
             0,
@@ -1502,7 +1502,7 @@ fn turret_holds_ground_and_dies_to_lancer_siege() {
         .unwrap()
         .id;
     run_until(&mut state, 600, |s, _| {
-        s.building(turret).is_some_and(|b| b.built)
+        s.building(turret).is_some_and(oxide_sim::Building::built)
     });
     // Builder clears the field so the duel is clean.
     state.tick(&[cmd(
@@ -1564,7 +1564,7 @@ fn turret_holds_ground_and_dies_to_lancer_siege() {
         .unwrap()
         .id;
     run_until(&mut state, 600, |s, _| {
-        s.building(turret).is_some_and(|b| b.built)
+        s.building(turret).is_some_and(oxide_sim::Building::built)
     });
     state.tick(&[
         cmd(
@@ -1616,7 +1616,9 @@ fn turret_fires_at_its_stated_cadence() {
         },
     )]);
     run_until(&mut state, 700, |s, _| {
-        s.buildings().iter().any(|b| b.anchor == anchor && b.built)
+        s.buildings()
+            .iter()
+            .any(|b| b.anchor == anchor && b.built())
     });
     // Builder clears out; the sentinel wanders in obliviously.
     state.tick(&[

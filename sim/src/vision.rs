@@ -491,7 +491,7 @@ impl GroundSalvageDanger {
         for building in state
             .buildings
             .iter()
-            .filter(|building| !building.kind.is_stealthy() && !building.provisional)
+            .filter(|building| !building.kind.is_stealthy() && !building.provisional())
         {
             if state.player(building.player).team == viewer_team {
                 stamp_blocked_rect(
@@ -1185,7 +1185,7 @@ pub(crate) fn refresh(state: &mut State) {
         for building in state
             .buildings
             .iter()
-            .filter(|b| allied(b.player) && b.built)
+            .filter(|b| allied(b.player) && b.built())
         {
             let (w, h) = building.kind.size();
             view.stamp_rect(
@@ -1232,7 +1232,7 @@ pub(crate) fn refresh(state: &mut State) {
                     owner: building.player,
                     anchor: building.anchor,
                     hp: building.hp,
-                    built: building.built,
+                    built: building.built(),
                 });
             }
         }
@@ -1277,7 +1277,7 @@ pub(crate) fn refresh(state: &mut State) {
         let masts: Vec<TilePos> = state
             .buildings
             .iter()
-            .filter(|b| allied(b.player) && b.built && b.kind == BuildingKind::Array)
+            .filter(|b| allied(b.player) && b.built() && b.kind == BuildingKind::Array)
             .map(|b| b.anchor)
             .collect();
         if !masts.is_empty() {
@@ -1385,7 +1385,7 @@ fn radar_return(
         .buildings
         .iter()
         .filter(|b| {
-            b.player == building.player && !b.provisional && b.kind == BuildingKind::Foundry
+            b.player == building.player && !b.provisional() && b.kind == BuildingKind::Foundry
         })
         .min_by_key(|b| b.id)
         .map(|foundry| {

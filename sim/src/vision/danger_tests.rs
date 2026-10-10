@@ -268,12 +268,12 @@ fn indexed_building_knowledge_matches_the_fog_reference() {
         if vision.visible(tile) {
             return state
                 .buildings_at(tile)
-                .any(|building| !building.kind.is_stealthy() && !building.provisional);
+                .any(|building| !building.kind.is_stealthy() && !building.provisional());
         }
         let team = state.player(viewer).team;
         state.buildings.iter().any(|building| {
             !building.kind.is_stealthy()
-                && !building.provisional
+                && !building.provisional()
                 && state.player(building.player).team == team
                 && building.contains(tile)
         }) || vision

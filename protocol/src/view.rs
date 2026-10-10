@@ -524,15 +524,18 @@ fn building_view(b: &Building) -> BuildingView {
         anchor: [b.anchor.x, b.anchor.y],
         hp: b.hp,
         queue: Some(b.queue.iter().copied().collect()),
-        ticks_remaining: b
-            .queue
-            .front()
-            .map(|kind| kind.stats().train_ticks.saturating_sub(b.progress)),
+        ticks_remaining: b.queue.front().map(|kind| {
+            kind.stats()
+                .train_ticks
+                .saturating_sub(b.training_progress())
+        }),
         rally: b.rally.map(|r| [r.x, r.y]),
         focus: b.focus,
-        built: b.built,
-        provisional: b.provisional,
-        progress: b.progress,
+        built: b.built(),
+        provisional: b.provisional(),
+        progress: b
+            .construction_progress()
+            .unwrap_or_else(|| b.training_progress()),
         tier: b.tier,
     }
 }
@@ -547,7 +550,7 @@ fn building_view_redacted(b: &Building) -> BuildingView {
         focus: None,
         // A scaffold's stage is drawn on every screen; a built
         // producer's meter is training progress no enemy panel shows.
-        progress: if b.built { 0 } else { b.progress },
+        progress: b.construction_progress().unwrap_or(0),
         ..building_view(b)
     }
 }

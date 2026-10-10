@@ -404,7 +404,7 @@ fn repair_rejects_the_healthy_the_foreign_and_the_unfinished() {
     let site = state
         .buildings()
         .iter()
-        .find(|b| !b.built)
+        .find(|b| !b.built())
         .expect("site placed")
         .id;
     let report = state.tick(&[cmd(

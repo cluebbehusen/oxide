@@ -151,7 +151,7 @@ fn owner_training_progress_is_exact_aligned_and_required_by_the_schema() {
         .expect("the Foundry remains live");
     foundry.queue.clear();
     foundry.queue.push_back(UnitKind::Harvester);
-    foundry.progress = 17;
+    foundry.phase = crate::state::BuildingPhase::Built { training: 17 };
 
     for observation in [
         ObservationData::fog_honest(&state, PlayerId(0)),
@@ -205,7 +205,7 @@ fn hostile_training_progress_never_enters_an_observation() {
         .building_mut(hostile_producer)
         .expect("the hostile Foundry remains live");
     foundry.queue.push_back(UnitKind::Harvester);
-    foundry.progress = 31;
+    foundry.phase = crate::state::BuildingPhase::Built { training: 31 };
 
     assert_eq!(
         ObservationData::fog_honest(&control, PlayerId(0)),

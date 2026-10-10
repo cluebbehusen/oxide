@@ -162,7 +162,7 @@ impl PreviousEffects {
                 .buildings()
                 .iter()
                 .filter(|b| {
-                    !b.provisional
+                    !b.provisional()
                         && (b.player == game.human
                             || game.all_seeing()
                             || (b.tiles().any(|t| state.vision(game.human).visible(t))
@@ -171,7 +171,7 @@ impl PreviousEffects {
                 .map(|b| {
                     (
                         b.id,
-                        b.built.then_some(CollapseBody {
+                        b.built().then_some(CollapseBody {
                             kind: b.kind,
                             tier: b.tier,
                             player: b.player,
@@ -738,7 +738,7 @@ impl Presentation {
         state
             .building(id)
             .filter(|b| {
-                !b.provisional
+                !b.provisional()
                     && (self.all_seeing()
                         || b.player == self.human
                         || b.tiles().any(|t| state.vision(self.human).visible(t))

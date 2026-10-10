@@ -51,7 +51,7 @@ fn command_phase_inspection_is_pure_and_stops_before_the_tick() {
             .iter()
             .find(|b| b.kind == kind && b.anchor == anchor)
             .expect("projected site is inspectable");
-        assert!(!site.built);
+        assert!(!site.built());
         assert!(site.queue.is_empty());
         assert!(state.buildings().iter().all(|b| b.id != site.id));
     });
@@ -659,10 +659,7 @@ fn assert_calibration_open_symmetry(
         assert_eq!(left.kind, right.kind, "{stage}: building kind");
         assert_eq!(left.hp, right.hp, "{stage}: building hp");
         assert_eq!(left.queue, right.queue, "{stage}: production queue");
-        assert_eq!(
-            left.progress, right.progress,
-            "{stage}: production progress"
-        );
+        assert_eq!(left.phase, right.phase, "{stage}: production progress");
         assert_eq!(
             TilePos::new(
                 state.map.width() - width - left.anchor.x,
