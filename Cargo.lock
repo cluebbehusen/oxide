@@ -583,7 +583,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 [[package]]
 name = "miniquad"
 version = "0.4.11"
-source = "git+https://github.com/cluebbehusen/miniquad?rev=fc47724a7cbee256bf7d877d1752dd3f7316b88f#fc47724a7cbee256bf7d877d1752dd3f7316b88f"
+source = "git+https://github.com/cluebbehusen/miniquad?rev=dc866df08367db757f3b84ed4c63a545932705d1#dc866df08367db757f3b84ed4c63a545932705d1"
 dependencies = [
  "libc",
  "ndk-sys",
