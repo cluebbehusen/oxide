@@ -492,8 +492,7 @@ fn clicking_the_secondary_column_selects_it_even_when_release_is_a_later_frame()
         .position(|a| *a == Some(Action::PanUp))
         .unwrap();
     screen.goto_controls(&config, row);
-    let rect = screen.menu.item_rect(row).unwrap();
-    let (x, y) = (rect.x + rect.w * 0.9, rect.y + rect.h * 0.5);
+    let (x, y) = pan_up_columns(&screen).secondary.center().into();
     drive(
         &mut screen,
         &mut config,
@@ -524,6 +523,79 @@ fn clicking_the_secondary_column_selects_it_even_when_release_is_a_later_frame()
     assert_eq!(
         config.bindings.chord_at(Action::PanUp, 1),
         Some(Chord::bare(Key::I))
+    );
+}
+
+/// The Pan up row's columns, as the Controls face draws them.
+fn pan_up_columns(screen: &SettingsScreen) -> crate::menu::BindingColumns {
+    let row = control_rows()
+        .iter()
+        .position(|a| *a == Some(Action::PanUp))
+        .unwrap();
+    let rect = screen.menu.item_rect(row).unwrap();
+    crate::menu::BindingColumns::of(rect, crate::render::ui_scale())
+}
+
+/// Opens Controls on the Pan up row with `slot` chosen, clicks the row
+/// at `x`, and returns the chosen slot and the row's label.
+fn click_pan_up_at(
+    slot: usize,
+    x: impl Fn(&crate::menu::BindingColumns) -> f32,
+) -> (usize, String) {
+    use oxide_protocol::MouseButton;
+    let mut config = Config::default();
+    let mut screen = SettingsScreen::open(&config);
+    let row = control_rows()
+        .iter()
+        .position(|a| *a == Some(Action::PanUp))
+        .unwrap();
+    screen.binding_slot = slot;
+    screen.goto_controls(&config, row);
+    let columns = pan_up_columns(&screen);
+    let (x, y) = (x(&columns), columns.primary.center().y);
+    drive(
+        &mut screen,
+        &mut config,
+        &[
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+            },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x,
+                y,
+            },
+        ],
+        false,
+    );
+    assert!(matches!(screen.face, Face::Controls { rebinding: Some(r) } if r == row));
+    (screen.binding_slot, screen.menu.items[row].clone())
+}
+
+#[test]
+fn a_click_picks_the_chord_column_it_lands_in() {
+    assert_eq!(click_pan_up_at(0, |c| c.secondary.x + 1.0).0, 1);
+    assert_eq!(click_pan_up_at(1, |c| c.secondary.x - 1.0).0, 0);
+    assert_eq!(click_pan_up_at(1, |c| c.primary.x + 1.0).0, 0);
+}
+
+#[test]
+fn a_click_on_the_action_name_keeps_the_chosen_column() {
+    assert_eq!(click_pan_up_at(1, |c| c.name.center().x).0, 1);
+    assert_eq!(click_pan_up_at(0, |c| c.name.center().x).0, 0);
+}
+
+#[test]
+fn the_brackets_follow_the_clicked_column_while_capturing() {
+    let (_, label) = click_pan_up_at(0, |c| c.secondary.center().x);
+    let (_, keys) = label.rsplit_once(": ").unwrap();
+    let (primary, secondary) = keys.split_once(" | ").unwrap();
+    assert!(!primary.starts_with('['), "{label}");
+    assert!(
+        secondary.starts_with('[') && secondary.ends_with(']'),
+        "{label}"
     );
 }
 
