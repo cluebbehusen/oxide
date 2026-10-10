@@ -2,6 +2,7 @@ use super::*;
 use crate::game::Game;
 use crate::slide_motion::SlideMotion;
 use oxide_sim::Command;
+use oxide_sim::UnitKind;
 
 fn production_game() -> Game {
     let mut scenario = Scenario::skirmish();

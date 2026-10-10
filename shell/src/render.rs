@@ -117,9 +117,6 @@ pub(crate) const OUTSIDE: Color = color_u8!(20, 20, 25, 255);
 // thickens world decoration.
 const BONE: Color = color_u8!(232, 228, 216, 255);
 const BONE_FAINT: Color = color_u8!(232, 228, 216, 90);
-const DEFAULT_UNIT_DRAW_SCALE: f32 = 1.05;
-const HEAVY_UNIT_DRAW_SCALE: f32 = 1.4;
-const LARGE_UNIT_DRAW_SCALE: f32 = 2.0;
 const SCRAP_COLOR: Color = crate::theme::TEXT_ACCENT;
 const HP_BACK: Color = color_u8!(20, 20, 24, 220);
 const DANGER: Color = crate::theme::TEXT_DANGER;
@@ -613,42 +610,19 @@ pub(crate) fn unit_visual_radius(kind: oxide_sim::UnitKind) -> f32 {
 }
 
 pub(crate) fn unit_draw_scale(kind: oxide_sim::UnitKind) -> f32 {
-    match kind {
-        oxide_sim::UnitKind::Condor
-        | oxide_sim::UnitKind::Moth
-        | oxide_sim::UnitKind::Breaker
-        | oxide_sim::UnitKind::Avalanche
-        | oxide_sim::UnitKind::Skyhook => LARGE_UNIT_DRAW_SCALE,
-        oxide_sim::UnitKind::Warden => HEAVY_UNIT_DRAW_SCALE,
-        oxide_sim::UnitKind::Excavator | oxide_sim::UnitKind::Shrike => 1.3,
-        oxide_sim::UnitKind::Sylph => 1.2,
-        _ => DEFAULT_UNIT_DRAW_SCALE,
-    }
+    crate::look::unit(kind).scale
 }
 
+/// A flyer's shadow size, shadow offset and body lift at `zoom`.
 pub(crate) fn air_presentation(kind: oxide_sim::UnitKind, zoom: f32) -> (Vec2, Vec2, f32) {
-    match kind {
-        oxide_sim::UnitKind::Condor => (
-            vec2(zoom * 1.75, zoom * 1.1875),
-            vec2(zoom * 0.125, zoom * 0.1875),
-            zoom * 0.0625,
-        ),
-        oxide_sim::UnitKind::Moth => (
-            vec2(zoom * 1.55, zoom),
-            vec2(zoom * 0.11, zoom * 0.17),
-            zoom * 0.08,
-        ),
-        oxide_sim::UnitKind::Skyhook => (
-            vec2(zoom * 1.78, zoom * 1.52),
-            vec2(zoom * 0.13, zoom * 0.20),
-            zoom * 0.07,
-        ),
-        _ => (
-            vec2(zoom * 0.9, zoom * 0.9),
-            vec2(zoom * 0.16, zoom * 0.26),
-            zoom * 0.18,
-        ),
-    }
+    let airframe = crate::look::unit(kind)
+        .airframe
+        .unwrap_or(crate::look::SMALL_AIRFRAME);
+    (
+        airframe.shadow * zoom,
+        airframe.shadow_offset * zoom,
+        airframe.lift * zoom,
+    )
 }
 
 fn tracked_mount_angle(
@@ -662,7 +636,7 @@ fn tracked_mount_angle(
         .get(&unit.id.0)
         .copied()
         .or_else(|| {
-            if unit.kind == oxide_sim::UnitKind::Sapper
+            if unit.kind.stats().demolition.is_some()
                 && let oxide_sim::Order::Attack { target, .. } = unit.order
             {
                 game.state
@@ -1062,7 +1036,7 @@ fn draw_unit_pass(
             }
         }
         let body_size = vec2(dest, dest);
-        if unit.kind == oxide_sim::UnitKind::Bombard
+        if unit.kind.stats().brace.is_some()
             && let Some(source) = sprites.bombard_spades(unit.brace_ticks)
         {
             sprites.draw_unit(
@@ -1176,7 +1150,8 @@ fn draw_unit_pass(
                     DrawTextureParams {
                         dest_size: Some(body_size),
                         source: Some(source),
-                        rotation: if unit.kind == oxide_sim::UnitKind::Skyhook {
+                        // A mount that carries no weapon turns with the hull.
+                        rotation: if unit.kind.stats().weapons.is_empty() {
                             body_rotation
                         } else {
                             rotation

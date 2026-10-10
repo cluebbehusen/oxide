@@ -397,27 +397,14 @@ impl ShotStyle {
     }
 }
 
-/// Which report family a unit's weapon slot fires.
-fn unit_shot_style(kind: oxide_sim::UnitKind, weapon: usize) -> ShotStyle {
-    use oxide_sim::UnitKind;
-    if kind.stats().contact_reach.is_some() {
-        return ShotStyle::Contact;
-    }
-    match (kind, weapon) {
-        (UnitKind::Sentinel, _) => ShotStyle::Kinetic { heavy: false },
-        (UnitKind::Buzzard | UnitKind::Warden, _) => ShotStyle::Kinetic { heavy: true },
-        (UnitKind::Breaker, _) => ShotStyle::Mortar,
-        (UnitKind::Lancer, _) => ShotStyle::Rail,
-        (UnitKind::Flakhound, _) => ShotStyle::FlakBurst {
-            yoke_delay: FlakYokeDelay::OneTick,
-            rounds_per_yoke: 2,
-        },
-        (UnitKind::Stinger, _) => ShotStyle::FlakBurst {
-            yoke_delay: FlakYokeDelay::None,
-            rounds_per_yoke: 1,
-        },
-        _ => ShotStyle::ForgeSpot,
-    }
+/// Which report family a unit's weapon slot fires: every slot speaks
+/// through the kind's one physical barrel. None for a kind that never draws
+/// a direct report.
+fn unit_shot_style(kind: oxide_sim::UnitKind, _weapon: usize) -> Option<ShotStyle> {
+    crate::look::unit(kind)
+        .weapon
+        .and_then(|weapon| weapon.shot)
+        .map(|(style, _)| style)
 }
 
 fn defense_shot_style(kind: oxide_sim::BuildingKind, tier: u8) -> ShotStyle {
@@ -446,24 +433,21 @@ fn visual_shot_origin(from: Vec2, to: Vec2, reach: f32) -> Vec2 {
     }
 }
 
-fn unit_muzzle_reach(kind: oxide_sim::UnitKind) -> f32 {
-    match kind {
-        oxide_sim::UnitKind::Buzzard => 38.0 / 128.0 * crate::render::unit_draw_scale(kind),
-        oxide_sim::UnitKind::Flakhound => 42.0 / 128.0 * crate::render::unit_draw_scale(kind),
-        oxide_sim::UnitKind::Stinger => 35.0 / 128.0 * crate::render::unit_draw_scale(kind),
-        oxide_sim::UnitKind::Sentinel => 0.35,
-        oxide_sim::UnitKind::Warden => 0.36 * crate::render::unit_draw_scale(kind),
-        oxide_sim::UnitKind::Breaker => 0.625,
-        _ if kind.stats().domain == oxide_sim::stats::Domain::Ground => 0.38,
-        _ => 0.32,
-    }
+fn unit_muzzle_reach(kind: oxide_sim::UnitKind) -> Option<f32> {
+    crate::look::unit(kind)
+        .weapon
+        .and_then(|weapon| weapon.shot)
+        .map(|(_, reach)| reach)
 }
 
 fn unit_shot_origin(kind: oxide_sim::UnitKind, from: Vec2, to: Vec2) -> Vec2 {
     if kind.stats().contact_reach.is_some() {
         return from;
     }
-    let mut origin = visual_shot_origin(from, to, unit_muzzle_reach(kind));
+    let Some(reach) = unit_muzzle_reach(kind) else {
+        return from;
+    };
+    let mut origin = visual_shot_origin(from, to, reach);
     if kind.stats().domain == oxide_sim::stats::Domain::Air {
         origin.y -= crate::render::air_presentation(kind, 1.0).2;
     }
@@ -478,34 +462,9 @@ fn defense_muzzle_reach(kind: oxide_sim::BuildingKind) -> f32 {
     }
 }
 
-fn unit_fire_sound(kind: oxide_sim::UnitKind) -> SoundKind {
-    use oxide_sim::UnitKind;
-    match kind {
-        UnitKind::Sentinel => SoundKind::SentinelFire,
-        UnitKind::Scuttler => SoundKind::ScuttlerFire,
-        UnitKind::Lancer => SoundKind::LancerFire,
-        UnitKind::Bombard => SoundKind::BombardFire,
-        UnitKind::Flakhound => SoundKind::FlakhoundFire,
-        UnitKind::Stinger => SoundKind::StingerFire,
-        UnitKind::Buzzard => SoundKind::BuzzardFire,
-        UnitKind::Darter => SoundKind::DarterFire,
-        UnitKind::Talon => SoundKind::TalonFire,
-        UnitKind::Wisp => SoundKind::WispFire,
-        UnitKind::Warden => SoundKind::WardenFire,
-        // Interceptors share the air-superiority zap family on purpose.
-        UnitKind::Shrike => SoundKind::TalonFire,
-        UnitKind::Sylph => SoundKind::WispFire,
-        UnitKind::Condor | UnitKind::Moth => SoundKind::BombRelease,
-        UnitKind::Avalanche => SoundKind::AvalancheFire,
-        UnitKind::Breaker => SoundKind::BreakerFire,
-        UnitKind::Tender
-        | UnitKind::Excavator
-        | UnitKind::Kestrel
-        | UnitKind::Gnat
-        | UnitKind::Skyhook => SoundKind::Laser,
-        UnitKind::Sapper => SoundKind::DemolitionBoom,
-        UnitKind::Harvester => SoundKind::Laser,
-    }
+/// The report a unit's weapon makes; an unarmed kind makes none.
+fn unit_fire_sound(kind: oxide_sim::UnitKind) -> Option<SoundKind> {
+    crate::look::unit(kind).weapon.map(|weapon| weapon.sound)
 }
 
 fn defense_fire_sound(kind: oxide_sim::BuildingKind) -> SoundKind {
@@ -539,7 +498,9 @@ fn shell_launch_audio(
     impact_seen: bool,
 ) -> Option<(SoundKind, ShellSoundAnchor)> {
     if muzzle_seen || allegiance == AllegianceCue::Mine {
-        let report = shooter_kind.map_or_else(|| shell_fire_sound(shooter), unit_fire_sound);
+        let report = shooter_kind
+            .and_then(unit_fire_sound)
+            .unwrap_or_else(|| shell_fire_sound(shooter));
         Some((report, ShellSoundAnchor::Muzzle))
     } else if allegiance == AllegianceCue::Hostile && impact_seen {
         Some((SoundKind::ArtilleryLaunch, ShellSoundAnchor::Impact))
@@ -994,7 +955,10 @@ impl Presentation {
                     // The kind comes from the event because the attacker
                     // may have died later this same tick. The weapon decides
                     // the report and whether the impact blooms.
-                    let sapper_owner = (*attacker_kind == oxide_sim::UnitKind::Sapper)
+                    let sapper_owner = attacker_kind
+                        .stats()
+                        .demolition
+                        .is_some()
                         .then(|| {
                             events.iter().find_map(|event| match event {
                                 Event::UnitDied { unit, player, .. } if unit == attacker => {
@@ -1019,7 +983,9 @@ impl Presentation {
                         .get(*weapon)
                         .and_then(|w| w.splash)
                         .map(|s| s.to_num::<f32>());
-                    if heard || crate::mixer::spec(sound).explosion {
+                    if let Some(sound) = sound
+                        && (heard || crate::mixer::spec(sound).explosion)
+                    {
                         let at = if crate::mixer::spec(sound).explosion {
                             *target_pos
                         } else if sees(self, *attacker_pos) {
@@ -1029,7 +995,7 @@ impl Presentation {
                         };
                         self.sounds_pending.push((sound, Some(world_vec(at))));
                     }
-                    if *attacker_kind == oxide_sim::UnitKind::Sapper {
+                    if attacker_kind.stats().demolition.is_some() {
                         if let Some(player) = sapper_owner {
                             let direction = world_vec(*target_pos) - world_vec(*attacker_pos);
                             let rotation = if direction.length_squared() > 1e-6 {
@@ -1076,9 +1042,12 @@ impl Presentation {
                         {
                             origin.y += crate::render::air_presentation(*attacker_kind, 1.0).2;
                         }
+                        let Some(style) = unit_shot_style(*attacker_kind, *weapon) else {
+                            continue;
+                        };
                         let report = push_direct_report(
                             &mut self.fx,
-                            unit_shot_style(*attacker_kind, *weapon),
+                            style,
                             origin,
                             world_vec(*target_pos),
                             splash,

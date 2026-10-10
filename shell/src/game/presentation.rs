@@ -7,9 +7,7 @@ use super::{EffectKind, Selection};
 use crate::camera::Camera;
 use crate::numeric;
 use macroquad::prelude::{Vec2, vec2};
-use oxide_sim::{
-    Building, Event, PlayerCommand, PlayerId, Scenario, State, Target, UnitId, UnitKind,
-};
+use oxide_sim::{Building, Event, PlayerCommand, PlayerId, Scenario, State, Target, UnitId};
 use std::collections::HashMap;
 
 pub struct Presentation {
@@ -509,7 +507,11 @@ impl Presentation {
             }
             if let Some(turn) = rotor_hull_turn_rate(unit.kind) {
                 let movement_facing = self.facing.get(&unit.id.0).copied().unwrap_or(0.0);
-                let target = if unit.kind == UnitKind::Wisp && !moving {
+                // A rotorcraft whose gun is fixed to its hull turns the hull
+                // to aim while it hovers.
+                let fixed_gun =
+                    unit.kind.stats().can_fight() && unit.kind.stats().turret_turn_rate == 0;
+                let target = if fixed_gun && !moving {
                     self.aim_units
                         .get(&unit.id.0)
                         .filter(|(_, at)| self.fx_time() - at < 1.2)
