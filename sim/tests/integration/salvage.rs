@@ -120,7 +120,7 @@ fn harvesters_strip_wrecks_from_beside_them_and_deliver() {
     // The salvager must reach a stopped working position beside the pile.
     run_until(&mut state, 300, |s, _| {
         let u = s.unit(salvager).unwrap();
-        u.in_work_reach(grave, (1, 1)) && u.work_stopped() && u.carrying > 0
+        u.in_work_reach(grave, (1, 1)) && u.work_stopped() && u.carrying() > 0
     });
     run_until(&mut state, 600, |s, events| {
         let _ = s;
@@ -1403,7 +1403,7 @@ fn a_dry_source_with_no_neighbor_retires_the_harvester_instead_of_marching() {
     )]);
     let events = run_until(&mut state, 4000, |s, _| {
         let u = s.unit(salvager).unwrap();
-        u.order == Order::Idle && u.carrying == 0
+        u.order == Order::Idle && u.carrying() == 0
     });
     assert!(
         events.iter().any(|e| matches!(

@@ -270,7 +270,7 @@ enum UnitWorkFact {
 impl UnitAnimationFacts {
     /// Reads the unit's visible mechanisms from the post-tick world.
     pub(crate) fn capture(state: &State, unit: &Unit, moved: bool) -> Self {
-        let unloading = unit.unloading.and_then(|release| {
+        let unloading = unit.unloading().and_then(|release| {
             state
                 .building(release.foundry)
                 .filter(|b| unit.work_stopped() && state.in_building_work_reach(unit, b.id))
@@ -291,7 +291,7 @@ impl UnitAnimationFacts {
         };
         let work_target = if work == UnitWorkFact::Idle {
             None
-        } else if let Some(release) = unit.unloading {
+        } else if let Some(release) = unit.unloading() {
             Some(WorkTarget::Building(release.foundry))
         } else {
             match unit.order {
@@ -314,7 +314,7 @@ impl UnitAnimationFacts {
             kind: unit.kind,
             moved,
             work,
-            carrying: unit.carrying,
+            carrying: unit.carrying(),
             demolition_contact: sapper_at_contact(state, unit),
             cooldowns: unit.cooldowns,
         }
@@ -1104,7 +1104,7 @@ fn active_harvesting(state: &State, unit: &Unit) -> Option<Vec2Fx> {
     else {
         return None;
     };
-    if unit.carrying >= harvest.capacity || unit.unloading.is_some() || !unit.work_stopped() {
+    if unit.carrying() >= harvest.capacity || unit.unloading().is_some() || !unit.work_stopped() {
         return None;
     }
     let active = (state.map().scrap_at(node) > 0 || state.map().wreck_at(node) > 0)
@@ -1148,7 +1148,7 @@ fn active_unit_repair(state: &State, unit: &Unit) -> Option<Vec2Fx> {
                 && patient.hp < patient.kind.stats().max_hp
                 && patient.path.is_none()
                 && !matches!(patient.order, Order::Found { .. })
-                && patient.drive_speed == chassis::fx::Fx::ZERO
+                && patient.drive_speed() == chassis::fx::Fx::ZERO
                 && unit.in_repair_reach(patient))
             .then_some(patient.pos)
         }),

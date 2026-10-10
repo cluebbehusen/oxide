@@ -290,7 +290,7 @@ fn accepted_units(state: &State, player: PlayerId, ids: &[UnitId]) -> Vec<UnitId
 fn end_station_keeping(unit: &mut crate::state::Unit) {
     unit.leash = None;
     unit.settled = 0;
-    unit.danger_retry_at = None;
+    unit.clear_danger_hold();
 }
 
 /// Drops the active leg without rotating it into a looping program. This is
@@ -330,7 +330,7 @@ fn assign(unit: &mut crate::state::Unit, order: Order, queue: bool) -> bool {
             return true;
         }
     }
-    unit.unloading = None;
+    unit.end_release();
     unit.order = order;
     unit.path = None;
     unit.progress = 0;
@@ -342,7 +342,7 @@ fn assign(unit: &mut crate::state::Unit, order: Order, queue: bool) -> bool {
 /// the route; `legs` must be non-empty.
 fn assign_circuit(unit: &mut crate::state::Unit, mut legs: impl Iterator<Item = Order>) {
     end_station_keeping(unit);
-    unit.unloading = None;
+    unit.end_release();
     unit.order = legs.next().expect("caller validated a non-empty route");
     unit.queue = legs.collect();
     unit.looping = true;
@@ -957,7 +957,7 @@ fn apply_return_cargo(
                 unit.player == player
                     && unit.hp > 0
                     && unit.kind.stats().harvest.is_some()
-                    && unit.carrying > 0
+                    && unit.carrying() > 0
             })
         })
         .collect();

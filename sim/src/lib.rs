@@ -20,8 +20,9 @@ pub use event::{Event, GroundMotion, StallReason, TickReport, UnitRepairSource};
 pub use ids::{AttackTarget, BuildingId, ContactId, PlayerId, RememberedBuilding, Target, UnitId};
 pub use scenario::Scenario;
 pub use state::{
-    Aim, Building, BuildingPhase, ExtractorIncome, Faction, GameResult, Goal, Leash, Order,
-    OrderKey, PlaceRefusal, Player, Recovery, State, StateIntegrityError, Unit,
+    Aim, Building, BuildingPhase, ExtractorIncome, Faction, GameResult, Goal, Leash, Motor, Order,
+    OrderKey, PlaceRefusal, Player, Recovery, Rider, State, StateIntegrityError, Unit, Unloading,
+    Worker,
 };
 pub use stats::{BuildingKind, ProjectileKind, UnitKind};
 pub use tick::CommandPhaseView;

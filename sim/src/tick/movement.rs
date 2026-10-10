@@ -14,7 +14,7 @@ mod ground;
 
 use super::flight;
 use crate::map::Map;
-use crate::state::{GroundTerrain, Order, ParkedBodies, PathFollow, State};
+use crate::state::{GroundTerrain, Motor, Order, ParkedBodies, PathFollow, State};
 use chassis::fx::{Fx, Vec2Fx, sqrt};
 use chassis::grid::TilePos;
 
@@ -33,20 +33,20 @@ pub(super) fn steer_weapon_heading(unit: &mut crate::state::Unit, direction: Vec
         let bearing = unit.turret_heading.get_or_insert(unit.heading);
         return steer_bearing(bearing, direction, unit.kind.stats().turret_turn_rate);
     }
-    if unit.drive_speed > Fx::ZERO {
+    if unit.drive_speed() > Fx::ZERO {
         return false;
     }
     if let Some(brace) = unit.kind.stats().brace {
         if !ground_weapon_aligned(unit, direction) {
-            if unit.brace_ticks > 0 {
+            if unit.braces() > 0 {
                 unit.retract_braces();
             } else {
                 steer_ground_heading(unit, direction);
             }
             return false;
         }
-        unit.brace_ticks = (unit.brace_ticks + 1).min(brace.deploy_ticks);
-        return unit.brace_ticks == brace.deploy_ticks;
+        unit.set_braces((unit.braces() + 1).min(brace.deploy_ticks));
+        return unit.braces() == brace.deploy_ticks;
     }
     let rate = unit
         .kind
@@ -93,7 +93,7 @@ fn work_aim(state: &State, unit: &crate::state::Unit) -> Option<Vec2Fx> {
     if unit.path.is_some() || unit.kind.ground_turn_rate() == 0 {
         return None;
     }
-    if let Some(release) = unit.unloading {
+    if let Some(release) = unit.unloading() {
         return state
             .building(release.foundry)
             .map(|b| state.contact_surface(b).closest(unit.pos));
@@ -238,7 +238,7 @@ pub(super) fn evict_claimed_ground(state: &mut State) {
         if let Some(path) = claimed_ground_escape(state, id) {
             // A landed airframe leaves a claimed footprint the only way it
             // can: it lifts off along that route.
-            state.units[i].landed = false;
+            state.units[i].lift_off();
             state.units[i].path = Some(path);
         }
     }
@@ -279,14 +279,19 @@ pub(super) fn note_stalls(
                     let made = net.x * toward.x + net.y * toward.y;
                     wanted > Fx::ZERO && made * Fx::from_num(4) < wanted
                 });
+        // Only a driving chassis can stall: anything else never walks a
+        // ground route under its own power.
+        let Motor::Ground { stall_ticks, .. } = &mut unit.motor else {
+            continue;
+        };
         if !stalled {
-            unit.stall_ticks = 0;
+            *stall_ticks = 0;
             continue;
         }
-        unit.stall_ticks += 1;
-        if unit.stall_ticks >= crate::stats::STALL_REPLAN_TICKS {
+        *stall_ticks += 1;
+        if *stall_ticks >= crate::stats::STALL_REPLAN_TICKS {
             unit.path = None;
-            unit.stall_ticks = 0;
+            *stall_ticks = 0;
         }
     }
 }
@@ -297,8 +302,10 @@ pub(super) fn note_stalls(
 /// its own invariants and the next route inherits a stale count.
 pub(super) fn forget_stalls_without_routes(state: &mut State) {
     for unit in &mut state.units {
-        if unit.path.is_none() {
-            unit.stall_ticks = 0;
+        if unit.path.is_none()
+            && let Motor::Ground { stall_ticks, .. } = &mut unit.motor
+        {
+            *stall_ticks = 0;
         }
     }
 }
@@ -338,14 +345,14 @@ pub(super) fn run(state: &mut State) -> (Vec<Vec2Fx>, Vec<bool>) {
     let mut travel = vec![Vec2Fx::ZERO; units.len()];
     let mut refused = vec![false; units.len()];
     for (slot, unit) in units.iter_mut().enumerate() {
-        if unit.hp == 0 || unit.brace_ticks > 0 {
+        if unit.hp == 0 || unit.braces() > 0 {
             continue;
         }
         let before = unit.pos;
         let stats = unit.kind.stats();
         if stats.turn_rate > 0 {
             // A landed airframe rests on its tile until an order lifts it.
-            if !unit.landed {
+            if !unit.landed() {
                 steer_turn_limited(unit, map, stats);
                 travel[slot] = unit.pos - before;
             }
@@ -362,7 +369,7 @@ pub(super) fn run(state: &mut State) -> (Vec<Vec2Fx>, Vec<bool>) {
                 &terrain.with_contact(contacts[slot]),
                 &parked[unit.player.0 as usize],
             );
-            if unit.drive_speed == Fx::ZERO
+            if unit.drive_speed() == Fx::ZERO
                 && let Some(aim) = work_aims[slot]
             {
                 steer_ground_heading(unit, aim - unit.pos);
@@ -641,10 +648,10 @@ fn collision_position_open(state: &State, domain: crate::stats::Domain, pos: Vec
 /// A unit that is standing still to work — extracting, welding, or
 /// holding fire on a target — resists shoving; movers yield around it.
 fn is_anchored(unit: &crate::state::Unit) -> bool {
-    unit.landed
+    unit.landed()
         || unit.kind.stats().turn_rate == 0
             && unit.path.is_none()
-            && unit.drive_speed == Fx::ZERO
+            && unit.drive_speed() == Fx::ZERO
             && matches!(
                 unit.order,
                 Order::Harvest { .. }
@@ -937,7 +944,7 @@ fn collision_pairs(
             radius: unit.kind.stats().radius,
             domain: unit.domain(),
             alive: unit.hp > 0,
-            shoveable: unit.kind.stats().turn_rate == 0 || unit.landed,
+            shoveable: unit.kind.stats().turn_rate == 0 || unit.landed(),
         })
         .collect();
     for (i, body) in bodies.iter().enumerate() {
@@ -1084,7 +1091,7 @@ fn relaxation_pass(
         // movers absorb the correction and flow around them.
         // A landed airframe is a fixture on its tile center: it takes no
         // correction at all, so the whole overlap falls on the mover.
-        let (share_i, share_j) = match (state.units[i].landed, state.units[j].landed) {
+        let (share_i, share_j) = match (state.units[i].landed(), state.units[j].landed()) {
             (true, true) => (Fx::ZERO, Fx::ZERO),
             (true, false) => (Fx::ZERO, Fx::ONE),
             (false, true) => (Fx::ONE, Fx::ZERO),

@@ -387,7 +387,7 @@ pub(super) fn commit_unit_welds(
                 continue;
             };
             let me = unit.player;
-            if unit.drive_speed != Fx::ZERO || footprint_eviction_pending(state, weld.welder) {
+            if unit.drive_speed() != Fx::ZERO || footprint_eviction_pending(state, weld.welder) {
                 // The movement pre-pass, after weld resolution, will make
                 // this welder walk off newly claimed ground. It cannot light
                 // the torch and move in the same tick.
@@ -404,7 +404,7 @@ pub(super) fn commit_unit_welds(
                 continue;
             };
             if t.path.is_none()
-                && t.drive_speed == Fx::ZERO
+                && t.drive_speed() == Fx::ZERO
                 && !matches!(t.order, Order::Found { .. })
                 && !footprint_eviction_pending(state, weld.patient)
                 && unit.in_repair_reach(t)
@@ -617,7 +617,7 @@ pub(super) fn harvest(
         state.unit_mut(id).expect("caller checked").clear_program();
         return;
     };
-    if unit.unloading.is_some() {
+    if unit.unloading().is_some() {
         deliver(state, danger, id, events, retiring);
         return;
     }
@@ -626,7 +626,7 @@ pub(super) fn harvest(
         return;
     }
 
-    let (tile, carrying) = (unit.tile(), unit.carrying);
+    let (tile, carrying) = (unit.tile(), unit.carrying());
     // The clicked source is authoritative: danger governs autonomous
     // chaining, not an explicit player command. Once the work zone picks
     // a different source for itself, that source remains subject to the
@@ -663,7 +663,7 @@ pub(super) fn harvest(
         // scan may start the next one.
         let worker = state.unit_mut(id).expect("caller checked");
         worker.path = None;
-        worker.danger_retry_at = None;
+        worker.clear_danger_hold();
         if !worker.work_stopped() {
             return;
         }
@@ -956,7 +956,10 @@ fn approach_authoritative_source(
                     .final_point
                     .is_none_or(|point| !crowding::claimed(state, id, point, true)))
         {
-            state.unit_mut(id).expect("caller checked").danger_retry_at = None;
+            state
+                .unit_mut(id)
+                .expect("caller checked")
+                .clear_danger_hold();
             return true;
         }
         // Only danger defers a search, and only after one already failed: a
@@ -967,13 +970,17 @@ fn approach_authoritative_source(
                 known_ground_passable(state, danger, player, waypoint)
             })
             .is_none();
-        if danger_only && unit.danger_retry_at.is_some_and(|retry| state.tick < retry) {
+        if danger_only
+            && unit
+                .danger_retry_at()
+                .is_some_and(|retry| state.tick < retry)
+        {
             return true;
         }
         let detour = authoritative_source_route(state, danger, id, source);
         let tick = state.tick;
         let worker = state.unit_mut(id).expect("caller checked");
-        worker.danger_retry_at = (detour.is_none() && danger_only)
+        worker.worker_mut().danger_retry_at = (detour.is_none() && danger_only)
             .then_some(tick + crate::stats::HARVEST_DANGER_RETRY_TICKS);
         if let Some(path) = detour {
             worker.path = Some(path);
@@ -983,7 +990,10 @@ fn approach_authoritative_source(
         return true;
     }
 
-    state.unit_mut(id).expect("caller checked").danger_retry_at = None;
+    state
+        .unit_mut(id)
+        .expect("caller checked")
+        .clear_danger_hold();
     if let Some(path) = authoritative_source_route(state, danger, id, source) {
         state.unit_mut(id).expect("caller checked").path = Some(path);
         return true;
@@ -1194,7 +1204,11 @@ fn try_drop_offs(
     events: &mut Vec<Event>,
 ) -> bool {
     let unit = state.unit(id).expect("caller checked");
-    if unit.path.is_none() && unit.danger_retry_at.is_some_and(|retry| state.tick < retry) {
+    if unit.path.is_none()
+        && unit
+            .danger_retry_at()
+            .is_some_and(|retry| state.tick < retry)
+    {
         report_danger_hold(state, id, events);
         return true;
     }
@@ -1222,7 +1236,10 @@ fn try_drop_offs(
                         && danger.route_safe_from(from, waypoint)
                 })
             {
-                state.unit_mut(id).expect("caller checked").danger_retry_at = None;
+                state
+                    .unit_mut(id)
+                    .expect("caller checked")
+                    .clear_danger_hold();
                 return true;
             }
         }
@@ -1230,7 +1247,7 @@ fn try_drop_offs(
         {
             let worker = state.unit_mut(id).expect("caller checked");
             worker.path = Some(path);
-            worker.danger_retry_at = None;
+            worker.clear_danger_hold();
             return true;
         }
         if !path_cleared {
@@ -1246,13 +1263,19 @@ fn try_drop_offs(
             // Danger-blocked, not sealed: stand and wait for the window,
             // checking again only after the retry period.
             let tick = state.tick;
-            state.unit_mut(id).expect("caller checked").danger_retry_at =
-                Some(tick + crate::stats::HARVEST_DANGER_RETRY_TICKS);
+            state
+                .unit_mut(id)
+                .expect("caller checked")
+                .worker_mut()
+                .danger_retry_at = Some(tick + crate::stats::HARVEST_DANGER_RETRY_TICKS);
             report_danger_hold(state, id, events);
             return true;
         }
     }
-    state.unit_mut(id).expect("caller checked").danger_retry_at = None;
+    state
+        .unit_mut(id)
+        .expect("caller checked")
+        .clear_danger_hold();
     false
 }
 
@@ -1404,7 +1427,7 @@ fn source_route_failed(
         switch_source(state, id, next.pos, anchor);
         return;
     }
-    let carrying = state.unit(id).expect("caller checked").carrying;
+    let carrying = state.unit(id).expect("caller checked").carrying();
     begin_retirement(state, id, node, anchor);
     if carrying > 0 {
         deliver(state, danger, id, events, true);
@@ -1424,7 +1447,11 @@ fn extract_wreck(state: &mut State, id: UnitId, node: TilePos, ticks_per_scrap: 
     }
     unit.progress = 0;
     if state.map.extract_wreck(node).is_some() {
-        state.unit_mut(id).expect("caller checked").carrying += 1;
+        state
+            .unit_mut(id)
+            .expect("caller checked")
+            .worker_mut()
+            .carrying += 1;
     }
 }
 
@@ -1443,7 +1470,7 @@ fn extract(
         return;
     }
     unit.progress = 0;
-    unit.carrying += 1;
+    unit.worker_mut().carrying += 1;
     if state.map.extract_scrap(node) == Some(0) {
         events.push(Event::NodeDepleted { pos: node });
     }
@@ -1459,10 +1486,13 @@ fn unload_cargo(
 ) -> bool {
     let unit = state.unit_mut(id).expect("caller checked");
     unit.path = None;
-    let release = unit.unloading.get_or_insert(crate::state::Unloading {
-        foundry,
-        elapsed: 0,
-    });
+    let release = unit
+        .worker_mut()
+        .unloading
+        .get_or_insert(crate::state::Unloading {
+            foundry,
+            elapsed: 0,
+        });
     if release.foundry != foundry {
         *release = crate::state::Unloading {
             foundry,
@@ -1479,10 +1509,10 @@ fn unload_cargo(
 
 fn deposit_cargo(state: &mut State, id: UnitId, foundry: BuildingId, events: &mut Vec<Event>) {
     let unit = state.unit(id).expect("caller checked");
-    let (me, carrying) = (unit.player, unit.carrying);
+    let (me, carrying) = (unit.player, unit.carrying());
     let unit = state.unit_mut(id).expect("caller checked");
-    unit.carrying = 0;
-    unit.unloading = None;
+    unit.worker_mut().carrying = 0;
+    unit.end_release();
     unit.progress = 0;
     unit.path = None;
     // Saturating: a hostile scenario can start a bank near u32::MAX.
@@ -1563,7 +1593,7 @@ pub(super) fn return_cargo(
     events: &mut Vec<Event>,
 ) {
     let unit = state.unit(id).expect("caller checked");
-    if unit.carrying == 0 {
+    if unit.carrying() == 0 {
         state.unit_mut(id).expect("caller checked").advance_queue();
         return;
     }
@@ -1578,7 +1608,7 @@ pub(super) fn return_cargo(
             let unit = state.unit_mut(id).expect("caller checked");
             unit.path = None;
             if !unit.work_stopped() {
-                unit.unloading = None;
+                unit.end_release();
                 return;
             }
             if !unload_cargo(state, id, foundry, events) {
@@ -1592,7 +1622,7 @@ pub(super) fn return_cargo(
             }
             return;
         }
-        state.unit_mut(id).expect("caller checked").unloading = None;
+        state.unit_mut(id).expect("caller checked").end_release();
         if try_drop_offs(state, danger, id, &[foundry], events) {
             return;
         }
@@ -1621,7 +1651,7 @@ fn deliver(
     let unit = state.unit(id).expect("caller checked");
     let drop_offs = drop_offs_by_distance(state, id);
     let active = unit
-        .unloading
+        .unloading()
         .map(|release| release.foundry)
         .filter(|foundry| drop_offs.contains(foundry));
     let at_drop_off = active.or_else(|| {
@@ -1636,7 +1666,7 @@ fn deliver(
         let unit = state.unit_mut(id).expect("caller checked");
         unit.path = None;
         if !unit.work_stopped() {
-            unit.unloading = None;
+            unit.end_release();
             return;
         }
         if unload_cargo(state, id, foundry, events) && retiring {
@@ -1644,7 +1674,7 @@ fn deliver(
         }
         return;
     }
-    state.unit_mut(id).expect("caller checked").unloading = None;
+    state.unit_mut(id).expect("caller checked").end_release();
 
     if try_drop_offs(state, danger, id, &drop_offs, events) {
         return;
@@ -1667,7 +1697,7 @@ fn deliver(
 /// becoming idle or starting the next queued order. If no Foundry is
 /// reachable, the queue still advances once instead of being erased.
 fn retire(state: &mut State, danger: &GroundSalvageDanger, id: UnitId, events: &mut Vec<Event>) {
-    if state.unit(id).expect("caller checked").carrying > 0 {
+    if state.unit(id).expect("caller checked").carrying() > 0 {
         deliver(state, danger, id, events, true);
         return;
     }

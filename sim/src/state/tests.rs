@@ -12,7 +12,7 @@ fn parked_bodies_mark_exactly_the_resting_friendly_ground_tiles() {
     let (width, height) = (state.map.width(), state.map.height());
     state.units[0].pos = TilePos::new(-1, 2).center();
     state.units[0].path = None;
-    state.units[0].drive_speed = Fx::ZERO;
+    state.units[0].set_drive_speed(Fx::ZERO);
     let mut marked = 0;
     for player in 0..state.players.len() {
         let viewer = PlayerId::from_index(player);
@@ -24,7 +24,7 @@ fn parked_bodies_mark_exactly_the_resting_friendly_ground_tiles() {
                     && state.units.iter().any(|u| {
                         u.hp > 0
                             && u.domain() == crate::stats::Domain::Ground
-                            && u.drive_speed == Fx::ZERO
+                            && u.drive_speed() == Fx::ZERO
                             && u.path.is_none()
                             && !state.hostile(viewer, u.player)
                             && u.tile() == tile

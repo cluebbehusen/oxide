@@ -65,7 +65,7 @@ fn cruising_aircraft_bank_on_reversal_and_hover_on_arrival() {
                 "{kind:?}"
             );
             assert!(after.pos.dist(before.pos) <= kind.stats().speed + Fx::DELTA * 16);
-            assert!(!after.landed);
+            assert!(!after.landed());
             if after.order == Order::Idle {
                 break;
             }
@@ -77,7 +77,7 @@ fn cruising_aircraft_bank_on_reversal_and_hover_on_arrival() {
             state.tick(&[]);
             assert_eq!(state.units()[0].pos, arrived.pos);
             assert_eq!(state.units()[0].heading, arrived.heading);
-            assert!(!state.units()[0].landed);
+            assert!(!state.units()[0].landed());
         }
     }
 }
@@ -347,7 +347,7 @@ fn stop_interrupts_a_banked_patrol_and_holds_position() {
         for _ in 0..100 {
             state.tick(&[]);
             assert_eq!(state.units()[0].pos, before);
-            assert!(!state.units()[0].landed);
+            assert!(!state.units()[0].landed());
         }
     }
 }

@@ -1037,7 +1037,7 @@ fn draw_unit_pass(
         }
         let body_size = vec2(dest, dest);
         if unit.kind.stats().brace.is_some()
-            && let Some(source) = sprites.bombard_spades(unit.brace_ticks)
+            && let Some(source) = sprites.bombard_spades(unit.braces())
         {
             sprites.draw_unit(
                 body.x - body_size.x * 0.5,

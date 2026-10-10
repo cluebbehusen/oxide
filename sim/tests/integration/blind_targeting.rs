@@ -513,7 +513,11 @@ fn concealed_identity_domain_health_and_position_do_not_change_firing_decisions(
     for variant in 0..4 {
         let mut document = serde_json::to_value(&base).unwrap();
         match variant {
-            0 => document["units"][0]["kind"] = serde_json::json!("harvester"),
+            0 => {
+                document["units"][0]["kind"] = serde_json::json!("harvester");
+                document["units"][0]["worker"] = serde_json::json!({});
+                document["units"][0]["motor"] = serde_json::json!({"motor": "ground"});
+            }
             1 => {
                 document["units"][0]["id"] = serde_json::json!(17);
                 document["next_unit_id"] = serde_json::json!(18);

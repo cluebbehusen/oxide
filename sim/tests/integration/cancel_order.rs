@@ -190,13 +190,13 @@ fn a_cancelled_harvest_keeps_its_cargo() {
         ),
     ]);
     run_until(&mut state, 400, |state, _| {
-        state.unit(worker).unwrap().carrying > 0
+        state.unit(worker).unwrap().carrying() > 0
     });
-    let cargo = state.unit(worker).unwrap().carrying;
+    let cargo = state.unit(worker).unwrap().carrying();
     state.tick(&[cancel(worker, OrderKey::Harvest { anchor: node }, 0, &[])]);
     let unit = state.unit(worker).unwrap();
     assert_eq!(keys(&state, worker), walks(&[home]));
-    assert_eq!(unit.carrying, cargo, "the hopper stays full");
+    assert_eq!(unit.carrying(), cargo, "the hopper stays full");
 }
 
 #[test]

@@ -372,14 +372,14 @@ fn a_parked_airframe_is_grounded_for_its_owner_and_for_anyone_who_sees_it() {
         },
     }]);
     for _ in 0..1_500 {
-        if state.unit(condor).is_some_and(|unit| unit.landed) {
+        if state.unit(condor).is_some_and(crate::state::Unit::landed) {
             break;
         }
         state.tick(&[]);
     }
     let parked = state.unit(condor).expect("the Condor survives its landing");
     assert!(
-        parked.landed,
+        parked.landed(),
         "the Condor sets down within the flight budget"
     );
     let tile = parked.tile();

@@ -486,7 +486,10 @@ fn harvesting_requires_real_work_and_cargo_is_a_continuous_fill() {
         (1, 1),
         unit.kind.stats().radius,
     );
-    unit.carrying = 5;
+    unit.worker
+        .as_mut()
+        .expect("a Harvester has harvest gear")
+        .carrying = 5;
     unit.progress = 1;
     let facts = UnitAnimationFacts::capture(&state, &unit, false);
     assert_eq!(
@@ -715,7 +718,10 @@ fn construction_requires_the_assigned_harvester_at_the_site() {
         salvage_credited: 0,
     };
     let mut builder = Unit {
-        air_motion: Vec2Fx::ZERO,
+        motor: oxide_sim::Motor::Ground {
+            speed: chassis::fx::Fx::ZERO,
+            stall_ticks: 0,
+        },
         id: UnitId(2),
         player: PlayerId(0),
         kind: UnitKind::Harvester,
@@ -726,14 +732,9 @@ fn construction_requires_the_assigned_harvester_at_the_site() {
             UnitKind::Harvester.stats().radius,
         ),
         hp: UnitKind::Harvester.stats().max_hp,
-        carrying: 0,
-        unloading: None,
+        worker: Some(oxide_sim::Worker::default()),
         cooldowns: [0; MAX_WEAPONS],
-        brace_ticks: 0,
         turret_heading: None,
-        drive_speed: chassis::fx::Fx::ZERO,
-        stall_ticks: 0,
-        danger_retry_at: None,
         progress: 0,
         order: Order::Build { site: site.id },
         queue: VecDeque::new(),
@@ -743,7 +744,6 @@ fn construction_requires_the_assigned_harvester_at_the_site() {
         settled: 0,
         heading: 0,
         cargo: Vec::new(),
-        landed: false,
     };
     assert!(builder.in_work_reach(site.anchor, site.kind.size()));
     assert!(matches!(builder.order, Order::Build { site: id } if id == site.id));

@@ -146,8 +146,8 @@ fn a_landing_mirrors_exactly_under_a_map_half_turn() {
             ua.heading.wrapping_add(128),
             "headings diverged"
         );
-        assert_eq!(ub.landed, ua.landed, "one landed before the other");
-        if ua.landed {
+        assert_eq!(ub.landed(), ua.landed(), "one landed before the other");
+        if ua.landed() {
             landed_at = Some(state.tick);
             break;
         }

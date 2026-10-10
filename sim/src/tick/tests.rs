@@ -566,7 +566,11 @@ fn assert_calibration_open_symmetry(
         assert_eq!(right.player, crate::PlayerId(1), "{stage}: right owner");
         assert_eq!(left.kind, right.kind, "{stage}: unit kind {left_id}");
         assert_eq!(left.hp, right.hp, "{stage}: unit hp {left_id}");
-        assert_eq!(left.carrying, right.carrying, "{stage}: cargo {left_id}");
+        assert_eq!(
+            left.carrying(),
+            right.carrying(),
+            "{stage}: cargo {left_id}"
+        );
         assert_eq!(left.progress, right.progress, "{stage}: progress {left_id}");
         let mirrored_pos = Vec2Fx::new(
             Fx::from_num(state.map.width()) - left.pos.x,
@@ -851,7 +855,7 @@ fn mirrored_haulers_replan_together_when_construction_closes_their_routes() {
         ),
     ] {
         let unit = state.unit_mut(id).expect("the hauler exists");
-        unit.carrying = 10;
+        unit.worker_mut().carrying = 10;
         unit.order = Order::Harvest {
             node,
             anchor,

@@ -78,7 +78,8 @@ pub(super) fn idle(
         // directly rather than assigned so `settled` survives: a parked
         // aircraft is a stationed guard whose fights tether to its pad.
         let stats = unit.kind.stats();
-        let wants_ground = stats.turn_rate > 0 && !unit.landed && auto_land_probe_due(unit.settled);
+        let wants_ground =
+            stats.turn_rate > 0 && !unit.landed() && auto_land_probe_due(unit.settled);
         if wants_ground {
             let (tile, pos, heading) = (unit.tile(), unit.pos, unit.heading);
             if let Some(goal) = landing::nearest_landable(
@@ -117,7 +118,7 @@ pub(super) fn land(
 ) {
     let unit = state.unit(id).expect("caller checked");
     let stats = unit.kind.stats();
-    if stats.turn_rate == 0 || unit.landed {
+    if stats.turn_rate == 0 || unit.landed() {
         state.unit_mut(id).expect("caller checked").advance_queue();
         return;
     }
@@ -183,7 +184,7 @@ pub(super) fn land(
         // The airframe rests where it met the tile: no snap to the center,
         // so the touchdown reads as the end of the run rather than a hop.
         let unit = state.unit_mut(id).expect("caller checked");
-        unit.landed = true;
+        unit.touch_down();
         unit.path = None;
         unit.advance_queue();
         return;
@@ -571,7 +572,7 @@ fn touching_settled_arrival(
                     && other.hp > 0
                     && other.domain() == unit.domain()
                     && other.path.is_none()
-                    && other.drive_speed == chassis::fx::Fx::ZERO
+                    && other.drive_speed() == chassis::fx::Fx::ZERO
                     && other.order == Order::Idle
                     && other.pos.dist_sq(goal_center) <= near_sq
                     && unit.pos.dist(other.pos)

@@ -531,7 +531,7 @@ impl Presentation {
     /// neither may be drawn pointing anywhere else.
     fn slide_lean_allowed(&self, unit: &oxide_sim::state::Unit, propulsion: Vec2) -> bool {
         let aiming = !unit.kind.has_ground_turret()
-            && (unit.brace_ticks > 0
+            && (unit.braces() > 0
                 || self
                     .aim_units
                     .get(&unit.id.0)

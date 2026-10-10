@@ -137,8 +137,8 @@ pub(in crate::tick) fn surface_for(
         Order::Build { site } => Some(site),
         Order::Repair { building } | Order::Salvage { building } => Some(building),
         Order::ReturnCargo { foundry, .. } => Some(foundry),
-        Order::Harvest { .. } if unit.carrying > 0 => {
-            unit.unloading.map(|u| u.foundry).or_else(|| {
+        Order::Harvest { .. } if unit.carrying() > 0 => {
+            unit.unloading().map(|u| u.foundry).or_else(|| {
                 state
                     .buildings()
                     .iter()

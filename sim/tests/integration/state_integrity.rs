@@ -195,13 +195,17 @@ fn ground_motor_speed_is_validated_and_survives_continuation() {
         UnitKind::Harvester.stats().speed + Fx::from_bits(1),
     ] {
         let mut forged = doc(&state);
-        forged["units"][0]["drive_speed"] = serde_json::to_value(speed).unwrap();
+        forged["units"][0]["motor"]["speed"] = serde_json::to_value(speed).unwrap();
         assert!(refusal(forged).contains("invalid ground motor speed"));
     }
+    // Planted spades leave no motor speed to forge.
     let mut forged = doc(&state);
-    forged["units"][1]["brace_ticks"] = json!(1);
-    forged["units"][1]["drive_speed"] = serde_json::to_value(Fx::from_bits(1)).unwrap();
-    assert!(refusal(forged).contains("invalid ground motor speed"));
+    forged["units"][1]["motor"] = json!({
+        "motor": "braced",
+        "ticks": 1,
+        "speed": serde_json::to_value(Fx::from_bits(1)).unwrap(),
+    });
+    assert!(refusal(forged).contains("unknown field"));
 }
 
 /// A well-formed shell, for fixtures that need one in the sky.
@@ -258,9 +262,8 @@ fn a_carried_shooters_shell_stays_valid_and_must_launch_before_it_lands() {
     ];
     let mut base = doc(&scenario.build().unwrap());
     base["shells"] = json!([shell(&json!({"kind": "unit", "id": 0}), 0, 4_294_967_296)]);
-    let mut rider = base["units"].as_array_mut().unwrap().remove(0);
-    rider["pos"] = base["units"][0]["pos"].clone();
-    base["units"][0]["cargo"] = json!([rider]);
+    let walker = base["units"].as_array_mut().unwrap().remove(0);
+    base["units"][0]["cargo"] = json!([as_rider(&walker)]);
     let restored: State =
         serde_json::from_value(base.clone()).expect("a carried shooter's shell remains valid");
     assert_eq!(doc(&restored), base);
@@ -354,12 +357,9 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::IncoherentSalvageLedger(_) => 34,
         E::TierBeyondLadder(_) => 35,
         E::OverlappingBuildings(..) => 36,
-        E::CargoOnNonTransport(_) => 51,
         E::CargoBeyondCapacity(_) => 52,
         E::UncarriableCargo(_) => 53,
         E::CargoHpOutOfRange(_) => 54,
-        E::CargoOwnerMismatch(_) => 55,
-        E::CargoNotDormant(_) => 56,
         E::AliasedCargoId => 57,
         E::ForeignShellOwner(_) => 37,
         E::ShellOutsideEnvelope(_) => 38,
@@ -376,9 +376,7 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::SalvageIncidentExpiryBeyondHorizon(_) => 49,
         E::UnsortedSalvageIncidents(_) => 50,
         E::EliminationInTheFuture(_) => 58,
-        E::CargoProgressOutOfRange(_) => 59,
         E::CargoCooldownOutOfRange(_) => 60,
-        E::LandedNonAircraft(_) => 61,
         E::LandedOffCenter(_) => 62,
         E::LandedWithPath(_) => 63,
         E::LandedUnescapable(_) => 64,
@@ -386,7 +384,6 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::LandedOverlap(..) => 66,
         E::ShellLaunchedAfterArrival(_) => 67,
         E::InvalidUnitBraces(_) => 68,
-        E::InvalidTurretHeading(_) => 69,
         E::InvalidGroundSpeed(_) => 70,
         E::InvalidAirMotion(_) => 71,
         E::InvalidAircraftCrash(_) => 72,
@@ -396,15 +393,16 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::ScrapBeyondCapacity(_) => 76,
         E::InvalidStallTicks(_) => 77,
         E::InvalidLeashClock(_) => 78,
-        E::SandboxElimination => 79,
-        E::NonCanonicalGoal(_) => 80,
-        E::InvalidUnloading(_) => 81,
-        E::InvalidWorkEndpoint(_) => 82,
-        E::InvalidDangerRetry(_) => 83,
+        E::SandboxElimination => 69,
+        E::NonCanonicalGoal(_) => 61,
+        E::InvalidUnloading(_) => 59,
+        E::UnitPartMismatch(_) => 51,
+        E::InvalidWorkEndpoint(_) => 56,
+        E::InvalidDangerRetry(_) => 55,
     }
 }
 
-const ROWS: usize = 84;
+const ROWS: usize = 79;
 
 /// One rendered message per row, with the entity ids the forgeries
 /// provoke (everything targets seat p0 and entity 0). A fixture's
@@ -468,17 +466,17 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::ExpiredSalvageIncident(PlayerId(0)),
         E::SalvageIncidentExpiryBeyondHorizon(PlayerId(0)),
         E::UnsortedSalvageIncidents(PlayerId(0)),
-        E::CargoOnNonTransport(UnitId(0)),
+        E::UnitPartMismatch(UnitId(0)),
         E::CargoBeyondCapacity(UnitId(0)),
         E::UncarriableCargo(UnitId(0)),
         E::CargoHpOutOfRange(UnitId(0)),
-        E::CargoOwnerMismatch(UnitId(0)),
-        E::CargoNotDormant(UnitId(0)),
+        E::InvalidDangerRetry(UnitId(0)),
+        E::InvalidWorkEndpoint(UnitId(0)),
         E::AliasedCargoId,
         E::EliminationInTheFuture(PlayerId(0)),
-        E::CargoProgressOutOfRange(UnitId(0)),
+        E::InvalidUnloading(UnitId(0)),
         E::CargoCooldownOutOfRange(UnitId(0)),
-        E::LandedNonAircraft(UnitId(0)),
+        E::NonCanonicalGoal(UnitId(0)),
         E::LandedOffCenter(UnitId(0)),
         E::LandedWithPath(UnitId(0)),
         E::LandedUnescapable(UnitId(0)),
@@ -486,7 +484,7 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::LandedOverlap(UnitId(0), UnitId(1)),
         E::ShellLaunchedAfterArrival(0),
         E::InvalidUnitBraces(UnitId(0)),
-        E::InvalidTurretHeading(UnitId(0)),
+        E::SandboxElimination,
         E::InvalidGroundSpeed(UnitId(0)),
         E::InvalidAirMotion(UnitId(0)),
         E::InvalidAircraftCrash(0),
@@ -496,11 +494,6 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::ScrapBeyondCapacity(UnitId(0)),
         E::InvalidStallTicks(UnitId(0)),
         E::InvalidLeashClock(UnitId(0)),
-        E::SandboxElimination,
-        E::NonCanonicalGoal(UnitId(0)),
-        E::InvalidUnloading(UnitId(0)),
-        E::InvalidWorkEndpoint(UnitId(0)),
-        E::InvalidDangerRetry(UnitId(0)),
     ]
 }
 
@@ -511,21 +504,27 @@ type Forgery = (&'static str, fn(&mut Value), &'static str);
 /// A dormant, well-formed Sentinel rider cut from the enemy Sentinel's
 /// serialized shape: fresh id below the counter, idle, owner seat 0.
 fn well_formed_rider(d: &Value) -> Value {
-    let mut rider = d["units"][2].clone();
     let next = d["next_unit_id"].as_u64().expect("counter serialized");
+    let mut rider = as_rider(&d["units"][2]);
     rider["id"] = json!(next - 1);
-    rider["player"] = json!(0);
     rider["hp"] = json!(10);
-    rider["order"] = json!({"order": "idle"});
-    rider.as_object_mut().expect("unit is a map").remove("path");
     rider
-        .as_object_mut()
-        .expect("unit is a map")
-        .remove("leash");
-    rider
-        .as_object_mut()
-        .expect("unit is a map")
-        .remove("queue");
+}
+
+/// What a walking unit keeps once it boards.
+fn as_rider(unit: &Value) -> Value {
+    let mut rider = json!({
+        "id": unit["id"],
+        "kind": unit["kind"],
+        "hp": unit["hp"],
+        "cooldowns": unit["cooldowns"],
+    });
+    // Zero scrap and a zero heading are left out, as a rider serializes them.
+    for key in ["carrying", "heading", "turret_heading"] {
+        if let Some(value) = unit.get(key).filter(|value| **value != json!(0)) {
+            rider[key] = value.clone();
+        }
+    }
     rider
 }
 
@@ -535,10 +534,10 @@ fn make_transport(d: &mut Value) {
     d["units"][0]["kind"] = json!("skyhook");
     d["units"][0]["hp"] = json!(150);
     d["units"][0]["order"] = json!({"order": "idle"});
-    d["units"][0]["carrying"] = json!(0);
     let unit = d["units"][0].as_object_mut().expect("unit is a map");
+    unit.remove("worker");
+    unit.insert("motor".into(), json!({"motor": "airborne"}));
     unit.remove("path");
-    unit.remove("drive_speed");
     unit.remove("leash");
     unit.remove("queue");
 }
@@ -590,10 +589,19 @@ fn scrap_load_is_bounded_for_walking_and_carried_units() {
                 if carried {
                     data["units"][0]["cargo"][0]["carrying"] = json!(amount);
                 } else {
-                    data["units"][0]["carrying"] = json!(amount);
+                    data["units"][0]["worker"]["carrying"] = json!(amount);
                 }
                 let restored = serde_json::from_value::<State>(data);
-                if amount <= capacity {
+                if !carried && kind.stats().harvest.is_none() {
+                    // A walking machine without harvest gear has nowhere to
+                    // hold scrap at all.
+                    assert!(
+                        restored
+                            .unwrap_err()
+                            .to_string()
+                            .contains("parts that do not match its kind")
+                    );
+                } else if amount <= capacity {
                     let state = restored.unwrap();
                     let round_trip: State =
                         serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
@@ -617,16 +625,18 @@ fn make_landed(d: &mut Value) {
     d["units"][0]["kind"] = json!("condor");
     d["units"][0]["hp"] = json!(260);
     d["units"][0]["order"] = json!({"order": "idle"});
-    d["units"][0]["carrying"] = json!(0);
+    d["units"][0]
+        .as_object_mut()
+        .expect("unit is a map")
+        .remove("worker");
     d["units"][0]["pos"] = json!({
         "x": {"bits": chassis::fx::Fx::lit("4.5").to_bits()},
         "y": {"bits": chassis::fx::Fx::lit("4.5").to_bits()},
     });
     d["units"][0]["heading"] = json!(0);
-    d["units"][0]["landed"] = json!(true);
+    d["units"][0]["motor"] = json!({"motor": "landed"});
     let unit = d["units"][0].as_object_mut().expect("unit is a map");
     unit.remove("path");
-    unit.remove("drive_speed");
     unit.remove("leash");
     unit.remove("queue");
 }
@@ -663,8 +673,8 @@ fn every_checklist_row_refuses_its_forgery() {
         (
             "release without cargo",
             |d| {
-                d["units"][0]["carrying"] = json!(0);
-                d["units"][0]["unloading"] = json!({"foundry": 0, "elapsed": 3});
+                d["units"][0]["worker"]["carrying"] = json!(0);
+                d["units"][0]["worker"]["unloading"] = json!({"foundry": 0, "elapsed": 3});
             },
             "unit u0 carries invalid unloading state",
         ),
@@ -690,31 +700,20 @@ fn every_checklist_row_refuses_its_forgery() {
         ),
         (
             "an oversized scrap load",
-            |d| d["units"][0]["carrying"] = json!(1_000_000),
+            |d| d["units"][0]["worker"]["carrying"] = json!(1_000_000),
             "unit u0 carries scrap beyond its harvest capacity",
         ),
         (
-            "a landed ground rider",
-            |d| {
-                let mut rider = well_formed_rider(d);
-                let next = d["next_unit_id"].as_u64().unwrap();
-                rider["id"] = json!(next);
-                d["next_unit_id"] = json!(next + 1);
-                make_transport(d);
-                d["units"][0]["cargo"] = json!([rider.clone()]);
-                serde_json::from_value::<State>(d.clone()).expect("valid dormant cargo baseline");
-                rider["landed"] = json!(true);
-                d["units"][0]["cargo"] = json!([rider]);
-            },
-            "carries a rider that is not dormant",
+            "a ground machine flying",
+            |d| d["units"][0]["motor"] = json!({"motor": "airborne"}),
+            "unit u0 carries parts that do not match its kind",
         ),
         (
-            "ground unit with crash momentum",
+            "an airframe drifting faster than it can fly",
             |d| {
-                d["units"][0]["air_motion"] = json!(chassis::fx::Vec2Fx::new(
-                    chassis::fx::Fx::ONE,
-                    chassis::fx::Fx::ZERO
-                ));
+                make_transport(d);
+                d["units"][0]["motor"]["motion"] =
+                    json!({"x": {"bits": i64::MAX}, "y": {"bits": 0}});
             },
             "unit u0 carries invalid airborne motion",
         ),
@@ -876,32 +875,34 @@ fn every_checklist_row_refuses_its_forgery() {
         (
             "a harvester carrying an independent turret bearing",
             |d| d["units"][0]["turret_heading"] = json!(0),
-            "unit u0 carries an unsupported independent turret heading",
+            "unit u0 carries parts that do not match its kind",
         ),
         (
             "negative motor speed",
-            |d| d["units"][0]["drive_speed"] = json!({"bits": -1}),
+            |d| d["units"][0]["motor"]["speed"] = json!({"bits": -1}),
             "unit u0 carries invalid ground motor speed",
         ),
         (
-            "a harvester carrying deployed spades",
-            |d| d["units"][0]["brace_ticks"] = json!(1),
-            "unit u0 carries invalid spade deployment",
+            "spades planted past their deployment",
+            |d| d["units"][1]["motor"] = json!({"motor": "braced", "ticks": 255}),
+            "unit u1 carries invalid spade deployment",
         ),
         (
             "a stall counter at its replan bound",
-            |d| d["units"][0]["stall_ticks"] = json!(oxide_sim::stats::STALL_REPLAN_TICKS),
+            |d| {
+                d["units"][0]["motor"]["stall_ticks"] = json!(oxide_sim::stats::STALL_REPLAN_TICKS);
+            },
             "unit u0 carries an invalid stall counter",
         ),
         (
             "a danger retry no failed search could schedule",
-            |d| d["units"][0]["danger_retry_at"] = json!(u64::MAX),
+            |d| d["units"][0]["worker"]["danger_retry_at"] = json!(u64::MAX),
             "unit u0 carries an invalid danger retry",
         ),
         (
-            "a danger retry on a machine that never harvests",
-            |d| d["units"][1]["danger_retry_at"] = d["tick"].clone(),
-            "unit u1 carries an invalid danger retry",
+            "harvest gear on a machine that never harvests",
+            |d| d["units"][1]["worker"]["danger_retry_at"] = d["tick"].clone(),
+            "unit u1 carries parts that do not match its kind",
         ),
         (
             "a unit shoved to the far end of the coordinate space",
@@ -1176,7 +1177,7 @@ fn every_checklist_row_refuses_its_forgery() {
                 let rider = well_formed_rider(d);
                 d["units"][0]["cargo"] = json!([rider]);
             },
-            "carries cargo without being a transport",
+            "unit u0 carries parts that do not match its kind",
         ),
         (
             "a sling packed past its capacity",
@@ -1215,28 +1216,6 @@ fn every_checklist_row_refuses_its_forgery() {
             "elimination stamp lies in the future",
         ),
         (
-            "a rider smuggling a progress meter boarding zeroes",
-            |d| {
-                let mut rider = well_formed_rider(d);
-                // The smallest possible forgery: boarding resets the
-                // meter, so even one tick of progress is unreachable.
-                rider["progress"] = json!(1);
-                make_transport(d);
-                d["units"][0]["cargo"] = json!([rider]);
-            },
-            "carries a rider with an impossible progress meter",
-        ),
-        (
-            "a rider still armed with a looping program",
-            |d| {
-                let mut rider = well_formed_rider(d);
-                rider["looping"] = json!(true);
-                make_transport(d);
-                d["units"][0]["cargo"] = json!([rider]);
-            },
-            "carries a rider that is not dormant",
-        ),
-        (
             "a rider smuggling an oversized weapon cooldown",
             |d| {
                 let mut rider = well_formed_rider(d);
@@ -1256,26 +1235,6 @@ fn every_checklist_row_refuses_its_forgery() {
                 d["map"]["extractor_frames"] = json!([frame.clone(), frame]);
             },
             "map grid dimensions disagree with its cells",
-        ),
-        (
-            "another player's machine in the hold",
-            |d| {
-                let mut rider = well_formed_rider(d);
-                rider["player"] = json!(1);
-                make_transport(d);
-                d["units"][0]["cargo"] = json!([rider]);
-            },
-            "carries another player's machine",
-        ),
-        (
-            "a rider still holding live orders",
-            |d| {
-                let mut rider = well_formed_rider(d);
-                rider["order"] = json!({"order": "run", "goal": {"x": 3, "y": 3}});
-                make_transport(d);
-                d["units"][0]["cargo"] = json!([rider]);
-            },
-            "carries a rider that is not dormant",
         ),
         (
             "a rider whose id walks the world too",
@@ -1408,9 +1367,9 @@ fn every_checklist_row_refuses_its_forgery() {
             "player p0 holds salvage incidents out of canonical order",
         ),
         (
-            "a landed flag on a machine that cannot land",
-            |d| d["units"][0]["landed"] = json!(true),
-            "is landed but is not an aircraft that can land",
+            "a parked harvester, which cannot land",
+            |d| d["units"][0]["motor"] = json!({"motor": "landed"}),
+            "unit u0 carries parts that do not match its kind",
         ),
         (
             "a landed airframe resting off its tile center",
@@ -1726,7 +1685,7 @@ fn a_full_verb_run_stays_valid_every_tick() {
             |u| matches!(u.order, oxide_sim::Order::Land { from, .. } if from == Some(tile(6, 6))),
         );
         saw_shell |= !state.shells().is_empty();
-        saw_haul |= state.units().iter().any(|u| u.carrying > 0);
+        saw_haul |= state.units().iter().any(|u| u.carrying() > 0);
         saw_site |= state.buildings().iter().any(|b| !b.built());
         let hp = state.building(fabricator).map(|b| b.hp);
         saw_strip |= matches!((last_hp, hp), (Some(was), Some(now)) if now < was);
@@ -1945,14 +1904,7 @@ fn extreme_and_unphysical_aircraft_motion_is_rejected_without_arithmetic_overflo
         ),
     ] {
         let mut forged = base.clone();
-        forged["units"][0]["air_motion"] = json!({"x":{"bits": x}, "y":{"bits":y}});
+        forged["units"][0]["motor"]["motion"] = json!({"x":{"bits": x}, "y":{"bits":y}});
         assert!(refusal(forged).contains("invalid airborne motion"));
     }
-    let mut parked = snapshot();
-    make_landed(&mut parked);
-    parked["units"][0]["air_motion"] = json!(chassis::fx::Vec2Fx::new(
-        chassis::fx::Fx::lit("0.1"),
-        chassis::fx::Fx::ZERO,
-    ));
-    assert!(refusal(parked).contains("invalid airborne motion"));
 }

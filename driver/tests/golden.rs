@@ -766,7 +766,7 @@ fn showcase_covers_every_rendered_feature() {
         state
             .units()
             .iter()
-            .any(|u| u.kind == UnitKind::Harvester && u.carrying > 0),
+            .any(|u| u.kind == UnitKind::Harvester && u.carrying() > 0),
         "no laden harvester: the carried-scrap dot goes unrendered"
     );
 

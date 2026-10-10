@@ -156,7 +156,7 @@ fn stage() -> Stage {
     .unwrap();
 
     let mut data = serde_json::to_value(&state).unwrap();
-    data["units"][1]["carrying"] = serde_json::json!(3);
+    data["units"][1]["worker"]["carrying"] = serde_json::json!(3);
     state = serde_json::from_value(data).unwrap();
     let guard = state.units()[0].id;
     let worker = state.units()[1].id;

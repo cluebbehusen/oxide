@@ -730,7 +730,7 @@ fn a_stationary_builder_at_a_revealed_scaffold_is_weldable() {
             serde_json::json!(patient_pos - Vec2Fx::new(Fx::lit("0.7"), Fx::ZERO));
         json["units"][1]["pos"] = serde_json::json!(patient_pos);
         json["units"][1]["path"] = serde_json::Value::Null;
-        json["units"][1]["drive_speed"] = serde_json::json!(Fx::ZERO);
+        json["units"][1]["motor"]["speed"] = serde_json::json!(Fx::ZERO);
         let mut state: State = serde_json::from_value(json).unwrap();
 
         let before_hp = state.unit(patient).unwrap().hp;

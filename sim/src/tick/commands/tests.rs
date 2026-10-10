@@ -20,7 +20,7 @@ fn an_append_a_full_queue_refuses_leaves_the_unit_untouched() {
         cooldown: 2,
     });
     unit.settled = 5;
-    unit.danger_retry_at = Some(tick + 3);
+    unit.worker_mut().danger_retry_at = Some(tick + 3);
     let (id, player) = (unit.id, unit.player);
     let before = state.units[0].clone();
     let mut events = Vec::new();

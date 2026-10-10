@@ -544,7 +544,12 @@ fn riders_count_toward_worth_and_die_to_whoever_downs_their_carrier() {
             .iter_mut()
             .find(|unit| unit["kind"] == "skyhook")
             .unwrap();
-        skyhook["cargo"] = serde_json::json!([rider]);
+        skyhook["cargo"] = serde_json::json!([{
+            "id": rider["id"],
+            "kind": rider["kind"],
+            "hp": rider["hp"],
+            "cooldowns": rider["cooldowns"],
+        }]);
     });
     let rider_value = u64::from(UnitKind::Sentinel.stats().cost);
     let ledger = ImpactLedger::new(&state);

@@ -339,7 +339,7 @@ fn walking(
         .find(|unit| unit["id"] == json!(id))
         .unwrap();
     unit["pos"] = json!(pos);
-    unit["drive_speed"] = json!(Fx::ZERO);
+    unit["motor"]["speed"] = json!(Fx::ZERO);
     unit["path"] = json!(oxide_sim::state::PathFollow {
         final_point: point,
         goal: *waypoints.last().unwrap(),
