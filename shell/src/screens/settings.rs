@@ -638,13 +638,18 @@ impl SettingsScreen {
                                 | RawEvent::TouchUp { .. }
                         )
                     }) && let Some(rect) = self.menu.item_rect(row)
+                        && let Some(slot) =
+                            crate::menu::BindingColumns::of(rect, crate::render::ui_scale())
+                                .slot_at(mouse.x)
                     {
-                        self.binding_slot = usize::from(mouse.x >= rect.x + rect.w * 0.8);
+                        self.binding_slot = slot;
                     }
                     if control_rows().get(row).is_some_and(Option::is_some) {
                         self.face = Face::Controls {
                             rebinding: Some(row),
                         };
+                        // The brackets mark the chord being captured.
+                        self.menu.items = controls_menu(config, self.binding_slot).items;
                     } else if row == control_rows().len() {
                         // Reset to defaults.
                         config.bindings = BindingMap::classic();

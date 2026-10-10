@@ -78,6 +78,7 @@ mod chrome;
 mod destruction;
 pub(crate) mod entities;
 mod environment;
+pub(crate) mod hud;
 mod impacts;
 mod minimap;
 mod motion;
@@ -494,6 +495,14 @@ pub(crate) fn draw_with_performance(
     bindings: &crate::action::BindingMap,
     performance: Option<&crate::performance::PerformanceView>,
 ) {
+    let hud = hud::refresh(
+        game,
+        input,
+        bindings,
+        hud::HudEnv::current(),
+        performance,
+        &hud::window_measure,
+    );
     clear_background(OUTSIDE);
     environment::draw_backdrop(game);
     let alpha = game.clock.render_alpha();
@@ -536,7 +545,7 @@ pub(crate) fn draw_with_performance(
     draw_touch_box(game, input);
     draw_long_press_ring(input);
     draw_salvage_tooltip(game, input);
-    draw_hud(game, sprites, input, bindings, performance);
+    draw_hud(game, sprites, input, bindings, &hud, performance);
     if game.presentation.overlay {
         draw_overlay_info(game);
     }

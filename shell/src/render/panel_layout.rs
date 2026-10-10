@@ -118,6 +118,7 @@ pub(super) fn measure_info(
     }
 }
 
+/// A panel's clickable regions, as the HUD publishes them.
 pub(super) struct PanelGeometry {
     pub info: Rect,
     pub actions: Rect,
@@ -130,4 +131,25 @@ pub(super) struct PanelGeometry {
     pub queue_count: usize,
     pub queue_stop: (Rect, crate::panel::CardAction),
     pub hides_minimap: bool,
+}
+
+impl PanelGeometry {
+    /// No panel: nothing to click.
+    pub(super) fn empty() -> Self {
+        use crate::panel::CardAction;
+        let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
+        Self {
+            info: zero,
+            actions: zero,
+            orders: zero,
+            roster_slots: [(zero, CardAction::None); 8],
+            roster_count: 0,
+            cards: [(zero, CardAction::None); 16],
+            card_count: 0,
+            queue_slots: [(zero, CardAction::None); 8],
+            queue_count: 0,
+            queue_stop: (zero, CardAction::None),
+            hides_minimap: false,
+        }
+    }
 }

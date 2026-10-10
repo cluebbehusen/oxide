@@ -7,7 +7,7 @@ use crate::numeric;
 use crate::numeric::Fit;
 use crate::render::prim::{fill_rect, stroke_rect};
 
-use super::panel_layout::{PanelGeometry, measure_info};
+use super::panel_layout::{InfoLayout, PanelGeometry, measure_info};
 
 const CARD_RIGHT_INSET: f32 = 12.0;
 const CARD_LEFT_INSET: f32 = 8.0;
@@ -485,17 +485,11 @@ fn draw_catalog(
     panel: &crate::panel::Panel,
     input: &InputState,
     bindings: &crate::action::BindingMap,
-    minimap: Rect,
+    (band, slots, grouped): (Rect, &[Rect], bool),
     draw_icon: &impl Fn(Rect, &crate::panel::CardIcon, Color),
-) -> PanelGeometry {
+) {
     use crate::panel::CardAction;
     let s = ui_scale();
-    let (band, slots, grouped) = catalog_geometry(
-        vec2(screen_width(), screen_height()),
-        s,
-        minimap,
-        panel.cards.len(),
-    );
     fill_rect(band, Color::from_rgba(20, 24, 26, 255));
     draw_rectangle(
         band.x,
@@ -538,9 +532,8 @@ fn draw_catalog(
             );
         }
     }
-    let mut cards = [(Rect::new(0.0, 0.0, 0.0, 0.0), CardAction::None); 16];
     let hovered = slots.iter().position(|rect| rect.contains(input.mouse));
-    for (i, (card, rect)) in panel.cards.iter().zip(slots).enumerate() {
+    for (i, (card, &rect)) in panel.cards.iter().zip(slots).enumerate() {
         let armed =
             matches!(card.action, CardAction::ArmBuild(kind) if input.placing == Some(kind));
         let hot = hovered == Some(i);
@@ -611,21 +604,6 @@ fn draw_catalog(
             11.0 * s,
             TEXT_SECONDARY,
         );
-        cards[i] = (rect, published_action(card));
-    }
-    let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
-    PanelGeometry {
-        info: zero,
-        actions: band,
-        orders: zero,
-        roster_slots: [(zero, CardAction::None); 8],
-        roster_count: 0,
-        cards,
-        card_count: panel.cards.len(),
-        queue_slots: [(zero, CardAction::None); 8],
-        queue_count: 0,
-        queue_stop: (zero, CardAction::None),
-        hides_minimap: false,
     }
 }
 
@@ -634,22 +612,83 @@ fn selection_info_rect(viewport: Vec2, width: f32, content_height: f32, actions:
     Rect::new(0.0, viewport.y - height, width, height)
 }
 
-/// Draws the command panel band and returns its clickable geometry.
-#[expect(
-    clippy::too_many_lines,
-    reason = "lays out and draws the whole selection panel"
-)]
-pub(crate) fn draw_panel(
+/// Where the command panel's pieces sit this frame, laid out without
+/// drawing so input hit-tests exactly what the next draw shows.
+pub(crate) enum PanelLayout {
+    /// The construction palette: its band, one slot per card, and
+    /// whether the slots stand in their four category columns.
+    Catalog {
+        band: Rect,
+        slots: Vec<Rect>,
+        grouped: bool,
+    },
+    /// A selection's information region, command cards, roster and
+    /// orders dock.
+    Selection(Box<SelectionLayout>),
+}
+
+pub(crate) struct SelectionLayout {
+    small: bool,
+    cards_x: f32,
+    measured: InfoLayout,
+    info_rect: Rect,
+    action_rect: Rect,
+    card_rects: Vec<Rect>,
+    rally_count: usize,
+    roster: Vec<Rect>,
+    dock: Option<DockLayout>,
+    hides_minimap: bool,
+}
+
+/// The orders dock: its plate, the list beneath the Stop plate, the Stop
+/// plate and button, the visible chips, and how many more are hidden.
+struct DockLayout {
+    dock: Rect,
+    list: Rect,
+    stop: Option<(Rect, Rect)>,
+    chips: Vec<Rect>,
+    hidden: usize,
+}
+
+/// Whether the panel is the construction palette rather than a selection.
+fn is_catalog(panel: &crate::panel::Panel) -> bool {
+    use crate::panel::CardAction;
+    panel
+        .cards
+        .iter()
+        .any(|card| matches!(card.action, CardAction::ArmBuild(_)))
+        && panel.cards.iter().all(|card| {
+            matches!(
+                card.action,
+                CardAction::ArmBuild(_) | CardAction::ClosePalette
+            )
+        })
+}
+
+/// Lays out the command panel for `panel` in `env`'s window.
+pub(crate) fn layout_panel(
     game: &crate::game::Scene<'_>,
-    sprites: &Sprites,
     input: &InputState,
-    bindings: &crate::action::BindingMap,
     panel: &crate::panel::Panel,
-) -> PanelGeometry {
-    use crate::panel::{CardAction, CardIcon};
-    let s = ui_scale();
-    let mini = minimap_rect(game);
-    let viewport = vec2(screen_width(), screen_height());
+    env: super::hud::HudEnv,
+    measure: super::hud::Measure<'_>,
+) -> PanelLayout {
+    use super::hud::Face;
+    let (viewport, s) = (env.viewport, env.ui);
+    let mini = minimap_rect_scaled(
+        game.state.map().width(),
+        game.state.map().height(),
+        viewport,
+        s,
+    );
+    if is_catalog(panel) {
+        let (band, slots, grouped) = catalog_geometry(viewport, s, mini, panel.cards.len());
+        return PanelLayout::Catalog {
+            band,
+            slots,
+            grouped,
+        };
+    }
     let small = viewport.x / s < 800.0 || viewport.y / s < 500.0;
     let packing = panel_packing(
         viewport,
@@ -660,15 +699,167 @@ pub(crate) fn draw_panel(
     );
     let (cards_x, _, _, _) = card_metrics(viewport, s);
     let measured = measure_info(panel, cards_x, s, small, |text, size| {
-        crate::typography::measure(text, size).width
+        measure(Face::Display, text, size)
     });
     let (card_rects, cards_w) = command_card_geometry(viewport, s, packing, &panel.cards);
     let action_rect = action_panel_rect(packing, cards_x, cards_w, !panel.cards.is_empty());
     let info_rect = selection_info_rect(viewport, cards_x, measured.height, action_rect);
     let top = info_rect.y;
-    let roster_shown = panel.roster.len().min(8);
-    let (rw, rh, roster_gap) = (measured.roster_size, measured.roster_size, 4.0 * s);
-    let roster_per_row = measured.roster_columns;
+    let (size, gap) = (measured.roster_size, 4.0 * s);
+    let roster = (0..panel.roster.len().min(8))
+        .map(|index| {
+            let row = index / measured.roster_columns;
+            let column = index % measured.roster_columns;
+            Rect::new(
+                8.0 * s + column as f32 * (size + gap),
+                top + measured.roster_y + row as f32 * (size + gap),
+                size,
+                size,
+            )
+        })
+        .collect();
+    let dock = (!panel.queue.is_empty() || panel.stop.is_some())
+        .then(|| layout_dock(game, input, panel, viewport, s, top, measure));
+    PanelLayout::Selection(Box::new(SelectionLayout {
+        small,
+        cards_x,
+        measured,
+        info_rect,
+        action_rect,
+        card_rects,
+        rally_count: packing.rally_count,
+        roster,
+        dock,
+        hides_minimap: packing.hides_minimap,
+    }))
+}
+
+/// Production ghosts or order chips, stacked above the band's left
+/// corner so the band itself stays short.
+fn layout_dock(
+    game: &crate::game::Scene<'_>,
+    input: &InputState,
+    panel: &crate::panel::Panel,
+    viewport: Vec2,
+    s: f32,
+    top: f32,
+    measure: super::hud::Measure<'_>,
+) -> DockLayout {
+    let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
+    let toggle_below = super::chrome::queue_toggle_shown(game, input, crate::platform::TOUCH_ONLY);
+    let floor = if toggle_below {
+        top - super::chrome::queue_dock_lift(s)
+    } else {
+        top
+    };
+    let header = if panel.stop.is_some() {
+        STOP_PLATE + STOP_GAP
+    } else {
+        0.0
+    };
+    let (mut grid_dock, grid_slots, n) = if panel.queue.is_empty() {
+        // A lone Stop plate: some other selected unit is busy.
+        let side = STOP_PLATE * s;
+        (Rect::new(0.0, floor - side, side, side), [zero; 8], 0)
+    } else if panel.queue_groups.is_empty() {
+        queue_grid(panel.queue.len(), floor, s, header)
+    } else {
+        collective_queue_grid(panel.queue.len(), floor, s, viewport.x, header)
+    };
+    if !panel.queue.is_empty() {
+        let queue_label_width = queue_label_width(panel, |text| {
+            measure(super::hud::Face::Body, text, 14.0 * s)
+        }) + 16.0 * s;
+        grid_dock.w = grid_dock.w.max(queue_label_width);
+    }
+    let mut dock = grid_dock;
+    let hidden = panel.queue.len().saturating_sub(n);
+    let more_h = if hidden > 0 { 16.0 * s } else { 0.0 };
+    if more_h > 0.0 {
+        dock.y -= more_h;
+        dock.h += more_h;
+    }
+    // The dock borders only its open top and right, resting on the
+    // band. With the QUEUE toggle beneath it, the plate runs down to
+    // the band so the toggle sits inside one closed column.
+    if toggle_below {
+        dock.h = top - dock.y;
+    }
+    // The list rests on the band beneath the Stop plate and its gap.
+    let list = Rect::new(dock.x, dock.y + header * s, dock.w, dock.h - header * s);
+    // The Stop button is as wide as the chips beneath it.
+    let stop = panel.stop.as_ref().map(|_| {
+        let width = if n > 0 { grid_slots[0].w } else { 44.0 * s };
+        (
+            Rect::new(0.0, dock.y, width + 16.0 * s, STOP_PLATE * s),
+            Rect::new(8.0 * s, dock.y + 8.0 * s, width, 44.0 * s),
+        )
+    });
+    let chips = grid_slots
+        .iter()
+        .take(n)
+        .map(|slot| Rect::new(slot.x, slot.y - more_h, slot.w, slot.h))
+        .collect();
+    DockLayout {
+        dock,
+        list,
+        stop,
+        chips,
+        hidden,
+    }
+}
+
+impl PanelLayout {
+    /// The clickable regions this layout publishes for `panel`.
+    pub(super) fn geometry(&self, panel: &crate::panel::Panel) -> PanelGeometry {
+        let mut geometry = PanelGeometry::empty();
+        match self {
+            PanelLayout::Catalog { band, slots, .. } => {
+                geometry.actions = *band;
+                for (i, (card, rect)) in panel.cards.iter().zip(slots).enumerate() {
+                    geometry.cards[i] = (*rect, published_action(card));
+                }
+                geometry.card_count = panel.cards.len();
+            }
+            PanelLayout::Selection(selection) => {
+                geometry.info = selection.info_rect;
+                geometry.actions = selection.action_rect;
+                geometry.hides_minimap = selection.hides_minimap;
+                for (card, rect) in panel.roster.iter().zip(&selection.roster) {
+                    geometry.roster_slots[geometry.roster_count] = (*rect, card.action);
+                    geometry.roster_count += 1;
+                }
+                for (card, rect) in panel.cards.iter().zip(&selection.card_rects) {
+                    geometry.cards[geometry.card_count] = (*rect, published_action(card));
+                    geometry.card_count += 1;
+                }
+                if let Some(dock) = &selection.dock {
+                    geometry.orders = dock.dock;
+                    for (card, rect) in panel.queue.iter().zip(&dock.chips) {
+                        geometry.queue_slots[geometry.queue_count] = (*rect, card.action);
+                        geometry.queue_count += 1;
+                    }
+                    if let (Some(card), Some((_, button))) = (&panel.stop, dock.stop) {
+                        geometry.queue_stop = (button, card.action);
+                    }
+                }
+            }
+        }
+        geometry
+    }
+}
+
+/// Draws the command panel band laid out by [`layout_panel`].
+#[expect(clippy::too_many_lines, reason = "draws the whole selection panel")]
+pub(crate) fn draw_panel(
+    sprites: &Sprites,
+    input: &InputState,
+    bindings: &crate::action::BindingMap,
+    panel: &crate::panel::Panel,
+    layout: &PanelLayout,
+) {
+    use crate::panel::{CardAction, CardIcon};
+    let s = ui_scale();
     // The panel says whose colors it wears: an inspected ally or
     // enemy draws in its owner's faction, not the viewer's. Own
     // panels carry the human's faction, so roster cards stay right.
@@ -760,19 +951,31 @@ pub(crate) fn draw_panel(
         blit(plate, sprites.verb_icon(*verb), tint);
     };
 
-    if panel
-        .cards
-        .iter()
-        .any(|card| matches!(card.action, CardAction::ArmBuild(_)))
-        && panel.cards.iter().all(|card| {
-            matches!(
-                card.action,
-                CardAction::ArmBuild(_) | CardAction::ClosePalette
-            )
-        })
-    {
-        return draw_catalog(panel, input, bindings, mini, &draw_icon);
-    }
+    let selection = match layout {
+        PanelLayout::Catalog {
+            band,
+            slots,
+            grouped,
+        } => {
+            draw_catalog(panel, input, bindings, (*band, slots, *grouped), &draw_icon);
+            return;
+        }
+        PanelLayout::Selection(selection) => selection,
+    };
+    let SelectionLayout {
+        small,
+        cards_x,
+        measured,
+        info_rect,
+        action_rect,
+        card_rects,
+        rally_count,
+        roster,
+        dock,
+        hides_minimap: _,
+    } = &**selection;
+    let (small, cards_x, info_rect, action_rect) = (*small, *cards_x, *info_rect, *action_rect);
+    let top = info_rect.y;
 
     for rect in [info_rect, action_rect] {
         if rect.w == 0.0 {
@@ -888,10 +1091,7 @@ pub(crate) fn draw_panel(
 
     // Mixed-selection roster, visually and geometrically separate from
     // verbs. It reads as "what is in my hand" before "what can it do".
-    let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
-    let mut roster_slots = [(zero, CardAction::None); 8];
-    let mut roster_count = 0;
-    if roster_shown > 0 {
+    if !roster.is_empty() {
         let label_y = top + measured.roster_y - 4.0 * s;
         draw_text(
             "SELECTED UNITS",
@@ -900,14 +1100,7 @@ pub(crate) fn draw_panel(
             12.0 * s,
             TEXT_SECONDARY,
         );
-        for (index, card) in panel.roster.iter().take(roster_shown).enumerate() {
-            let (row, column) = (index / roster_per_row, index % roster_per_row);
-            let rect = Rect::new(
-                8.0 * s + column as f32 * (rw + roster_gap),
-                top + measured.roster_y + row as f32 * (rh + roster_gap),
-                rw,
-                rh,
-            );
+        for (card, &rect) in panel.roster.iter().zip(roster) {
             let hovered = rect.contains(input.mouse);
             fill_rect(
                 rect,
@@ -957,12 +1150,10 @@ pub(crate) fn draw_panel(
                 size,
                 TEXT_PRIMARY,
             );
-            roster_slots[roster_count] = (rect, card.action);
-            roster_count += 1;
         }
     }
 
-    if packing.rally_count > 0 {
+    if *rally_count > 0 {
         draw_icon(
             rally_context_rect(card_rects[0], s),
             &CardIcon::Verb(crate::panel::VerbIcon::Rally),
@@ -971,9 +1162,7 @@ pub(crate) fn draw_panel(
     }
 
     // Command cards, wrapping into as many rows as the width demands.
-    let mut cards = [(zero, CardAction::None); 16];
-    let mut card_count = 0;
-    for (card, rect) in panel.cards.iter().zip(card_rects) {
+    for (card, &rect) in panel.cards.iter().zip(card_rects) {
         let hovered = rect.contains(input.mouse);
         let selected = matches!(card.action, CardAction::ArmBuild(kind) if input.placing == Some(kind))
             || (card.action == CardAction::ArmRally && !input.rallying.is_empty());
@@ -1002,8 +1191,6 @@ pub(crate) fn draw_panel(
         };
         if matches!(card.action, CardAction::ArmRally | CardAction::ClearRally) {
             draw_rally_control(card, rect, s);
-            cards[card_count] = (rect, published_action(card));
-            card_count += 1;
             continue;
         }
         let horizontal = rect.w >= 100.0 * s;
@@ -1115,256 +1302,201 @@ pub(crate) fn draw_panel(
                 },
             );
         }
-        cards[card_count] = (rect, published_action(card));
-        card_count += 1;
     }
 
-    // Orders dock on the left edge: production ghosts or order chips,
-    // stacked above the band's corner so the band itself stays short.
-    let mut queue_slots = [(zero, CardAction::None); 8];
-    let mut queue_count = 0;
-    let mut queue_stop = (zero, CardAction::None);
-    let mut dock = Rect::new(0.0, 0.0, 0.0, 0.0);
-    if !panel.queue.is_empty() || panel.stop.is_some() {
-        let toggle_below =
-            super::chrome::queue_toggle_shown(game, input, crate::platform::TOUCH_ONLY);
-        let floor = if toggle_below {
-            top - super::chrome::queue_dock_lift(s)
-        } else {
-            top
-        };
-        let header = if panel.stop.is_some() {
-            STOP_PLATE + STOP_GAP
-        } else {
-            0.0
-        };
-        let (mut grid_dock, grid_slots, n) = if panel.queue.is_empty() {
-            // A lone Stop plate: some other selected unit is busy.
-            let side = STOP_PLATE * s;
-            (Rect::new(0.0, floor - side, side, side), [zero; 8], 0)
-        } else if panel.queue_groups.is_empty() {
-            queue_grid(panel.queue.len(), floor, s, header)
-        } else {
-            collective_queue_grid(panel.queue.len(), floor, s, viewport.x, header)
-        };
-        if !panel.queue.is_empty() {
-            let queue_label_width = queue_label_width(panel, |text| {
-                measure_text(text, None, numeric::font_size(14.0 * s), 1.0).width
-            }) + 16.0 * s;
-            grid_dock.w = grid_dock.w.max(queue_label_width);
+    // Orders dock on the left edge: production ghosts or order chips.
+    if let Some(dock) = dock {
+        draw_dock(panel, input, dock, s, &draw_icon);
+    }
+}
+
+fn draw_dock(
+    panel: &crate::panel::Panel,
+    input: &InputState,
+    layout: &DockLayout,
+    s: f32,
+    draw_icon: &impl Fn(Rect, &crate::panel::CardIcon, Color),
+) {
+    use crate::panel::CardIcon;
+    let DockLayout {
+        dock,
+        list,
+        stop,
+        chips,
+        hidden,
+    } = layout;
+    // Plates border their open sides; the screen edge closes the left.
+    let plate = |rect: Rect, bottom: bool| {
+        let edge = Color::new(0.6, 0.6, 0.65, 0.4);
+        fill_rect(rect, Color::from_rgba(20, 20, 24, 255));
+        draw_rectangle(rect.x, rect.y, rect.w, 1.5 * s, edge);
+        draw_rectangle(rect.right() - 1.5 * s, rect.y, 1.5 * s, rect.h, edge);
+        if bottom {
+            draw_rectangle(rect.x, rect.bottom() - 1.5 * s, rect.w, 1.5 * s, edge);
         }
-        dock = grid_dock;
-        let hidden = panel.queue.len().saturating_sub(n);
-        let more_h = if hidden > 0 { 16.0 * s } else { 0.0 };
-        if more_h > 0.0 {
-            dock.y -= more_h;
-            dock.h += more_h;
-        }
-        // The dock borders only its open top and right, resting on the
-        // band. With the QUEUE toggle beneath it, the plate runs down to
-        // the band so the toggle sits inside one closed column.
-        if toggle_below {
-            dock.h = top - dock.y;
-        }
-        let dock_top = dock.y;
-        // Plates border their open sides; the screen edge closes the left.
-        let plate = |rect: Rect, bottom: bool| {
-            let edge = Color::new(0.6, 0.6, 0.65, 0.4);
-            fill_rect(rect, Color::from_rgba(20, 20, 24, 255));
-            draw_rectangle(rect.x, rect.y, rect.w, 1.5 * s, edge);
-            draw_rectangle(rect.right() - 1.5 * s, rect.y, 1.5 * s, rect.h, edge);
-            if bottom {
-                draw_rectangle(rect.x, rect.bottom() - 1.5 * s, rect.w, 1.5 * s, edge);
-            }
-        };
-        // The list rests on the band beneath the Stop plate and its gap.
-        let list = Rect::new(dock.x, dock_top + header * s, dock.w, dock.h - header * s);
-        if list.h > 0.0 {
-            plate(list, false);
-        }
-        if !panel.queue.is_empty() {
+    };
+    if list.h > 0.0 {
+        plate(*list, false);
+    }
+    if !panel.queue.is_empty() {
+        draw_text(
+            &panel.queue_label,
+            8.0 * s,
+            list.y + 17.0 * s,
+            14.0 * s,
+            TEXT_PRIMARY,
+        );
+    }
+    if let (Some(card), Some((stop_plate, rect))) = (&panel.stop, *stop) {
+        // Named where the chips beneath it are.
+        plate(stop_plate, true);
+        let named = rect.w >= 150.0 * s;
+        fill_rect(rect, Color::new(0.14, 0.14, 0.18, 1.0));
+        stroke_rect(
+            rect,
+            1.2 * s,
+            if rect.contains(input.mouse) {
+                BONE
+            } else {
+                Color::new(0.45, 0.45, 0.52, 0.8)
+            },
+        );
+        let isz = 34.0 * s;
+        draw_icon(
+            Rect::new(
+                rect.x + if named { 4.0 * s } else { (rect.w - isz) * 0.5 },
+                rect.y + (rect.h - isz) * 0.5,
+                isz,
+                isz,
+            ),
+            &card.icon,
+            WHITE,
+        );
+        if named {
             draw_text(
-                &panel.queue_label,
-                8.0 * s,
-                list.y + 17.0 * s,
-                14.0 * s,
-                TEXT_PRIMARY,
+                &card.title,
+                rect.x + 42.0 * s,
+                rect.y + 27.0 * s,
+                13.0 * s,
+                BONE,
             );
         }
-        if let Some(card) = &panel.stop {
-            // As wide as the chips beneath it, and named where they are.
-            let width = if n > 0 { grid_slots[0].w } else { 44.0 * s };
-            plate(
-                Rect::new(0.0, dock_top, width + 16.0 * s, STOP_PLATE * s),
-                true,
+    }
+    let orders_dock = panel.queue_label == "Orders";
+    for (i, (card, &rect)) in panel.queue.iter().zip(chips).enumerate() {
+        let hovered = rect.contains(input.mouse);
+        fill_rect(rect, Color::new(0.14, 0.14, 0.18, 1.0));
+        // The active order or production head wears the bright border;
+        // a ready-but-blocked head remains the queue's current job.
+        let group = panel.queue_groups.get(i);
+        let active = group.map_or(i == 0, |g| g.active > 0);
+        let wide_group = group.is_some() && rect.w >= 150.0 * s;
+        stroke_rect(
+            rect,
+            if active { 2.0 * s } else { 1.2 * s },
+            if hovered || active {
+                BONE
+            } else {
+                Color::new(0.45, 0.45, 0.52, 0.8)
+            },
+        );
+        // Order chips carry the same numbers as the world
+        // breadcrumbs: chip 2 is waypoint 2.
+        if orders_dock && panel.queue.len() > 1 {
+            draw_text(
+                format!("{}", i + 1),
+                rect.x + 3.0 * s,
+                rect.y + 13.0 * s,
+                11.0 * s,
+                TEXT_SECONDARY,
             );
-            let rect = Rect::new(8.0 * s, dock_top + 8.0 * s, width, 44.0 * s);
-            let named = width >= 150.0 * s;
-            fill_rect(rect, Color::new(0.14, 0.14, 0.18, 1.0));
-            stroke_rect(
-                rect,
-                1.2 * s,
-                if rect.contains(input.mouse) {
-                    BONE
-                } else {
-                    Color::new(0.45, 0.45, 0.52, 0.8)
-                },
-            );
+        }
+        {
             let isz = 34.0 * s;
             draw_icon(
                 Rect::new(
-                    rect.x + if named { 4.0 * s } else { (rect.w - isz) * 0.5 },
-                    rect.y + (rect.h - isz) * 0.5,
+                    rect.x
+                        + if wide_group {
+                            4.0 * s
+                        } else {
+                            (rect.w - isz) * 0.5
+                        },
+                    rect.y + 5.0 * s,
                     isz,
                     isz,
                 ),
                 &card.icon,
                 WHITE,
             );
-            if named {
-                draw_text(
-                    &card.title,
-                    rect.x + 42.0 * s,
-                    rect.y + 27.0 * s,
-                    13.0 * s,
-                    BONE,
-                );
-            }
-            queue_stop = (rect, card.action);
         }
-        let orders_dock = panel.queue_label == "Orders";
-        for (i, card) in panel.queue.iter().take(n).enumerate() {
-            let mut rect = grid_slots[i];
-            rect.y -= more_h;
-            let hovered = rect.contains(input.mouse);
-            fill_rect(rect, Color::new(0.14, 0.14, 0.18, 1.0));
-            // The active order or production head wears the bright border;
-            // a ready-but-blocked head remains the queue's current job.
-            let group = panel.queue_groups.get(i);
-            let active = group.map_or(i == 0, |g| g.active > 0);
-            let wide_group = group.is_some() && rect.w >= 150.0 * s;
-            stroke_rect(
-                rect,
-                if active { 2.0 * s } else { 1.2 * s },
-                if hovered || active {
-                    BONE
-                } else {
-                    Color::new(0.45, 0.45, 0.52, 0.8)
-                },
+        if let Some(group) = group.filter(|_| !wide_group) {
+            let label = format!("x{}", group.count);
+            let width =
+                measure_text(&label, None, numeric::font_size(12.0 * s), 1.0).width + 4.0 * s;
+            draw_rectangle(
+                rect.right() - width - 2.0 * s,
+                rect.y + 2.0 * s,
+                width,
+                14.0 * s,
+                Color::from_rgba(20, 20, 24, 235),
             );
-            // Order chips carry the same numbers as the world
-            // breadcrumbs: chip 2 is waypoint 2.
-            if orders_dock && panel.queue.len() > 1 {
-                draw_text(
-                    format!("{}", i + 1),
-                    rect.x + 3.0 * s,
-                    rect.y + 13.0 * s,
-                    11.0 * s,
-                    TEXT_SECONDARY,
-                );
-            }
-            {
-                let isz = 34.0 * s;
-                draw_icon(
-                    Rect::new(
-                        rect.x
-                            + if wide_group {
-                                4.0 * s
-                            } else {
-                                (rect.w - isz) * 0.5
-                            },
-                        rect.y + 5.0 * s,
-                        isz,
-                        isz,
-                    ),
-                    &card.icon,
-                    WHITE,
-                );
-            }
-            if let Some(group) = group.filter(|_| !wide_group) {
-                let label = format!("x{}", group.count);
-                let width =
-                    measure_text(&label, None, numeric::font_size(12.0 * s), 1.0).width + 4.0 * s;
-                draw_rectangle(
-                    rect.right() - width - 2.0 * s,
-                    rect.y + 2.0 * s,
-                    width,
-                    14.0 * s,
-                    Color::from_rgba(20, 20, 24, 235),
-                );
-                draw_text(
-                    label,
-                    rect.right() - width,
-                    rect.y + 13.0 * s,
-                    12.0 * s,
-                    BONE,
-                );
-            }
-            if let Some(group) = group.filter(|_| wide_group) {
-                let name = match card.icon {
-                    CardIcon::Unit(kind) => crate::typography::entity_name(kind.name()),
-                    _ => card.title.clone(),
-                };
-                draw_text(
-                    format!("{name} x {}", group.count),
-                    rect.x + 42.0 * s,
-                    rect.y + 18.0 * s,
-                    13.0 * s,
-                    BONE,
-                );
-                draw_text(
-                    match group.next_ticks {
-                        Some(0) => format!("{} building | ready", group.active),
-                        Some(ticks) => format!(
-                            "{} building | {}",
-                            group.active,
-                            crate::panel::tick_time_label(ticks)
-                        ),
-                        None => "waiting".into(),
-                    },
-                    rect.x + 42.0 * s,
-                    rect.y + 34.0 * s,
-                    11.0 * s,
-                    TEXT_SECONDARY,
-                );
-            }
-            // A chip with a measurable job wears its meter: the
-            // production head's build, a site's rise, a patient's hp.
-            // Read from the model, never peeked back out of the state.
-            if let Some(frac) = card.progress {
-                draw_rectangle(
-                    rect.x,
-                    rect.y + rect.h - 3.0 * s,
-                    rect.w * frac.clamp(0.0, 1.0),
-                    3.0 * s,
-                    SCRAP_COLOR,
-                );
-            }
-            queue_slots[queue_count] = (rect, card.action);
-            queue_count += 1;
-        }
-        if hidden > 0 {
             draw_text(
-                format!("+{hidden}"),
+                label,
+                rect.right() - width,
+                rect.y + 13.0 * s,
                 12.0 * s,
-                dock_top + dock.h - 8.0 * s,
+                BONE,
+            );
+        }
+        if let Some(group) = group.filter(|_| wide_group) {
+            let name = match card.icon {
+                CardIcon::Unit(kind) => crate::typography::entity_name(kind.name()),
+                _ => card.title.clone(),
+            };
+            draw_text(
+                format!("{name} x {}", group.count),
+                rect.x + 42.0 * s,
+                rect.y + 18.0 * s,
                 13.0 * s,
+                BONE,
+            );
+            draw_text(
+                match group.next_ticks {
+                    Some(0) => format!("{} building | ready", group.active),
+                    Some(ticks) => format!(
+                        "{} building | {}",
+                        group.active,
+                        crate::panel::tick_time_label(ticks)
+                    ),
+                    None => "waiting".into(),
+                },
+                rect.x + 42.0 * s,
+                rect.y + 34.0 * s,
+                11.0 * s,
                 TEXT_SECONDARY,
             );
         }
+        // A chip with a measurable job wears its meter: the
+        // production head's build, a site's rise, a patient's hp.
+        // Read from the model, never peeked back out of the state.
+        if let Some(frac) = card.progress {
+            draw_rectangle(
+                rect.x,
+                rect.y + rect.h - 3.0 * s,
+                rect.w * frac.clamp(0.0, 1.0),
+                3.0 * s,
+                SCRAP_COLOR,
+            );
+        }
     }
-    PanelGeometry {
-        info: info_rect,
-        actions: action_rect,
-        orders: dock,
-        roster_slots,
-        roster_count,
-        cards,
-        card_count,
-        queue_slots,
-        queue_count,
-        queue_stop,
-        hides_minimap: packing.hides_minimap,
+    if *hidden > 0 {
+        draw_text(
+            format!("+{hidden}"),
+            12.0 * s,
+            dock.y + dock.h - 8.0 * s,
+            13.0 * s,
+            TEXT_SECONDARY,
+        );
     }
 }
 

@@ -58,26 +58,19 @@ fn card_hits_pad_for_fingertips_and_search_roster_first() {
     );
 }
 
+/// A 1280x800 layout whose only chrome is the top bar and a full-width
+/// band from `panel_top` down.
 fn compute_at(panel_top: f32, ui: f32) -> LayoutModel {
-    let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
-    LayoutModel::compute(
-        vec2(1280.0, 800.0),
-        ui,
+    LayoutModel {
+        top_bar_h: TOP_BAR_H * ui,
         panel_top,
-        1280.0,
-        zero,
-        zero,
-        zero,
-        zero,
-        zero,
-        zero,
-        [(zero, CardAction::None); 8],
-        0,
-        [(zero, CardAction::None); 16],
-        0,
-        [(zero, CardAction::None); 8],
-        0,
-    )
+        panel_right: 1280.0,
+        panel_regions: [
+            Rect::new(0.0, panel_top, 1280.0, (800.0 - panel_top).max(0.0)),
+            Rect::new(0.0, 0.0, 0.0, 0.0),
+        ],
+        ..LayoutModel::default()
+    }
 }
 
 #[test]

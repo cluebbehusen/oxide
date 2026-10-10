@@ -65,6 +65,42 @@ fn ui() -> f32 {
     crate::render::ui_scale()
 }
 
+/// Where a Controls row's columns sit: the action's name, then its
+/// primary and secondary chords. Drawing and clicking share it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BindingColumns {
+    /// The action's name.
+    pub name: Rect,
+    /// The primary chord.
+    pub primary: Rect,
+    /// The secondary chord.
+    pub secondary: Rect,
+}
+
+impl BindingColumns {
+    /// The columns across `row` at UI scale `s`.
+    pub fn of(row: Rect, s: f32) -> Self {
+        let column = |x: f32, w: f32| Rect::new(x, row.y, w, row.h);
+        Self {
+            name: column(row.x + 18.0 * s, row.w * 0.56),
+            primary: column(row.x + row.w * 0.61, row.w * 0.18),
+            secondary: column(row.x + row.w * 0.81, row.w * 0.18),
+        }
+    }
+
+    /// The chord slot a pointer at `x` picks: each chord owns the space
+    /// from its column to the next. `None` over the name.
+    pub fn slot_at(&self, x: f32) -> Option<usize> {
+        if x >= self.secondary.x {
+            Some(1)
+        } else if x >= self.primary.x {
+            Some(0)
+        } else {
+            None
+        }
+    }
+}
+
 /// A titled, selectable list.
 ///
 /// Three independent pieces of state, deliberately: `selected` is the
@@ -537,15 +573,16 @@ impl Menu {
                 && let Some((name, keys)) = label.rsplit_once(": ")
                 && let Some((primary, secondary)) = keys.split_once(" | ")
             {
-                for (text, x, width) in [
-                    (name, rect.x + 18.0 * s, rect.w * 0.56),
-                    (primary, rect.x + rect.w * 0.61, rect.w * 0.18),
-                    (secondary, rect.x + rect.w * 0.81, rect.w * 0.18),
+                let columns = BindingColumns::of(rect, s);
+                for (text, column) in [
+                    (name, columns.name),
+                    (primary, columns.primary),
+                    (secondary, columns.secondary),
                 ] {
                     let measured =
                         measure_text(text, None, numeric::font_size(text_size), 1.0).width;
-                    let size = text_size * (width / measured.max(1.0)).min(1.0);
-                    draw_text(text, x, rect.y + rect.h * 0.68, size, color);
+                    let size = text_size * (column.w / measured.max(1.0)).min(1.0);
+                    draw_text(text, column.x, rect.y + rect.h * 0.68, size, color);
                 }
             } else {
                 draw_text(

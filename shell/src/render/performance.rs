@@ -65,30 +65,53 @@ fn geometry(
     }
 }
 
-pub(super) fn draw(view: &PerformanceView, status_space: Option<(f32, f32)>) -> Rect {
-    if view.mode == PerformanceDisplay::Off {
-        return Rect::new(0.0, 0.0, 0.0, 0.0);
+/// The performance readout: where it sits and its FPS text.
+pub(crate) struct PerformanceLayout {
+    geometry: Geometry,
+    fps: String,
+}
+
+impl PerformanceLayout {
+    /// The read-only panel; zero-sized when the FPS sits in the top bar.
+    pub(super) fn panel(&self) -> Rect {
+        self.geometry.panel
     }
-    let s = super::ui_scale();
-    let size = 14.0 * s;
+}
+
+/// Lays out the readout; none while the display is off.
+pub(super) fn layout(
+    view: &PerformanceView,
+    env: super::hud::HudEnv,
+    status_space: Option<(f32, f32)>,
+    measure: super::hud::Measure<'_>,
+) -> Option<PerformanceLayout> {
+    if view.mode == PerformanceDisplay::Off {
+        return None;
+    }
     let fps = view
         .fps
         .map_or_else(|| "-- FPS".to_string(), |fps| format!("{fps:.0} FPS"));
-    let width = typography::measure(&fps, size).width;
-    let layout = geometry(super::viewport(), s, view.mode, width, status_space);
+    let width = measure(super::hud::Face::Display, &fps, 14.0 * env.ui);
+    Some(PerformanceLayout {
+        geometry: geometry(env.viewport, env.ui, view.mode, width, status_space),
+        fps,
+    })
+}
+
+pub(super) fn draw(view: &PerformanceView, performance: &PerformanceLayout) {
+    let s = super::ui_scale();
+    let size = 14.0 * s;
+    let PerformanceLayout {
+        geometry: layout,
+        fps,
+    } = performance;
     let panel = layout.panel;
     if panel.w > 0.0 {
         fill_rect(panel, Color::from_rgba(15, 15, 19, 230));
     }
-    typography::draw(
-        &fps,
-        layout.fps.x,
-        layout.fps.y,
-        size,
-        theme::TEXT_SECONDARY,
-    );
+    typography::draw(fps, layout.fps.x, layout.fps.y, size, theme::TEXT_SECONDARY);
     if view.mode != PerformanceDisplay::Detailed {
-        return panel;
+        return;
     }
     let x = panel.x + 10.0 * s;
     for (index, (label, value)) in [
@@ -145,7 +168,6 @@ pub(super) fn draw(view: &PerformanceView, status_space: Option<(f32, f32)>) -> 
         11.0 * s,
         theme::TEXT_SECONDARY,
     );
-    panel
 }
 
 #[cfg(test)]

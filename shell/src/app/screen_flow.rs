@@ -726,7 +726,20 @@ fn playing_frame(
     app.input.now = get_time();
     app.input.camera_prefs = app.config.camera;
     app.input.touch_prefs = app.config.touch;
-    input::apply_events(&mut app.game, &mut app.input, &app.config.bindings, events);
+    let performance = app.performance.view();
+    relayout_hud(
+        &app.game.view(),
+        &app.input,
+        &app.config.bindings,
+        Some(performance),
+    );
+    input::apply_events(
+        &mut app.game,
+        &mut app.input,
+        &app.config.bindings,
+        events,
+        |game, input| relayout_hud(&game.view(), input, &app.config.bindings, Some(performance)),
+    );
     input::update_held(&mut app.game, &app.input, time.presentation);
     input::update_touch(&mut app.game, &mut app.input, &app.config.bindings);
     let menu_pressed = app.input.take_menu_request();
@@ -808,6 +821,25 @@ fn advance_live_match(game: &mut Game, raw_dt: f32, stop_tick: Option<u64>, leav
     !leaving && game.net_role().is_none() && game.advance_wall_clock(raw_dt, stop_tick)
 }
 
+/// Lays the HUD out for the scene as it stands, so input hit-tests the
+/// chrome this frame draws: a resize, a LAN tick or a fresh match can
+/// move it since the last frame.
+fn relayout_hud(
+    scene: &crate::game::Scene<'_>,
+    input: &input::InputState,
+    bindings: &crate::action::BindingMap,
+    performance: Option<&crate::performance::PerformanceView>,
+) {
+    render::hud::refresh(
+        scene,
+        input,
+        bindings,
+        render::hud::HudEnv::current(),
+        performance,
+        &render::hud::window_measure,
+    );
+}
+
 /// The one way into a replay viewer: leaving it restores `back` wholesale.
 fn open_playback(session: PlaybackSession, back: Screen) -> Screen {
     Screen::Playback {
@@ -826,6 +858,12 @@ fn playback_frame(
 ) -> Screen {
     let input_scope =
         oxide_kit::diagnostics::stage(oxide_kit::diagnostics::Stage::Input, pb.engine.position());
+    relayout_hud(
+        &pb.view(),
+        &app.input,
+        &app.config.bindings,
+        Some(app.performance.view()),
+    );
     let leave = pb.apply_input(
         &app.config.bindings,
         events,
@@ -867,6 +905,12 @@ fn final_map_frame(
     let input_scope = app
         .game
         .diagnostic_stage(oxide_kit::diagnostics::Stage::Input);
+    relayout_hud(
+        &app.game.view(),
+        &app.input,
+        &app.config.bindings,
+        Some(app.performance.view()),
+    );
     let leave = final_map.update(
         &app.config.bindings,
         events,

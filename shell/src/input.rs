@@ -1085,287 +1085,308 @@ pub fn desired_cursor(game: &Game, input: &InputState) -> macroquad::miniquad::C
     CursorIcon::Default
 }
 
-/// Applies a frame's events — hardware and injected alike — to the game.
+/// Applies a frame's events — hardware and injected alike — to the game,
+/// laying the HUD out again through `relayout` before each press or
+/// release that follows another event, and once after the batch. An
+/// earlier event can open a panel or move chrome, and a press must
+/// hit-test what the next frame draws.
 pub fn apply_events(
     game: &mut Game,
     input: &mut InputState,
     bindings: &BindingMap,
     events: &[RawEvent],
+    mut relayout: impl FnMut(&Game, &InputState),
 ) {
-    for event in events {
-        match *event {
-            RawEvent::MouseDown { .. } | RawEvent::MouseMove { .. } => {
-                input.last_pointer = Pointer::Mouse;
-            }
-            RawEvent::TouchDown { .. } => input.last_pointer = Pointer::Touch,
-            _ => {}
+    for (index, event) in events.iter().enumerate() {
+        let press = matches!(
+            event,
+            RawEvent::MouseDown { .. }
+                | RawEvent::MouseUp { .. }
+                | RawEvent::TouchDown { .. }
+                | RawEvent::TouchUp { .. }
+        );
+        if press && index > 0 {
+            relayout(game, input);
         }
-        match *event {
-            RawEvent::MouseMove { x, y } => {
-                input.mouse = vec2(x, y);
-                // A held minimap press keeps steering: clamp the cursor
-                // into the minimap so sliding off its edge doesn't stall
-                // the pan mid-gesture.
-                if input.minimap_drag
-                    && let Some(world) =
-                        crate::render::minimap_world_clamped(&game.view(), vec2(x, y))
-                {
-                    game.presentation.camera.center = world;
-                    game.presentation.camera.pan(Vec2::ZERO);
-                }
-                // Middle-drag: the world follows the hand, so the pan
-                // moves against the cursor delta, scaled out of screen
-                // space by the zoom.
-                if let Some(anchor) = input.mmb_anchor {
-                    let delta = vec2(x, y) - anchor;
-                    game.presentation
-                        .camera
-                        .pan(-delta / game.presentation.camera.zoom);
-                    input.mmb_anchor = Some(vec2(x, y));
-                }
-                // Drag-to-place: while the button stays down in
-                // placement mode, every new valid, non-overlapping
-                // anchor stamps another build, queued behind the
-                // builder's program — a wall in one stroke. Invalid
-                // cells skip silently (the ghost tells that story),
-                // and the stroke stops stamping at the order-queue
-                // cap instead of firing doomed commands.
-                if let (Some(kind), Some(stroke)) = (input.placing, input.placing_stroke.as_mut())
-                    && !click_on_hud(game, vec2(x, y))
-                    && crate::render::minimap_world_at(&game.view(), vec2(x, y)).is_none()
-                {
-                    let world = game.presentation.camera.to_world(vec2(x, y));
-                    let clicked = numeric::tile_at(world);
-                    let anchor = placement_anchor(&game.view(), kind, clicked);
-                    let (w, h) = kind.size();
-                    let overlaps = stroke
-                        .anchors
-                        .iter()
-                        .any(|a| (a.x - anchor.x).abs() < w && (a.y - anchor.y).abs() < h);
-                    let cost = kind.base_stats().construction.map_or(0, |c| c.cost);
-                    let projection = pending_build_projection(&game.view(), kind, anchor, true);
-                    // The projected bank already reflects every paid
-                    // pending command; only surviving deferred claims
-                    // need a future-price reserve, so no stamp is billed
-                    // twice.
-                    let affordable = projection.funds.available() >= cost;
-                    // The cap is the BUILDER's projected headroom, not
-                    // a stroke-local count: a command staged while the
-                    // button is held can clear or fill the program.
-                    if !overlaps
-                        && affordable
-                        && projection.queue_has_room
-                        && projection.refusal.is_none()
-                    {
-                        let units = game.presentation.selection.units.clone();
-                        game.issue(Command::Build {
-                            units,
-                            kind,
-                            anchor,
-                            queue: true,
-                            // A stroke can cross the vision skirt: each
-                            // stamp defers or founds on its own ground.
-                            defer: build_defer_needed(&game.view(), kind, anchor),
-                        });
-                        game.presentation.ping_order(
-                            placement_ping(kind, anchor),
-                            PingKind::Rally,
-                            true,
-                        );
-                        stroke.anchors.push(anchor);
-                    }
-                }
-            }
-            RawEvent::Wheel { delta } => crate::camera::controls::wheel_zoom(
-                &mut game.presentation.camera,
-                input.mouse,
-                delta,
-                input.camera_prefs,
-            ),
-            RawEvent::MouseDown {
-                button: MouseButton::Left,
-                x,
-                y,
-            } => {
-                input.mouse = vec2(x, y);
-                if ribbon_row_press(game, input, vec2(x, y), Pointer::Mouse)
-                    || armed_click(game, input, bindings, vec2(x, y), Pointer::Mouse)
-                {
-                    continue;
-                }
-                // Panel cards are buttons: each carries the exact action
-                // its click performs — the same action its hotkey routes.
-                let layout = game.presentation.layout.get();
-                if let Some(hit) = crate::layout::card_under(&layout, vec2(x, y), None) {
-                    press_card(game, input, bindings, hit);
-                    continue;
-                }
-                // The idle badge cycles workers on click.
-                let layout = game.presentation.layout.get();
-                let badge = layout.idle_badge;
-                if badge.w > 0.0 && badge.contains(vec2(x, y)) {
-                    cycle_idle_worker(game);
-                    continue;
-                }
-                let alert = layout.alert_badge;
-                if alert.w > 0.0 && alert.contains(vec2(x, y)) {
-                    dispatch_action(game, input, bindings, Action::JumpToLastAlert);
-                    continue;
-                }
-                if let Some(slot) = crate::layout::group_slot_under(&layout, vec2(x, y), None) {
-                    let assign = input.resolver.ctrl_held();
-                    press_group_slot(game, input, bindings, slot, assign);
-                    continue;
-                }
-                if layout.menu_button.w > 0.0 && layout.menu_button.contains(vec2(x, y)) {
-                    input.menu_requested = true;
-                    continue;
-                }
-                if layout.pause_status.w > 0.0 && layout.pause_status.contains(vec2(x, y)) {
-                    dispatch_action(game, input, bindings, Action::TogglePause);
-                    continue;
-                }
-                // The minimap owns clicks landing on it: jump the camera,
-                // never start a drag-select there. HUD chrome swallows
-                // clicks outright.
-                if let Some(world) = crate::render::minimap_world_at(&game.view(), vec2(x, y)) {
-                    game.presentation.camera.center = world;
-                    game.presentation.camera.pan(Vec2::ZERO); // re-clamp
-                    input.minimap_drag = true;
-                } else if !click_on_hud(game, vec2(x, y)) {
-                    input.drag_origin = Some(vec2(x, y));
-                }
-            }
-            RawEvent::MouseUp {
-                button: MouseButton::Left,
-                x,
-                y,
-            } => {
-                input.mouse = vec2(x, y);
-                input.minimap_drag = false;
-                // The placement stroke ends at release; Shift decides
-                // whether the mode stays armed.
-                if input.placing_stroke.take().is_some() && !input.queue_held() {
-                    input.stop_placing();
-                }
-                if let Some(origin) = input.drag_origin.take() {
-                    let release = vec2(x, y);
-                    let additive = input.queue_held();
-                    if origin.distance(release) <= click_slop(input.ui) {
-                        let now = input.now;
-                        let double = !additive
-                            && input.last_click.take().is_some_and(|(t, p)| {
-                                now - t < 0.35 && p.distance(release) <= 12.0 * input.ui
-                            });
-                        if double {
-                            select_all_of_kind_on_screen(game, release, input.ui, Pointer::Mouse);
-                        } else {
-                            click_select(game, release, additive, input.ui, Pointer::Mouse);
-                        }
-                        input.last_click = Some((now, release));
-                    } else {
-                        box_select(game, origin, release, additive);
-                    }
-                }
-            }
-            RawEvent::MouseDown {
-                button: MouseButton::Right,
-                x,
-                y,
-            } => {
-                input.mouse = vec2(x, y);
-                // A contextual order is a new intent, so it also exits
-                // any one-shot mode left armed by a prior build/salvage/
-                // weld/run/hunt gesture. In particular, a move
-                // away from a deferred Found order must not leave a
-                // placement ghost stuck to the cursor. Patrol is the
-                // exception: its right-clicks are collecting the route.
-                if input.patrol_route.is_none() {
-                    input.close_construction();
-                }
-                // A right-click on the minimap orders to that world tile
-                // (ground semantics — entities can't be picked at that
-                // scale); anywhere else, full context ordering. HUD chrome
-                // swallows the click.
-                let queue = input.queue_held();
-                if let Some(world) = crate::render::minimap_world_at(&game.view(), vec2(x, y)) {
-                    let tile = ground_tile(&game.state, world);
-                    if input.patrol_route.is_some() {
-                        add_patrol_waypoint(game, input, bindings, world);
-                    } else {
-                        let units = game.presentation.selection.units.clone();
-                        // The same commandability gate the world path
-                        // applies: an inspected ally or enemy takes no
-                        // orders from the minimap either.
-                        if !units.is_empty() && game.selection_commandable() {
-                            game.issue(Command::Advance {
-                                units,
-                                goal: tile,
-                                queue,
-                            });
-                            game.presentation
-                                .ping_order(tile_center(tile), PingKind::Move, queue);
-                        } else if units.is_empty() {
-                            rally_selected_producers(game, tile);
-                        }
-                    }
-                } else if !click_on_hud(game, vec2(x, y)) {
-                    let world = game.presentation.camera.to_world(vec2(x, y));
-                    if input.patrol_route.is_some() {
-                        add_patrol_waypoint(game, input, bindings, world);
-                    } else {
-                        context_order(game, vec2(x, y), queue);
-                    }
-                }
-            }
-            RawEvent::MouseUp {
-                button: MouseButton::Right,
-                ..
-            } => {}
-            RawEvent::MouseDown {
-                button: MouseButton::Middle,
-                x,
-                y,
-            } => {
-                input.mmb_anchor = Some(vec2(x, y));
-            }
-            RawEvent::MouseUp {
-                button: MouseButton::Middle,
-                ..
-            } => {
-                input.mmb_anchor = None;
-            }
-            RawEvent::KeyDown { key } => {
-                if let Some(ActionEvent::Pressed(action)) =
-                    input.key_edge(bindings, key, true, input.context(game))
-                {
-                    dispatch_action(game, input, bindings, action);
-                }
-            }
-            RawEvent::KeyUp { key } => {
-                let _ = input.key_edge(bindings, key, false, input.context(game));
-            }
-            RawEvent::TouchDown { id, x, y } => touch::down(game, input, id, vec2(x, y)),
-            RawEvent::TouchMove { id, x, y } => touch::moved(game, input, id, vec2(x, y)),
-            RawEvent::Text { .. } => {
-                // Typed characters exist for menu text fields (the
-                // save-name flow); gameplay deliberately has no text
-                // consumer — letters reach the world as semantic keys.
-            }
-            RawEvent::TouchUp { id, x, y } => touch::up(game, input, bindings, id, vec2(x, y)),
-        }
-        if input.construction_open()
-            && !matches!(
-                input.context(game),
-                crate::action::Context::Construction | crate::action::Context::BuildCategory(_)
-            )
-        {
-            input.close_construction();
-        }
+        apply_event(game, input, bindings, event);
     }
     let selection = &mut game.presentation.selection;
     if !selection.units.is_empty() || !selection.buildings.is_empty() {
         selection.pile = None;
+    }
+    if !events.is_empty() {
+        relayout(game, input);
+    }
+}
+
+fn apply_event(game: &mut Game, input: &mut InputState, bindings: &BindingMap, event: &RawEvent) {
+    match *event {
+        RawEvent::MouseDown { .. } | RawEvent::MouseMove { .. } => {
+            input.last_pointer = Pointer::Mouse;
+        }
+        RawEvent::TouchDown { .. } => input.last_pointer = Pointer::Touch,
+        _ => {}
+    }
+    match *event {
+        RawEvent::MouseMove { x, y } => {
+            input.mouse = vec2(x, y);
+            // A held minimap press keeps steering: clamp the cursor
+            // into the minimap so sliding off its edge doesn't stall
+            // the pan mid-gesture.
+            if input.minimap_drag
+                && let Some(world) = crate::render::minimap_world_clamped(&game.view(), vec2(x, y))
+            {
+                game.presentation.camera.center = world;
+                game.presentation.camera.pan(Vec2::ZERO);
+            }
+            // Middle-drag: the world follows the hand, so the pan
+            // moves against the cursor delta, scaled out of screen
+            // space by the zoom.
+            if let Some(anchor) = input.mmb_anchor {
+                let delta = vec2(x, y) - anchor;
+                game.presentation
+                    .camera
+                    .pan(-delta / game.presentation.camera.zoom);
+                input.mmb_anchor = Some(vec2(x, y));
+            }
+            // Drag-to-place: while the button stays down in
+            // placement mode, every new valid, non-overlapping
+            // anchor stamps another build, queued behind the
+            // builder's program — a wall in one stroke. Invalid
+            // cells skip silently (the ghost tells that story),
+            // and the stroke stops stamping at the order-queue
+            // cap instead of firing doomed commands.
+            if let (Some(kind), Some(stroke)) = (input.placing, input.placing_stroke.as_mut())
+                && !click_on_hud(game, vec2(x, y))
+                && crate::render::minimap_world_at(&game.view(), vec2(x, y)).is_none()
+            {
+                let world = game.presentation.camera.to_world(vec2(x, y));
+                let clicked = numeric::tile_at(world);
+                let anchor = placement_anchor(&game.view(), kind, clicked);
+                let (w, h) = kind.size();
+                let overlaps = stroke
+                    .anchors
+                    .iter()
+                    .any(|a| (a.x - anchor.x).abs() < w && (a.y - anchor.y).abs() < h);
+                let cost = kind.base_stats().construction.map_or(0, |c| c.cost);
+                let projection = pending_build_projection(&game.view(), kind, anchor, true);
+                // The projected bank already reflects every paid
+                // pending command; only surviving deferred claims
+                // need a future-price reserve, so no stamp is billed
+                // twice.
+                let affordable = projection.funds.available() >= cost;
+                // The cap is the BUILDER's projected headroom, not
+                // a stroke-local count: a command staged while the
+                // button is held can clear or fill the program.
+                if !overlaps
+                    && affordable
+                    && projection.queue_has_room
+                    && projection.refusal.is_none()
+                {
+                    let units = game.presentation.selection.units.clone();
+                    game.issue(Command::Build {
+                        units,
+                        kind,
+                        anchor,
+                        queue: true,
+                        // A stroke can cross the vision skirt: each
+                        // stamp defers or founds on its own ground.
+                        defer: build_defer_needed(&game.view(), kind, anchor),
+                    });
+                    game.presentation.ping_order(
+                        placement_ping(kind, anchor),
+                        PingKind::Rally,
+                        true,
+                    );
+                    stroke.anchors.push(anchor);
+                }
+            }
+        }
+        RawEvent::Wheel { delta } => crate::camera::controls::wheel_zoom(
+            &mut game.presentation.camera,
+            input.mouse,
+            delta,
+            input.camera_prefs,
+        ),
+        RawEvent::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+        } => {
+            input.mouse = vec2(x, y);
+            if ribbon_row_press(game, input, vec2(x, y), Pointer::Mouse)
+                || armed_click(game, input, bindings, vec2(x, y), Pointer::Mouse)
+            {
+                return;
+            }
+            // Panel cards are buttons: each carries the exact action
+            // its click performs — the same action its hotkey routes.
+            let layout = game.presentation.layout.get();
+            if let Some(hit) = crate::layout::card_under(&layout, vec2(x, y), None) {
+                press_card(game, input, bindings, hit);
+                return;
+            }
+            // The idle badge cycles workers on click.
+            let layout = game.presentation.layout.get();
+            let badge = layout.idle_badge;
+            if badge.w > 0.0 && badge.contains(vec2(x, y)) {
+                cycle_idle_worker(game);
+                return;
+            }
+            let alert = layout.alert_badge;
+            if alert.w > 0.0 && alert.contains(vec2(x, y)) {
+                dispatch_action(game, input, bindings, Action::JumpToLastAlert);
+                return;
+            }
+            if let Some(slot) = crate::layout::group_slot_under(&layout, vec2(x, y), None) {
+                let assign = input.resolver.ctrl_held();
+                press_group_slot(game, input, bindings, slot, assign);
+                return;
+            }
+            if layout.menu_button.w > 0.0 && layout.menu_button.contains(vec2(x, y)) {
+                input.menu_requested = true;
+                return;
+            }
+            if layout.pause_status.w > 0.0 && layout.pause_status.contains(vec2(x, y)) {
+                dispatch_action(game, input, bindings, Action::TogglePause);
+                return;
+            }
+            // The minimap owns clicks landing on it: jump the camera,
+            // never start a drag-select there. HUD chrome swallows
+            // clicks outright.
+            if let Some(world) = crate::render::minimap_world_at(&game.view(), vec2(x, y)) {
+                game.presentation.camera.center = world;
+                game.presentation.camera.pan(Vec2::ZERO); // re-clamp
+                input.minimap_drag = true;
+            } else if !click_on_hud(game, vec2(x, y)) {
+                input.drag_origin = Some(vec2(x, y));
+            }
+        }
+        RawEvent::MouseUp {
+            button: MouseButton::Left,
+            x,
+            y,
+        } => {
+            input.mouse = vec2(x, y);
+            input.minimap_drag = false;
+            // The placement stroke ends at release; Shift decides
+            // whether the mode stays armed.
+            if input.placing_stroke.take().is_some() && !input.queue_held() {
+                input.stop_placing();
+            }
+            if let Some(origin) = input.drag_origin.take() {
+                let release = vec2(x, y);
+                let additive = input.queue_held();
+                if origin.distance(release) <= click_slop(input.ui) {
+                    let now = input.now;
+                    let double = !additive
+                        && input.last_click.take().is_some_and(|(t, p)| {
+                            now - t < 0.35 && p.distance(release) <= 12.0 * input.ui
+                        });
+                    if double {
+                        select_all_of_kind_on_screen(game, release, input.ui, Pointer::Mouse);
+                    } else {
+                        click_select(game, release, additive, input.ui, Pointer::Mouse);
+                    }
+                    input.last_click = Some((now, release));
+                } else {
+                    box_select(game, origin, release, additive);
+                }
+            }
+        }
+        RawEvent::MouseDown {
+            button: MouseButton::Right,
+            x,
+            y,
+        } => {
+            input.mouse = vec2(x, y);
+            // A contextual order is a new intent, so it also exits
+            // any one-shot mode left armed by a prior build/salvage/
+            // weld/run/hunt gesture. In particular, a move
+            // away from a deferred Found order must not leave a
+            // placement ghost stuck to the cursor. Patrol is the
+            // exception: its right-clicks are collecting the route.
+            if input.patrol_route.is_none() {
+                input.close_construction();
+            }
+            // A right-click on the minimap orders to that world tile
+            // (ground semantics — entities can't be picked at that
+            // scale); anywhere else, full context ordering. HUD chrome
+            // swallows the click.
+            let queue = input.queue_held();
+            if let Some(world) = crate::render::minimap_world_at(&game.view(), vec2(x, y)) {
+                let tile = ground_tile(&game.state, world);
+                if input.patrol_route.is_some() {
+                    add_patrol_waypoint(game, input, bindings, world);
+                } else {
+                    let units = game.presentation.selection.units.clone();
+                    // The same commandability gate the world path
+                    // applies: an inspected ally or enemy takes no
+                    // orders from the minimap either.
+                    if !units.is_empty() && game.selection_commandable() {
+                        game.issue(Command::Advance {
+                            units,
+                            goal: tile,
+                            queue,
+                        });
+                        game.presentation
+                            .ping_order(tile_center(tile), PingKind::Move, queue);
+                    } else if units.is_empty() {
+                        rally_selected_producers(game, tile);
+                    }
+                }
+            } else if !click_on_hud(game, vec2(x, y)) {
+                let world = game.presentation.camera.to_world(vec2(x, y));
+                if input.patrol_route.is_some() {
+                    add_patrol_waypoint(game, input, bindings, world);
+                } else {
+                    context_order(game, vec2(x, y), queue);
+                }
+            }
+        }
+        RawEvent::MouseUp {
+            button: MouseButton::Right,
+            ..
+        } => {}
+        RawEvent::MouseDown {
+            button: MouseButton::Middle,
+            x,
+            y,
+        } => {
+            input.mmb_anchor = Some(vec2(x, y));
+        }
+        RawEvent::MouseUp {
+            button: MouseButton::Middle,
+            ..
+        } => {
+            input.mmb_anchor = None;
+        }
+        RawEvent::KeyDown { key } => {
+            if let Some(ActionEvent::Pressed(action)) =
+                input.key_edge(bindings, key, true, input.context(game))
+            {
+                dispatch_action(game, input, bindings, action);
+            }
+        }
+        RawEvent::KeyUp { key } => {
+            let _ = input.key_edge(bindings, key, false, input.context(game));
+        }
+        RawEvent::TouchDown { id, x, y } => touch::down(game, input, id, vec2(x, y)),
+        RawEvent::TouchMove { id, x, y } => touch::moved(game, input, id, vec2(x, y)),
+        RawEvent::Text { .. } => {
+            // Typed characters exist for menu text fields (the
+            // save-name flow); gameplay deliberately has no text
+            // consumer — letters reach the world as semantic keys.
+        }
+        RawEvent::TouchUp { id, x, y } => touch::up(game, input, bindings, id, vec2(x, y)),
+    }
+    if input.construction_open()
+        && !matches!(
+            input.context(game),
+            crate::action::Context::Construction | crate::action::Context::BuildCategory(_)
+        )
+    {
+        input.close_construction();
     }
 }
 
