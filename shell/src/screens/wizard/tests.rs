@@ -1,5 +1,6 @@
 use super::*;
 use macroquad::prelude::vec2;
+use oxide_protocol::MouseButton;
 
 #[test]
 fn the_setup_hint_speaks_touch_on_touch_only_builds() {

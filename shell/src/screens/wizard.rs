@@ -19,7 +19,7 @@ use macroquad::prelude::{
     Color, DrawTextureParams, Rect, Vec2, draw_circle, draw_circle_lines, draw_rectangle,
     draw_rectangle_lines, draw_text, draw_texture_ex, measure_text, vec2,
 };
-use oxide_protocol::{Key, MouseButton, RawEvent};
+use oxide_protocol::{Key, RawEvent};
 use oxide_sim::Scenario;
 use oxide_sim::scenario::{BotDifficulty, BotStance};
 use std::path::PathBuf;
@@ -893,6 +893,19 @@ impl Wizard {
         };
         let mut activate: Option<(usize, usize)> = None;
         for event in events {
+            if let Fed::Activated((row, cell)) = self.setup_press.feed(event, zone_at) {
+                if let Some(p) = crate::press::position(event) {
+                    *mouse = p;
+                }
+                if row <= start_index {
+                    self.setup_sel = row;
+                    if cell_live(row, cell) {
+                        self.setup_cell = cell;
+                    }
+                }
+                activate = Some((row, cell));
+                break;
+            }
             match *event {
                 RawEvent::KeyDown { key: Key::Escape } => {
                     self.goto(Step::Map, draft);
@@ -933,51 +946,10 @@ impl Wizard {
                     }
                 }
                 RawEvent::MouseMove { x, y } => *mouse = vec2(x, y),
-                RawEvent::MouseDown {
-                    button: MouseButton::Left,
-                    x,
-                    y,
-                } => {
-                    self.setup_press.mouse_down(zone_at(vec2(x, y), false));
-                }
-                RawEvent::MouseUp {
-                    button: MouseButton::Left,
-                    x,
-                    y,
-                } => {
-                    let released = zone_at(vec2(x, y), false);
-                    if let Some(a) = self.setup_press.mouse_up(released) {
-                        if a.0 <= start_index {
-                            self.setup_sel = a.0;
-                            if cell_live(a.0, a.1) {
-                                self.setup_cell = a.1;
-                            }
-                        }
-                        activate = Some(a);
-                        break;
-                    }
-                }
-                RawEvent::TouchDown { id, x, y } if self.setup_press.touch_free() => {
+                RawEvent::TouchDown { id, x, y } | RawEvent::TouchMove { id, x, y }
+                    if self.setup_press.owns(id) =>
+                {
                     *mouse = vec2(x, y);
-                    self.setup_press.touch_down(id, zone_at(*mouse, true));
-                }
-                RawEvent::TouchMove { id, x, y } if self.setup_press.owns(id) => {
-                    *mouse = vec2(x, y);
-                }
-                RawEvent::TouchUp { id, x, y } if self.setup_press.owns(id) => {
-                    *mouse = vec2(x, y);
-                    let released = zone_at(*mouse, true);
-                    if let Some(armed) = self.setup_press.touch_up(released) {
-                        let (row, cell) = armed;
-                        if row <= start_index {
-                            self.setup_sel = row;
-                            if cell_live(row, cell) {
-                                self.setup_cell = cell;
-                            }
-                        }
-                        activate = Some(armed);
-                        break;
-                    }
                 }
                 _ => {}
             }

@@ -13,7 +13,7 @@ use oxide_sim::Scenario;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::press::Press;
+use crate::press::{ScrollPress, Swipe};
 use crate::theme::{
     SURFACE_MENU, TEXT_BODY, TEXT_DISABLED, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TITLE,
 };
@@ -24,9 +24,6 @@ const ITEM_WIDTH: f32 = 420.0;
 const ROW_GAP: f32 = 6.0;
 /// The tightest a desktop list packs its rows before it scrolls.
 const MIN_ROW: f32 = 30.0;
-/// Travel, in logical px at 1x, past which a finger scrolls the list
-/// instead of tapping a row.
-const DRAG_SLOP: f32 = 8.0;
 
 thread_local! {
     static MENU_BINDINGS: std::cell::RefCell<crate::action::BindingMap> = std::cell::RefCell::new(crate::action::BindingMap::classic());
@@ -123,12 +120,13 @@ pub struct Menu {
     /// Fractional wheel accumulation: trackpads deliver hundredths per
     /// frame, so only whole accumulated rows scroll.
     wheel_accum: f32,
-    /// Row armed by a mouse press or the owning finger.
-    press: Press<usize>,
-    /// The first finger down, which scrolls the list once it drags. A
-    /// touch-only player has no wheel or paging keys, so this is the
-    /// only way to reach rows below the window.
-    drag: Option<TouchDrag>,
+    /// Row armed by a mouse press or the owning finger. The first finger
+    /// down scrolls the list once it drags: a touch-only player has no
+    /// wheel or paging keys, so this is the only way to reach rows below
+    /// the window.
+    press: ScrollPress<usize>,
+    /// Drag travel not yet spent on a whole row of scrolling.
+    carry: f32,
     /// Section-label rows: drawn dimmer, skipped by the cursor, never
     /// activated.
     headers: Vec<usize>,
@@ -136,18 +134,6 @@ pub struct Menu {
     /// width, zero for a centered list: the codex shifts its list left
     /// to make room for the page beside it.
     pub shift: f32,
-}
-
-/// A finger dragging a menu list.
-#[derive(Debug, Clone, Copy)]
-struct TouchDrag {
-    id: u64,
-    last_y: f32,
-    /// Total distance moved, for the tap-versus-drag slop.
-    travel: f32,
-    /// Movement not yet spent on a whole row of scrolling.
-    carry: f32,
-    scrolling: bool,
 }
 
 fn view_w() -> f32 {
@@ -174,8 +160,8 @@ impl Menu {
             scroll: 0,
             hover: None,
             wheel_accum: 0.0,
-            press: Press::default(),
-            drag: None,
+            press: ScrollPress::default(),
+            carry: 0.0,
             headers,
             shift: 0.0,
         };
@@ -226,36 +212,23 @@ impl Menu {
         self.selected = self.settle(clamped, clamped < self.selected);
     }
 
-    /// Follows the dragging finger to `y`. Past the slop the drag owns
-    /// the gesture: the armed row is dropped, and each row-height of
-    /// travel scrolls one row, with the content following the finger.
-    /// Returns whether the drag is scrolling.
-    fn drag_to(&mut self, y: f32) -> bool {
-        let Some(mut drag) = self.drag else {
-            return false;
-        };
-        let dy = y - drag.last_y;
-        drag.last_y = y;
-        drag.travel += dy.abs();
-        if !drag.scrolling && drag.travel > DRAG_SLOP * ui() {
-            drag.scrolling = true;
-            self.press.cancel();
+    /// Scrolls whole rows as a dragging finger moves the list `dy` px.
+    /// The content follows the finger.
+    fn drag_by(&mut self, dy: f32, began: bool) {
+        if began {
+            self.carry = 0.0;
             self.hover = None;
         }
-        if drag.scrolling {
-            drag.carry += dy;
-            let (_, row, _, _) = self.layout();
-            while drag.carry >= row {
-                self.scroll_by(-1);
-                drag.carry -= row;
-            }
-            while drag.carry <= -row {
-                self.scroll_by(1);
-                drag.carry += row;
-            }
+        self.carry += dy;
+        let (_, row, _, _) = self.layout();
+        while self.carry >= row {
+            self.scroll_by(-1);
+            self.carry -= row;
         }
-        self.drag = Some(drag);
-        drag.scrolling
+        while self.carry <= -row {
+            self.scroll_by(1);
+            self.carry += row;
+        }
     }
 
     fn row_at(&self, point: Vec2) -> Option<usize> {
@@ -323,36 +296,43 @@ impl Menu {
             return None;
         }
         for event in events {
-            match *event {
-                RawEvent::TouchDown { id, y, .. } if self.drag.is_none() => {
-                    self.drag = Some(TouchDrag {
-                        id,
-                        last_y: y,
-                        travel: 0.0,
-                        carry: 0.0,
-                        scrolling: false,
-                    });
-                }
-                RawEvent::TouchMove { id, y, .. }
-                    if self.drag.is_some_and(|drag| drag.id == id) && self.drag_to(y) =>
-                {
+            let mut press = self.press;
+            let swipe = press.feed(event, ui(), |p, _| {
+                self.row_at(p).filter(|row| !self.is_header(*row))
+            });
+            self.press = press;
+            match swipe {
+                Swipe::Scrolled { dy, began } => {
+                    self.drag_by(dy, began);
                     continue;
                 }
-                RawEvent::TouchUp { id, .. }
-                    if self
-                        .drag
-                        .is_some_and(|drag| drag.id == id && drag.scrolling) =>
-                {
-                    self.drag = None;
-                    continue;
+                Swipe::Activated(row) => {
+                    if let Some(p) = crate::press::position(event) {
+                        *mouse = p;
+                    }
+                    self.selected = row;
+                    return Some(row);
                 }
-                RawEvent::TouchUp { id, .. } if self.drag.is_some_and(|drag| drag.id == id) => {
-                    self.drag = None;
-                }
-                _ => {}
+                Swipe::Held | Swipe::Ignored => {}
             }
             match *event {
                 RawEvent::MouseMove { x, y } => {
+                    *mouse = vec2(x, y);
+                    self.hover = self.row_at(*mouse).filter(|r| !self.is_header(*r));
+                }
+                RawEvent::MouseDown {
+                    button: MouseButton::Left,
+                    x,
+                    y,
+                }
+                | RawEvent::MouseUp {
+                    button: MouseButton::Left,
+                    x,
+                    y,
+                } => *mouse = vec2(x, y),
+                RawEvent::TouchDown { id, x, y } | RawEvent::TouchMove { id, x, y }
+                    if self.press.owns(id) =>
+                {
                     *mouse = vec2(x, y);
                     self.hover = self.row_at(*mouse).filter(|r| !self.is_header(*r));
                 }
@@ -368,44 +348,6 @@ impl Menu {
                     self.wheel_accum -= steps;
                     self.scroll_by(if steps > 0.0 { -1 } else { 1 });
                     self.hover = self.row_at(*mouse).filter(|r| !self.is_header(*r));
-                }
-                RawEvent::MouseDown {
-                    button: MouseButton::Left,
-                    x,
-                    y,
-                } => {
-                    *mouse = vec2(x, y);
-                    let row = self.row_at(vec2(x, y)).filter(|r| !self.is_header(*r));
-                    self.press.mouse_down(row);
-                }
-                RawEvent::MouseUp {
-                    button: MouseButton::Left,
-                    x,
-                    y,
-                } => {
-                    *mouse = vec2(x, y);
-                    let released_on = self.row_at(vec2(x, y));
-                    if let Some(row) = self.press.mouse_up(released_on) {
-                        self.selected = row;
-                        return Some(row);
-                    }
-                }
-                RawEvent::TouchDown { id, x, y } if self.press.touch_free() => {
-                    *mouse = vec2(x, y);
-                    self.hover = self.row_at(*mouse).filter(|r| !self.is_header(*r));
-                    self.press.touch_down(id, self.hover);
-                }
-                RawEvent::TouchMove { id, x, y } if self.press.owns(id) => {
-                    *mouse = vec2(x, y);
-                    self.hover = self.row_at(*mouse).filter(|r| !self.is_header(*r));
-                }
-                RawEvent::TouchUp { id, x, y } if self.press.owns(id) => {
-                    *mouse = vec2(x, y);
-                    let released_on = self.row_at(*mouse);
-                    if let Some(row) = self.press.touch_up(released_on) {
-                        self.selected = row;
-                        return Some(row);
-                    }
                 }
                 RawEvent::KeyDown { .. } => match crate::nav::Nav::decode(event) {
                     Some(crate::nav::Nav::Confirm) if !self.is_header(self.selected) => {

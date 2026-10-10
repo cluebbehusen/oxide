@@ -7,10 +7,10 @@ use crate::game::{Game, SoundKind};
 use crate::nav::{Axis, Nav, step_line};
 use crate::numeric;
 use crate::numeric::Fit;
-use crate::press::Press;
+use crate::press::{Fed, Press};
 use crate::{render, theme};
 use macroquad::prelude::*;
-use oxide_protocol::{Key, MouseButton, RawEvent};
+use oxide_protocol::{Key, RawEvent};
 use oxide_sim::{GameResult, PlayerId, TICKS_PER_SECOND};
 
 const ACTIONS: [&str; 4] = ["REMATCH", "WATCH REPLAY", "VIEW FINAL MAP", "HOME"];
@@ -323,48 +323,26 @@ impl ResultsScreen {
         sounds: &mut Vec<(SoundKind, Option<Vec2>)>,
     ) -> Out {
         for event in events {
+            if let Fed::Activated(index) =
+                self.press.feed(event, |p, _| action_at(p, viewport, scale))
+            {
+                if let Some(p) = crate::press::position(event) {
+                    *mouse = p;
+                }
+                self.selected = index;
+                sounds.push((SoundKind::Click, None));
+                return out_for(index);
+            }
             match *event {
                 RawEvent::MouseMove { x, y } => {
                     *mouse = vec2(x, y);
                     self.hover = action_at(*mouse, viewport, scale);
                 }
-                RawEvent::MouseDown {
-                    button: MouseButton::Left,
-                    x,
-                    y,
-                } => {
-                    self.press
-                        .mouse_down(action_at(vec2(x, y), viewport, scale));
-                }
-                RawEvent::MouseUp {
-                    button: MouseButton::Left,
-                    x,
-                    y,
-                } => {
-                    let released = action_at(vec2(x, y), viewport, scale);
-                    if let Some(index) = self.press.mouse_up(released) {
-                        self.selected = index;
-                        sounds.push((SoundKind::Click, None));
-                        return out_for(index);
-                    }
-                }
-                RawEvent::TouchDown { id, x, y } if self.press.touch_free() => {
+                RawEvent::TouchDown { id, x, y } | RawEvent::TouchMove { id, x, y }
+                    if self.press.owns(id) =>
+                {
                     *mouse = vec2(x, y);
                     self.hover = action_at(*mouse, viewport, scale);
-                    self.press.touch_down(id, self.hover);
-                }
-                RawEvent::TouchMove { id, x, y } if self.press.owns(id) => {
-                    *mouse = vec2(x, y);
-                    self.hover = action_at(*mouse, viewport, scale);
-                }
-                RawEvent::TouchUp { id, x, y } if self.press.owns(id) => {
-                    *mouse = vec2(x, y);
-                    let released = action_at(*mouse, viewport, scale);
-                    if let Some(armed) = self.press.touch_up(released) {
-                        self.selected = armed;
-                        sounds.push((SoundKind::Click, None));
-                        return out_for(armed);
-                    }
                 }
                 RawEvent::KeyDown { key: Key::Enter } => {
                     sounds.push((SoundKind::Click, None));

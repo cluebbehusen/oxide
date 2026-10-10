@@ -1,4 +1,5 @@
 use super::*;
+use oxide_protocol::MouseButton;
 
 fn key(key: Key) -> RawEvent {
     RawEvent::KeyDown { key }

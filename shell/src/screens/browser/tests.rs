@@ -1,4 +1,5 @@
 use super::*;
+use oxide_protocol::MouseButton;
 
 #[test]
 fn the_map_hint_speaks_touch_on_touch_only_builds() {

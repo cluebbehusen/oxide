@@ -10,12 +10,13 @@
 use crate::menu::{PreviewCache, ScenarioEntry};
 use crate::nav::{Nav, step_grid};
 use crate::numeric;
+use crate::press::{ScrollPress, Swipe};
 use crate::render::prim::{fill_rect, stroke_rect};
 use macroquad::prelude::{
     Color, DrawTextureParams, Rect, Vec2, draw_rectangle, draw_text, draw_texture_ex, measure_text,
     vec2,
 };
-use oxide_protocol::{Key, MouseButton, RawEvent};
+use oxide_protocol::{Key, RawEvent};
 
 use crate::theme::{SURFACE_MENU, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TITLE};
 
@@ -66,11 +67,9 @@ pub struct Browser {
     /// wizard's protocol surface so hover-driven row discovery in the
     /// UX battery works on the grid like it does on row menus.
     pub(crate) hover: Option<usize>,
-    pressed: Option<usize>,
-    touch_id: Option<u64>,
-    touch_last_y: f32,
-    touch_travel: f32,
-    touch_pressed: Option<usize>,
+    /// The card a click or tap armed; a finger that drags scrolls the
+    /// grid instead.
+    press: ScrollPress<usize>,
     /// The viewport the last frame handled, so the snap-back guard fires
     /// only on resize.
     last_view: Vec2,
@@ -189,11 +188,7 @@ impl Browser {
             selected: 0,
             scroll_y: 0.0,
             hover: None,
-            pressed: None,
-            touch_id: None,
-            touch_last_y: 0.0,
-            touch_travel: 0.0,
-            touch_pressed: None,
+            press: ScrollPress::default(),
             last_view: vec2(0.0, 0.0),
         }
     }
@@ -338,6 +333,37 @@ impl Browser {
                 .map(|(e, _)| *e)
         };
         for event in events {
+            // A finger landing outside the grid neither taps nor drags it.
+            if matches!(*event, RawEvent::TouchDown { y, .. } if y < shelf_top || y >= shelf_bottom)
+            {
+                continue;
+            }
+            let mut press = self.press;
+            let swipe = press.feed(event, ui, |p, _| card_at(self, p));
+            self.press = press;
+            match swipe {
+                Swipe::Scrolled { dy, .. } => {
+                    let max = max_scroll(&lines(entries, cols), view, ui);
+                    self.scroll_y = (self.scroll_y - dy).clamp(0.0, max);
+                    self.hover = None;
+                    continue;
+                }
+                Swipe::Activated(card) => {
+                    if let Some(p) = crate::press::position(event) {
+                        *mouse = p;
+                    }
+                    // First click selects; a click on the already-selected
+                    // card commits. Browsing by pointer can't misfire a
+                    // launch, and the double-click reflex reads as
+                    // select-then-play.
+                    if card == self.selected {
+                        return Out::Pick(card);
+                    }
+                    self.selected = card;
+                    continue;
+                }
+                Swipe::Held | Swipe::Ignored => {}
+            }
             match *event {
                 RawEvent::KeyDown { key: Key::Escape } => return Out::Back,
                 RawEvent::KeyDown { key: Key::Enter } => {
@@ -391,70 +417,11 @@ impl Browser {
                     *mouse = vec2(x, y);
                     self.hover = card_at(self, *mouse);
                 }
-                RawEvent::MouseDown {
-                    button: MouseButton::Left,
-                    x,
-                    y,
-                } => {
-                    self.pressed = card_at(self, vec2(x, y));
-                }
-                RawEvent::MouseUp {
-                    button: MouseButton::Left,
-                    x,
-                    y,
-                } => {
-                    let released = card_at(self, vec2(x, y));
-                    let armed = self.pressed.take();
-                    if let (Some(a), Some(r)) = (armed, released)
-                        && a == r
-                    {
-                        // First click selects; a click on the already-
-                        // selected card commits. Browsing by pointer
-                        // can't misfire a launch, and the double-click
-                        // reflex reads as select-then-play.
-                        if a == self.selected {
-                            return Out::Pick(a);
-                        }
-                        self.selected = a;
-                    }
-                }
-                RawEvent::TouchDown { id, x, y } => {
-                    if self.touch_id.is_none() && y >= shelf_top && y < shelf_bottom {
-                        let point = vec2(x, y);
-                        self.touch_id = Some(id);
-                        self.touch_last_y = y;
-                        self.touch_travel = 0.0;
-                        self.touch_pressed = card_at(self, point);
-                        *mouse = point;
-                        self.hover = self.touch_pressed;
-                    }
-                }
-                RawEvent::TouchMove { id, x, y } if self.touch_id == Some(id) => {
-                    let dy = y - self.touch_last_y;
-                    self.touch_last_y = y;
-                    self.touch_travel += dy.abs();
-                    let max = max_scroll(&lines(entries, cols), view, ui);
-                    self.scroll_y = (self.scroll_y - dy).clamp(0.0, max);
+                RawEvent::TouchDown { id, x, y } if self.press.owns(id) => {
                     *mouse = vec2(x, y);
-                    self.hover = None;
+                    self.hover = card_at(self, *mouse);
                 }
-                RawEvent::TouchUp { id, x, y } if self.touch_id == Some(id) => {
-                    let released = card_at(self, vec2(x, y));
-                    let armed = self.touch_pressed.take();
-                    self.touch_id = None;
-                    let was_tap = self.touch_travel <= 8.0 * ui;
-                    self.touch_travel = 0.0;
-                    self.hover = None;
-                    if was_tap
-                        && let (Some(a), Some(r)) = (armed, released)
-                        && a == r
-                    {
-                        if a == self.selected {
-                            return Out::Pick(a);
-                        }
-                        self.selected = a;
-                    }
-                }
+                RawEvent::TouchUp { .. } => self.hover = None,
                 _ => {}
             }
         }
