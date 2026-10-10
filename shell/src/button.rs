@@ -71,6 +71,11 @@ pub(crate) struct BackButton {
 }
 
 impl BackButton {
+    /// Drops a half-made press, as when the screen beneath changes.
+    pub(crate) fn cancel(&mut self) {
+        self.press.cancel();
+    }
+
     /// Whether this frame pressed the button, and the events it left
     /// for the screen.
     pub(crate) fn route(&mut self, events: &[RawEvent]) -> (bool, Vec<RawEvent>) {

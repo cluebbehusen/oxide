@@ -279,9 +279,8 @@ pub struct Wizard {
     /// release inside the same zone. Rows after Start are compact-page
     /// navigation controls.
     setup_press: Press<(usize, usize)>,
-    /// The map grid's corner Back button. Setup routes its own Back
-    /// through `setup_press` as one more zone.
-    back_press: Press<()>,
+    /// The corner Back button: Home from the grid, the grid from setup.
+    back: crate::button::BackButton,
     /// Compact setup page. Full-height layouts always clamp this to zero.
     setup_page: usize,
 }
@@ -742,7 +741,7 @@ impl Wizard {
             setup_sel: 0,
             setup_cell: 0,
             setup_press: Press::default(),
-            back_press: Press::default(),
+            back: crate::button::BackButton::default(),
             setup_page: 0,
         }
     }
@@ -758,7 +757,7 @@ impl Wizard {
 
     fn goto(&mut self, step: Step, draft: &NewMatchDraft) {
         self.step = step;
-        self.back_press.cancel();
+        self.back.cancel();
         match step {
             Step::Map => {
                 self.entries = discover_scenarios();
@@ -786,42 +785,36 @@ impl Wizard {
         draft: &mut NewMatchDraft,
         sounds: &mut Vec<(SoundKind, Option<Vec2>)>,
     ) -> Result<Out> {
-        match self.step {
-            Step::Map => {
-                // The corner Back button sees the pointer first; the grid
-                // only gets the events it leaves alone.
-                let back = crate::button::corner_slot(0, crate::render::ui_scale());
-                let mut grid_events = Vec::with_capacity(events.len());
-                for event in events {
-                    match self
-                        .back_press
-                        .feed(event, |p, _| back.contains(p).then_some(()))
-                    {
-                        Fed::Activated(()) => {
-                            sounds.push((SoundKind::Click, None));
-                            return Ok(Out::Home);
-                        }
-                        Fed::Held => {}
-                        Fed::Ignored => grid_events.push(*event),
-                    }
-                }
-                match self.browser.handle(&self.entries, &grid_events, mouse) {
-                    BrowserOut::Back => return Ok(Out::Home),
-                    BrowserOut::Pick(entry) => {
-                        sounds.push((SoundKind::Click, None));
-                        let scenario = match &self.entries[entry].path {
-                            Some(path) => Scenario::load(path)
-                                .with_context(|| format!("loading {}", path.display()))?,
-                            None => Scenario::skirmish(),
-                        };
-                        draft.set_scenario(scenario, self.entries[entry].path.clone());
-                        self.goto(Step::Setup, draft);
-                    }
-                    BrowserOut::Stay => {}
+        // The corner Back button sees the pointer first; the step only
+        // gets the events it leaves alone.
+        let (back, events) = self.back.route(events);
+        if back {
+            sounds.push((SoundKind::Click, None));
+            match self.step {
+                Step::Map => return Ok(Out::Home),
+                Step::Setup => {
+                    self.goto(Step::Map, draft);
+                    return Ok(Out::Stay);
                 }
             }
+        }
+        match self.step {
+            Step::Map => match self.browser.handle(&self.entries, &events, mouse) {
+                BrowserOut::Back => return Ok(Out::Home),
+                BrowserOut::Pick(entry) => {
+                    sounds.push((SoundKind::Click, None));
+                    let scenario = match &self.entries[entry].path {
+                        Some(path) => Scenario::load(path)
+                            .with_context(|| format!("loading {}", path.display()))?,
+                        None => Scenario::skirmish(),
+                    };
+                    draft.set_scenario(scenario, self.entries[entry].path.clone());
+                    self.goto(Step::Setup, draft);
+                }
+                BrowserOut::Stay => {}
+            },
             Step::Setup => {
-                if let Some(out) = self.update_setup(events, mouse, draft, sounds) {
+                if let Some(out) = self.update_setup(&events, mouse, draft, sounds) {
                     return Ok(out);
                 }
             }
@@ -848,8 +841,6 @@ impl Wizard {
         let start_index = order.len();
         let previous_page_index = start_index + 1;
         let next_page_index = start_index + 2;
-        let back_index = start_index + 3;
-        let back = crate::button::corner_slot(0, crate::render::ui_scale());
         let view = crate::render::viewport();
         let ui = crate::render::ui_scale();
         self.setup_page = self.setup_sel.min(start_index) / COMPACT_PAGE_ITEMS;
@@ -865,9 +856,6 @@ impl Wizard {
                 }
         };
         let zone_at = |p: Vec2, touch: bool| -> Option<(usize, usize)> {
-            if back.contains(p) {
-                return Some((back_index, 0));
-            }
             for row in 0..layout.cells.len() {
                 for cell in (0..5).filter(|cell| cell_live(row, *cell)) {
                     let rect = if touch {
@@ -956,11 +944,6 @@ impl Wizard {
         }
         if let Some((row, cell)) = activate {
             self.setup_press.cancel();
-            if row == back_index {
-                sounds.push((SoundKind::Click, None));
-                self.goto(Step::Map, draft);
-                return None;
-            }
             if row == previous_page_index {
                 self.setup_page = self.setup_page.saturating_sub(1);
                 self.setup_sel = self.setup_page * COMPACT_PAGE_ITEMS;

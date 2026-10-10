@@ -4,7 +4,6 @@ use crate::action::{Action, ActionEvent, ActionResolver, BindingMap, Context};
 use crate::camera::controls::{MinimapPoint, ViewerHands, event_point, held_pan, pan_toward};
 use crate::game::Game;
 use crate::numeric;
-use crate::press::{Fed, Press};
 use crate::{render, theme};
 use macroquad::prelude::*;
 #[cfg(test)]
@@ -15,8 +14,8 @@ use oxide_protocol::RawEvent;
 #[derive(Default)]
 pub struct FinalMapScreen {
     resolver: ActionResolver,
-    /// The corner Back button's press.
-    back_press: Press<()>,
+    /// The corner Back button.
+    back: crate::button::BackButton,
     /// Middle-drag, wheel, minimap and finger camera control.
     hands: ViewerHands,
 }
@@ -38,8 +37,11 @@ impl FinalMapScreen {
         game: &mut Game,
     ) -> bool {
         let ui = render::ui_scale();
-        let back = crate::button::corner_slot(0, ui);
-        for event in events {
+        let (back, events) = self.back.route(events);
+        if back {
+            return true;
+        }
+        for event in &events {
             match event {
                 RawEvent::KeyDown { key } => {
                     if self
@@ -55,14 +57,6 @@ impl FinalMapScreen {
                         .key_edge_in(bindings, *key, false, Context::FinalMap);
                 }
                 _ => {
-                    match self
-                        .back_press
-                        .feed(event, |p, _| back.contains(p).then_some(()))
-                    {
-                        Fed::Activated(()) => return true,
-                        Fed::Held => continue,
-                        Fed::Ignored => {}
-                    }
                     let minimap =
                         event_point(event).map_or_else(MinimapPoint::default, |p| MinimapPoint {
                             under: render::minimap_world_at(&game.view(), p),
@@ -92,8 +86,7 @@ impl FinalMapScreen {
     /// battlefield.
     pub fn draw_hud(bindings: &BindingMap, mouse: Vec2) {
         let scale = render::ui_scale();
-        let back = crate::button::corner_slot(0, scale);
-        crate::button::draw(back, "BACK", back.contains(mouse), scale);
+        crate::button::draw_back(mouse);
         let size = 17.0 * scale;
         let line = if !crate::hints::showing() {
             "FINAL BATTLEFIELD".to_string()

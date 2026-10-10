@@ -363,6 +363,38 @@ fn a_back_press_that_slides_off_does_nothing() {
 }
 
 #[test]
+fn a_step_change_drops_a_half_made_back_press() {
+    crate::render::set_viewport(1280.0, 800.0);
+    let back = crate::button::corner_slot(0, crate::render::ui_scale()).center();
+    let button = MouseButton::Left;
+    let mut draft = NewMatchDraft::default();
+    let mut w = Wizard::open(&draft);
+    let mut mouse = vec2(0.0, 0.0);
+    let mut sounds = Vec::new();
+    let down = [RawEvent::MouseDown {
+        button,
+        x: back.x,
+        y: back.y,
+    }];
+    w.update(&down, &mut mouse, &mut draft, &mut sounds)
+        .expect("update");
+    pick_first_map(&mut w, &mut draft);
+    assert_eq!(w.step, Step::Setup);
+    let up = [RawEvent::MouseUp {
+        button,
+        x: back.x,
+        y: back.y,
+    }];
+    w.update(&up, &mut mouse, &mut draft, &mut sounds)
+        .expect("update");
+    assert_eq!(
+        w.step,
+        Step::Setup,
+        "a press from the grid never backs out of setup"
+    );
+}
+
+#[test]
 fn the_back_button_clears_grid_and_setup_content() {
     let draft = NewMatchDraft::default();
     let w = Wizard::open(&draft);
