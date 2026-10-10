@@ -11,12 +11,12 @@ fn live_body_frames_have_cached_production_contact_sources() {
     let page_height = u32::from(first.height);
     let mut pages = vec![first];
     for name in [
-        "rig_harvester_body_ferrous_cargo5",
-        "rig_excavator_body_cupric_move2",
-        "rig_tender_body_ferrous_move1",
-        "rig_scuttler_body_cupric_move2",
-        "rig_buzzard_hull_cupric_move2",
-        "bombard_ferrous_action2",
+        "rig_harvester_body_cargo5",
+        "rig_excavator_body_move2",
+        "rig_tender_body_move1",
+        "rig_scuttler_body_move2",
+        "rig_buzzard_hull_move2",
+        "bombard_action2",
     ] {
         let key = manifest[name].map(numeric::to_u32);
         assert!(sources.contains(&key), "uncached live body frame: {name}");
@@ -44,20 +44,18 @@ fn live_body_frames_have_cached_production_contact_sources() {
 #[test]
 fn layered_units_omit_unused_full_poses_but_keep_portraits_and_fallbacks() {
     let mut manifest = HashMap::from([
-        ("wisp_ferrous".to_owned(), [0.0, 0.0, 128.0, 128.0]),
-        ("wisp_ferrous_move1".to_owned(), [128.0, 0.0, 128.0, 128.0]),
+        ("buzzard".to_owned(), [0.0, 0.0, 128.0, 128.0]),
+        ("buzzard_move1".to_owned(), [128.0, 0.0, 128.0, 128.0]),
+        ("buzzard_action2".to_owned(), [256.0, 0.0, 128.0, 128.0]),
         (
-            "wisp_ferrous_action2".to_owned(),
-            [256.0, 0.0, 128.0, 128.0],
+            "buzzard_accent_move1".to_owned(),
+            [640.0, 0.0, 128.0, 128.0],
         ),
     ]);
-    assert_eq!(entity_sources(&manifest).len(), 3);
+    assert_eq!(entity_sources(&manifest).len(), 4);
+    manifest.insert("rig_buzzard_hull".to_owned(), [384.0, 0.0, 128.0, 128.0]);
     manifest.insert(
-        "rig_wisp_hull_ferrous".to_owned(),
-        [384.0, 0.0, 128.0, 128.0],
-    );
-    manifest.insert(
-        "rig_wisp_mount_ferrous_action2".to_owned(),
+        "rig_buzzard_mount_action2".to_owned(),
         [512.0, 0.0, 128.0, 128.0],
     );
     assert_eq!(
@@ -183,15 +181,15 @@ fn levels_change_continuously_at_every_boundary() {
 #[test]
 fn building_layers_and_resources_enter_the_bank_but_terrain_does_not() {
     for key in [
-        "foundry_ferrous",
-        "flak_turret_ferrous",
+        "foundry",
+        "flak_turret",
         "flak_mount_accent",
-        "rig_array_t1_rotor_cupric",
-        "repair_bay_ferrous",
+        "rig_array_t1_rotor",
+        "repair_bay",
         "scuttle_charge_accent",
         "scrap_full",
         "wreck_pile",
-        "harvester_ferrous_cargo0",
+        "harvester_cargo0",
     ] {
         assert!(is_entity_source(key), "{key}");
     }

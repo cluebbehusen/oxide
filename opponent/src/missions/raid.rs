@@ -55,25 +55,24 @@ enum Raider {
 }
 
 fn raider(kind: UnitKind) -> Option<Raider> {
-    use oxide_sim::stats::Role as Kind;
-    match kind.role() {
-        Kind::Sapper => Some(Raider::Sapper),
-        Kind::Scuttler => Some(Raider::Scuttler),
-        Kind::AirGround | Kind::Bomber => Some(Raider::Bomber),
-        Kind::Harvester
-        | Kind::Excavator
-        | Kind::Sentinel
-        | Kind::Warden
-        | Kind::Breaker
-        | Kind::Lancer
-        | Kind::Bombard
-        | Kind::Avalanche
-        | Kind::AntiAir
-        | Kind::AirAir
-        | Kind::Interceptor
-        | Kind::Tender
-        | Kind::Scout
-        | Kind::Skyhook => None,
+    match kind {
+        UnitKind::Sapper => Some(Raider::Sapper),
+        UnitKind::Scuttler => Some(Raider::Scuttler),
+        UnitKind::Buzzard | UnitKind::Condor => Some(Raider::Bomber),
+        UnitKind::Harvester
+        | UnitKind::Excavator
+        | UnitKind::Sentinel
+        | UnitKind::Warden
+        | UnitKind::Breaker
+        | UnitKind::Lancer
+        | UnitKind::Bombard
+        | UnitKind::Avalanche
+        | UnitKind::Flakhound
+        | UnitKind::Talon
+        | UnitKind::Shrike
+        | UnitKind::Tender
+        | UnitKind::Kestrel
+        | UnitKind::Skyhook => None,
     }
 }
 

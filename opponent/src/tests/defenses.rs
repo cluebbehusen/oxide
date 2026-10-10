@@ -213,11 +213,11 @@ fn turrets_and_bastions_share_a_watched_approach_by_what_they_hold_per_scrap() {
 #[test]
 fn a_clump_in_the_air_does_not_count_against_spread_ground_attackers() {
     let spread = [(12, 1), (15, 1), (18, 1), (12, 9), (15, 9), (18, 9)];
-    let darters = [
-        (UnitKind::Darter, 14, 6),
-        (UnitKind::Darter, 15, 6),
-        (UnitKind::Darter, 14, 7),
-        (UnitKind::Darter, 15, 7),
+    let buzzards = [
+        (UnitKind::Buzzard, 14, 6),
+        (UnitKind::Buzzard, 15, 6),
+        (UnitKind::Buzzard, 14, 7),
+        (UnitKind::Buzzard, 15, 7),
     ];
     let bastion = |others: &[(UnitKind, i32, i32)]| {
         offer(
@@ -226,7 +226,7 @@ fn a_clump_in_the_air_does_not_count_against_spread_ground_attackers() {
         )
     };
     assert!(bastion(&[]).is_some(), "premise: a Bastion is offered");
-    assert_eq!(bastion(&darters), bastion(&[]));
+    assert_eq!(bastion(&buzzards), bastion(&[]));
 }
 
 #[test]
@@ -326,7 +326,7 @@ fn flak_waits_for_air_evidence() {
     let state = scenario.build().unwrap();
     assert!(!flak(&wanted(&scenario, &state, &Memory::default(), 85)));
 
-    scenario.units.push(unit(1, UnitKind::Darter, 10, 5));
+    scenario.units.push(unit(1, UnitKind::Buzzard, 10, 5));
     let state = scenario.build().unwrap();
     assert!(flak(&wanted(&scenario, &state, &Memory::default(), 85)));
 }
@@ -679,7 +679,7 @@ fn an_array_watches_for_aircraft_where_no_ground_threat_is_known() {
         row.replace_range(11..13, "##");
     }
     scenario.units.extend([
-        unit(1, UnitKind::Darter, 21, 3),
+        unit(1, UnitKind::Buzzard, 21, 3),
         unit(0, UnitKind::Kestrel, 20, 3),
     ]);
     let state = scenario.build().unwrap();

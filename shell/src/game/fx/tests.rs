@@ -11,8 +11,8 @@ fn lethal_scuttler_bite_retains_the_visible_unit_surface() {
     let scenario = serde_json::from_value(serde_json::json!({
         "name": "Lethal bite", "mode": "sandbox", "map": vec![".............................."; 22],
         "players": [
-            {"name": "Local", "faction": "ferrous", "scrap": 0, "bot": false},
-            {"name": "Target", "faction": "cupric", "scrap": 0, "bot": false}
+            {"name": "Local", "scrap": 0, "bot": false},
+            {"name": "Target", "scrap": 0, "bot": false}
         ],
         "units": [
             {"player": 0, "kind": "scuttler", "x": 11, "y": 7},
@@ -58,8 +58,8 @@ fn building_reports_keep_surface_facts_through_the_lethal_tick() {
         let scenario = serde_json::from_value(serde_json::json!({
             "name": "Building strike", "mode": "sandbox", "map": vec![".............................."; 22],
             "players": [
-                {"name": "Local", "faction": "ferrous", "scrap": 0, "bot": false},
-                {"name": "Target", "faction": "cupric", "scrap": 0, "bot": false}
+                {"name": "Local", "scrap": 0, "bot": false},
+                {"name": "Target", "scrap": 0, "bot": false}
             ],
             "units": [{"player": 0, "kind": "sentinel", "x": 11, "y": 7}],
             "buildings": [{"player": 1, "kind": "fabricator", "x": 13, "y": 9}]
@@ -100,7 +100,6 @@ fn building_reports_keep_surface_facts_through_the_lethal_tick() {
             .expect("ordinary and lethal hits both retain the building outline");
         assert_eq!(hit.kind, BuildingKind::Fabricator);
         assert_eq!(hit.anchor, Vec2::new(13., 9.));
-        assert_eq!(hit.faction, oxide_sim::Faction::Cupric);
         assert!(
             game.presentation
                 .building_hit(&game.state, Some(Target::Unit(UnitId(0))))
@@ -252,7 +251,7 @@ fn blind_hitscan_damage_alerts_only_its_owner_in_live_and_playback() {
 
 #[test]
 fn blind_hitscan_miss_does_not_raise_an_attack_alert() {
-    let mut game = blind_bulwark_scene(UnitKind::Gnat);
+    let mut game = blind_bulwark_scene(UnitKind::Kestrel);
     let victim = game.state.units()[0].id;
     let hp = game.state.unit(victim).unwrap().hp;
     let report = game.do_tick();
@@ -389,7 +388,6 @@ fn casualty_art_survives_unit_removal_in_live_and_playback() {
                         })
                         .expect("removed casualty retains its presentation");
                     assert_eq!(body.kind, kind);
-                    assert_eq!(body.faction, expected_body.faction);
                     assert_eq!(body.player, expected_body.player);
                     assert_eq!(body.rotation, expected_body.rotation);
                     assert_eq!(body.velocity, expected_body.velocity);
@@ -726,7 +724,6 @@ fn projectile_impacts_sound_on_visible_and_hidden_ground_for_either_owner() {
                 let mut scenario = oxide_sim::Scenario::skirmish();
                 for seat in &mut scenario.players {
                     seat.bot_config = None;
-                    seat.faction = oxide_sim::Faction::Ferrous;
                 }
                 scenario.units.push(oxide_sim::scenario::UnitSpec {
                     player: player.0,
@@ -811,9 +808,9 @@ fn charge_detonation_plays_one_blast_and_preserves_other_building_losses() {
             let scenario = serde_json::from_value(serde_json::json!({
                 "name": "Charge explosion audio", "map": map,
                 "players": [
-                    {"name": "Observer", "faction": "ferrous", "bot": false},
-                    {"name": "Mine", "faction": "cupric", "bot": true},
-                    {"name": "Trigger", "faction": "ferrous", "bot": true}
+                    {"name": "Observer", "bot": false},
+                    {"name": "Mine", "bot": true},
+                    {"name": "Trigger", "bot": true}
                 ],
                 "units": [{"player": 2, "kind": "warden", "x": 30, "y": 20}],
                 "buildings": buildings
@@ -1139,13 +1136,6 @@ fn every_weapon_family_uses_its_physical_report() {
             rounds_per_yoke: 2,
         }
     );
-    assert_eq!(
-        unit_shot_style(UnitKind::Stinger, 0).unwrap(),
-        ShotStyle::FlakBurst {
-            yoke_delay: FlakYokeDelay::None,
-            rounds_per_yoke: 1,
-        }
-    );
     // Both Sentinel slots speak through its one physical barrel;
     // the second is a weaker skyward poke, not a paired flak gun.
     assert_eq!(
@@ -1169,15 +1159,7 @@ fn every_weapon_family_uses_its_physical_report() {
         ShotStyle::Kinetic { heavy: true }
     );
     assert_eq!(
-        unit_shot_style(UnitKind::Darter, 0).unwrap(),
-        ShotStyle::ForgeSpot
-    );
-    assert_eq!(
         unit_shot_style(UnitKind::Talon, 0).unwrap(),
-        ShotStyle::ForgeSpot
-    );
-    assert_eq!(
-        unit_shot_style(UnitKind::Wisp, 0).unwrap(),
         ShotStyle::ForgeSpot
     );
     assert_eq!(
@@ -1391,11 +1373,8 @@ fn only_bombard_and_bastion_use_real_shell_entities() {
         UnitKind::Lancer,
         UnitKind::Bombard,
         UnitKind::Flakhound,
-        UnitKind::Stinger,
         UnitKind::Buzzard,
-        UnitKind::Darter,
         UnitKind::Talon,
-        UnitKind::Wisp,
     ];
     let unit_shells: Vec<_> = units
         .into_iter()
@@ -1449,24 +1428,12 @@ fn approved_combatants_use_their_own_reports() {
         SoundKind::FlakhoundFire
     );
     assert_eq!(
-        unit_fire_sound(UnitKind::Stinger).unwrap(),
-        SoundKind::StingerFire
-    );
-    assert_eq!(
         unit_fire_sound(UnitKind::Buzzard).unwrap(),
         SoundKind::BuzzardFire
     );
     assert_eq!(
-        unit_fire_sound(UnitKind::Darter).unwrap(),
-        SoundKind::DarterFire
-    );
-    assert_eq!(
         unit_fire_sound(UnitKind::Talon).unwrap(),
         SoundKind::TalonFire
-    );
-    assert_eq!(
-        unit_fire_sound(UnitKind::Wisp).unwrap(),
-        SoundKind::WispFire
     );
     assert_eq!(
         defense_report(BuildingKind::FlakTurret).sound,
@@ -1556,7 +1523,6 @@ fn every_projectile_shooter_launches_with_its_own_report() {
         (UnitKind::Bombard, SoundKind::BombardFire),
         (UnitKind::Avalanche, SoundKind::AvalancheFire),
         (UnitKind::Condor, SoundKind::BombRelease),
-        (UnitKind::Moth, SoundKind::BombRelease),
     ] {
         assert_eq!(
             shell_launch_audio(shooter, Some(kind), AllegianceCue::Mine, true, true),
@@ -1583,14 +1549,7 @@ fn shot_visuals_begin_at_the_authored_muzzle_not_chassis_center() {
     let origin = unit_shot_origin(UnitKind::Buzzard, from, to);
     assert!((origin.x - (from.x + buzzard_muzzle)).abs() < 1e-5);
     assert!((origin.y - (from.y - 0.18)).abs() < 1e-5);
-    assert_eq!(unit_muzzle_reach(UnitKind::Darter).unwrap(), 0.32);
-    for kind in [
-        UnitKind::Darter,
-        UnitKind::Talon,
-        UnitKind::Wisp,
-        UnitKind::Shrike,
-        UnitKind::Sylph,
-    ] {
+    for kind in [UnitKind::Talon, UnitKind::Shrike] {
         assert_eq!(
             unit_shot_origin(kind, from, to).y,
             from.y - crate::render::air_presentation(kind, 1.0).2
@@ -1827,8 +1786,8 @@ fn ranged_reports_retain_unit_contacts_through_lethal_hits() {
         let scenario = serde_json::from_value(serde_json::json!({
             "name":"Unit impacts", "mode":"sandbox", "map":vec![".............................."; 22],
             "players":[
-                {"name":"Local","faction":"ferrous","scrap":0,"bot":false},
-                {"name":"Target","faction":"cupric","scrap":0,"bot":false}
+                {"name":"Local","scrap":0,"bot":false},
+                {"name":"Target","scrap":0,"bot":false}
             ],
             "units":[{"player":0,"kind":kind,"x":10,"y":10},{"player":1,"kind":"excavator","x":14,"y":10}]
         })).unwrap();
@@ -1872,13 +1831,34 @@ fn bomb_contacts_preserve_ground_spread_and_use_simulation_time() {
     let scenario = serde_json::from_value(serde_json::json!({
         "name":"Bomb contacts", "mode":"sandbox", "map":vec!["...................................."; 24],
         "players":[
-            {"name":"Local","faction":"ferrous","scrap":0,"bot":false},
-            {"name":"Target","faction":"cupric","scrap":0,"bot":false}
+            {"name":"Local","scrap":0,"bot":false},
+            {"name":"Target","scrap":0,"bot":false}
         ],
-        "units":[{"player":0,"kind":"moth","x":12,"y":11},{"player":0,"kind":"harvester","x":17,"y":15}],
+        "units":[{"player":0,"kind":"condor","x":12,"y":11},{"player":0,"kind":"harvester","x":17,"y":15}],
         "buildings":[{"player":1,"kind":"fabricator","x":17,"y":10}]
     })).unwrap();
     let mut game = Game::with_viewport(scenario, Vec2::new(1280., 800.)).unwrap();
+    // The Condor's own bomb lands on the footprint; two more already fall
+    // on open ground either side of it.
+    let condor = game.state.units()[0].clone();
+    let strays: Vec<_> = [(15, 11, 4), (21, 11, 5)]
+        .into_iter()
+        .map(|(x, y, arrival)| oxide_sim::state::Shell {
+            kind: oxide_sim::ProjectileKind::Bomb,
+            player: condor.player,
+            shooter: Target::Unit(condor.id),
+            launch: condor.pos,
+            impact: chassis::grid::TilePos::new(x, y).center(),
+            launched_at: 0,
+            arrival,
+            damage: 1,
+            targets: oxide_sim::stats::DomainMask::GROUND,
+            splash: None,
+        })
+        .collect();
+    let mut wire = serde_json::to_value(&*game.state).unwrap();
+    wire["shells"] = serde_json::json!(strays);
+    game.replace_state_after_jump(&serde_json::from_value(wire).unwrap());
     game.pending.push(oxide_sim::PlayerCommand {
         player: oxide_sim::PlayerId(0),
         command: oxide_sim::Command::Attack {
@@ -1917,13 +1897,14 @@ fn bomb_contacts_preserve_ground_spread_and_use_simulation_time() {
                 arrivals.push(at);
             }
         }
-        if arrivals.len() == 6 {
+        if arrivals.len() == 3 {
             break;
         }
     }
-    assert_eq!(arrivals.len(), 6);
+    assert_eq!(arrivals.len(), 3);
     assert!(arrivals.iter().any(|at| at.x < 17.));
     assert!(arrivals.iter().any(|at| at.x > 19.));
+    assert!(arrivals.iter().any(|at| (17.0..=19.0).contains(&at.x)));
     let tick = game.state.current_tick();
     let before = game
         .presentation
@@ -1944,16 +1925,11 @@ fn bomb_contacts_preserve_ground_spread_and_use_simulation_time() {
 }
 #[test]
 fn checkpoint_projectiles_recover_unit_contacts_without_launch_history() {
-    for kind in [
-        UnitKind::Bombard,
-        UnitKind::Avalanche,
-        UnitKind::Condor,
-        UnitKind::Moth,
-    ] {
+    for kind in [UnitKind::Bombard, UnitKind::Avalanche, UnitKind::Condor] {
         let scenario = serde_json::from_value(serde_json::json!({
             "name":"Restored contacts", "mode":"sandbox", "map":vec!["...................................."; 24],
-            "players":[{"name":"Local","faction":"ferrous","scrap":0,"bot":false},
-                {"name":"Target","faction":"cupric","scrap":0,"bot":false}],
+            "players":[{"name":"Local","scrap":0,"bot":false},
+                {"name":"Target","scrap":0,"bot":false}],
             "units":[{"player":0,"kind":kind,"x":12,"y":11},
                 {"player":0,"kind":"harvester","x":17,"y":15},
                 {"player":1,"kind":"excavator","x":17,"y":11}]
@@ -2018,8 +1994,8 @@ fn checkpoint_projectiles_recover_unit_contacts_without_launch_history() {
 fn lethal_hit_retains_the_moving_body_frame() {
     let scenario = serde_json::from_value(serde_json::json!({
         "name":"Moving lethal contact", "mode":"sandbox", "map":vec!["....................................";24],
-        "players":[{"name":"Local","faction":"ferrous","scrap":0,"bot":false},
-            {"name":"Target","faction":"cupric","scrap":0,"bot":false}],
+        "players":[{"name":"Local","scrap":0,"bot":false},
+            {"name":"Target","scrap":0,"bot":false}],
         "units":[{"player":0,"kind":"lancer","x":10,"y":10},
             {"player":1,"kind":"scuttler","x":13,"y":10}]
     }))

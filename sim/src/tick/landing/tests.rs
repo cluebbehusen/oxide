@@ -1,4 +1,3 @@
-use crate::Faction;
 use crate::command::Command;
 use crate::ids::PlayerId;
 use crate::scenario::{PlayerSpec, Scenario, ScenarioMode, UnitSpec};
@@ -21,16 +20,14 @@ fn arena() -> State {
         map: rows,
         players: vec![
             PlayerSpec {
-                name: "Ferrous".into(),
-                faction: Faction::Ferrous,
+                name: "West".into(),
                 team: None,
                 scrap: 0,
                 bot: false,
                 bot_config: None,
             },
             PlayerSpec {
-                name: "Cupric".into(),
-                faction: Faction::Cupric,
+                name: "East".into(),
                 team: None,
                 scrap: 0,
                 bot: false,

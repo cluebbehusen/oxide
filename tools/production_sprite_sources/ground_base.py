@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw
 
 from tools.gen_sprites import (
     BONE,
-    FACTIONS,
+    PALETTES,
     IRON,
     IRON_DARK,
     IRON_LIGHT,
@@ -19,7 +19,7 @@ from tools.gen_sprites import (
 
 SIZE = 64
 SS = 4
-FERROUS = FACTIONS["ferrous"]
+BASE = PALETTES["base"]
 
 
 @dataclass(frozen=True)
@@ -97,7 +97,7 @@ def _tracks(
         pad_y = y0 + 8 + phase * 11 % max(10, y1 - y0 - 16)
         draw.rectangle(
             _box((x0 + 2, pad_y, x1 - 2, min(y1 - 3, pad_y + 5))),
-            fill=_rgba(FERROUS["dark"]),
+            fill=_rgba(BASE["dark"]),
         )
         draw.line(
             ((_s(x0 + 2), _s(y0 + 4)), (_s(x0 + 2), _s(y1 - 5))),
@@ -119,10 +119,10 @@ def _sentinel_sprite(
         _points(((21, 22), (26, 18), (38, 18), (43, 22), (41, 51), (23, 51))),
         fill=_rgba(IRON),
     )
-    draw.rectangle(_box((22, 42, 42, 55)), fill=_rgba(FERROUS["dark"]))
+    draw.rectangle(_box((22, 42, 42, 55)), fill=_rgba(BASE["dark"]))
     draw.rectangle(_box((26, 46, 38, 51)), fill=(18, 17, 19, 255))
-    draw.rectangle(_box((19, 30, 26, 38)), fill=_rgba(FERROUS["base"]))
-    draw.rectangle(_box((38, 30, 45, 38)), fill=_rgba(FERROUS["base"]))
+    draw.rectangle(_box((19, 30, 26, 38)), fill=_rgba(BASE["base"]))
+    draw.rectangle(_box((38, 30, 45, 38)), fill=_rgba(BASE["base"]))
     draw.rectangle(_box((21, 25, 27, 29)), fill=_rgba(IRON_LIGHT))
     draw.rectangle(_box((37, 25, 43, 29)), fill=_rgba(IRON_LIGHT))
     y = recoil
@@ -130,7 +130,7 @@ def _sentinel_sprite(
     draw.rectangle(_box((29, 18 + y, 35, 36 + y)), fill=_rgba(IRON_LIGHT))
     draw.rectangle(_box((30, 4 + y, 34, 24 + y)), fill=_rgba(IRON_DARK))
     draw.rectangle(_box((31, 4 + y, 33, 23 + y)), fill=_rgba(BONE))
-    draw.rectangle(_box((27, 31 + y, 37, 39 + y)), fill=_rgba(FERROUS["dark"]))
+    draw.rectangle(_box((27, 31 + y, 37, 39 + y)), fill=_rgba(BASE["dark"]))
     draw.rectangle(_box((29, 33 + y, 35, 37 + y)), fill=(12, 12, 15, 255))
     if locked:
         draw.rectangle(_box((25, 27, 39, 30)), fill=_rgba(SCRAP_DARK))
@@ -158,14 +158,14 @@ def _lancer_sprite(
         fill=_rgba(IRON_DARK),
     )
     draw.rectangle(_box((20, 22, 44, 54)), fill=_rgba(IRON))
-    draw.rectangle(_box((21, 42, 43, 55)), fill=_rgba(FERROUS["dark"]))
+    draw.rectangle(_box((21, 42, 43, 55)), fill=_rgba(BASE["dark"]))
     draw.rectangle(_box((25, 45, 39, 51)), fill=(13, 13, 16, 255))
     y = recoil
     for x0, x1 in ((25, 29), (35, 39)):
         draw.rectangle(_box((x0, 6 + y, x1, 38 + y)), fill=_rgba(IRON_DARK))
         draw.rectangle(_box((x0 + 1, 7 + y, x1 - 1, 35 + y)), fill=_rgba(IRON_LIGHT))
-    draw.rectangle(_box((28, 8 + y, 36, 11 + y)), fill=_rgba(FERROUS["dark"]))
-    draw.rectangle(_box((28, 31 + y, 36, 34 + y)), fill=_rgba(FERROUS["dark"]))
+    draw.rectangle(_box((28, 8 + y, 36, 11 + y)), fill=_rgba(BASE["dark"]))
+    draw.rectangle(_box((28, 31 + y, 36, 34 + y)), fill=_rgba(BASE["dark"]))
     draw.rectangle(_box((24, 34 + y, 40, 43 + y)), fill=_rgba(IRON_DARK))
     draw.rectangle(_box((27, 36 + y, 37, 41 + y)), fill=(9, 9, 12, 255))
     draw.rectangle(_box((30, 4 + y, 34, 9 + y)), fill=_rgba(BONE))
@@ -192,7 +192,7 @@ def _flakhound_sprite(*, tread_phase: int = 0, state: str = "idle") -> Image.Ima
     )
     draw.rectangle(_box((19, 23, 45, 54)), fill=_rgba(IRON))
     draw.ellipse(_box((17, 18, 47, 49)), fill=_rgba(IRON_DARK))
-    draw.ellipse(_box((22, 23, 42, 43)), fill=_rgba(FERROUS["dark"]))
+    draw.ellipse(_box((22, 23, 42, 43)), fill=_rgba(BASE["dark"]))
     left_recoil = 3 if state == "report_left" else 1 if state == "recover" else 0
     right_recoil = 3 if state == "report_right" else 1 if state == "recover" else 0
     for center, recoil in ((24, left_recoil), (40, right_recoil)):
@@ -200,15 +200,11 @@ def _flakhound_sprite(*, tread_phase: int = 0, state: str = "idle") -> Image.Ima
             _box((center - 9, 18, center + 9, 42)),
             start=180,
             end=360,
-            fill=_rgba(FERROUS["base"]),
+            fill=_rgba(BASE["base"]),
             width=_s(5),
         )
-        draw.rectangle(
-            _box((center - 9, 28, center - 5, 43)), fill=_rgba(FERROUS["dark"])
-        )
-        draw.rectangle(
-            _box((center + 5, 28, center + 9, 43)), fill=_rgba(FERROUS["dark"])
-        )
+        draw.rectangle(_box((center - 9, 28, center - 5, 43)), fill=_rgba(BASE["dark"]))
+        draw.rectangle(_box((center + 5, 28, center + 9, 43)), fill=_rgba(BASE["dark"]))
         for barrel_x in (center - 4, center + 4):
             draw.rounded_rectangle(
                 _box((barrel_x - 2, 5 + recoil, barrel_x + 2, 32 + recoil)),
@@ -223,7 +219,7 @@ def _flakhound_sprite(*, tread_phase: int = 0, state: str = "idle") -> Image.Ima
                 _box((barrel_x - 2, 3 + recoil, barrel_x + 2, 8 + recoil)),
                 fill=(7, 7, 10, 255),
             )
-    draw.rectangle(_box((30, 28, 34, 50)), fill=_rgba(FERROUS["base"]))
+    draw.rectangle(_box((30, 28, 34, 50)), fill=_rgba(BASE["base"]))
     draw.rectangle(_box((27, 43, 37, 49)), fill=_rgba(IRON_DARK))
     filled = {
         "idle": 4,

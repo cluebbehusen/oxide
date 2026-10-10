@@ -7,6 +7,8 @@ from pathlib import Path
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
+from tools.gen_sprites import save_sprite, variant_tag
+
 Registry = dict[str, Image.Image]
 Renderer = Callable[[str, int, int], Image.Image]
 Color = tuple[int, int, int]
@@ -22,8 +24,8 @@ BONE = (226, 220, 204)
 FLASH = (255, 220, 132)
 SMOKE = (151, 145, 137)
 PALETTES = {
-    "ferrous": ((176, 75, 52), (105, 43, 33)),
-    "cupric": ((48, 132, 113), (29, 79, 68)),
+    "base": ((176, 75, 52), (105, 43, 33)),
+    "probe": ((48, 132, 113), (29, 79, 68)),
 }
 
 APPROVED_SOURCE_RGBA_SHA256 = (
@@ -183,14 +185,14 @@ def _rocket(
         )
 
 
-def render_breaker(faction: str, move_phase: int = 0, action: int = 0) -> Image.Image:
+def render_breaker(variant: str, move_phase: int = 0, action: int = 0) -> Image.Image:
     """Render the twin-casemate Breaker and its authored motion states."""
-    if faction not in PALETTES:
-        raise ValueError(f"unknown faction: {faction}")
+    if variant not in PALETTES:
+        raise ValueError(f"unknown variant: {variant}")
     if action not in range(5):
         raise ValueError(f"unknown Breaker action: {action}")
     image, draw = _canvas()
-    palette = PALETTES[faction]
+    palette = PALETTES[variant]
     _track(draw, (7, 18, 34, 116), move_phase % 3, palette[1])
     _track(draw, (94, 18, 121, 116), move_phase % 3, palette[1])
     _polygon(
@@ -223,10 +225,10 @@ def render_breaker(faction: str, move_phase: int = 0, action: int = 0) -> Image.
 
 
 def _artillery_base(
-    faction: str, move_phase: int, *, outriggers: bool
+    variant: str, move_phase: int, *, outriggers: bool
 ) -> tuple[Image.Image, ImageDraw.ImageDraw]:
     image, draw = _canvas()
-    palette = PALETTES[faction]
+    palette = PALETTES[variant]
     for box in (
         (8, 27, 29, 66),
         (99, 27, 120, 66),
@@ -255,14 +257,14 @@ def _artillery_base(
     return image, draw
 
 
-def render_avalanche(faction: str, move_phase: int = 0, action: int = 0) -> Image.Image:
+def render_avalanche(variant: str, move_phase: int = 0, action: int = 0) -> Image.Image:
     """Render the single-payload Avalanche and its authored motion states."""
-    if faction not in PALETTES:
-        raise ValueError(f"unknown faction: {faction}")
+    if variant not in PALETTES:
+        raise ValueError(f"unknown variant: {variant}")
     if action not in range(5):
         raise ValueError(f"unknown Avalanche action: {action}")
-    image, draw = _artillery_base(faction, move_phase, outriggers=action > 0)
-    palette = PALETTES[faction]
+    image, draw = _artillery_base(variant, move_phase, outriggers=action > 0)
+    palette = PALETTES[variant]
     draw.ellipse((38, 39, 90, 91), fill=_rgba(BLACK))
     draw.ellipse((45, 46, 83, 84), fill=_rgba(IRON))
     rail_shift = 0 if action < 2 else -3 if action == 2 else 0
@@ -286,36 +288,37 @@ def render_avalanche(faction: str, move_phase: int = 0, action: int = 0) -> Imag
 
 
 def _put(registry: Registry, out: Path, key: str, image: Image.Image) -> None:
-    image.save(out / f"{key}.png")
+    save_sprite(image, out, key)
     registry[key] = image
 
 
 def _install_unit(
     registry: Registry,
     out: Path,
-    faction: str,
+    variant: str,
     stem: str,
     renderer: Renderer,
 ) -> None:
-    _put(registry, out, f"{stem}_{faction}", renderer(faction, 0, 0))
+    tag = variant_tag(variant)
+    _put(registry, out, f"{stem}{tag}", renderer(variant, 0, 0))
     for phase in (1, 2):
         _put(
             registry,
             out,
-            f"{stem}_{faction}_move{phase}",
-            renderer(faction, phase, 0),
+            f"{stem}{tag}_move{phase}",
+            renderer(variant, phase, 0),
         )
     for action in range(1, 5):
         _put(
             registry,
             out,
-            f"{stem}_{faction}_action{action}",
-            renderer(faction, 0, action),
+            f"{stem}{tag}_action{action}",
+            renderer(variant, 0, action),
         )
 
 
 def install_crucible_units(registry: Registry, out: Path) -> None:
     """Install both advanced ground-unit sprite rows."""
-    for faction in PALETTES:
-        _install_unit(registry, out, faction, "breaker", render_breaker)
-        _install_unit(registry, out, faction, "avalanche", render_avalanche)
+    for variant in PALETTES:
+        _install_unit(registry, out, variant, "breaker", render_breaker)
+        _install_unit(registry, out, variant, "avalanche", render_avalanche)

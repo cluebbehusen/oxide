@@ -9,8 +9,8 @@ use oxide_sim::command::RejectReason;
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, ScenarioMode};
 use oxide_sim::stats::BuildingKind;
 use oxide_sim::{
-    BuildingId, Command, Event, Faction, Order, OrderKey, PlayerId, Scenario, State, Target,
-    UnitId, UnitKind,
+    BuildingId, Command, Event, Order, OrderKey, PlayerId, Scenario, State, Target, UnitId,
+    UnitKind,
 };
 
 use common::{cmd, run_until, unit};
@@ -104,9 +104,8 @@ fn map() -> Vec<String> {
 }
 
 fn stage() -> Stage {
-    let seat = |name: &str, faction| PlayerSpec {
+    let seat = |name: &str| PlayerSpec {
         name: name.into(),
-        faction,
         team: None,
         scrap: 500,
         bot: false,
@@ -116,10 +115,7 @@ fn stage() -> Stage {
         mode: ScenarioMode::Match,
         name: "canonicalization-arena".into(),
         map: map(),
-        players: vec![
-            seat("Ferrous", Faction::Ferrous),
-            seat("Cupric", Faction::Cupric),
-        ],
+        players: vec![seat("West"), seat("East")],
         units: vec![
             unit(0, UnitKind::Sentinel, 5, 4),
             unit(0, UnitKind::Harvester, 5, 5),

@@ -13,43 +13,6 @@ fn skirmish_builds_and_is_deterministic() {
 }
 
 #[test]
-fn retint_swaps_roster_name_and_faction_bound_kinds() {
-    let mut scenario = Scenario::skirmish();
-    // A faction-bound starter proves the role remap.
-    scenario.units.push(UnitSpec {
-        player: 1,
-        kind: UnitKind::Stinger,
-        x: 3,
-        y: 3,
-    });
-    let old_name = scenario.players[1].name.clone();
-    assert_eq!(scenario.players[1].faction, Faction::Cupric);
-    scenario.retint_seat(1, Faction::Ferrous);
-    assert_eq!(scenario.players[1].faction, Faction::Ferrous);
-    assert_ne!(
-        scenario.players[1].name, old_name,
-        "a faction-derived name follows the roster"
-    );
-    assert!(
-        scenario
-            .units
-            .iter()
-            .filter(|u| u.player == 1)
-            .all(|u| u.kind.faction() != Some(Faction::Cupric)),
-        "no seat keeps the other roster's kinds"
-    );
-    assert!(
-        scenario.units.iter().any(|u| u.kind == UnitKind::Flakhound),
-        "the stinger crossed to its ferrous role twin"
-    );
-    // Same faction again: a no-op, not a name churn.
-    let name = scenario.players[1].name.clone();
-    scenario.retint_seat(1, Faction::Ferrous);
-    assert_eq!(scenario.players[1].name, name);
-    scenario.build().expect("a retinted scenario still builds");
-}
-
-#[test]
 fn player_count_bounds_are_enforced_and_named() {
     let mut scenario = Scenario::skirmish();
     scenario.players.clear();
@@ -98,7 +61,6 @@ fn missing_anchor_is_an_error() {
     let mut scenario = Scenario::skirmish();
     scenario.players.push(PlayerSpec {
         name: "third".into(),
-        faction: Faction::Ferrous,
         team: None,
         scrap: 0,
         bot: false,

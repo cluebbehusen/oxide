@@ -1,9 +1,9 @@
 use super::*;
 use crate::numeric;
 use crate::numeric::Fit;
+use oxide_sim::Scenario;
 use oxide_sim::scenario::PlayerSpec;
 use oxide_sim::scenario::ScenarioMode;
-use oxide_sim::{Faction, Scenario};
 
 fn scenario(count: usize, team: impl Fn(usize) -> Option<u8>) -> Scenario {
     let mut map = vec![vec!['.'; 70]; 70];
@@ -20,11 +20,6 @@ fn scenario(count: usize, team: impl Fn(usize) -> Option<u8>) -> Scenario {
         players: (0..count)
             .map(|seat| PlayerSpec {
                 name: format!("Seat {seat}"),
-                faction: if seat % 2 == 0 {
-                    Faction::Ferrous
-                } else {
-                    Faction::Cupric
-                },
                 team: team(seat),
                 scrap: 0,
                 bot: seat != 0,
@@ -57,10 +52,7 @@ fn every_supported_ffa_seat_has_a_distinct_hostile_identity_for_every_viewer() {
                     let style = styles.get(PlayerId(owner.fit::<u8>()));
                     if owner == viewer {
                         assert_eq!(style.cue, AllegianceCue::Mine);
-                        assert_eq!(
-                            style.color,
-                            faction_accent(state.players()[owner].faction, colorblind)
-                        );
+                        assert_eq!(style.color, roster_accent(colorblind));
                     } else {
                         assert_eq!(style.cue, AllegianceCue::Hostile);
                         let color = rgb(style.color);

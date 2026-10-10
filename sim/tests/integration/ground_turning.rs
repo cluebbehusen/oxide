@@ -159,7 +159,7 @@ fn a_ground_sidearm_cannot_fire_across_its_main_guns_bearing() {
         vec![
             unit(0, UnitKind::Sentinel, 5, 8),
             unit(1, UnitKind::Scuttler, 7, 8),
-            unit(1, UnitKind::Darter, 5, 6),
+            unit(1, UnitKind::Buzzard, 5, 6),
         ],
     )
     .build()
@@ -180,6 +180,9 @@ fn a_ground_sidearm_cannot_fire_across_its_main_guns_bearing() {
     )]);
     assert!(report.events.iter().any(|event| matches!(event,Event::AttackHit{attacker,target:Some(Target::Unit(id)),..} if *attacker==gun && *id==ground)));
     assert!(!report.events.iter().any(|event| matches!(event,Event::AttackHit{attacker,target:Some(Target::Unit(id)),..} if *attacker==gun && *id==air)));
-    assert_eq!(state.unit(air).unwrap().hp, UnitKind::Darter.stats().max_hp);
+    assert_eq!(
+        state.unit(air).unwrap().hp,
+        UnitKind::Buzzard.stats().max_hp
+    );
     assert_eq!(state.unit(gun).unwrap().cooldowns[1], 0);
 }

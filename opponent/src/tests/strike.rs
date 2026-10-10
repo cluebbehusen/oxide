@@ -136,7 +136,6 @@ fn a_strike_outweighed_by_anti_air_withdraws_and_gives_up_its_target() {
 #[test]
 fn mirrored_strikes_issue_mirrored_commands() {
     let mut scenario = winged();
-    scenario.players[1].faction = Faction::Ferrous;
     for (x, y) in GARRISON {
         scenario
             .units

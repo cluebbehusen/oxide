@@ -2,14 +2,12 @@
  "name": "Skirmish Basin",
  "players": [
   {
-   "name": "Ferrous",
-   "faction": "ferrous",
+   "name": "North West",
    "scrap": 150,
    "bot": false
   },
   {
-   "name": "Cupric",
-   "faction": "cupric",
+   "name": "South East",
    "scrap": 150,
    "bot": true,
    "bot_config": {}

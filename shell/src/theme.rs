@@ -4,7 +4,7 @@
 //! supporting detail, inactive affordance) rather than a raw color
 //! literal. The tests pin the readable tiers to WCAG AA (4.5:1) against
 //! the house surfaces, treating each surface as opaque. World decoration
-//! (order rings, rally lines, faction art) is not text and keeps its own
+//! (order rings, rally lines, unit art) is not text and keeps its own
 //! palette in the renderer.
 
 use macroquad::prelude::{Color, color_u8};

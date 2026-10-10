@@ -6,7 +6,7 @@
 
 use crate::ids::PlayerId;
 use crate::map::{Map, MapError};
-use crate::state::{Faction, Player, State};
+use crate::state::{Player, State};
 use crate::stats::{BuildingKind, UnitKind};
 use chassis::grid::TilePos;
 use serde::{Deserialize, Serialize};
@@ -101,8 +101,6 @@ pub struct ScenarioMeta {
 pub struct PlayerSpec {
     /// Display name.
     pub name: String,
-    /// Which roster this seat runs (and its sprite tint).
-    pub faction: Faction,
     /// Team index; seats sharing one stand and fall together. `None`
     /// puts the seat on its own team.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -354,30 +352,10 @@ impl Scenario {
         Self::from_json(&std::fs::read_to_string(path)?)
     }
 
-    /// The built-in two-player map: human as Ferrous, bot as Cupric.
+    /// The built-in two-player map: a human seat against a bot.
     pub fn skirmish() -> Self {
         Self::from_json(include_str!("../../scenarios/skirmish.json"))
             .expect("embedded skirmish scenario is validated by tests")
-    }
-
-    /// Moves a seat onto a roster: swaps the faction, keeps any
-    /// faction-derived name honest ("North West Cupric" retints to
-    /// "North West Ferrous"), and remaps the seat's authored starting
-    /// units through their role so faction-bound kinds survive the
-    /// flip. Name collisions are the caller's to resolve — two seats
-    /// may legitimately end up on one roster.
-    pub fn retint_seat(&mut self, seat: usize, faction: Faction) {
-        let Some(player) = self.players.get_mut(seat) else {
-            return;
-        };
-        if player.faction == faction {
-            return;
-        }
-        player.name = retinted_name(&player.name, player.faction, faction);
-        player.faction = faction;
-        for unit in self.units.iter_mut().filter(|u| u.player as usize == seat) {
-            unit.kind = unit.kind.role().unit_for(faction);
-        }
     }
 
     /// Validates the scenario and constructs the initial [`State`].
@@ -411,7 +389,6 @@ impl Scenario {
                 };
                 Player {
                     name: spec.name.clone(),
-                    faction: spec.faction,
                     team,
                     scrap: spec.scrap,
                     recovery: crate::state::Recovery::Ready,
@@ -471,7 +448,7 @@ impl Scenario {
         // Authoring tripwire: every pair of Foundries must share a route
         // some mover can take, or the victory condition is unreachable by
         // construction. Ground connectivity is the ordinary case; an air
-        // route is a valid fallback, since every faction can reach the sky
+        // route is a valid fallback, since every seat can reach the sky
         // at tier two. Only terrain that also seals the sky (peaks) makes a
         // true seal. Flood over terrain only: scrap mines out and buildings
         // can be demolished.
@@ -524,20 +501,6 @@ impl Scenario {
         state.refresh_vision();
         Ok(state)
     }
-}
-
-/// The name a seat wears after a retint onto `to`'s roster: any
-/// faction word in the authored name flips ("East Cupric" becomes
-/// "East Ferrous"); a name without one keeps itself. This is the one
-/// definition of the rule — [`Scenario::retint_seat`] applies it at
-/// launch and the setup screen previews through it, so the card can
-/// never disagree with the launched match.
-pub fn retinted_name(name: &str, from: Faction, to: Faction) -> String {
-    let label = |f: Faction| match f {
-        Faction::Ferrous => "Ferrous",
-        Faction::Cupric => "Cupric",
-    };
-    name.replace(label(from), label(to))
 }
 
 #[cfg(test)]

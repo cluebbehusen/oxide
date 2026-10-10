@@ -329,7 +329,7 @@ fn head_on_pair() -> (Game, [UnitId; 2]) {
     map[2] = "..1.....................................";
     let scenario = serde_json::from_value(serde_json::json!({
         "name": "Head-on pass", "map": map,
-        "players": [{"name": "You", "faction": "ferrous", "scrap": 0, "bot": false}],
+        "players": [{"name": "You", "scrap": 0, "bot": false}],
         "units": [
             {"player": 0, "kind": "sentinel", "x": 12, "y": 12},
             {"player": 0, "kind": "sentinel", "x": 22, "y": 12}
@@ -393,8 +393,8 @@ fn rotor_game(kind: UnitKind) -> Game {
     let scenario = serde_json::from_value(serde_json::json!({
         "name": "Rotor turning", "map": map,
         "players": [
-            {"name": "You", "faction": "ferrous", "scrap": 0, "bot": false},
-            {"name": "Target", "faction": "cupric", "scrap": 0, "bot": true}
+            {"name": "You", "scrap": 0, "bot": false},
+            {"name": "Target", "scrap": 0, "bot": true}
         ],
         "units": [{"player": 0, "kind": kind, "x": 12, "y": 12}],
         "buildings": []
@@ -406,7 +406,7 @@ fn rotor_game(kind: UnitKind) -> Game {
 #[test]
 fn rotor_hulls_ease_reversals_and_finish_turning_after_stopping() {
     let mut first_turns = Vec::new();
-    for kind in [UnitKind::Buzzard, UnitKind::Skyhook, UnitKind::Wisp] {
+    for kind in [UnitKind::Buzzard, UnitKind::Skyhook] {
         let mut game = rotor_game(kind);
         let id = game.state.units()[0].id;
         game.present_ticks(1);
@@ -445,31 +445,7 @@ fn rotor_hulls_ease_reversals_and_finish_turning_after_stopping() {
     }
     assert!((first_turns[0] - 0.3).abs() < 1e-6);
     assert!((first_turns[1] - 0.25).abs() < 1e-6);
-    assert!(first_turns[1] < first_turns[0] && first_turns[0] < first_turns[2]);
-}
-
-#[test]
-fn hovering_wisp_eases_firing_aim_and_discards_it_on_seek() {
-    let mut game = rotor_game(UnitKind::Wisp);
-    let id = game.state.units()[0].id;
-    game.present_ticks(1);
-    let before = game.view().draw_hull_heading(id, 1.0);
-    let position = game.state.unit(id).unwrap().pos;
-    game.presentation
-        .aim_units
-        .insert(id.0, (std::f32::consts::PI, game.presentation.fx_time()));
-    game.present_ticks(1);
-    let after = game.view().draw_hull_heading(id, 1.0);
-    assert!((0.1..0.7).contains(&angle_delta(before, after).abs()));
-    assert_eq!(game.state.unit(id).unwrap().pos, position);
-    game.present_ticks(8);
-    assert!(angle_delta(game.view().draw_hull_heading(id, 1.0), std::f32::consts::PI).abs() < 1e-5);
-    game.replace_state_after_jump(&(*game.state).clone());
-    assert_eq!(
-        game.view().draw_hull_heading(id, 0.0),
-        game.view().draw_hull_heading(id, 1.0)
-    );
-    assert_eq!(game.view().draw_hull_heading(id, 1.0), 0.0);
+    assert!(first_turns[1] < first_turns[0]);
 }
 
 #[test]
@@ -791,9 +767,8 @@ fn a_decisive_concession_uses_the_result_flow_not_the_overlay() {
 #[test]
 fn a_team_concession_raises_the_surrender_overlay() {
     use oxide_sim::scenario::PlayerSpec;
-    let seat = |name: &str, faction, team, bot| PlayerSpec {
+    let seat = |name: &str, team, bot| PlayerSpec {
         name: name.into(),
-        faction,
         team: Some(team),
         scrap: 100,
         bot,
@@ -813,10 +788,10 @@ fn a_team_concession_raises_the_surrender_overlay() {
             "####################".into(),
         ],
         players: vec![
-            seat("West Ferrous", oxide_sim::Faction::Ferrous, 0, false),
-            seat("West Cupric", oxide_sim::Faction::Cupric, 0, true),
-            seat("East Ferrous", oxide_sim::Faction::Ferrous, 1, true),
-            seat("East Cupric", oxide_sim::Faction::Cupric, 1, true),
+            seat("North West", 0, false),
+            seat("South West", 0, true),
+            seat("North East", 1, true),
+            seat("South East", 1, true),
         ],
         units: Vec::new(),
         buildings: Vec::new(),

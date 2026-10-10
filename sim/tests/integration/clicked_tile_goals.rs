@@ -13,8 +13,8 @@ use oxide_sim::event::StallReason;
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, ScenarioMode, UnitSpec};
 use oxide_sim::stats::BuildingKind;
 use oxide_sim::{
-    AttackTarget, Command, Event, Faction, Goal, Order, PlayerCommand, PlayerId, Scenario, State,
-    UnitId, UnitKind,
+    AttackTarget, Command, Event, Goal, Order, PlayerCommand, PlayerId, Scenario, State, UnitId,
+    UnitKind,
 };
 
 /// An open sandbox of `width` by `height`, with `carve` editing the grid.
@@ -46,7 +46,6 @@ fn sandbox(map: Vec<String>, teams: &[Option<u8>], units: &[(u8, UnitKind, i32, 
             .enumerate()
             .map(|(seat, &team)| PlayerSpec {
                 name: format!("seat {seat}"),
-                faction: Faction::Ferrous,
                 team,
                 scrap: 2_000,
                 bot: false,
@@ -348,7 +347,7 @@ fn pacifists_sent_at_an_unexplored_radar_contact_share_its_tile() {
         40,
         30,
         vec![
-            common::unit(1, UnitKind::Gnat, 14, 8),
+            common::unit(1, UnitKind::Kestrel, 14, 8),
             common::unit(0, UnitKind::Harvester, 5, 20),
             common::unit(0, UnitKind::Harvester, 7, 21),
         ],
@@ -367,7 +366,7 @@ fn pacifists_sent_at_an_unexplored_radar_contact_share_its_tile() {
         .tracks()
         .iter()
         .find(|track| track.visible_unit.is_none())
-        .expect("the Array tracks the Gnat")
+        .expect("the Array tracks the Kestrel")
         .id;
     let walkers = ids(&state, 0);
     state.tick(&[cmd(
@@ -610,7 +609,7 @@ fn range() -> Vec<String> {
 
 #[test]
 fn fliers_ordered_onto_a_peak_settle_off_it_seen_or_unseen() {
-    for kind in [UnitKind::Wisp, UnitKind::Skyhook] {
+    for kind in [UnitKind::Talon, UnitKind::Skyhook] {
         for (start, seen) in [(26, true), (3, false)] {
             let mut state = sandbox(range(), &[None], &[(0, kind, start, 5)]);
             let flier = ids(&state, 0)[0];

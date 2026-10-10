@@ -345,7 +345,7 @@ fn flakhound_and_sentinel_use_consistent_colors_and_marks_for_each_target_domain
             "....................", "....................", "....................",
             "....................", "....................", "....................",
             "....................", "....................", "...................."],
-        "players": [{"name": "You", "faction": "ferrous", "scrap": 0, "bot": false}],
+        "players": [{"name": "You", "scrap": 0, "bot": false}],
         "units": [{"player": 0, "kind": "flakhound", "x": 5, "y": 7},
             {"player": 0, "kind": "sentinel", "x": 9, "y": 7}]
     }))
@@ -595,35 +595,6 @@ fn support_line_occlusion_handles_crossings_misses_and_reversed_edges() {
 }
 
 #[test]
-fn moth_payloads_begin_in_six_rack_positions_and_keep_their_impact_points() {
-    let launch = vec2(5.0, 7.0);
-    let heading = vec2(1.0, 0.0);
-    let mut starts = Vec::new();
-    for slot in 0..6 {
-        let impact = vec2(7.0 + slot as f32 * 0.8, 7.1);
-        let release = crate::game::LaunchPose {
-            heading,
-            kind: oxide_sim::UnitKind::Moth,
-            slot,
-        };
-        let (start, direction) = moth_bomb_pose(launch, impact, release, 0.0, 10.0);
-        assert!(direction.dot(heading) > 0.99);
-        assert!(!starts.contains(&start));
-        starts.push(start);
-        for progress in [0.0, 0.01, 0.2, 0.5, 0.99, 1.0] {
-            let (position, direction) = moth_bomb_pose(launch, impact, release, progress, 10.0);
-            assert!(position.is_finite() && direction.is_finite());
-        }
-        assert!(
-            moth_bomb_pose(launch, impact, release, 1.0, 10.0)
-                .0
-                .distance(impact)
-                < 1e-5
-        );
-    }
-}
-
-#[test]
 fn condor_payload_clears_the_nose_and_arrives_without_a_loft() {
     let launch = vec2(5.0, 7.0);
     let heading = vec2(1.0, 0.0);
@@ -806,10 +777,6 @@ fn separate_flak_yokes_report_at_their_authored_delays() {
 
     let turret_delay = FlakYokeDelay::OneAndHalfTicks.seconds();
     assert_eq!(turret_delay, 1.5 * crate::game::TICK_DT);
-    assert_eq!(
-        flak_round_progress(0.0, FlakYokeDelay::None),
-        [Some(0.0), Some(0.0)]
-    );
 }
 
 #[test]

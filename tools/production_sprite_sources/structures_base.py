@@ -10,7 +10,7 @@ from PIL import Image, ImageDraw
 
 from tools.gen_sprites import (
     BONE,
-    FACTIONS,
+    PALETTES,
     IRON,
     IRON_DARK,
     IRON_LIGHT,
@@ -19,7 +19,7 @@ from tools.gen_sprites import (
 )
 
 SS = 4
-FERROUS = FACTIONS["ferrous"]
+BASE = PALETTES["base"]
 NATIVE_SIZES = {
     "fabricator": (128, 128),
     "repair_bay": (128, 128),
@@ -125,19 +125,19 @@ def _fabricator_sprite(
         )
         draw.rectangle(_box((x + 3, 36, x + 5, 103)), fill=(*IRON_LIGHT, 255))
         for y in range(40, 103, 13):
-            draw.rectangle(_box((x + 1, y, x + 7, y + 3)), fill=(*FERROUS["dark"], 255))
+            draw.rectangle(_box((x + 1, y, x + 7, y + 3)), fill=(*BASE["dark"], 255))
     draw.rectangle(_box((46, 103, 82, 114)), fill=(*IRON_DARK, 255))
     for x in range(48, 82, 8):
         draw.polygon(
             _points(((x, 104), (x + 4, 104), (x + 8, 113), (x + 4, 113))),
-            fill=(*FERROUS["dark"], 255),
+            fill=(*BASE["dark"], 255),
         )
     for x0, x1 in ((12, 27), (101, 116)):
         _beveled_plate(draw, (x0, 25, x1, 108), radius=3)
         draw.rectangle(_box((x0 + 4, 35, x1 - 4, 98)), fill=(18, 18, 22, 255))
-        _strut(draw, (x0 + 4, 40), (x1 - 4, 61), color=FERROUS["dark"])
-        _strut(draw, (x1 - 4, 62), (x0 + 4, 83), color=FERROUS["dark"])
-        _strut(draw, (x0 + 4, 84), (x1 - 4, 98), color=FERROUS["dark"])
+        _strut(draw, (x0 + 4, 40), (x1 - 4, 61), color=BASE["dark"])
+        _strut(draw, (x1 - 4, 62), (x0 + 4, 83), color=BASE["dark"])
+        _strut(draw, (x0 + 4, 84), (x1 - 4, 98), color=BASE["dark"])
         _bolt(draw, (x0 + x1) / 2, 31)
         _bolt(draw, (x0 + x1) / 2, 103)
     _beveled_plate(draw, (11, 11, 117, 31), radius=4)
@@ -148,9 +148,9 @@ def _fabricator_sprite(
     _beveled_plate(
         draw,
         (carriage_x - 10, 17, carriage_x + 10, 34),
-        fill=FERROUS["dark"],
+        fill=BASE["dark"],
         edge=IRON_DARK,
-        highlight=FERROUS["light"],
+        highlight=BASE["light"],
         radius=3,
     )
     draw.rectangle(
@@ -169,7 +169,7 @@ def _fabricator_sprite(
                 (carriage_x + 5, 47 + tool_drop),
             )
         ),
-        fill=(*FERROUS["light"], 255),
+        fill=(*BASE["light"], 255),
     )
     if assembly_stage:
         width = (18, 28, 36)[assembly_stage - 1]
@@ -181,7 +181,7 @@ def _fabricator_sprite(
         draw.rounded_rectangle(
             _box((x0 + 3, 76, x1 - 3, 94)), radius=_s(3), fill=(*IRON, 255)
         )
-        draw.rectangle(_box((58, 79, 70, 94)), fill=(*FERROUS["dark"], 255))
+        draw.rectangle(_box((58, 79, 70, 94)), fill=(*BASE["dark"], 255))
         if assembly_stage >= 2:
             for side in (-1, 1):
                 draw.rounded_rectangle(
@@ -190,7 +190,7 @@ def _fabricator_sprite(
                     fill=(*IRON_LIGHT, 255),
                 )
         if assembly_stage >= 3:
-            draw.rectangle(_box((59, 68, 69, 78)), fill=(*FERROUS["base"], 255))
+            draw.rectangle(_box((59, 68, 69, 78)), fill=(*BASE["base"], 255))
             draw.rectangle(_box((62, 66, 66, 71)), fill=(*BONE, 255))
     return _finish(image, size)
 
@@ -242,7 +242,7 @@ def _repair_bay_sprite(
         )
         draw.rectangle(_box((x - 1, 38, x + 1, 102)), fill=(*IRON_LIGHT, 255))
         for y in range(42, 101, 14):
-            draw.rectangle(_box((x - 3, y, x + 3, y + 3)), fill=(*FERROUS["dark"], 255))
+            draw.rectangle(_box((x - 3, y, x + 3, y + 3)), fill=(*BASE["dark"], 255))
     pad_inset = lift * 4
     for x0, x1 in ((34 + pad_inset, 48 + pad_inset), (80 - pad_inset, 94 - pad_inset)):
         _beveled_plate(
@@ -250,7 +250,7 @@ def _repair_bay_sprite(
             (x0, 66 - lift * 2, x1, 91 - lift * 2),
             fill=IRON,
             edge=IRON_DARK,
-            highlight=FERROUS["light"],
+            highlight=BASE["light"],
             radius=3,
         )
     if lift:
@@ -258,19 +258,17 @@ def _repair_bay_sprite(
             _box((49, 56, 79, 99)), radius=_s(6), fill=(*IRON_DARK, 255)
         )
         draw.rounded_rectangle(_box((54, 60, 74, 94)), radius=_s(4), fill=(*IRON, 255))
-        draw.rectangle(_box((57, 70, 71, 86)), fill=(*FERROUS["dark"], 255))
-        draw.rectangle(_box((60, 63, 68, 69)), fill=(*FERROUS["base"], 255))
+        draw.rectangle(_box((57, 70, 71, 86)), fill=(*BASE["dark"], 255))
+        draw.rectangle(_box((60, 63, 68, 69)), fill=(*BASE["base"], 255))
     for x0, x1 in ((12, 27), (101, 116)):
         _beveled_plate(draw, (x0, 25, x1, 108), radius=3)
         for y in (38, 57, 96):
-            draw.rectangle(
-                _box((x0 + 4, y, x1 - 4, y + 9)), fill=(*FERROUS["dark"], 255)
-            )
+            draw.rectangle(_box((x0 + 4, y, x1 - 4, y + 9)), fill=(*BASE["dark"], 255))
         _bolt(draw, (x0 + x1) / 2, 31)
         _bolt(draw, (x0 + x1) / 2, 103)
     shoulder = (105, 28)
-    _strut(draw, shoulder, arm_joint, color=FERROUS["base"], width=7)
-    _strut(draw, arm_joint, torch, color=FERROUS["light"], width=6)
+    _strut(draw, shoulder, arm_joint, color=BASE["base"], width=7)
+    _strut(draw, arm_joint, torch, color=BASE["light"], width=6)
     for joint_x, joint_y, radius in ((*shoulder, 7), (*arm_joint, 7), (*torch, 5)):
         draw.ellipse(
             _box(
@@ -280,7 +278,7 @@ def _repair_bay_sprite(
         )
         draw.ellipse(
             _box((joint_x - 3, joint_y - 3, joint_x + 3, joint_y + 3)),
-            fill=(*FERROUS["base"], 255),
+            fill=(*BASE["base"], 255),
         )
         draw.rectangle(
             _box((joint_x - 1, joint_y - 1, joint_x + 1, joint_y + 1)),
@@ -316,7 +314,7 @@ def _repair_bay_sprite(
     for x in range(34, 94, 12):
         draw.polygon(
             _points(((x, 109), (x + 6, 109), (x + 10, 116), (x + 4, 116))),
-            fill=(*FERROUS["dark"], 255),
+            fill=(*BASE["dark"], 255),
         )
     for x in (20, 108):
         draw.rectangle(_box((x - 2, 113, x + 2, 116)), fill=(*SCRAP, 255))
@@ -387,7 +385,7 @@ def _array_sprite(*, heading: int) -> Image.Image:
     arc_points = tuple(_polar(center, 19, angle) for angle in range(start, end + 1, 13))
     draw.polygon(_points((center, *arc_points)), fill=(24, 24, 30, 255))
     draw.arc(
-        _box((13, 13, 51, 51)), start, end, fill=(*FERROUS["light"], 255), width=_s(3)
+        _box((13, 13, 51, 51)), start, end, fill=(*BASE["light"], 255), width=_s(3)
     )
     for offset in (-36, -18, 0, 18, 36):
         draw.line(
@@ -404,11 +402,11 @@ def _array_sprite(*, heading: int) -> Image.Image:
             width=_s(1.5),
         )
     tip = _polar(center, 17, heading)
-    draw.line(_points((center, tip)), fill=(*FERROUS["base"], 255), width=_s(3))
+    draw.line(_points((center, tip)), fill=(*BASE["base"], 255), width=_s(3))
     draw.ellipse(
         _box((tip[0] - 3, tip[1] - 3, tip[0] + 3, tip[1] + 3)), fill=(*BONE, 255)
     )
     draw.ellipse(_box((25, 25, 39, 39)), fill=(*IRON_DARK, 255))
-    draw.ellipse(_box((28, 28, 36, 36)), fill=(*FERROUS["base"], 255))
+    draw.ellipse(_box((28, 28, 36, 36)), fill=(*BASE["base"], 255))
     draw.rectangle(_box((31, 30, 33, 34)), fill=(*SCRAP_LIGHT, 255))
     return _finish(image, size)

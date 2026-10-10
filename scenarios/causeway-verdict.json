@@ -55,47 +55,41 @@
  ],
  "players": [
   {
-   "name": "North West Ferrous",
-   "faction": "ferrous",
+   "name": "North West",
    "team": 0,
    "scrap": 150,
    "bot": false
   },
   {
-   "name": "Mid West Cupric",
-   "faction": "cupric",
+   "name": "Mid West",
    "team": 0,
    "scrap": 150,
    "bot": true,
    "bot_config": {}
   },
   {
-   "name": "South West Ferrous",
-   "faction": "ferrous",
+   "name": "South West",
    "team": 0,
    "scrap": 150,
    "bot": true,
    "bot_config": {}
   },
   {
-   "name": "North East Cupric",
-   "faction": "cupric",
+   "name": "North East",
    "team": 1,
    "scrap": 150,
    "bot": true,
    "bot_config": {}
   },
   {
-   "name": "Mid East Ferrous",
-   "faction": "ferrous",
+   "name": "Mid East",
    "team": 1,
    "scrap": 150,
    "bot": true,
    "bot_config": {}
   },
   {
-   "name": "South East Cupric",
-   "faction": "cupric",
+   "name": "South East",
    "team": 1,
    "scrap": 150,
    "bot": true,

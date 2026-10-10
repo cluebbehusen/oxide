@@ -9,8 +9,10 @@ use anyhow::{Context, Result, bail, ensure};
 use oxide_kit::GameReplay;
 use oxide_kit::controller::{record_events, seat_controllers};
 
-use oxide_sim::stats::{Domain, Role};
-use oxide_sim::{BuildingKind, Command, PlayerCommand, PlayerId, Scenario, State, UnitId};
+use oxide_sim::stats::Domain;
+use oxide_sim::{
+    BuildingKind, Command, PlayerCommand, PlayerId, Scenario, State, UnitId, UnitKind,
+};
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 use std::path::Path;
@@ -342,15 +344,15 @@ impl Watch {
     }
 }
 
-/// Whether `player` owns anti-air: a unit whose role is to shoot aircraft,
+/// Whether `player` owns anti-air: a unit whose job is to shoot aircraft,
 /// or a completed Flak Turret.
 pub(crate) fn owns_anti_air(state: &State, player: PlayerId) -> bool {
     let unit = state.units().iter().any(|unit| {
         unit.player == player
             && unit.hp > 0
             && matches!(
-                unit.kind.role(),
-                Role::AntiAir | Role::AirAir | Role::Interceptor
+                unit.kind,
+                UnitKind::Flakhound | UnitKind::Talon | UnitKind::Shrike
             )
     });
     unit || state.buildings().iter().any(|building| {

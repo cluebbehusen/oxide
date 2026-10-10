@@ -42,7 +42,7 @@ FOUNDRY_POSES = ("", "_work1", "_work2", "_work3", "_work4")
 
 # Semantic RGBA digest of the four approved review candidates.
 APPROVED_SOURCE_RGBA_SHA256 = (
-    "0e9561f9d14ba071e7e3cb899053185b2b475f30276a79f026768b4e6c69b7e5"
+    "adc35449899594b6e0eb5f477e082004e8fab71b2a6b2799304c0ed39cea49f9"
 )
 
 
@@ -167,12 +167,12 @@ def _cargo_meter(draw: ImageDraw.ImageDraw, cargo: int) -> None:
 
 def _harvester_body(
     draw: ImageDraw.ImageDraw,
-    faction: str,
+    variant: str,
     *,
     cargo: int,
     tread: int,
 ) -> Palette:
-    palette = gen.FACTIONS[faction]
+    palette = gen.PALETTES[variant]
     _tracks(draw, palette, tread)
     _plate(draw, (18, 15, 46, 58), fill=gen.IRON, radius=5)
     draw.polygon(
@@ -239,29 +239,29 @@ def _harvester_bucket(draw: ImageDraw.ImageDraw, palette: Palette, scoop: int) -
 
 
 def render_harvester(
-    faction: str, *, cargo: int, tread: int = 0, scoop: int = 0
+    variant: str, *, cargo: int, tread: int = 0, scoop: int = 0
 ) -> Image.Image:
     """Render the approved Harvester and its independent state channels."""
-    if faction not in gen.FACTIONS:
-        raise ValueError(f"unknown faction: {faction}")
+    if variant not in gen.PALETTES:
+        raise ValueError(f"unknown variant: {variant}")
     if cargo not in range(HARVESTER_CARGO_LEVELS):
         raise ValueError(f"invalid Harvester cargo level: {cargo}")
     if tread not in range(3) or scoop not in range(3) or (tread and scoop):
         raise ValueError("Harvester tread and scoop states must be separate 0..2 rows")
     image, draw = _new_sprite(64)
-    palette = _harvester_body(draw, faction, cargo=cargo, tread=tread)
+    palette = _harvester_body(draw, variant, cargo=cargo, tread=tread)
     _harvester_pincers(draw, palette, scoop)
     _harvester_bucket(draw, palette, scoop)
     return _finish(image, 64)
 
 
-def render_sentinel(faction: str, *, move: int = 0, action: int = 0) -> Image.Image:
+def render_sentinel(variant: str, *, move: int = 0, action: int = 0) -> Image.Image:
     """Render the approved riveted-casemate Sentinel."""
-    if faction not in gen.FACTIONS:
-        raise ValueError(f"unknown faction: {faction}")
+    if variant not in gen.PALETTES:
+        raise ValueError(f"unknown variant: {variant}")
     if move not in range(3) or action not in range(5) or (move and action):
         raise ValueError("Sentinel movement and action states are separate")
-    palette = gen.FACTIONS[faction]
+    palette = gen.PALETTES[variant]
     image, draw = _new_sprite(64)
     _tracks(draw, palette, move, bounds=((7, 20, 20, 59), (44, 20, 57, 59)))
     draw.polygon(
@@ -336,13 +336,13 @@ def _scuttler_legs(draw: ImageDraw.ImageDraw, gait: int) -> None:
             _bolt(draw, elbow[0], elbow[1], 1.2)
 
 
-def render_scuttler(faction: str, *, move: int = 0, action: int = 0) -> Image.Image:
+def render_scuttler(variant: str, *, move: int = 0, action: int = 0) -> Image.Image:
     """Render the approved armored-centipede Scuttler."""
-    if faction not in gen.FACTIONS:
-        raise ValueError(f"unknown faction: {faction}")
+    if variant not in gen.PALETTES:
+        raise ValueError(f"unknown variant: {variant}")
     if move not in range(3) or action not in range(5) or (move and action):
         raise ValueError("Scuttler movement and action states are separate")
-    palette = gen.FACTIONS[faction]
+    palette = gen.PALETTES[variant]
     image, draw = _new_sprite(64)
     _scuttler_legs(draw, move)
     _plate(draw, (22, 14, 42, 59), fill=gen.IRON, radius=6)
@@ -418,13 +418,13 @@ def _octagon(
     )
 
 
-def render_foundry(faction: str, *, work: int = 0) -> Image.Image:
+def render_foundry(variant: str, *, work: int = 0) -> Image.Image:
     """Render the approved heavy-bridge Foundry."""
-    if faction not in gen.FACTIONS:
-        raise ValueError(f"unknown faction: {faction}")
+    if variant not in gen.PALETTES:
+        raise ValueError(f"unknown variant: {variant}")
     if work not in range(5):
         raise ValueError(f"invalid Foundry work frame: {work}")
-    palette = gen.FACTIONS[faction]
+    palette = gen.PALETTES[variant]
     image, draw = _new_sprite(128)
     _octagon(draw, 4, gen.IRON_DARK)
     _octagon(draw, 10, IRON_DEEP)
@@ -520,33 +520,34 @@ def render_foundry(faction: str, *, work: int = 0) -> Image.Image:
 
 def source_frames() -> Iterator[tuple[str, Image.Image]]:
     """Yield every approved frame in stable production-key order."""
-    for faction in ("ferrous", "cupric"):
+    for variant in ("base", "probe"):
+        tag = gen.variant_tag(variant)
         for cargo in range(HARVESTER_CARGO_LEVELS):
-            prefix = f"harvester_{faction}_cargo{cargo}"
-            yield prefix, render_harvester(faction, cargo=cargo)
-            yield f"{prefix}_tread1", render_harvester(faction, cargo=cargo, tread=1)
-            yield f"{prefix}_tread2", render_harvester(faction, cargo=cargo, tread=2)
-            yield f"{prefix}_scoop1", render_harvester(faction, cargo=cargo, scoop=1)
-            yield f"{prefix}_scoop2", render_harvester(faction, cargo=cargo, scoop=2)
-        yield f"sentinel_{faction}", render_sentinel(faction)
-        yield f"sentinel_{faction}_move1", render_sentinel(faction, move=1)
-        yield f"sentinel_{faction}_move2", render_sentinel(faction, move=2)
+            prefix = f"harvester{tag}_cargo{cargo}"
+            yield prefix, render_harvester(variant, cargo=cargo)
+            yield f"{prefix}_tread1", render_harvester(variant, cargo=cargo, tread=1)
+            yield f"{prefix}_tread2", render_harvester(variant, cargo=cargo, tread=2)
+            yield f"{prefix}_scoop1", render_harvester(variant, cargo=cargo, scoop=1)
+            yield f"{prefix}_scoop2", render_harvester(variant, cargo=cargo, scoop=2)
+        yield f"sentinel{tag}", render_sentinel(variant)
+        yield f"sentinel{tag}_move1", render_sentinel(variant, move=1)
+        yield f"sentinel{tag}_move2", render_sentinel(variant, move=2)
         for action in range(1, 5):
             yield (
-                f"sentinel_{faction}_action{action}",
-                render_sentinel(faction, action=action),
+                f"sentinel{tag}_action{action}",
+                render_sentinel(variant, action=action),
             )
-        yield f"scuttler_{faction}", render_scuttler(faction)
-        yield f"scuttler_{faction}_move1", render_scuttler(faction, move=1)
-        yield f"scuttler_{faction}_move2", render_scuttler(faction, move=2)
+        yield f"scuttler{tag}", render_scuttler(variant)
+        yield f"scuttler{tag}_move1", render_scuttler(variant, move=1)
+        yield f"scuttler{tag}_move2", render_scuttler(variant, move=2)
         for action in range(1, 5):
             yield (
-                f"scuttler_{faction}_action{action}",
-                render_scuttler(faction, action=action),
+                f"scuttler{tag}_action{action}",
+                render_scuttler(variant, action=action),
             )
-        yield f"foundry_{faction}", render_foundry(faction)
+        yield f"foundry{tag}", render_foundry(variant)
         for work in range(1, 5):
-            yield f"foundry_{faction}_work{work}", render_foundry(faction, work=work)
+            yield f"foundry{tag}_work{work}", render_foundry(variant, work=work)
 
 
 def source_rgba_digest() -> str:
@@ -560,7 +561,7 @@ def source_rgba_digest() -> str:
 
 def _put(registry: Registry, out: Path, key: str, image: Image.Image) -> None:
     native = image.convert("RGBA")
-    native.save(out / f"{key}.png")
+    gen.save_sprite(native, out, key)
     registry[key] = native
 
 
@@ -569,13 +570,14 @@ def install_core_unit_art(registry: Registry, out: Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
     for key, image in source_frames():
         _put(registry, out, key, image)
-    for faction in ("ferrous", "cupric"):
+    for variant in ("base", "probe"):
+        tag = gen.variant_tag(variant)
         aliases = {
-            f"harvester_{faction}": f"harvester_{faction}_cargo0",
-            f"harvester_{faction}_tread1": f"harvester_{faction}_cargo0_tread1",
-            f"harvester_{faction}_tread2": f"harvester_{faction}_cargo0_tread2",
-            f"harvester_{faction}_scoop1": f"harvester_{faction}_cargo0_scoop1",
-            f"harvester_{faction}_scoop2": f"harvester_{faction}_cargo0_scoop2",
+            f"harvester{tag}": f"harvester{tag}_cargo0",
+            f"harvester{tag}_tread1": f"harvester{tag}_cargo0_tread1",
+            f"harvester{tag}_tread2": f"harvester{tag}_cargo0_tread2",
+            f"harvester{tag}_scoop1": f"harvester{tag}_cargo0_scoop1",
+            f"harvester{tag}_scoop2": f"harvester{tag}_cargo0_scoop2",
         }
         for alias, source_key in aliases.items():
             _put(registry, out, alias, registry[source_key])

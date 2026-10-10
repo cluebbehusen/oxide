@@ -17,6 +17,8 @@ from PIL import (  # ty: ignore[unresolved-import]
     ImageFilter,
 )
 
+from tools.gen_sprites import save_sprite, variant_tag
+
 Registry = dict[str, Image.Image]
 Color = tuple[int, int, int]
 
@@ -33,12 +35,12 @@ BONE = (226, 220, 204)
 SCRAP_DARK = (116, 78, 38)
 SCRAP = (170, 111, 48)
 PALETTES = {
-    "ferrous": ((176, 75, 52), (105, 43, 33)),
-    "cupric": ((48, 132, 113), (29, 79, 68)),
+    "base": ((176, 75, 52), (105, 43, 33)),
+    "probe": ((48, 132, 113), (29, 79, 68)),
 }
 
 APPROVED_SOURCE_RGBA_SHA256 = (
-    "2e18485aac475caa929f3cdcf71f10e479aab13c1630ba92b3011b803a3bbb26"
+    "2a34c6b10a1bb705aa87655d5654243b4aad3a2c542274d40375fafca81eb1e6"
 )
 
 
@@ -137,17 +139,17 @@ def _conveyor(draw: ImageDraw.ImageDraw, work_phase: int) -> None:
 
 
 def render_excavator(
-    faction: str,
+    variant: str,
     move_phase: int = 0,
     work_phase: int = 0,
 ) -> Image.Image:
     """Render one approved milling-drum chassis frame."""
-    if faction not in PALETTES:
-        raise ValueError(f"unknown faction: {faction}")
+    if variant not in PALETTES:
+        raise ValueError(f"unknown variant: {variant}")
     if work_phase not in range(ACTION_COUNT + 1):
         raise ValueError(f"unknown Excavator work phase: {work_phase}")
     image, draw = _canvas()
-    primary, dark = PALETTES[faction]
+    primary, dark = PALETTES[variant]
     _base(draw, move_phase % 3, dark)
     _hopper(draw, dark)
     _cargo_bar_frame(draw)
@@ -198,7 +200,7 @@ def render_cargo_meter(level: int) -> Image.Image:
 def source_rgba_digest() -> str:
     """Digest every approved Excavator frame in installation order."""
     digest = hashlib.sha256()
-    for faction in ("ferrous", "cupric"):
+    for variant in ("base", "probe"):
         states = (
             ("idle", 0, 0),
             ("move1", 1, 0),
@@ -206,8 +208,8 @@ def source_rgba_digest() -> str:
             *((f"action{action}", 0, action) for action in range(1, ACTION_COUNT + 1)),
         )
         for label, move_phase, work_phase in states:
-            digest.update(f"excavator/{faction}/{label}".encode())
-            digest.update(render_excavator(faction, move_phase, work_phase).tobytes())
+            digest.update(f"excavator/{variant}/{label}".encode())
+            digest.update(render_excavator(variant, move_phase, work_phase).tobytes())
     for level in range(CARGO_LEVELS):
         digest.update(f"excavator/cargo{level}".encode())
         digest.update(render_cargo_meter(level).tobytes())
@@ -216,28 +218,29 @@ def source_rgba_digest() -> str:
 
 def _put(registry: Registry, out: Path, key: str, image: Image.Image) -> None:
     native = image.convert("RGBA")
-    native.save(out / f"{key}.png")
+    save_sprite(native, out, key)
     registry[key] = native
 
 
 def install_excavator(registry: Registry, out: Path) -> None:
     """Install candidate 423 and its exact cargo layers into production."""
     out.mkdir(parents=True, exist_ok=True)
-    for faction in ("ferrous", "cupric"):
-        _put(registry, out, f"excavator_{faction}", render_excavator(faction))
+    for variant in ("base", "probe"):
+        tag = variant_tag(variant)
+        _put(registry, out, f"excavator{tag}", render_excavator(variant))
         for move_phase in (1, 2):
             _put(
                 registry,
                 out,
-                f"excavator_{faction}_move{move_phase}",
-                render_excavator(faction, move_phase=move_phase),
+                f"excavator{tag}_move{move_phase}",
+                render_excavator(variant, move_phase=move_phase),
             )
         for work_phase in range(1, ACTION_COUNT + 1):
             _put(
                 registry,
                 out,
-                f"excavator_{faction}_action{work_phase}",
-                render_excavator(faction, work_phase=work_phase),
+                f"excavator{tag}_action{work_phase}",
+                render_excavator(variant, work_phase=work_phase),
             )
     for level in range(CARGO_LEVELS):
         _put(registry, out, f"excavator_cargo{level}", render_cargo_meter(level))

@@ -42,25 +42,12 @@ pub struct SeatPlan {
     /// it join. Like the bot choices, launch ignores it for the human's
     /// own chair.
     pub remote: bool,
-    /// Faction chip (feeds [`faction_override`]): 0 keeps the map's
-    /// authored roster. The human's own card carries this too.
-    pub faction_choice: usize,
     /// Team chip (feeds [`team_override`]): 0 is FFA — the seat stands
     /// alone — and `k` is Team `k`. [`NewMatchDraft::set_scenario`]
     /// seeds it from the map's authored teams, so the bare default is
     /// only right for maps that author none. Carried on every card,
-    /// the human's included: teams regroup seats, never retint them.
+    /// the human's included.
     pub team_choice: usize,
-}
-
-/// The faction a chip value forces onto its seat; `None` keeps the
-/// map's authored faction.
-pub fn faction_override(choice: usize) -> Option<oxide_sim::Faction> {
-    match choice {
-        1 => Some(oxide_sim::Faction::Ferrous),
-        2 => Some(oxide_sim::Faction::Cupric),
-        _ => None,
-    }
 }
 
 /// The scenario team a chip value writes onto its seat: `None` (FFA)
@@ -132,34 +119,6 @@ fn draft_one_team(draft: &NewMatchDraft) -> bool {
     first != 0 && choices.all(|c| c == first)
 }
 
-/// The faction a seat will actually run: its chip override, or the
-/// map's authored roster.
-pub fn effective_faction(
-    scenario: &Scenario,
-    draft: &NewMatchDraft,
-    seat: usize,
-) -> oxide_sim::Faction {
-    draft
-        .seats
-        .get(seat)
-        .and_then(|p| faction_override(p.faction_choice))
-        .unwrap_or(scenario.players[seat].faction)
-}
-
-/// The name a seat will actually play under: the authored name run
-/// through the launcher's own retint rule when a faction chip
-/// overrides the roster. Lives beside [`effective_faction`] so the
-/// card's disc and its label agree. Duplicate-name ordinals are added
-/// at launch; the preview shows the pre-ordinal name.
-pub fn effective_name(scenario: &Scenario, draft: &NewMatchDraft, seat: usize) -> String {
-    let spec = &scenario.players[seat];
-    oxide_sim::scenario::retinted_name(
-        &spec.name,
-        spec.faction,
-        effective_faction(scenario, draft, seat),
-    )
-}
-
 /// Everything New Match has chosen so far. The draft outlives every
 /// screen transition: backing from any step to the map list and
 /// forward again re-offers each earlier answer instead of forgetting
@@ -206,9 +165,6 @@ impl NewMatchDraft {
     }
 }
 
-/// The setup cards' faction chip values, aligned with
-/// [`faction_override`].
-const FACTION_CHIP_ITEMS: [&str; 3] = ["Auto", "Ferrous", "Cupric"];
 const COMPACT_PAGE_ITEMS: usize = 5;
 
 /// The setup screen's coaching line. The keyboard hint follows the
@@ -224,11 +180,9 @@ fn setup_hint(one_team: bool, on_start: bool, cell: Cell, touch_only: bool) -> &
         (false, false) => match cell {
             Cell::Difficulty => "{confirm} cycles difficulty - {left}/{right} move - {back} back",
             Cell::Stance => "{confirm} cycles stance - {left}/{right} move - {back} back",
-            Cell::Faction | Cell::Team => {
-                "{confirm} cycles the chip - {left}/{right} move - {back} back"
-            }
+            Cell::Team => "{confirm} cycles the chip - {left}/{right} move - {back} back",
             Cell::Seat => {
-                "{confirm} takes this seat - {left}/{right} reach difficulty, stance, faction, and team - {back} back"
+                "{confirm} takes this seat - {left}/{right} reach difficulty, stance, and team - {back} back"
             }
         },
     }
@@ -276,7 +230,7 @@ pub struct Wizard {
     pub setup_sel: usize,
     /// Which cell of the selected seat card the cursor is on: 0 the
     /// seat itself, then its controls left to right: 1 difficulty,
-    /// 2 stance, 3 faction, and 4 team. The two bot controls are absent
+    /// 2 stance, and 3 team. The two bot controls are absent
     /// from the human's row.
     pub setup_cell: Cell,
     /// Setup zone armed by a press; activation on release inside the
@@ -355,27 +309,19 @@ pub enum Cell {
     Seat,
     Difficulty,
     Stance,
-    Faction,
     Team,
 }
 
 impl Cell {
     /// Every cell, left to right.
-    pub const ALL: [Self; 5] = [
-        Self::Seat,
-        Self::Difficulty,
-        Self::Stance,
-        Self::Faction,
-        Self::Team,
-    ];
+    pub const ALL: [Self; 4] = [Self::Seat, Self::Difficulty, Self::Stance, Self::Team];
 
     fn index(self) -> usize {
         match self {
             Self::Seat => 0,
             Self::Difficulty => 1,
             Self::Stance => 2,
-            Self::Faction => 3,
-            Self::Team => 4,
+            Self::Team => 3,
         }
     }
 }
@@ -390,7 +336,6 @@ pub struct CardRects {
     pub seat: Rect,
     pub difficulty: Option<Rect>,
     pub stance: Option<Rect>,
-    pub faction: Rect,
     pub team: Rect,
 }
 
@@ -401,7 +346,6 @@ impl CardRects {
             Cell::Seat => Some(self.seat),
             Cell::Difficulty => self.difficulty,
             Cell::Stance => self.stance,
-            Cell::Faction => Some(self.faction),
             Cell::Team => Some(self.team),
         }
     }
@@ -542,10 +486,10 @@ fn setup_card_controls(card: Rect, seat: usize, seat_choice: usize, ui: f32) -> 
     let chip_h = (card.h * 0.72).clamp(10.0, 40.0 * ui);
     let chip_y = card.y + (card.h - chip_h) * 0.5;
     if seat == seat_choice {
-        let controls_w = (card.w * 0.36)
-            .max(MIN_TOUCH_TARGET * 2.0)
+        let controls_w = (card.w * 0.18)
+            .max(MIN_TOUCH_TARGET)
             .min(card.w - MIN_TOUCH_TARGET);
-        let lane_w = controls_w / 2.0;
+        let lane_w = controls_w;
         let controls_x = card.x + card.w - controls_w;
         let control = |lane: usize| {
             Rect::new(
@@ -560,14 +504,13 @@ fn setup_card_controls(card: Rect, seat: usize, seat_choice: usize, ui: f32) -> 
             seat: Rect::new(card.x, card.y, controls_x - card.x, card.h),
             difficulty: None,
             stance: None,
-            faction: control(0),
-            team: control(1),
+            team: control(0),
         }
     } else {
-        let controls_w = (card.w * 0.72)
-            .max(MIN_TOUCH_TARGET * 4.0)
+        let controls_w = (card.w * 0.54)
+            .max(MIN_TOUCH_TARGET * 3.0)
             .min(card.w - MIN_TOUCH_TARGET);
-        let lane_w = controls_w / 4.0;
+        let lane_w = controls_w / 3.0;
         let controls_x = card.x + card.w - controls_w;
         let control = |lane: usize| {
             Rect::new(
@@ -582,8 +525,7 @@ fn setup_card_controls(card: Rect, seat: usize, seat_choice: usize, ui: f32) -> 
             seat: Rect::new(card.x, card.y, controls_x - card.x, card.h),
             difficulty: Some(control(0)),
             stance: Some(control(1)),
-            faction: control(2),
-            team: control(3),
+            team: control(2),
         }
     }
 }
@@ -719,12 +661,10 @@ pub fn seat_anchors(map: &[String]) -> Vec<(usize, (i32, i32))> {
 }
 
 /// Marks every seat's foundry on a drawn preview rect: numbered discs
-/// in the seat's effective faction color (chip overrides included), a
-/// white ring for the human's chair, an accent ring for the focused
-/// seat.
+/// in the roster accent, a white ring for the human's chair, an accent
+/// ring for the focused seat.
 pub fn draw_seat_markers(
     scenario: &Scenario,
-    draft: &NewMatchDraft,
     rect: Rect,
     seat_choice: usize,
     focus_seat: Option<usize>,
@@ -739,7 +679,7 @@ pub fn draw_seat_markers(
         // Foundry anchors are the 2x2's top-left; mark its center.
         let px = rect.x + (ax as f32 + 1.0) / map_w * rect.w;
         let py = rect.y + (ay as f32 + 1.0) / map_h * rect.h;
-        let accent = crate::render::faction_accent(effective_faction(scenario, draft, seat));
+        let accent = crate::render::roster_accent();
         if seat == seat_choice {
             draw_circle_lines(px, py, 10.0 * ui, 2.5, macroquad::prelude::WHITE);
         } else if focus_seat == Some(seat) {
@@ -855,8 +795,8 @@ impl Wizard {
     }
 
     /// The setup screen's input: Up/Down walk the seat cards and the
-    /// Start button; Left/Right walk the seat, difficulty, stance,
-    /// faction, and team cells; Enter takes the seat or cycles the
+    /// Start button; Left/Right walk the seat, difficulty, stance, and
+    /// team cells; Enter takes the seat or cycles the
     /// control under the cursor; clicks hit each zone directly.
     fn update_setup(
         &mut self,
@@ -879,7 +819,7 @@ impl Wizard {
         let cell_live = |row: usize, cell: Cell| -> bool {
             row < start_index
                 && match cell {
-                    Cell::Seat | Cell::Faction | Cell::Team => true,
+                    Cell::Seat | Cell::Team => true,
                     Cell::Difficulty => order[row] != draft.seat_choice,
                     Cell::Stance => {
                         order[row] != draft.seat_choice && !draft.seats[order[row]].remote
@@ -1025,9 +965,6 @@ impl Wizard {
                     Cell::Seat => draft.seat_choice = seat,
                     Cell::Difficulty => cycle_controller(plan),
                     Cell::Stance => plan.stance = cycle_stance(plan.stance, 1),
-                    Cell::Faction => {
-                        plan.faction_choice = (plan.faction_choice + 1) % FACTION_CHIP_ITEMS.len();
-                    }
                     // FFA, then every team up to the seat count
                     // (start_index is the full roster's length),
                     // wrapping back to FFA.
@@ -1070,10 +1007,7 @@ impl Wizard {
         );
         if !compact {
             let sub = if crate::hints::showing() {
-                format!(
-                    "{} - pick your seat, opponents, factions, and teams",
-                    scenario.name
-                )
+                format!("{} - pick your seat, opponents, and teams", scenario.name)
             } else {
                 scenario.name.clone()
             };
@@ -1110,7 +1044,7 @@ impl Wizard {
             };
             let rect = &card.card;
             let seat = order[pos];
-            let display = effective_name(scenario, draft, seat);
+            let display = scenario.players[seat].name.as_str();
             let selected = self.setup_sel == pos;
             let is_you = seat == draft.seat_choice;
             let plan = draft.seats[seat];
@@ -1128,7 +1062,7 @@ impl Wizard {
                 .at(ui),
                 if selected { TEXT_TITLE } else { BORDER_FAINT },
             );
-            let accent = crate::render::faction_accent(effective_faction(scenario, draft, seat));
+            let accent = crate::render::roster_accent();
             let cy = rect.y + rect.h * 0.5;
             let chip_x = rect.x + 22.0 * ui;
             // Everything on a card scales to the card, so a compressed
@@ -1153,13 +1087,13 @@ impl Wizard {
                 .map_or(card.seat.x + card.seat.w, |difficulty| difficulty.x);
             let name_room = (text_right - rect.x - 48.0 * ui).max(20.0);
             let name_font = crate::typography::fit(
-                &display,
+                display,
                 Type::Body.at(ui).min(rect.h * 0.62),
                 name_room,
                 8.0,
             );
             draw_text(
-                &display,
+                display,
                 rect.x + 44.0 * ui,
                 cy + name_font * 0.35,
                 name_font,
@@ -1169,10 +1103,9 @@ impl Wizard {
                 let tag = "your seat";
                 let tag_font = Type::Small.at(ui).min(rect.h * 0.55);
                 let tdims = measure_text(tag, None, numeric::font_size(tag_font), 1.0);
-                let fac = card.faction;
                 draw_text(
                     tag,
-                    fac.x - tdims.width - 14.0 * ui,
+                    card.team.x - tdims.width - 14.0 * ui,
                     cy + tag_font * 0.35,
                     tag_font,
                     TEXT_SECONDARY,
@@ -1215,47 +1148,40 @@ impl Wizard {
                     accent,
                 );
             }
-            // Boxed editable chips; the cursor's cell wears the accent.
+            // The boxed team chip; the cursor's cell wears the accent.
             let team_label = team_chip_label(plan.team_choice);
-            for (cell, chip, label) in [
-                (
-                    Cell::Faction,
-                    card.faction,
-                    FACTION_CHIP_ITEMS[plan.faction_choice],
-                ),
-                (Cell::Team, card.team, team_label.as_str()),
-            ] {
-                let on_cell = selected && self.setup_cell == cell;
-                draw_rectangle(chip.x, chip.y, chip.w, chip.h, CHIP);
-                draw_rectangle_lines(
-                    chip.x,
-                    chip.y,
-                    chip.w,
-                    chip.h,
-                    if on_cell {
-                        Stroke::Focus
-                    } else {
-                        Stroke::Hairline
-                    }
-                    .at(ui),
-                    if on_cell { TEXT_TITLE } else { BORDER_STRONG },
-                );
-                // The label fits its chip: squeezed cards shrink the type
-                // instead of spilling text across neighbors.
-                let font = crate::typography::fit(label, Type::Small.at(ui), chip.w - 6.0, 8.0);
-                let ldims = measure_text(label, None, numeric::font_size(font), 1.0);
-                draw_text(
-                    label,
-                    chip.x + (chip.w - ldims.width) * 0.5,
-                    chip.y + chip.h * 0.5 + font * 0.35,
-                    font,
-                    if on_cell {
-                        TEXT_PRIMARY
-                    } else {
-                        TEXT_SECONDARY
-                    },
-                );
-            }
+            let label = team_label.as_str();
+            let chip = card.team;
+            let on_cell = selected && self.setup_cell == Cell::Team;
+            draw_rectangle(chip.x, chip.y, chip.w, chip.h, CHIP);
+            draw_rectangle_lines(
+                chip.x,
+                chip.y,
+                chip.w,
+                chip.h,
+                if on_cell {
+                    Stroke::Focus
+                } else {
+                    Stroke::Hairline
+                }
+                .at(ui),
+                if on_cell { TEXT_TITLE } else { BORDER_STRONG },
+            );
+            // The label fits its chip: squeezed cards shrink the type
+            // instead of spilling text across neighbors.
+            let font = crate::typography::fit(label, Type::Small.at(ui), chip.w - 6.0, 8.0);
+            let ldims = measure_text(label, None, numeric::font_size(font), 1.0);
+            draw_text(
+                label,
+                chip.x + (chip.w - ldims.width) * 0.5,
+                chip.y + chip.h * 0.5 + font * 0.35,
+                font,
+                if on_cell {
+                    TEXT_PRIMARY
+                } else {
+                    TEXT_SECONDARY
+                },
+            );
             // The seat-zone cell cursor: a soft inner line under
             // the name, so "Enter takes this chair" reads.
             if selected && self.setup_cell == Cell::Seat && !is_you {
@@ -1263,7 +1189,7 @@ impl Wizard {
                 draw_rectangle(
                     zone.x + 44.0 * ui,
                     cy + name_font * 0.55,
-                    measure_text(&display, None, numeric::font_size(name_font), 1.0).width,
+                    measure_text(display, None, numeric::font_size(name_font), 1.0).width,
                     1.5,
                     TEXT_TITLE,
                 );
@@ -1368,7 +1294,6 @@ impl Wizard {
             let focus = (self.setup_sel < order.len()).then(|| order[self.setup_sel]);
             draw_seat_markers(
                 scenario,
-                draft,
                 Rect::new(x, y, pw, ph),
                 draft.seat_choice,
                 focus,
@@ -1426,12 +1351,12 @@ impl Wizard {
                         seat_display_order(sc)
                             .into_iter()
                             .map(|seat| {
-                                let name = effective_name(sc, draft, seat);
+                                let name = &sc.players[seat].name;
                                 let plan = draft.seats[seat];
                                 let team = team_chip_label(plan.team_choice);
                                 if seat == draft.seat_choice || plan.remote {
                                     format!(
-                                        "{}. {} ({}) | {} | {}",
+                                        "{}. {} ({}) | {}",
                                         seat + 1,
                                         name,
                                         if seat == draft.seat_choice {
@@ -1439,17 +1364,15 @@ impl Wizard {
                                         } else {
                                             "remote"
                                         },
-                                        FACTION_CHIP_ITEMS[plan.faction_choice],
                                         team
                                     )
                                 } else {
                                     format!(
-                                        "{}. {} | Difficulty {} | Stance {} | {} | {}",
+                                        "{}. {} | Difficulty {} | Stance {} | {}",
                                         seat + 1,
                                         name,
                                         difficulty_name(plan.difficulty),
                                         stance_name(plan.stance),
-                                        FACTION_CHIP_ITEMS[plan.faction_choice],
                                         team
                                     )
                                 }

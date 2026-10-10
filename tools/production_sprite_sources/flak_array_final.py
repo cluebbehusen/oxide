@@ -15,10 +15,10 @@ ARRAY_WORK_SUFFIXES = tuple(f"_work{phase}" for phase in range(1, 7))
 ARRAY_HEADINGS = (225, 285, 345, 405, 465, 525, 585)
 
 FLAK_APPROVED_VISIBLE_RGBA_SHA256 = (
-    "0e9458d23ea7bf6c34a8d90fe5dab09bd9d2706c6bfd3f6878451e1012238793"
+    "af36e7350ac5e95260be1ea56a2e3550eab50e9acef778f0c185c4cf5ac8381d"
 )
 DEEP_ARRAY_APPROVED_VISIBLE_RGBA_SHA256 = (
-    "56d4dd83c86f2526edfacb40218d95f35420faa5766aa6527d7533fbcbbb7a0f"
+    "af99dbff3cb052884614fe157ef5047bc40f837e34d63bb9872671215aec7ae6"
 )
 
 
@@ -162,11 +162,11 @@ def _elevated_barrel(
     )
 
 
-def flak_base(faction: str, tier: int) -> Image.Image:
+def flak_base(variant: str, tier: int) -> Image.Image:
     """Draw the approved compact base or broad Burst Flak foundation."""
     if tier not in range(2):
         raise ValueError(f"invalid Flak tier: {tier}")
-    palette = gen.FACTIONS[faction]
+    palette = gen.PALETTES[variant]
     image, draw = gen.canvas(64)
     if tier == 0:
         _ellipse(draw, (8, 8, 56, 58), fill=_rgba(gen.IRON_DARK))
@@ -214,13 +214,13 @@ def flak_base(faction: str, tier: int) -> Image.Image:
     return _finish(image)
 
 
-def flak_mount(faction: str, tier: int, phase: int) -> Image.Image:
+def flak_mount(variant: str, tier: int, phase: int) -> Image.Image:
     """Draw one approved four-stage charge, report, or recovery pose."""
     if tier not in range(2):
         raise ValueError(f"invalid Flak tier: {tier}")
     if phase not in range(9):
         raise ValueError(f"invalid Flak action phase: {phase}")
-    palette = gen.FACTIONS[faction]
+    palette = gen.PALETTES[variant]
     image, draw = gen.canvas(64)
     report_recoil = 5 if tier == 0 else 3
     left_recoil = report_recoil if phase == 5 else 2 if phase == 7 else 0
@@ -331,10 +331,10 @@ def flak_mount(faction: str, tier: int, phase: int) -> Image.Image:
     return _finish(image)
 
 
-def flak_frame(faction: str, tier: int, phase: int) -> Image.Image:
+def flak_frame(variant: str, tier: int, phase: int) -> Image.Image:
     """Compose a native review-equivalent Flak frame for stability tests."""
-    image = flak_base(faction, tier)
-    image.alpha_composite(flak_mount(faction, tier, phase))
+    image = flak_base(variant, tier)
+    image.alpha_composite(flak_mount(variant, tier, phase))
     return image
 
 
@@ -348,11 +348,11 @@ def _polar(
     )
 
 
-def deep_array_frame(faction: str, phase: int) -> Image.Image:
+def deep_array_frame(variant: str, phase: int) -> Image.Image:
     """Draw one approved concentric-gimbal Deep Array sweep pose."""
     if phase not in range(7):
         raise ValueError(f"invalid Deep Array work phase: {phase}")
-    palette = gen.FACTIONS[faction]
+    palette = gen.PALETTES[variant]
     image, draw = gen.canvas(64)
     center = (32.0, 32.0)
     heading = ARRAY_HEADINGS[phase]
@@ -421,36 +421,36 @@ def _visible_rgba_bytes(image: Image.Image) -> bytes:
 def flak_source_visible_digest() -> str:
     """Hash every approved Flak family frame without invisible RGB."""
     digest = hashlib.sha256()
-    for faction in ("ferrous", "cupric"):
+    for variant in ("base", "probe"):
         for tier in range(2):
             for phase in range(9):
-                digest.update(f"flak/{faction}/{tier}/{phase}".encode())
-                digest.update(_visible_rgba_bytes(flak_frame(faction, tier, phase)))
+                digest.update(f"flak/{variant}/{tier}/{phase}".encode())
+                digest.update(_visible_rgba_bytes(flak_frame(variant, tier, phase)))
     return digest.hexdigest()
 
 
 def deep_array_source_visible_digest() -> str:
     """Hash every approved Deep Array sweep frame without invisible RGB."""
     digest = hashlib.sha256()
-    for faction in ("ferrous", "cupric"):
+    for variant in ("base", "probe"):
         for phase in range(7):
-            digest.update(f"array/{faction}/{phase}".encode())
-            digest.update(_visible_rgba_bytes(deep_array_frame(faction, phase)))
+            digest.update(f"array/{variant}/{phase}".encode())
+            digest.update(_visible_rgba_bytes(deep_array_frame(variant, phase)))
     return digest.hexdigest()
 
 
-def factions_share_silhouette(image: str, tier: int, phase: int) -> bool:
-    """Return whether the two allegiance variants occupy identical pixels."""
+def variants_share_silhouette(image: str, tier: int, phase: int) -> bool:
+    """Return whether the base and probe renders occupy identical pixels."""
     if image == "flak":
-        ferrous = flak_frame("ferrous", tier, phase)
-        cupric = flak_frame("cupric", tier, phase)
+        base = flak_frame("base", tier, phase)
+        probe = flak_frame("probe", tier, phase)
     elif image == "array":
-        ferrous = deep_array_frame("ferrous", phase)
-        cupric = deep_array_frame("cupric", phase)
+        base = deep_array_frame("base", phase)
+        probe = deep_array_frame("probe", phase)
     else:
         raise ValueError(f"unknown sprite family: {image}")
     return (
-        ImageChops.difference(ferrous.getchannel("A"), cupric.getchannel("A")).getbbox()
+        ImageChops.difference(base.getchannel("A"), probe.getchannel("A")).getbbox()
         is None
     )
 
@@ -459,32 +459,33 @@ def _put(
     registry: dict[str, Image.Image], out: Path, key: str, image: Image.Image
 ) -> None:
     native = image.convert("RGBA")
-    native.save(out / f"{key}.png")
+    gen.save_sprite(native, out, key)
     registry[key] = native
 
 
 def install_flak_array(registry: dict[str, Image.Image], out: Path) -> None:
     """Install approved tier-specific Flak and Deep Array production rows."""
     out.mkdir(parents=True, exist_ok=True)
-    for faction in ("ferrous", "cupric"):
+    for variant in ("base", "probe"):
+        tag = gen.variant_tag(variant)
         for tier, (base_stem, mount_stem) in enumerate(
             (("flak_turret", "flak_mount"), ("flak_turret_t1", "flak_mount_t1"))
         ):
-            _put(registry, out, f"{base_stem}_{faction}", flak_base(faction, tier))
-            _put(registry, out, f"{mount_stem}_{faction}", flak_mount(faction, tier, 0))
+            _put(registry, out, f"{base_stem}{tag}", flak_base(variant, tier))
+            _put(registry, out, f"{mount_stem}{tag}", flak_mount(variant, tier, 0))
             for phase, suffix in enumerate(FLAK_ACTION_SUFFIXES, start=1):
                 _put(
                     registry,
                     out,
-                    f"{mount_stem}_{faction}{suffix}",
-                    flak_mount(faction, tier, phase),
+                    f"{mount_stem}{tag}{suffix}",
+                    flak_mount(variant, tier, phase),
                 )
 
-        _put(registry, out, f"array_t1_{faction}", deep_array_frame(faction, 0))
+        _put(registry, out, f"array_t1{tag}", deep_array_frame(variant, 0))
         for phase, suffix in enumerate(ARRAY_WORK_SUFFIXES, start=1):
             _put(
                 registry,
                 out,
-                f"array_t1_{faction}{suffix}",
-                deep_array_frame(faction, phase),
+                f"array_t1{tag}{suffix}",
+                deep_array_frame(variant, phase),
             )

@@ -5,7 +5,7 @@
 use chassis::grid::TilePos;
 use chassis::grid::as_index;
 use oxide_sim::scenario::{PlayerSpec, ScenarioMode, UnitSpec};
-use oxide_sim::{Command, Faction, PlayerCommand, PlayerId, Scenario, UnitKind};
+use oxide_sim::{Command, PlayerCommand, PlayerId, Scenario, UnitKind};
 
 /// A symmetric mass battle: `per_side` mixed-role units per seat on a
 /// 96x56 open field, foundries far corners, armies deployed in facing
@@ -71,16 +71,14 @@ pub fn mass_battle(per_side: u32) -> Scenario {
         map,
         players: vec![
             PlayerSpec {
-                name: "Ferrous".into(),
-                faction: Faction::Ferrous,
+                name: "West".into(),
                 team: None,
                 scrap: 0,
                 bot: false,
                 bot_config: None,
             },
             PlayerSpec {
-                name: "Cupric".into(),
-                faction: Faction::Cupric,
+                name: "East".into(),
                 team: None,
                 scrap: 0,
                 bot: false,

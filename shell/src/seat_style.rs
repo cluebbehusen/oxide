@@ -3,7 +3,7 @@ use macroquad::prelude::{Color, WHITE, color_u8};
 use oxide_sim::scenario::MAX_PLAYERS;
 use oxide_sim::{PlayerId, State};
 
-/// Relationship to the viewer, independent of faction artwork.
+/// Relationship to the viewer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AllegianceCue {
     Mine,
@@ -41,11 +41,11 @@ impl SeatStyles {
             cue: AllegianceCue::Mine,
             color: WHITE,
         }; MAX_PLAYERS];
-        for (seat, player) in state.players().iter().enumerate() {
+        for (seat, style) in styles.iter_mut().enumerate().take(state.players().len()) {
             let owner = PlayerId::from_index(seat);
             let cue = AllegianceCue::of(state, viewer, owner);
             let color = match cue {
-                AllegianceCue::Mine => faction_accent(player.faction, colorblind),
+                AllegianceCue::Mine => roster_accent(colorblind),
                 AllegianceCue::Ally => {
                     let color = identity_color(cue, allies, colorblind);
                     allies += 1;
@@ -57,7 +57,7 @@ impl SeatStyles {
                     color
                 }
             };
-            styles[seat] = SeatStyle { cue, color };
+            *style = SeatStyle { cue, color };
         }
         Self(styles)
     }
@@ -67,18 +67,16 @@ impl SeatStyles {
     }
 }
 
-pub(crate) fn faction_accent(faction: oxide_sim::Faction, colorblind: bool) -> Color {
-    match (faction, colorblind) {
-        (oxide_sim::Faction::Ferrous, false) => color_u8!(196, 87, 59, 255),
-        (oxide_sim::Faction::Cupric, false) => color_u8!(63, 148, 130, 255),
-        // The safe pair: warm orange vs cool blue reads under deutan,
-        // protan, and tritan alike.
-        (oxide_sim::Faction::Ferrous, true) => color_u8!(230, 120, 30, 255),
-        (oxide_sim::Faction::Cupric, true) => color_u8!(70, 120, 235, 255),
+/// The accent the roster's art wears, which own seats keep.
+pub(crate) fn roster_accent(colorblind: bool) -> Color {
+    if colorblind {
+        color_u8!(230, 120, 30, 255)
+    } else {
+        color_u8!(196, 87, 59, 255)
     }
 }
 
-// Hue supplements the allegiance rings and labels; it is not the sole identity cue.
+/// Stable hues by rank within the ally or the hostile family.
 fn identity_color(cue: AllegianceCue, rank: usize, colorblind: bool) -> Color {
     let allies = if colorblind {
         [
@@ -129,7 +127,7 @@ fn identity_color(cue: AllegianceCue, rank: usize, colorblind: bool) -> Color {
     let palette = match cue {
         AllegianceCue::Ally => allies,
         AllegianceCue::Hostile => hostiles,
-        AllegianceCue::Mine => unreachable!("own seats use their faction accent"),
+        AllegianceCue::Mine => unreachable!("own seats use the roster accent"),
     };
     let base = palette[rank % palette.len()];
     if rank < palette.len() {

@@ -1,7 +1,7 @@
 use super::*;
 use crate::scenario::{BuildingSpec, PlayerSpec, ScenarioMode, UnitSpec};
 use crate::stats::BuildingKind;
-use crate::{Faction, PlayerId, Scenario, UnitKind};
+use crate::{PlayerId, Scenario, UnitKind};
 
 #[test]
 fn return_cargo_reuses_exhausted_floods_per_worker_and_safety_pass() {
@@ -18,8 +18,8 @@ fn return_cargo_reuses_exhausted_floods_per_worker_and_safety_pass() {
     let scenario = serde_json::json!({
         "name": "sealed-worker-drop-offs", "map": rows.into_iter().map(|row| row.into_iter().collect::<String>()).collect::<Vec<_>>(),
         "players": [
-            {"name": "F", "faction": "ferrous", "scrap": 0, "bot": false},
-            {"name": "C", "faction": "cupric", "scrap": 0, "bot": true}
+            {"name": "F", "scrap": 0, "bot": false},
+            {"name": "C", "scrap": 0, "bot": true}
         ],
         "units": [
             {"player": 0, "kind": "harvester", "x": 4, "y": 5},
@@ -64,8 +64,8 @@ fn return_cargo_resets_reachability_before_ignoring_danger() {
             "##########################"
         ],
         "players": [
-            {"name": "F", "faction": "ferrous", "scrap": 0, "bot": false},
-            {"name": "C", "faction": "cupric", "scrap": 0, "bot": true}
+            {"name": "F", "scrap": 0, "bot": false},
+            {"name": "C", "scrap": 0, "bot": true}
         ],
         "units": [
             {"player": 0, "kind": "harvester", "x": 16, "y": 3},
@@ -120,8 +120,8 @@ fn a_failed_search_from_a_small_pocket_keeps_no_proof() {
             "##########################"
         ],
         "players": [
-            {"name": "F", "faction": "ferrous", "scrap": 0, "bot": false},
-            {"name": "C", "faction": "cupric", "scrap": 0, "bot": true}
+            {"name": "F", "scrap": 0, "bot": false},
+            {"name": "C", "scrap": 0, "bot": true}
         ],
         "units": [{"player": 0, "kind": "harvester", "x": 16, "y": 3}]
     });
@@ -162,8 +162,8 @@ fn a_failed_safe_search_settles_repeats_until_a_watched_node_drains() {
             "##########################"
         ],
         "players": [
-            {"name": "F", "faction": "ferrous", "scrap": 0, "bot": false},
-            {"name": "C", "faction": "cupric", "scrap": 0, "bot": true}
+            {"name": "F", "scrap": 0, "bot": false},
+            {"name": "C", "scrap": 0, "bot": true}
         ],
         "units": [{"player": 0, "kind": "harvester", "x": 17, "y": 3}]
     });
@@ -213,8 +213,8 @@ fn a_held_drop_off_route_yields_only_to_a_nearer_worker() {
             "##########################"
         ],
         "players": [
-            {"name": "F", "faction": "ferrous", "scrap": 0, "bot": false},
-            {"name": "C", "faction": "cupric", "scrap": 0, "bot": true}
+            {"name": "F", "scrap": 0, "bot": false},
+            {"name": "C", "scrap": 0, "bot": true}
         ],
         "units": [
             {"player": 0, "kind": "harvester", "x": 9, "y": 3},
@@ -286,8 +286,8 @@ fn held_worker(wall: Option<(usize, usize)>) -> (State, UnitId, KnownSource, Pat
     let scenario = serde_json::json!({
         "name": "danger-held-order", "map": map,
         "players": [
-            {"name": "F", "faction": "ferrous", "scrap": 0, "bot": false},
-            {"name": "C", "faction": "cupric", "scrap": 0, "bot": true}
+            {"name": "F", "scrap": 0, "bot": false},
+            {"name": "C", "scrap": 0, "bot": true}
         ],
         "units": [
             {"player": 0, "kind": "harvester", "x": 16, "y": 3},
@@ -391,8 +391,8 @@ fn a_sealed_worker_settles_every_work_position_with_one_search() {
     let scenario = serde_json::json!({
         "name": "sealed-worker-source", "map": rows.into_iter().map(|row| row.into_iter().collect::<String>()).collect::<Vec<_>>(),
         "players": [
-            {"name": "F", "faction": "ferrous", "scrap": 0, "bot": false},
-            {"name": "C", "faction": "cupric", "scrap": 0, "bot": true}
+            {"name": "F", "scrap": 0, "bot": false},
+            {"name": "C", "scrap": 0, "bot": true}
         ],
         "units": [{"player": 0, "kind": "harvester", "x": 4, "y": 5}]
     });
@@ -421,8 +421,8 @@ fn a_worker_held_from_its_drop_off_rescans_after_the_retry_period_and_on_command
             "##########################"
         ],
         "players": [
-            {"name": "F", "faction": "ferrous", "scrap": 0, "bot": false},
-            {"name": "C", "faction": "cupric", "scrap": 0, "bot": true}
+            {"name": "F", "scrap": 0, "bot": false},
+            {"name": "C", "scrap": 0, "bot": true}
         ],
         "units": [
             {"player": 0, "kind": "harvester", "x": 16, "y": 3},
@@ -621,16 +621,14 @@ fn replacement_preserves_worker_affinity_before_route_efficiency() {
         ],
         players: vec![
             PlayerSpec {
-                name: "Ferrous".into(),
-                faction: Faction::Ferrous,
+                name: "West".into(),
                 team: None,
                 scrap: 0,
                 bot: false,
                 bot_config: None,
             },
             PlayerSpec {
-                name: "Cupric".into(),
-                faction: Faction::Cupric,
+                name: "East".into(),
                 team: None,
                 scrap: 0,
                 bot: false,
@@ -706,7 +704,6 @@ fn danger_replan_cadence_uses_owner_local_rank() {
         players: vec![
             PlayerSpec {
                 name: "West".into(),
-                faction: Faction::Ferrous,
                 team: None,
                 scrap: 0,
                 bot: false,
@@ -714,7 +711,6 @@ fn danger_replan_cadence_uses_owner_local_rank() {
             },
             PlayerSpec {
                 name: "East".into(),
-                faction: Faction::Cupric,
                 team: None,
                 scrap: 0,
                 bot: false,
@@ -797,16 +793,14 @@ fn unseen_wreck_selection_reads_frozen_memory_not_live_salvage() {
         ],
         players: vec![
             PlayerSpec {
-                name: "Ferrous".into(),
-                faction: Faction::Ferrous,
+                name: "West".into(),
                 team: None,
                 scrap: 0,
                 bot: false,
                 bot_config: None,
             },
             PlayerSpec {
-                name: "Cupric".into(),
-                faction: Faction::Cupric,
+                name: "East".into(),
                 team: None,
                 scrap: 0,
                 bot: false,
@@ -867,16 +861,14 @@ fn an_unscouted_enemy_building_cannot_bend_a_route_through_fog() {
         ],
         players: vec![
             PlayerSpec {
-                name: "Ferrous".into(),
-                faction: Faction::Ferrous,
+                name: "West".into(),
                 team: None,
                 scrap: 0,
                 bot: false,
                 bot_config: None,
             },
             PlayerSpec {
-                name: "Cupric".into(),
-                faction: Faction::Cupric,
+                name: "East".into(),
                 team: None,
                 scrap: 0,
                 bot: false,

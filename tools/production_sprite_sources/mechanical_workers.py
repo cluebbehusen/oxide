@@ -58,9 +58,9 @@ def load(d, level, x0=45, y0=72, width=38, height=28):
         line(d, [(x0 + 20, y - 2), (x0 + width - 6, y)], SCRAP_EDGE)
 
 
-def harvester(faction, move=0, work=0, cargo=0, *, body_only=False):
+def harvester(variant, move=0, work=0, cargo=0, *, body_only=False):
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     for bounds in ((17, 36, 36, 112), (92, 36, 111, 112)):
         track(d, bounds, move, paint)
     poly(d, [(34, 48), (44, 38), (84, 38), (94, 48), (90, 111), (38, 111)], VOID)
@@ -113,9 +113,9 @@ def harvester(faction, move=0, work=0, cargo=0, *, body_only=False):
     return base
 
 
-def excavator(faction, move=0, work=0, *, body_only=False):
+def excavator(variant, move=0, work=0, *, body_only=False):
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     for bounds in ((14, 38, 35, 114), (93, 38, 114, 114)):
         track(d, bounds, move, paint)
     poly(d, [(33, 45), (44, 36), (84, 36), (95, 45), (90, 112), (38, 112)], VOID)
@@ -159,9 +159,9 @@ def excavator_cargo(level):
     return finish(im, rim=False)
 
 
-def tender(faction, move=0, work=0, *, body_only=False):
+def tender(variant, move=0, work=0, *, body_only=False):
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     for bounds in ((17, 40, 36, 113), (92, 40, 111, 113)):
         track(d, bounds, move, paint)
     poly(d, [(33, 47), (44, 37), (82, 37), (94, 50), (87, 112), (41, 112)], VOID)
@@ -217,9 +217,9 @@ def leg(d, root, knee, foot):
     pin(d, *knee, 2)
 
 
-def scuttler(faction, move=0, action=0, *, body_only=False):
+def scuttler(variant, move=0, action=0, *, body_only=False):
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     for side in (-1, 1):
         for i, y in enumerate((48, 69, 90)):
             shift = (0, 5, -5)[move] * (1 if (i + (side == 1)) % 2 else -1)
@@ -295,9 +295,9 @@ def scuttler(faction, move=0, action=0, *, body_only=False):
     return base
 
 
-def sapper(faction, move=0, action=0):
+def sapper(variant, move=0, action=0):
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     for side in (-1, 1):
         for i, y in enumerate((45, 91)):
             shift = (0, 5, -5)[move] * (1 if (i + (side == 1)) % 2 else -1)

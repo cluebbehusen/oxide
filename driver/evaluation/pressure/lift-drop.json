@@ -31,14 +31,12 @@
     "players": [
       {
         "name": "Defender",
-        "faction": "ferrous",
         "scrap": 300,
         "bot": true,
         "bot_config": {}
       },
       {
         "name": "Attacker",
-        "faction": "ferrous",
         "scrap": 0,
         "bot": false
       }

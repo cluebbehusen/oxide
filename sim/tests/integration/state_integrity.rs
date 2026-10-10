@@ -18,8 +18,8 @@ use common::cmd;
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, ScenarioMode, UnitSpec};
 use oxide_sim::stats::{BuildingKind, QUEUE_CAP};
 use oxide_sim::{
-    BuildingId, Command, Faction, PlayerCommand, PlayerId, Scenario, State, StateIntegrityError,
-    UnitId, UnitKind,
+    BuildingId, Command, PlayerCommand, PlayerId, Scenario, State, StateIntegrityError, UnitId,
+    UnitKind,
 };
 use serde_json::{Value, json};
 
@@ -42,8 +42,8 @@ fn sandbox_cannot_restore_a_match_result_or_elimination_stamp() {
     assert!(serde_json::from_value::<State>(forged).is_err());
 }
 
-/// A two-seat arena with a standing Fabricator (a producer whose roster
-/// spans both factions) and enough open ground for siege.
+/// A two-seat arena with a standing Fabricator and enough open ground for
+/// siege.
 fn arena() -> Scenario {
     Scenario {
         mode: ScenarioMode::Match,
@@ -63,16 +63,14 @@ fn arena() -> Scenario {
         ],
         players: vec![
             PlayerSpec {
-                name: "Ferrous".into(),
-                faction: Faction::Ferrous,
+                name: "West".into(),
                 team: None,
                 scrap: 900,
                 bot: false,
                 bot_config: None,
             },
             PlayerSpec {
-                name: "Cupric".into(),
-                faction: Faction::Cupric,
+                name: "East".into(),
                 team: None,
                 scrap: 900,
                 bot: false,
@@ -1140,11 +1138,6 @@ fn every_checklist_row_refuses_its_forgery() {
             "a Foundry queuing a unit only the Fabricator trains",
             |d| d["buildings"][0]["queue"] = json!(["lancer"]),
             "building b0 queues a unit it could never train",
-        ),
-        (
-            "a Ferrous Fabricator queuing the Cupric roster",
-            |d| d["buildings"][2]["queue"] = json!(["stinger"]),
-            "building b2 queues a unit it could never train",
         ),
         (
             "an anchor at the far end of the coordinate space",

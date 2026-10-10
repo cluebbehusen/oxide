@@ -268,7 +268,7 @@ fn paused_clock_holds_motion_and_lift_rotors_run_while_idle() {
     let controller = AnimationController::default();
     let clock = AnimationClock::new(77, 0.35);
     let options = AnimationOptions::default();
-    for kind in [UnitKind::Buzzard, UnitKind::Wisp, UnitKind::Skyhook] {
+    for kind in [UnitKind::Buzzard, UnitKind::Skyhook] {
         let a = controller.unit_state(unit_facts(kind), clock, options);
         let b = controller.unit_state(unit_facts(kind), clock, options);
         assert_eq!(a, b);
@@ -322,32 +322,30 @@ fn array_sweep_preserves_fractional_motion_and_holds_the_paused_clock() {
 fn scout_scanners_run_at_rest_without_restarting_with_movement() {
     let controller = AnimationController::default();
     let options = AnimationOptions::default();
-    for kind in [UnitKind::Kestrel, UnitKind::Gnat] {
-        let mut facts = unit_facts(kind);
-        let clock = AnimationClock::new(12, 0.5);
-        let idle = controller.unit_state(facts, clock, options);
-        assert_eq!(idle.locomotion, LocomotionState::Rest);
-        assert!(idle.scanner.is_some());
-        let later = controller.unit_state(facts, AnimationClock::new(24, 0.5), options);
-        assert_ne!(idle.scanner, later.scanner);
-        facts.moved = true;
-        assert_eq!(
-            controller.unit_state(facts, clock, options).scanner,
-            idle.scanner
-        );
-        assert_eq!(
-            controller
-                .unit_state(
-                    facts,
-                    clock,
-                    AnimationOptions {
-                        reduced_motion: true
-                    }
-                )
-                .scanner,
-            Some(0.0)
-        );
-    }
+    let mut facts = unit_facts(UnitKind::Kestrel);
+    let clock = AnimationClock::new(12, 0.5);
+    let idle = controller.unit_state(facts, clock, options);
+    assert_eq!(idle.locomotion, LocomotionState::Rest);
+    assert!(idle.scanner.is_some());
+    let later = controller.unit_state(facts, AnimationClock::new(24, 0.5), options);
+    assert_ne!(idle.scanner, later.scanner);
+    facts.moved = true;
+    assert_eq!(
+        controller.unit_state(facts, clock, options).scanner,
+        idle.scanner
+    );
+    assert_eq!(
+        controller
+            .unit_state(
+                facts,
+                clock,
+                AnimationOptions {
+                    reduced_motion: true
+                }
+            )
+            .scanner,
+        Some(0.0)
+    );
     assert_eq!(
         controller
             .unit_state(
@@ -363,7 +361,6 @@ fn scout_scanners_run_at_rest_without_restarting_with_movement() {
 #[test]
 fn lift_rotor_cadence_does_not_change_when_an_aircraft_starts_moving() {
     assert_eq!(unit_move_period(UnitKind::Buzzard), BUZZARD_ROTOR_PERIOD);
-    assert_eq!(unit_move_period(UnitKind::Wisp), WISP_ROTOR_PERIOD);
     assert_eq!(unit_move_period(UnitKind::Skyhook), SKYHOOK_ROTOR_PERIOD);
 }
 
@@ -756,7 +753,7 @@ fn producers_animate_only_while_queue_progress_can_advance() {
     let controller = AnimationController::default();
     for (building, unit) in [
         (BuildingKind::Foundry, UnitKind::Sentinel),
-        (BuildingKind::Airworks, UnitKind::Gnat),
+        (BuildingKind::Airworks, UnitKind::Kestrel),
     ] {
         let mut facts = building_facts(building);
         facts.production = Some((unit, 25, unit.stats().train_ticks));
@@ -852,7 +849,7 @@ fn aircraft_completion_holds_open_only_its_producer_bay() {
         &[Event::UnitTrained {
             building: facts.id,
             unit: UnitId(44),
-            kind: UnitKind::Gnat,
+            kind: UnitKind::Kestrel,
             player: PlayerId(0),
         }],
     );
@@ -884,7 +881,7 @@ fn completed_airworks_launches_are_pruned() {
         &[Event::UnitTrained {
             building,
             unit: UnitId(44),
-            kind: UnitKind::Gnat,
+            kind: UnitKind::Kestrel,
             player: PlayerId(0),
         }],
     );

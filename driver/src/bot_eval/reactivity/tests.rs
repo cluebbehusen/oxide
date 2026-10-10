@@ -1,7 +1,7 @@
 use super::*;
 use chassis::fx::{Fx, Vec2Fx};
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, ScenarioMode, UnitSpec};
-use oxide_sim::{BuildingId, Faction, Scenario, UnitId};
+use oxide_sim::{BuildingId, Scenario, UnitId};
 
 /// A 24-wide field: West's start at (2, 2) and East's at (20, 2), 12 rows
 /// deep, or 16 with a third start at (2, 13), allied to West, when `trio`
@@ -17,23 +17,18 @@ fn field(
     top[2] = '1';
     top[20] = '2';
     map[2] = top.into_iter().collect();
-    let mut factions = vec![Faction::Ferrous, Faction::Cupric];
     if trio {
         let mut low: Vec<char> = ground.chars().collect();
         low[2] = '3';
         map[13] = low.into_iter().collect();
-        factions.push(Faction::Ferrous);
     }
     Scenario {
         mode: ScenarioMode::Match,
         name: "reactivity".into(),
         map,
-        players: factions
-            .into_iter()
-            .enumerate()
-            .map(|(seat, faction)| PlayerSpec {
+        players: (0..if trio { 3 } else { 2 })
+            .map(|seat| PlayerSpec {
                 name: format!("seat {seat}"),
-                faction,
                 team: trio.then_some(u8::from(seat == 1)),
                 scrap: 0,
                 bot: false,
@@ -109,15 +104,15 @@ fn run(detectors: &mut ReactivityDetectors, state: &State, ticks: std::ops::Rang
 
 #[test]
 fn first_enemy_air_is_answered_by_anti_air_in_time_or_missed() {
-    let stinger = (1, UnitKind::Buzzard, 4, 4);
-    let bare = built(&field(&[stinger], &[], false));
+    let buzzard = (1, UnitKind::Buzzard, 4, 4);
+    let bare = built(&field(&[buzzard], &[], false));
     let mut detectors = ReactivityDetectors::new([true, false]);
     run(&mut detectors, &bare, 0..ANTI_AIR_TICKS + 12);
     let missed = found(detectors, 0);
     assert_eq!(counts(&missed.anti_air), (1, 0, 1, 0));
 
     let defended = built(&field(
-        &[stinger, (0, UnitKind::Flakhound, 5, 6)],
+        &[buzzard, (0, UnitKind::Flakhound, 5, 6)],
         &[],
         false,
     ));

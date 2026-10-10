@@ -68,9 +68,6 @@ impl SelectionInfo {
             };
             self.row("Range", range, None);
             self.row("Reload", tick_time_label(weapon.cooldown_ticks), None);
-            if weapon.salvo > 1 {
-                self.row("Salvo", format!("{} bombs", weapon.salvo), None);
-            }
             if let Some(radius) = weapon.splash {
                 self.row(
                     "Splash",

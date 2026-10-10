@@ -36,17 +36,16 @@ pub(crate) fn control_groups() -> bool {
     CONTROL_GROUPS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// The faction's colorblind-aware indicator accent, from which every
-/// allegiance signal derives.
-pub fn faction_accent(faction: oxide_sim::Faction) -> Color {
-    crate::seat_style::faction_accent(faction, colorblind())
+/// The roster art's colorblind-aware accent, which own seats keep.
+pub fn roster_accent() -> Color {
+    crate::seat_style::roster_accent(colorblind())
 }
 
 pub(crate) fn seat_identity_color(game: &Scene<'_>, owner: oxide_sim::PlayerId) -> Color {
     game.seat_styles.get(owner).color
 }
 
-/// The seat-aware sprite/minimap accent. Own machines keep their faction
+/// The seat-aware sprite/minimap accent. Own machines keep the roster's
 /// art; every other seat receives its stable ally- or enemy-family tint.
 pub(crate) fn seat_identity_tint(game: &Scene<'_>, owner: oxide_sim::PlayerId) -> Option<Color> {
     let style = game.seat_styles.get(owner);
@@ -783,18 +782,17 @@ impl UnitSpriteFrame {
 pub(crate) fn unit_body_sources(
     sprites: &Sprites,
     kind: oxide_sim::UnitKind,
-    faction: oxide_sim::Faction,
     frame: UnitSpriteFrame,
 ) -> (Rect, Rect, Option<Rect>, bool) {
     let (source, accent, cargo_meter) = match frame.frame {
-        motion::UnitFrame::Idle => (sprites.unit(kind, faction), sprites.unit_accent(kind), None),
+        motion::UnitFrame::Idle => (sprites.unit(kind), sprites.unit_accent(kind), None),
         motion::UnitFrame::Moving(phase) => (
-            sprites.unit_moving(kind, faction, phase + 1),
+            sprites.unit_moving(kind, phase + 1),
             sprites.unit_moving_accent(kind, phase + 1),
             None,
         ),
         motion::UnitFrame::Action(action) => (
-            sprites.unit_action(kind, faction, action),
+            sprites.unit_action(kind, action),
             sprites.unit_action_accent(kind, action),
             None,
         ),
@@ -807,7 +805,7 @@ pub(crate) fn unit_body_sources(
                 motion::HarvesterPose::Scoop(_) => SpriteHarvesterPose::Scoop2,
             };
             (
-                sprites.harvester_frame(faction, cargo, pose),
+                sprites.harvester_frame(cargo, pose),
                 sprites.harvester_frame_accent(cargo, pose),
                 None,
             )
@@ -823,25 +821,21 @@ pub(crate) fn unit_body_sources(
                 motion::ExcavatorPose::Working(_) => SpriteExcavatorPose::Work4,
             };
             (
-                sprites.excavator_frame(faction, pose),
+                sprites.excavator_frame(pose),
                 sprites.excavator_frame_accent(pose),
                 Some(sprites.excavator_cargo(cargo)),
             )
         }
     };
     let (source, accent) = sprites.unit_rig(kind).map_or((source, accent), |rig| {
-        rig.hull(
-            faction,
-            if tracks::supported(kind) {
-                0
-            } else {
-                usize::from(frame.hull_phase)
-            },
-        )
+        rig.hull(if tracks::supported(kind) {
+            0
+        } else {
+            usize::from(frame.hull_phase)
+        })
     });
     let worker_body = sprites.worker_body(
         kind,
-        faction,
         usize::from(frame.cargo),
         usize::from(frame.worker_phase),
     );
@@ -855,7 +849,6 @@ pub(crate) fn unit_body_pose(
     unit: &oxide_sim::Unit,
     alpha: f32,
 ) -> UnitBodyPose {
-    let faction = game.state.player(unit.player).faction;
     let animation = unit_animation(game.presentation, game.state, unit);
     let frame = UnitSpriteFrame::capture(unit.kind, animation);
     let moving = game
@@ -935,8 +928,7 @@ pub(crate) fn unit_body_pose(
     } else {
         rotation
     };
-    let (source, accent, cargo_meter, worker) =
-        unit_body_sources(sprites, unit.kind, faction, frame);
+    let (source, accent, cargo_meter, worker) = unit_body_sources(sprites, unit.kind, frame);
     let mut center = game.presentation.draw_pos(unit.id, unit.pos, alpha);
     if unit.domain() == oxide_sim::stats::Domain::Air {
         center.y -= air_presentation(unit.kind, 1.0).2;
@@ -975,7 +967,6 @@ fn draw_unit_pass(
         if !crate::strategic_markers::visible(game, unit) {
             continue;
         }
-        let faction = game.state.player(unit.player).faction;
         let pos = game.presentation.draw_pos(unit.id, unit.pos, alpha);
         if pos.x < view_lo.x - CULL_MARGIN
             || pos.y < view_lo.y - CULL_MARGIN
@@ -1143,7 +1134,7 @@ fn draw_unit_pass(
                 motion::UnitFrame::Action(action) => Some(action),
                 _ => None,
             };
-            let (mount, accent) = rig.mount(faction, action);
+            let (mount, accent) = rig.mount(action);
             for (source, tint) in std::iter::once((mount, WHITE))
                 .chain(seat_identity_tint(game, unit.player).map(|tint| (accent, tint)))
             {

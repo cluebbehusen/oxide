@@ -7,7 +7,7 @@
 
 use chassis::grid::TilePos;
 use chassis::grid::as_index;
-use oxide_sim::{Building, Faction, GameResult, Order, PlayerId, State, Unit, UnitKind};
+use oxide_sim::{Building, GameResult, Order, PlayerId, State, Unit, UnitKind};
 use serde::{Deserialize, Serialize};
 
 /// Which sections [`StateView`] should include. Map defaults off — it is by
@@ -71,11 +71,8 @@ pub struct PlayerView {
     pub id: u8,
     /// Display name.
     pub name: String,
-    /// Sprite tint.
-    pub faction: Faction,
-    /// Normalized team id. Factions repeat across teams, so this is how a
-    /// debug client tells allies apart and maps a victory's team back to
-    /// its seats.
+    /// Normalized team id: how a debug client tells allies apart and maps a
+    /// victory's team back to its seats.
     pub team: u8,
     /// Banked scrap.
     pub scrap: u32,
@@ -471,7 +468,6 @@ fn player_view(state: &State, index: usize) -> PlayerView {
     PlayerView {
         id: PlayerId::from_index(index).0,
         name: player.name.clone(),
-        faction: player.faction,
         team: player.team,
         scrap: player.scrap,
         units: state

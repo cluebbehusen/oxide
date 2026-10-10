@@ -20,7 +20,6 @@ fn plans(dir: &Path) -> Vec<(EvaluationPlan, Option<PathBuf>)> {
                 ProfileMatchup::uniform(BotDifficulty::Standard, BotStance::Balanced),
                 personality_seed,
                 true,
-                EvaluationFactionCell::Authored,
                 EvaluationGeometry::Authored,
             )
             .unwrap()

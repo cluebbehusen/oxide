@@ -12,10 +12,9 @@ regenerated sprite only differs when the code does.
 Pass --out DIRECTORY to write a complete alternate bank for review without
 touching the checked-in assets.
 
-Style: flat top-down geometry, supersampled 4x for clean edges. Factions
-share silhouettes and differ only in accent color — Ferrous rusts orange,
-Cupric corrodes teal. Units face up; the shell rotates them toward their
-heading.
+Style: flat top-down geometry, supersampled 4x for clean edges, rust-orange
+accents that the shell tints by allegiance. Units face up; the shell rotates
+them toward their heading.
 """
 
 import json
@@ -51,18 +50,36 @@ IRON_DARK = (38, 38, 46)
 IRON_LIGHT = (72, 72, 84)
 BONE = (232, 228, 216)
 
-FACTIONS = {
-    "ferrous": {
+# Accent palettes. "base" is the only one that ships. Every accented sprite
+# is also rendered in "probe" so accent_masks() can find its tintable
+# regions by diffing the two renders; probe renders never reach disk or the
+# atlas.
+PALETTES = {
+    "base": {
         "base": (196, 87, 59),
         "dark": (126, 56, 38),
         "light": (232, 137, 107),
     },
-    "cupric": {
+    "probe": {
         "base": (63, 148, 130),
         "dark": (39, 96, 79),
         "light": (119, 196, 176),
     },
 }
+PROBE_TAG = "_probe"
+
+
+def variant_tag(variant: str) -> str:
+    """The sprite-name token for a palette variant: none for base."""
+    if variant not in PALETTES:
+        raise ValueError(f"unknown variant: {variant}")
+    return "" if variant == "base" else PROBE_TAG
+
+
+def save_sprite(image: Image.Image, out: Path, name: str) -> None:
+    """Writes a shipping sprite; probe renders stay in memory only."""
+    if PROBE_TAG not in name:
+        image.save(out / f"{name}.png")
 
 
 def canvas(px: int, color=(0, 0, 0, 0)) -> tuple[Image.Image, ImageDraw.ImageDraw]:
@@ -80,20 +97,14 @@ def finish(img: Image.Image, px: int, name: str) -> None:
             "lancer",
             "bombard",
             "flakhound",
-            "stinger",
             "buzzard",
-            "darter",
             "talon",
-            "wisp",
             "warden",
             "tender",
             "excavator",
             "kestrel",
-            "gnat",
             "shrike",
-            "sylph",
             "condor",
-            "moth",
             "breaker",
             "avalanche",
             "skyhook",
@@ -101,9 +112,10 @@ def finish(img: Image.Image, px: int, name: str) -> None:
         )
     ):
         img = rim_light(img)
-    img.save(OUT / f"{name}.png")
+    save_sprite(img, OUT, name)
     REGISTRY[name] = img
-    print(f"  {name}.png")
+    if PROBE_TAG not in name:
+        print(f"  {name}.png")
 
 
 def rim_light(img: Image.Image) -> Image.Image:
@@ -221,32 +233,32 @@ def _install_finalized_construction_bank() -> None:
 
 
 def accent_masks() -> None:
-    """Derives one allegiance-accent mask per faction-varied sprite.
+    """Derives one allegiance-accent mask per probe render, then drops the
+    probe renders from the registry.
 
-    Factions share silhouettes and differ only in accent color, so the
-    pixels where a sprite's two faction variants differ ARE the
-    faction-colored regions — exactly the region an owner tint should
-    cover (the RTS team-color mask, derived instead of hand-painted).
-    The mask is luminance-preserving grayscale: the shell multiplies it
-    by an allegiance hue, keeping the original shading. Rim light and
-    chassis grays cancel in the diff and stay untinted.
+    A probe render shares its base sprite's silhouette and differs only in
+    accent color, so the pixels where the two differ are exactly the region
+    an owner tint should cover (the RTS team-color mask, derived instead of
+    hand-painted). The mask is luminance-preserving grayscale: the shell
+    multiplies it by an allegiance hue, keeping the original shading. Rim
+    light and chassis grays cancel in the diff and stay untinted.
     """
     from PIL import ImageChops
 
-    for name in [n for n in sorted(REGISTRY) if "_ferrous" in n]:
-        fer = REGISTRY[name]
-        cup = REGISTRY[name.replace("_ferrous", "_cupric")]
-        diff = ImageChops.difference(fer.convert("RGB"), cup.convert("RGB"))
+    for name in [n for n in sorted(REGISTRY) if PROBE_TAG in n]:
+        probe = REGISTRY.pop(name)
+        base = REGISTRY[name.replace(PROBE_TAG, "")]
+        diff = ImageChops.difference(base.convert("RGB"), probe.convert("RGB"))
         r, g, b = diff.split()
         weight = ImageChops.lighter(ImageChops.lighter(r, g), b).point(
             lambda v: min(255, v * 3)
         )
-        alpha = ImageChops.multiply(fer.split()[3], weight)
-        # Ferrous base luminance is ~116/255; x1.7 restores full-tint
+        alpha = ImageChops.multiply(base.split()[3], weight)
+        # Base accent luminance is ~116/255; x1.7 restores full-tint
         # brightness to the palette midpoint without clipping "light".
-        lum = fer.convert("L").point(lambda v: min(255, round(v * 1.7)))
+        lum = base.convert("L").point(lambda v: min(255, round(v * 1.7)))
         mask = Image.merge("RGBA", (lum, lum, lum, alpha))
-        out_name = name.replace("_ferrous", "_accent")
+        out_name = name.replace(PROBE_TAG, "_accent")
         mask.save(OUT / f"{out_name}.png")
         REGISTRY[out_name] = mask
         print(f"  {out_name}.png")
@@ -427,7 +439,7 @@ def peak_barrier(mask: int, variant: int) -> None:
 def extractor_frame_marker() -> None:
     """The derelict frame: a collapsed 2x2 machine bed that says
     'an Extractor can be rebuilt here'. Drawn on the map itself,
-    faction-free — the frame belongs to no one and outlives everyone."""
+    unowned: the frame belongs to no one and outlives everyone."""
     px = 128
     img, d = canvas(px)
     rng = random.Random(40415)
@@ -524,16 +536,16 @@ def scrap(stage: str, fullness: float) -> None:
     )
 
 
-def foundry(faction: str, work: int = 0) -> None:
+def foundry(variant: str, work: int = 0) -> None:
     px = 128
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     # Baseplate with a bevel.
     d.rounded_rectangle(
         [s(6), s(6), s(122), s(122)], radius=s(10), fill=(*IRON_DARK, 255)
     )
     d.rounded_rectangle([s(12), s(12), s(116), s(116)], radius=s(8), fill=(*IRON, 255))
-    # Faction roof panels, chevroned toward the center.
+    # Accent roof panels, chevroned toward the center.
     d.polygon(
         [(s(12), s(12)), (s(64), s(12)), (s(12), s(64))], fill=(*pal["dark"], 255)
     )
@@ -568,15 +580,15 @@ def foundry(faction: str, work: int = 0) -> None:
     for cx, cy in ((22, 22), (22, 106), (106, 106)):
         d.ellipse([s(cx - 3), s(cy - 3), s(cx + 3), s(cy + 3)], fill=(*IRON_LIGHT, 255))
     suffix = "" if work == 0 else f"_work{work}"
-    finish(img, px, f"foundry_{faction}{suffix}")
+    finish(img, px, f"foundry{variant_tag(variant)}{suffix}")
 
 
-def harvester(faction: str, dig: int = 0, tread: int = 0) -> None:
+def harvester(variant: str, dig: int = 0, tread: int = 0) -> None:
     """The hauler; `dig` (0-2) sinks the scoop for the working cycle —
     frame 0 is the travel pose and the atlas name every existing lookup
     uses, frames 1-2 land as `_scoop1`/`_scoop2`."""
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     if dig and tread:
         raise ValueError("dig and tread frames are separate animation rows")
@@ -648,7 +660,7 @@ def harvester(faction: str, dig: int = 0, tread: int = 0) -> None:
     suffix = ("", "_scoop1", "_scoop2")[dig]
     if tread:
         suffix = f"_tread{tread}"
-    finish(img, px, f"harvester_{faction}{suffix}")
+    finish(img, px, f"harvester{variant_tag(variant)}{suffix}")
 
 
 def scaffold(dense: bool) -> None:
@@ -685,9 +697,9 @@ def debris(variant: int) -> None:
     finish(img, px, f"debris_{variant}")
 
 
-def sentinel(faction: str, move: int = 0) -> None:
+def sentinel(variant: str, move: int = 0) -> None:
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     phase = move % 3
     body_dy = (0, -1, 1)[phase]
@@ -743,14 +755,14 @@ def sentinel(faction: str, move: int = 0) -> None:
         [s(29), s(24 + body_dy), s(35), s(30 + body_dy)], fill=(*pal["light"], 255)
     )
     suffix = "" if move == 0 else f"_move{move}"
-    finish(img, px, f"sentinel_{faction}{suffix}")
+    finish(img, px, f"sentinel{variant_tag(variant)}{suffix}")
 
 
-def turret(faction: str) -> None:
+def turret(variant: str) -> None:
     """1x1 static defense: a broad bolted base under a swivel gun. Reads
     as furniture, not a unit — no legs, no treads."""
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     # Foundation slab with corner bolts.
     d.rounded_rectangle([s(6), s(6), s(58), s(58)], radius=s(8), fill=(*IRON_DARK, 255))
@@ -762,14 +774,14 @@ def turret(faction: str) -> None:
     d.ellipse([s(20), s(20), s(44), s(44)], fill=(*pal["base"], 255))
     # The gun lives on a separate sprite so the mount can actually
     # track its victim; the base ships bare.
-    finish(img, px, f"turret_{faction}")
+    finish(img, px, f"turret{variant_tag(variant)}")
 
 
-def turret_t1(faction: str) -> None:
+def turret_t1(variant: str) -> None:
     """Heavy Turret hull (tier 1): the same swivel base under twin
     armored ammo drums — visibly more gun feeding the same mount."""
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     d.rounded_rectangle([s(3), s(3), s(61), s(61)], radius=s(9), fill=(*IRON_DARK, 255))
     d.rounded_rectangle([s(7), s(7), s(57), s(57)], radius=s(7), fill=(*IRON, 255))
@@ -784,14 +796,14 @@ def turret_t1(faction: str) -> None:
     d.ellipse([s(16), s(16), s(48), s(48)], fill=(*pal["dark"], 255))
     d.ellipse([s(19), s(19), s(45), s(45)], fill=(*pal["base"], 255))
     d.ellipse([s(27), s(27), s(37), s(37)], fill=(*pal["light"], 255))
-    finish(img, px, f"turret_t1_{faction}")
+    finish(img, px, f"turret_t1{variant_tag(variant)}")
 
 
-def turret_t2(faction: str) -> None:
+def turret_t2(variant: str) -> None:
     """Bulwark hull (tier 2): a full octagonal casemate with hazard
     chevrons — the top of the ladder, unmistakably a fortress."""
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     oct_pts = [
         (20, 2),
@@ -818,14 +830,14 @@ def turret_t2(faction: str) -> None:
     d.ellipse([s(26), s(26), s(38), s(38)], fill=(*pal["light"], 255))
     for bx, by in ((10, 32), (54, 32), (32, 54)):
         d.ellipse([s(bx - 2), s(by - 2), s(bx + 2), s(by + 2)], fill=(*BONE, 220))
-    finish(img, px, f"turret_t2_{faction}")
+    finish(img, px, f"turret_t2{variant_tag(variant)}")
 
 
-def flak_turret_t1(faction: str) -> None:
+def flak_turret_t1(variant: str) -> None:
     """Burst Flak hull (tier 1): quad launcher boxes around the mount
     ring — a sky-saturation battery instead of one gun."""
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     d.rounded_rectangle([s(5), s(5), s(59), s(59)], radius=s(8), fill=(*IRON_DARK, 255))
     d.rounded_rectangle([s(9), s(9), s(55), s(55)], radius=s(6), fill=(*IRON, 255))
@@ -841,27 +853,27 @@ def flak_turret_t1(faction: str) -> None:
                 )
     d.ellipse([s(22), s(22), s(42), s(42)], fill=(*pal["base"], 255))
     d.ellipse([s(28), s(28), s(36), s(36)], fill=(*pal["light"], 255))
-    finish(img, px, f"flak_turret_t1_{faction}")
+    finish(img, px, f"flak_turret_t1{variant_tag(variant)}")
 
 
-def turret_barrel(faction: str) -> None:
+def turret_barrel(variant: str) -> None:
     """The turret's gun, authored pointing up with its pivot at the
     canvas center — the renderer rotates it onto the last victim."""
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     d.rectangle([s(28), s(4), s(36), s(32)], fill=(*IRON_DARK, 255))
     d.rectangle([s(30), s(4), s(34), s(30)], fill=(*IRON_LIGHT, 255))
     d.ellipse([s(26), s(26), s(38), s(38)], fill=(*pal["light"], 255))
     d.ellipse([s(29), s(29), s(35), s(35)], fill=(*IRON_DARK, 255))
-    finish(img, px, f"turret_barrel_{faction}")
+    finish(img, px, f"turret_barrel{variant_tag(variant)}")
 
 
-def fabricator(faction: str, work: int = 0) -> None:
+def fabricator(variant: str, work: int = 0) -> None:
     """2x2 second factory: an industrial gantry hall — long assembly bays
     instead of the Foundry's melt pool."""
     px = 128
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     d.rounded_rectangle(
         [s(6), s(10), s(122), s(118)], radius=s(9), fill=(*IRON_DARK, 255)
@@ -910,14 +922,14 @@ def fabricator(faction: str, work: int = 0) -> None:
         fill=(*IRON_DARK, 255),
     )
     suffix = "" if work == 0 else f"_work{work}"
-    finish(img, px, f"fabricator_{faction}{suffix}")
+    finish(img, px, f"fabricator{variant_tag(variant)}{suffix}")
 
 
-def scuttler(faction: str, move: int = 0) -> None:
+def scuttler(variant: str, move: int = 0) -> None:
     """Low, wide, and mean: a six-legged shredder that reads as vermin
     next to the Sentinel's arrowhead."""
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     phase = move % 3
     gait = ((0, 0, 0), (-4, 3, -3), (3, -4, 3))[phase]
@@ -945,14 +957,14 @@ def scuttler(faction: str, move: int = 0) -> None:
     # A single hungry eye.
     d.ellipse([s(29), s(24), s(35), s(30)], fill=(*pal["light"], 255))
     suffix = "" if move == 0 else f"_move{move}"
-    finish(img, px, f"scuttler_{faction}{suffix}")
+    finish(img, px, f"scuttler{variant_tag(variant)}{suffix}")
 
 
-def lancer(faction: str, move: int = 0) -> None:
+def lancer(variant: str, move: int = 0) -> None:
     """Artillery on legs: a narrow chassis dwarfed by its rail — the
     barrel is the silhouette."""
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     phase = move % 3
     body_dx = (0, -1, 1)[phase]
@@ -1003,14 +1015,14 @@ def lancer(faction: str, move: int = 0) -> None:
         [s(36 + body_dx), s(26), s(40 + body_dx), s(38)], fill=(*IRON_DARK, 255)
     )
     suffix = "" if move == 0 else f"_move{move}"
-    finish(img, px, f"lancer_{faction}{suffix}")
+    finish(img, px, f"lancer{variant_tag(variant)}{suffix}")
 
 
-def bombard(faction: str, move: int = 0) -> None:
+def bombard(variant: str, move: int = 0) -> None:
     """Heavy siege mortar: a broad braced platform under one fat, short
     tube — the anti-silhouette of the Lancer's needle rail."""
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     phase = move % 3
     body_dx = (0, -1, 1)[phase]
@@ -1063,14 +1075,14 @@ def bombard(faction: str, move: int = 0) -> None:
         [s(28 + body_dx), s(5), s(36 + body_dx), s(11)], fill=(*pal["light"], 255)
     )
     suffix = "" if move == 0 else f"_move{move}"
-    finish(img, px, f"bombard_{faction}{suffix}")
+    finish(img, px, f"bombard{variant_tag(variant)}{suffix}")
 
 
-def flakhound(faction: str, tread: int = 0) -> None:
-    """Ferrous-pattern anti-air crawler: a fat tracked slab carrying a
+def flakhound(variant: str, tread: int = 0) -> None:
+    """Anti-air crawler: a fat tracked slab carrying a
     quad flak battery — four skyward muzzles read as four rings."""
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     # Broad treads. Cleats advance inside the silhouette; the chassis stays
     # planted instead of wobbling and kicking up procedural dust.
@@ -1106,54 +1118,14 @@ def flakhound(faction: str, tread: int = 0) -> None:
             [s(cx - 1), s(cy - 1), s(cx + 1), s(cy + 1)], fill=(*pal["light"], 255)
         )
     suffix = "" if tread == 0 else f"_tread{tread}"
-    finish(img, px, f"flakhound_{faction}{suffix}")
+    finish(img, px, f"flakhound{variant_tag(variant)}{suffix}")
 
 
-def stinger(faction: str, move: int = 0) -> None:
-    """Cupric-pattern anti-air skiff: light chassis under a three-rocket
-    rack — cheap, quick, and pointing at the sky."""
-    px = 64
-    pal = FACTIONS[faction]
-    img, d = canvas(px)
-    phase = move % 3
-    # Three splayed wheel-legs. Each travel phase extends a different pair,
-    # making the quick skiff's suspension readable after battlefield downscale.
-    legs = (
-        ((24, 40, 14, 52), (40, 40, 50, 52), (32, 44, 32, 58)),
-        ((24, 40, 12, 49), (40, 40, 52, 54), (32, 44, 30, 59)),
-        ((24, 40, 16, 54), (40, 40, 48, 49), (32, 44, 34, 59)),
-    )[phase]
-    for x0, y0, x1, y1 in legs:
-        d.line([(s(x0), s(y0)), (s(x1), s(y1))], fill=(*IRON_DARK, 255), width=s(3))
-        d.ellipse([s(x1 - 5), s(y1 - 5), s(x1 + 5), s(y1 + 5)], fill=(*IRON_DARK, 255))
-        spoke = ((0, -4, 0, 4), (-3, -3, 3, 3), (-4, 0, 4, 0))[phase]
-        d.line(
-            [
-                (s(x1 + spoke[0]), s(y1 + spoke[1])),
-                (s(x1 + spoke[2]), s(y1 + spoke[3])),
-            ],
-            fill=(*pal["light"], 255),
-            width=s(3),
-        )
-    # Slim triangular chassis.
-    d.polygon([(s(32), s(14)), (s(46), s(46)), (s(18), s(46))], fill=(*IRON, 255))
-    d.polygon(
-        [(s(32), s(20)), (s(42), s(43)), (s(22), s(43))], fill=(*pal["base"], 255)
-    )
-    # Rocket rack: three tubes seen end-on, stacked forward.
-    for i, cy in enumerate((22, 30, 38)):
-        tip = pal["light"] if i == 0 else IRON_LIGHT
-        d.ellipse([s(28), s(cy - 3), s(36), s(cy + 5)], fill=(*IRON_DARK, 255))
-        d.ellipse([s(30), s(cy - 1), s(34), s(cy + 3)], fill=(*tip, 255))
-    suffix = "" if move == 0 else f"_move{move}"
-    finish(img, px, f"stinger_{faction}{suffix}")
-
-
-def buzzard(faction: str) -> None:
-    """Ferrous-pattern ground-attack flyer: a heavy delta wing with twin
+def buzzard(variant: str) -> None:
+    """Ground-attack flyer: a heavy delta wing with twin
     engine pods — slow, blunt, loaded."""
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     # Delta wing.
     d.polygon([(s(32), s(4)), (s(58), s(50)), (s(6), s(50))], fill=(*IRON, 255))
@@ -1172,41 +1144,14 @@ def buzzard(faction: str) -> None:
     # Chin cannon along the nose.
     d.rectangle([s(30), s(8), s(34), s(30)], fill=(*IRON_DARK, 255))
     d.ellipse([s(29), s(26), s(35), s(32)], fill=(*IRON_LIGHT, 255))
-    finish(img, px, f"buzzard_{faction}")
+    finish(img, px, f"buzzard{variant_tag(variant)}")
 
 
-def darter(faction: str) -> None:
-    """Cupric-pattern strafer: a slim swept dart, all speed and spite."""
-    px = 64
-    pal = FACTIONS[faction]
-    img, d = canvas(px)
-    # Needle fuselage.
-    d.polygon(
-        [(s(32), s(2)), (s(38), s(34)), (s(32), s(56)), (s(26), s(34))],
-        fill=(*IRON, 255),
-    )
-    d.polygon(
-        [(s(32), s(8)), (s(36), s(33)), (s(32), s(50)), (s(28), s(33))],
-        fill=(*pal["base"], 255),
-    )
-    # Swept blades.
-    d.polygon([(s(30), s(26)), (s(8), s(44)), (s(28), s(38))], fill=(*pal["dark"], 255))
-    d.polygon(
-        [(s(34), s(26)), (s(56), s(44)), (s(36), s(38))], fill=(*pal["dark"], 255)
-    )
-    # Tail vanes.
-    d.polygon([(s(30), s(48)), (s(20), s(60)), (s(31), s(54))], fill=(*IRON_DARK, 255))
-    d.polygon([(s(34), s(48)), (s(44), s(60)), (s(33), s(54))], fill=(*IRON_DARK, 255))
-    # Cockpit eye.
-    d.ellipse([s(29), s(16), s(35), s(24)], fill=(*pal["light"], 255))
-    finish(img, px, f"darter_{faction}")
-
-
-def talon(faction: str) -> None:
-    """Ferrous-pattern air-superiority fighter: cruciform, canarded, a
+def talon(variant: str) -> None:
+    """Air-superiority fighter: cruciform, canarded, a
     hunter of other wings."""
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     # Main wings, straight and wide.
     d.polygon(
@@ -1237,41 +1182,17 @@ def talon(faction: str) -> None:
         [(s(35), s(50)), (s(44), s(62)), (s(34), s(56))], fill=(*pal["dark"], 255)
     )
     d.ellipse([s(29), s(14), s(35), s(22)], fill=(*pal["light"], 255))
-    finish(img, px, f"talon_{faction}")
+    finish(img, px, f"talon{variant_tag(variant)}")
 
 
-def wisp(faction: str) -> None:
-    """Cupric-pattern swarm wing: a tiny pod on stub wings — one is a
-    joke, a dozen are a problem."""
-    px = 64
-    pal = FACTIONS[faction]
-    img, d = canvas(px)
-    # Stub wings.
-    d.polygon(
-        [(s(30), s(28)), (s(12), s(38)), (s(28), s(40))], fill=(*pal["dark"], 255)
-    )
-    d.polygon(
-        [(s(34), s(28)), (s(52), s(38)), (s(36), s(40))], fill=(*pal["dark"], 255)
-    )
-    # Round pod body.
-    d.ellipse([s(22), s(16), s(42), s(44)], fill=(*IRON, 255))
-    d.ellipse([s(25), s(19), s(39), s(41)], fill=(*pal["base"], 255))
-    # Single rotor ring hint on top.
-    d.ellipse([s(27), s(21), s(37), s(31)], fill=(*pal["light"], 255))
-    d.ellipse([s(30), s(24), s(34), s(28)], fill=(*IRON_DARK, 255))
-    # Tail needle.
-    d.rectangle([s(31), s(42), s(33), s(54)], fill=(*IRON_DARK, 255))
-    finish(img, px, f"wisp_{faction}")
-
-
-def flak_turret(faction: str) -> None:
+def flak_turret(variant: str) -> None:
     """1x1 anti-air foundation: a braced cruciform firing platform.
 
     The directional quad battery is a separate sprite so its silhouette
     can track aircraft and kick independently of the foundation.
     """
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     # Broad cardinal outriggers keep the platform distinct from the ordinary
     # Turret's square slab even when the rotating head is hidden by fog.
@@ -1321,7 +1242,7 @@ def flak_turret(faction: str) -> None:
     ]
     d.polygon([(s(x), s(y)) for x, y in outer], fill=(*IRON_DARK, 255))
     d.polygon([(s(x), s(y)) for x, y in inner], fill=(*IRON, 255))
-    # Four armored stabilizer pads and faction chevrons make the AA role read
+    # Four armored stabilizer pads and accent chevrons make the AA role read
     # as a deployed weapon rather than another circular machine.
     for x0, y0, x1, y1 in (
         (10, 10, 24, 21),
@@ -1357,13 +1278,13 @@ def flak_turret(faction: str) -> None:
     d.rounded_rectangle(
         [s(25), s(25), s(39), s(39)], radius=s(3), fill=(*IRON_DARK, 255)
     )
-    finish(img, px, f"flak_turret_{faction}")
+    finish(img, px, f"flak_turret{variant_tag(variant)}")
 
 
-def flak_mount(faction: str) -> None:
+def flak_mount(variant: str) -> None:
     """Wide directional quad cannon with its pivot at canvas center."""
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     # Large feed pods and rear magazines keep the head legible when the game
     # scales the full tile down to its ordinary battlefield size.
@@ -1416,17 +1337,17 @@ def flak_mount(faction: str) -> None:
     d.rectangle([s(16), s(31), s(48), s(39)], fill=(*pal["dark"], 255))
     d.ellipse([s(23), s(23), s(41), s(43)], fill=(*pal["light"], 255))
     d.ellipse([s(28), s(28), s(36), s(36)], fill=(*IRON_DARK, 255))
-    finish(img, px, f"flak_mount_{faction}")
+    finish(img, px, f"flak_mount{variant_tag(variant)}")
 
 
-def bastion(faction: str) -> None:
+def bastion(variant: str) -> None:
     """2x2 artillery foundation: a braced bunker and armored traverse pit.
 
     The cannon is authored separately so the live silhouette can aim and
     recoil instead of behaving like a painted circle.
     """
     px = 128
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     # A clipped square blast apron fills the 2x2 footprint. It is deliberately
     # architectural, not another enlarged circular turret base.
@@ -1529,13 +1450,13 @@ def bastion(faction: str) -> None:
                 radius=s(1),
                 fill=(*SCRAP, 255),
             )
-    finish(img, px, f"bastion_{faction}")
+    finish(img, px, f"bastion{variant_tag(variant)}")
 
 
-def bastion_mount(faction: str) -> None:
+def bastion_mount(variant: str) -> None:
     """Massive single siege cannon, pivoted at the footprint center."""
     px = 128
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     # One broad, stepped barrel points up. The renderer's shell and muzzle
     # flash originate at the forward edge, and the tube reads as siege ordnance
@@ -1625,14 +1546,14 @@ def bastion_mount(faction: str) -> None:
         [s(69), s(99), s(84), s(113)], radius=s(4), fill=(*pal["light"], 255)
     )
     d.rounded_rectangle([s(44), s(102), s(63), s(111)], radius=s(3), fill=(*IRON, 255))
-    finish(img, px, f"bastion_mount_{faction}")
+    finish(img, px, f"bastion_mount{variant_tag(variant)}")
 
 
-def array_t1(faction: str) -> None:
+def array_t1(variant: str) -> None:
     """Deep Array hull (tier 1): the mast doubled, a wider dish on guy
     wires — eyes that reach past every gun in the game."""
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     d.rounded_rectangle([s(6), s(6), s(58), s(58)], radius=s(7), fill=(*IRON_DARK, 255))
     d.rounded_rectangle([s(10), s(10), s(54), s(54)], radius=s(5), fill=(*IRON, 255))
@@ -1648,14 +1569,14 @@ def array_t1(faction: str) -> None:
     # The feed boom.
     d.line([(s(33), s(31)), (s(48), s(16))], fill=(*IRON_LIGHT, 255), width=s(2))
     d.ellipse([s(45), s(13), s(51), s(19)], fill=(*BONE, 235))
-    finish(img, px, f"array_t1_{faction}")
+    finish(img, px, f"array_t1{variant_tag(variant)}")
 
 
-def array(faction: str, work: int = 0) -> None:
+def array(variant: str, work: int = 0) -> None:
     """1x1 radar mast: a lattice tower under a wide dish — the eyes that
     make long guns matter."""
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     d.rounded_rectangle(
         [s(10), s(10), s(54), s(54)], radius=s(7), fill=(*IRON_DARK, 255)
@@ -1684,14 +1605,14 @@ def array(faction: str, work: int = 0) -> None:
     )
     d.ellipse([s(31), s(29), s(37), s(35)], fill=(*BONE, 255))
     suffix = "" if work == 0 else f"_work{work}"
-    finish(img, px, f"array_{faction}{suffix}")
+    finish(img, px, f"array{variant_tag(variant)}{suffix}")
 
 
-def reclaimer_t1(faction: str) -> None:
+def reclaimer_t1(variant: str) -> None:
     """Refinery hull (tier 1): the grinder grown a cracking stack and a
     second hopper — the drip become an industry."""
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     d.rounded_rectangle([s(3), s(6), s(61), s(58)], radius=s(7), fill=(*IRON_DARK, 255))
     d.rounded_rectangle([s(7), s(10), s(57), s(54)], radius=s(5), fill=(*IRON, 255))
@@ -1718,14 +1639,14 @@ def reclaimer_t1(faction: str) -> None:
     d.ellipse([s(22), s(33), s(32), s(43)], fill=(*pal["light"], 255))
     # Amber-stained chute.
     d.rectangle([s(20), s(50), s(36), s(56)], fill=(96, 74, 34, 255))
-    finish(img, px, f"reclaimer_t1_{faction}")
+    finish(img, px, f"reclaimer_t1{variant_tag(variant)}")
 
 
-def reclaimer(faction: str, work: int = 0) -> None:
+def reclaimer(variant: str, work: int = 0) -> None:
     """1x1 debris grinder: hopper, drum, and a chute stained amber by
     everything it has ever eaten."""
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     d.rounded_rectangle([s(6), s(8), s(58), s(56)], radius=s(7), fill=(*IRON_DARK, 255))
     d.rounded_rectangle([s(10), s(12), s(54), s(52)], radius=s(5), fill=(*IRON, 255))
@@ -1778,15 +1699,15 @@ def reclaimer(faction: str, work: int = 0) -> None:
     d.rectangle([s(27), s(50), s(37), s(56)], fill=(*SCRAP_DARK, 255))
     d.rectangle([s(30), s(52), s(34), s(56)], fill=(*SCRAP, 255))
     suffix = "" if work == 0 else f"_work{work}"
-    finish(img, px, f"reclaimer_{faction}{suffix}")
+    finish(img, px, f"reclaimer{variant_tag(variant)}{suffix}")
 
 
-def extractor(faction: str, work: int = 0) -> None:
+def extractor(variant: str, work: int = 0) -> None:
     """2x2 restored strip miner: a bucket-wheel on a gantry cut, feeding
     a conveyor spine into an ore-stained discharge hall. The wheel is the
     role feature — income machinery you can read across the map."""
     px = 128
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     # Machine deck and discharge hall along the east side.
     d.rounded_rectangle(
@@ -1825,15 +1746,15 @@ def extractor(faction: str, work: int = 0) -> None:
     d.rectangle([s(30), s(30), s(42), s(44)], fill=(*IRON_DARK, 255))
     d.rectangle([s(33), s(24), s(39), s(34)], fill=(*pal["light"], 255))
     suffix = "" if work == 0 else f"_work{work}"
-    finish(img, px, f"extractor_{faction}{suffix}")
+    finish(img, px, f"extractor{variant_tag(variant)}{suffix}")
 
 
-def airworks(faction: str, work: int = 0) -> None:
+def airworks(variant: str, work: int = 0) -> None:
     """2x2 air production hall: two open rotor pads behind a launch
     apron — the fans are the role feature, spinning while a wing is
     on the line."""
     px = 128
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     d.rounded_rectangle(
         [s(6), s(12), s(122), s(116)], radius=s(9), fill=(*IRON_DARK, 255)
@@ -1867,15 +1788,15 @@ def airworks(faction: str, work: int = 0) -> None:
             )
         d.ellipse([s(cx - 5), s(45), s(cx + 5), s(55)], fill=(*pal["light"], 255))
     suffix = "" if work == 0 else f"_work{work}"
-    finish(img, px, f"airworks_{faction}{suffix}")
+    finish(img, px, f"airworks{variant_tag(variant)}{suffix}")
 
 
-def crucible(faction: str, work: int = 0) -> None:
+def crucible(variant: str, work: int = 0) -> None:
     """2x2 tier-three works: a buttressed smelter block around one deep
     melt core — the glowing eye is the role feature, breathing while the
     heaviest machines pour."""
     px = 128
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     d.rounded_rectangle(
         [s(4), s(10), s(124), s(118)], radius=s(10), fill=(*IRON_DARK, 255)
@@ -1913,13 +1834,13 @@ def crucible(faction: str, work: int = 0) -> None:
     ):
         d.rectangle([s(x0), s(y0), s(x1), s(y1)], fill=(*IRON_DARK, 255))
     suffix = "" if work == 0 else f"_work{work}"
-    finish(img, px, f"crucible_{faction}{suffix}")
+    finish(img, px, f"crucible{variant_tag(variant)}{suffix}")
 
 
-def barricade(faction: str) -> None:
+def barricade(variant: str) -> None:
     """A bought wall segment: layered plate courses over a rubble sill."""
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     d.rectangle([s(4), s(44), s(60), s(58)], fill=(*IRON_DARK, 255))
     for row, y in enumerate((12, 24, 36)):
@@ -1930,14 +1851,14 @@ def barricade(faction: str) -> None:
                 [s(x + 2), s(y + 2), s(x + 12), s(y + 8)], fill=(*pal["base"], 255)
             )
     d.rectangle([s(4), s(8), s(60), s(11)], fill=(*pal["dark"], 255))
-    finish(img, px, f"barricade_{faction}")
+    finish(img, px, f"barricade{variant_tag(variant)}")
 
 
-def scuttle_charge(faction: str) -> None:
+def scuttle_charge(variant: str) -> None:
     """The buried charge: a low disc almost flush with the ground, a
     ring of anchor cleats, one faint armed lamp."""
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     d.ellipse([s(14), s(14), s(50), s(50)], fill=(*IRON_DARK, 255))
     d.ellipse([s(18), s(18), s(46), s(46)], fill=(*IRON, 255))
@@ -1945,14 +1866,14 @@ def scuttle_charge(faction: str) -> None:
     for x, y in ((30, 12), (30, 48), (12, 30), (48, 30)):
         d.rectangle([s(x), s(y), s(x + 4), s(y + 4)], fill=(*IRON_DARK, 255))
     d.ellipse([s(29), s(29), s(35), s(35)], fill=(*pal["light"], 255))
-    finish(img, px, f"scuttle_charge_{faction}")
+    finish(img, px, f"scuttle_charge{variant_tag(variant)}")
 
 
-def sapper(faction: str, move: int = 0) -> None:
+def sapper(variant: str, move: int = 0) -> None:
     """The walking charge: a squat frame hauling one oversized shaped
     canister on its back — all payload, no gun."""
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     dy = (0, -1, 1)[move % 3]
     for x in (16, 42):
@@ -1976,14 +1897,14 @@ def sapper(faction: str, move: int = 0) -> None:
     d.rectangle([s(30), s(2 + dy), s(34), s(8 + dy)], fill=(*SCRAP_LIGHT, 255))
     d.ellipse([s(30), s(40 + dy), s(34), s(44 + dy)], fill=(*pal["light"], 255))
     suffix = "" if move == 0 else f"_move{move}"
-    finish(img, px, f"sapper_{faction}{suffix}")
+    finish(img, px, f"sapper{variant_tag(variant)}{suffix}")
 
 
-def warden(faction: str, move: int = 0, action: int = 0) -> None:
+def warden(variant: str, move: int = 0, action: int = 0) -> None:
     """Tier-two line brawler: a broad plated hull behind twin shield
     cheeks, one heavy fork cannon dead ahead — the wall that walks."""
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     body_dy = (0, -1, 1)[move % 3]
     # Twin tread blocks, heavier than a sentinel's runners.
@@ -2030,14 +1951,14 @@ def warden(faction: str, move: int = 0, action: int = 0) -> None:
         suffix = f"_move{move}"
     if action:
         suffix = f"_action{action}"
-    finish(img, px, f"warden_{faction}{suffix}")
+    finish(img, px, f"warden{variant_tag(variant)}{suffix}")
 
 
-def tender(faction: str, move: int = 0) -> None:
+def tender(variant: str, move: int = 0) -> None:
     """Armored mobile welder: a boxy sled with a jointed torch arm and a
     coil drum — the field workshop that follows the push."""
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     dy = (0, -1, 1)[move % 3]
     for x in (12, 46):
@@ -2061,14 +1982,14 @@ def tender(faction: str, move: int = 0) -> None:
     )
     d.ellipse([s(36), s(3 + dy), s(42), s(9 + dy)], fill=(*SCRAP_LIGHT, 255))
     suffix = "" if move == 0 else f"_move{move}"
-    finish(img, px, f"tender_{faction}{suffix}")
+    finish(img, px, f"tender{variant_tag(variant)}{suffix}")
 
 
-def excavator(faction: str, move: int = 0) -> None:
+def excavator(variant: str, move: int = 0) -> None:
     """Tier-two super-harvester: twin bucket arms around a tall hopper —
     the harvester's silhouette grown into industry."""
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     dy = (0, -1, 1)[move % 3]
     for x in (8, 48):
@@ -2105,13 +2026,13 @@ def excavator(faction: str, move: int = 0) -> None:
             fill=(*pal["dark"], 255),
         )
     suffix = "" if move == 0 else f"_move{move}"
-    finish(img, px, f"excavator_{faction}{suffix}")
+    finish(img, px, f"excavator{variant_tag(variant)}{suffix}")
 
 
-def scout_flyer(stem: str, faction: str, move: int = 0) -> None:
+def scout_flyer(stem: str, variant: str, move: int = 0) -> None:
     """Shared scout drawing: a slim delta with a long sensor boom."""
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     tilt = (0, -2, 2)[move % 3]
     d.polygon(
@@ -2127,22 +2048,18 @@ def scout_flyer(stem: str, faction: str, move: int = 0) -> None:
     d.ellipse([s(29), s(0), s(35), s(6)], fill=(*BONE, 255))
     d.ellipse([s(30), s(24), s(34), s(28)], fill=(*pal["light"], 255))
     suffix = "" if move == 0 else f"_move{move}"
-    finish(img, px, f"{stem}_{faction}{suffix}")
+    finish(img, px, f"{stem}{variant_tag(variant)}{suffix}")
 
 
-def kestrel(faction: str, move: int = 0) -> None:
-    scout_flyer("kestrel", faction, move)
+def kestrel(variant: str, move: int = 0) -> None:
+    scout_flyer("kestrel", variant, move)
 
 
-def gnat(faction: str, move: int = 0) -> None:
-    scout_flyer("gnat", faction, move)
-
-
-def interceptor_flyer(stem: str, faction: str, move: int = 0, action: int = 0) -> None:
+def interceptor_flyer(stem: str, variant: str, move: int = 0, action: int = 0) -> None:
     """Shared interceptor drawing: swept wings, twin intakes, and a
     chin gun that flares through the action frames."""
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     tilt = (0, -2, 2)[move % 3]
     # Swept wings.
@@ -2181,22 +2098,18 @@ def interceptor_flyer(stem: str, faction: str, move: int = 0, action: int = 0) -
         suffix = f"_move{move}"
     if action:
         suffix = f"_action{action}"
-    finish(img, px, f"{stem}_{faction}{suffix}")
+    finish(img, px, f"{stem}{variant_tag(variant)}{suffix}")
 
 
-def shrike(faction: str, move: int = 0, action: int = 0) -> None:
-    interceptor_flyer("shrike", faction, move, action)
+def shrike(variant: str, move: int = 0, action: int = 0) -> None:
+    interceptor_flyer("shrike", variant, move, action)
 
 
-def sylph(faction: str, move: int = 0, action: int = 0) -> None:
-    interceptor_flyer("sylph", faction, move, action)
-
-
-def skyhook(faction: str, move: int = 0) -> None:
+def skyhook(variant: str, move: int = 0) -> None:
     """Air transport: a heavy-lift X-frame with four sling hardpoints
     and a hook boom below the rotor hub."""
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     tilt = (0, -2, 2)[move % 3]
     # The X-frame arms.
@@ -2218,14 +2131,14 @@ def skyhook(faction: str, move: int = 0) -> None:
     d.ellipse([s(28), s(52), s(36), s(60)], fill=(*IRON_LIGHT, 255))
     d.ellipse([s(29), s(26), s(35), s(32)], fill=(*pal["light"], 255))
     suffix = "" if move == 0 else f"_move{move}"
-    finish(img, px, f"skyhook_{faction}{suffix}")
+    finish(img, px, f"skyhook{variant_tag(variant)}{suffix}")
 
 
-def condor(faction: str, move: int = 0, action: int = 0) -> None:
+def condor(variant: str, move: int = 0, action: int = 0) -> None:
     """Strategic bomber: a broad flying wing around one cavernous bomb
     bay. The action frames swing the bay doors and drop the load."""
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     tilt = (0, -2, 2)[move % 3]
     # The wing is the aircraft.
@@ -2253,44 +2166,14 @@ def condor(faction: str, move: int = 0, action: int = 0) -> None:
         suffix = f"_move{move}"
     if action:
         suffix = f"_action{action}"
-    finish(img, px, f"condor_{faction}{suffix}")
+    finish(img, px, f"condor{variant_tag(variant)}{suffix}")
 
 
-def moth(faction: str, move: int = 0, action: int = 0) -> None:
-    """Carpet bomber: a slighter twin-boom frame with a rack of small
-    bombs slung under the spine; the rack empties through the action."""
-    px = 64
-    pal = FACTIONS[faction]
-    img, d = canvas(px)
-    tilt = (0, -2, 2)[move % 3]
-    # Twin booms and the joining wing.
-    for x in (18, 42):
-        d.rectangle([s(x), s(10), s(x + 4), s(50)], fill=(*IRON, 255))
-    d.polygon(
-        [(s(32), s(16)), (s(56), s(40 + tilt)), (s(32), s(34)), (s(8), s(40 - tilt))],
-        fill=(*pal["base"], 255),
-    )
-    # The bomb rack: pips vanish as the stick releases.
-    remaining = (6, 4, 2, 0, 0)[action]
-    for i in range(remaining):
-        y = 18 + i * 5
-        d.rectangle([s(30), s(y), s(34), s(y + 3)], fill=(*IRON_DARK, 255))
-    if action in (2, 3):
-        d.ellipse([s(28), s(40), s(36), s(48)], fill=(*BONE, 200))
-    d.ellipse([s(30), s(10), s(34), s(14)], fill=(*pal["light"], 255))
-    suffix = ""
-    if move:
-        suffix = f"_move{move}"
-    if action:
-        suffix = f"_action{action}"
-    finish(img, px, f"moth_{faction}{suffix}")
-
-
-def breaker(faction: str, move: int = 0, action: int = 0) -> None:
+def breaker(variant: str, move: int = 0, action: int = 0) -> None:
     """Tier-three assault walker: a fortress hull on four piston legs
     with one siege mortar over the shoulder — the wall-breaker."""
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     stride = (0, 2, -2)[move % 3]
     # Four piston legs.
@@ -2323,14 +2206,14 @@ def breaker(faction: str, move: int = 0, action: int = 0) -> None:
         suffix = f"_move{move}"
     if action:
         suffix = f"_action{action}"
-    finish(img, px, f"breaker_{faction}{suffix}")
+    finish(img, px, f"breaker{variant_tag(variant)}{suffix}")
 
 
-def avalanche(faction: str, move: int = 0, action: int = 0) -> None:
+def avalanche(variant: str, move: int = 0, action: int = 0) -> None:
     """Tier-three rocket battery: a low tracked chassis under a raked
     bank of launch tubes; the bank flashes as the salvo leaves."""
     px = 64
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     dy = (0, -1, 1)[move % 3]
     # Wide tracks.
@@ -2366,7 +2249,7 @@ def avalanche(faction: str, move: int = 0, action: int = 0) -> None:
         suffix = f"_move{move}"
     if action:
         suffix = f"_action{action}"
-    finish(img, px, f"avalanche_{faction}{suffix}")
+    finish(img, px, f"avalanche{variant_tag(variant)}{suffix}")
 
 
 def _gear(
@@ -2416,11 +2299,11 @@ def _gear(
     )
 
 
-def repair_bay(faction: str, work: int = 0) -> None:
+def repair_bay(variant: str, work: int = 0) -> None:
     """2x2 field workshop: an open service pad under a welding gantry —
     wounded machines roll in past the hazard chevrons and roll out whole."""
     px = 128
-    pal = FACTIONS[faction]
+    pal = PALETTES[variant]
     img, d = canvas(px)
     d.rounded_rectangle(
         [s(6), s(8), s(122), s(120)], radius=s(9), fill=(*IRON_DARK, 255)
@@ -2463,11 +2346,11 @@ def repair_bay(faction: str, work: int = 0) -> None:
         d.ellipse(
             [s(cx - 3), s(cy - 3), s(cx + 3), s(cy + 3)], fill=(*pal["base"], 255)
         )
-    # Faction service band on the roof edge.
+    # Accent service band on the roof edge.
     d.rectangle([s(50), s(16), s(78), s(26)], fill=(*pal["dark"], 255))
     d.rectangle([s(54), s(18), s(74), s(24)], fill=(*pal["light"], 255))
     suffix = "" if work == 0 else f"_work{work}"
-    finish(img, px, f"repair_bay_{faction}{suffix}")
+    finish(img, px, f"repair_bay{variant_tag(variant)}{suffix}")
 
 
 def wreck_pile() -> None:
@@ -3476,81 +3359,76 @@ def generate(output: Path) -> None:
     scaffold(dense=False)
     for variant in range(3):
         debris(variant)
-    for faction in FACTIONS:
-        foundry(faction)
+    for variant in PALETTES:
+        foundry(variant)
         for work in range(1, 4):
-            foundry(faction, work)
-        harvester(faction)
-        harvester(faction, dig=1)
-        harvester(faction, dig=2)
-        harvester(faction, tread=1)
-        harvester(faction, tread=2)
-        sentinel(faction)
-        sentinel(faction, move=1)
-        sentinel(faction, move=2)
-        scuttler(faction)
-        scuttler(faction, move=1)
-        scuttler(faction, move=2)
-        lancer(faction)
-        lancer(faction, move=1)
-        lancer(faction, move=2)
-        bombard(faction)
-        bombard(faction, move=1)
-        bombard(faction, move=2)
-        flakhound(faction)
-        flakhound(faction, tread=1)
-        flakhound(faction, tread=2)
-        stinger(faction)
-        stinger(faction, move=1)
-        stinger(faction, move=2)
-        buzzard(faction)
-        darter(faction)
-        talon(faction)
-        wisp(faction)
-        turret(faction)
-        turret_barrel(faction)
-        fabricator(faction)
+            foundry(variant, work)
+        harvester(variant)
+        harvester(variant, dig=1)
+        harvester(variant, dig=2)
+        harvester(variant, tread=1)
+        harvester(variant, tread=2)
+        sentinel(variant)
+        sentinel(variant, move=1)
+        sentinel(variant, move=2)
+        scuttler(variant)
+        scuttler(variant, move=1)
+        scuttler(variant, move=2)
+        lancer(variant)
+        lancer(variant, move=1)
+        lancer(variant, move=2)
+        bombard(variant)
+        bombard(variant, move=1)
+        bombard(variant, move=2)
+        flakhound(variant)
+        flakhound(variant, tread=1)
+        flakhound(variant, tread=2)
+        buzzard(variant)
+        talon(variant)
+        turret(variant)
+        turret_barrel(variant)
+        fabricator(variant)
         for work in range(1, 4):
-            fabricator(faction, work)
-        flak_turret(faction)
-        turret_t1(faction)
-        turret_t2(faction)
-        flak_turret_t1(faction)
-        reclaimer_t1(faction)
-        array_t1(faction)
-        flak_mount(faction)
-        bastion(faction)
-        bastion_mount(faction)
-        array(faction)
+            fabricator(variant, work)
+        flak_turret(variant)
+        turret_t1(variant)
+        turret_t2(variant)
+        flak_turret_t1(variant)
+        reclaimer_t1(variant)
+        array_t1(variant)
+        flak_mount(variant)
+        bastion(variant)
+        bastion_mount(variant)
+        array(variant)
         for work in range(1, 4):
-            array(faction, work)
-        reclaimer(faction)
+            array(variant, work)
+        reclaimer(variant)
         for work in range(1, 4):
-            reclaimer(faction, work)
-        repair_bay(faction)
+            reclaimer(variant, work)
+        repair_bay(variant)
         for work in range(1, 4):
-            repair_bay(faction, work)
-        extractor(faction)
+            repair_bay(variant, work)
+        extractor(variant)
         for work in range(1, 4):
-            extractor(faction, work)
-        for unit_fn in (warden, shrike, sylph, condor, moth, breaker, avalanche):
-            unit_fn(faction)
+            extractor(variant, work)
+        for unit_fn in (warden, shrike, condor, breaker, avalanche):
+            unit_fn(variant)
             for move in (1, 2):
-                unit_fn(faction, move)
+                unit_fn(variant, move)
             for act in range(1, 5):
-                unit_fn(faction, 0, act)
-        for unit_fn in (tender, excavator, kestrel, gnat, skyhook, sapper):
-            unit_fn(faction)
+                unit_fn(variant, 0, act)
+        for unit_fn in (tender, excavator, kestrel, skyhook, sapper):
+            unit_fn(variant)
             for move in (1, 2):
-                unit_fn(faction, move)
-        airworks(faction)
+                unit_fn(variant, move)
+        airworks(variant)
         for work in range(1, 4):
-            airworks(faction, work)
-        crucible(faction)
+            airworks(variant, work)
+        crucible(variant)
         for work in range(1, 4):
-            crucible(faction, work)
-        barricade(faction)
-        scuttle_charge(faction)
+            crucible(variant, work)
+        barricade(variant)
+        scuttle_charge(variant)
     _install_finalized_sprite_bank()
     _install_finalized_environment_bank()
     _install_finalized_construction_bank()

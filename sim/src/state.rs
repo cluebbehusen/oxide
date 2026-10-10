@@ -28,16 +28,6 @@ use chassis::fx::{Fx, Vec2Fx};
 use chassis::grid::{TilePos, cell_count};
 use serde::{Deserialize, Serialize};
 
-/// A seat's allegiance: which roster it runs, and its sprite tint.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Faction {
-    /// Rust-orange machines.
-    Ferrous,
-    /// Patina-teal machines.
-    Cupric,
-}
-
 /// Whether a seat whose economy is stranded may begin a recovery cycle, or
 /// the package the current cycle captured.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,8 +56,6 @@ pub enum Recovery {
 pub struct Player {
     /// Display name.
     pub name: String,
-    /// Which roster this seat runs (and its sprite tint).
-    pub faction: Faction,
     /// Team index: seats sharing one share vision, never fight each
     /// other, and stand or fall together.
     pub team: u8,
@@ -1403,8 +1391,8 @@ impl State {
     ///   envelope, every anchored Harvest source inside its work zone,
     ///   every entity named by an order actually minted.
     /// - Buildings: the same, plus a phase that fits the tier, a queue
-    ///   only once built and only of what this kind produces for this
-    ///   seat's faction, and a coherent salvage ledger.
+    ///   only once built and only of what this kind produces, and a
+    ///   coherent salvage ledger.
     /// - Shells: coordinates inside the envelope, shooter minted.
     /// - Vision: ghost owners in the table and hostile to the viewer;
     ///   ghosts, contacts, and recent allied impact sites inside their
@@ -1555,7 +1543,6 @@ impl State {
         for (index, player) in self.players.iter().enumerate() {
             let Player {
                 name: _,
-                faction: _,
                 team,
                 scrap: _,
                 recovery,
@@ -1919,13 +1906,10 @@ impl State {
         if queue.len() > crate::stats::QUEUE_CAP {
             return Err(E::OverlongBuildingQueue(id));
         }
-        let faction = self.players[usize::from(player.0)].faction;
         // Training needs a complete building, and an upgrade keeps the queue
         // only of a kind that trains nothing.
         if (!queue.is_empty() && !b.built())
-            || queue.iter().any(|kind| {
-                !stats.produces.contains(kind) || kind.faction().is_some_and(|f| f != faction)
-            })
+            || queue.iter().any(|kind| !stats.produces.contains(kind))
         {
             return Err(E::UnproducibleQueueEntry(id));
         }
@@ -2441,7 +2425,7 @@ impl State {
         let scouted = self.units.iter().any(|u| {
             u.hp > 0
                 && !self.hostile(viewer, u.player)
-                && u.kind.role() == crate::stats::Role::Scout
+                && u.kind == crate::stats::UnitKind::Kestrel
                 && u.tile().chebyshev(anchor) <= scout_r
         });
         if scouted {
@@ -2931,8 +2915,8 @@ pub enum StateIntegrityError {
     /// [`crate::stats::QUEUE_CAP`].
     #[error("building {0} queues more units than the cap allows")]
     OverlongBuildingQueue(BuildingId),
-    /// A building queues a unit its kind cannot train, one belonging to the
-    /// other faction's roster, or anything at all before it is built.
+    /// A building queues a unit its kind cannot train, or anything at all
+    /// before it is built.
     #[error("building {0} queues a unit it could never train")]
     UnproducibleQueueEntry(BuildingId),
     /// A building's anchor or rally point sits outside the sanity

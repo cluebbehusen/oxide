@@ -775,11 +775,10 @@ fn build_chips_wear_the_works_they_are_raising() {
     assert_eq!(panel.queue.len(), 2, "two legs of one program");
     // Two Build chips look different: each carries its own works,
     // ghosted while the site is still rising.
-    let faction = game.state.player(game.presentation.human).faction;
     assert_eq!(
         panel.queue[0].icon,
         CardIcon::Order {
-            subject: OrderSubject::Building(BuildingKind::Turret, faction),
+            subject: OrderSubject::Building(BuildingKind::Turret),
             verb: VerbIcon::Build,
             ghost: true,
         }
@@ -787,7 +786,7 @@ fn build_chips_wear_the_works_they_are_raising() {
     assert_eq!(
         panel.queue[1].icon,
         CardIcon::Order {
-            subject: OrderSubject::Building(BuildingKind::Array, faction),
+            subject: OrderSubject::Building(BuildingKind::Array),
             verb: VerbIcon::Build,
             ghost: true,
         }
@@ -1027,9 +1026,6 @@ fn panel_copy_uses_only_supported_font_glyphs() {
         UnitKind::Flakhound,
         UnitKind::Buzzard,
         UnitKind::Talon,
-        UnitKind::Stinger,
-        UnitKind::Darter,
-        UnitKind::Wisp,
     ];
     let buildings = [
         BuildingKind::Foundry,

@@ -1,6 +1,6 @@
 use super::*;
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, ScenarioMode, UnitSpec};
-use oxide_sim::{AttackTarget, Command, Faction, PlayerCommand, PlayerId, Scenario};
+use oxide_sim::{AttackTarget, Command, PlayerCommand, PlayerId, Scenario};
 
 /// A 32-wide, 12-deep field: West's start at (2, 2) and East's at
 /// (28, 2), each seat with `scrap`, plus the given units and buildings.
@@ -19,12 +19,9 @@ fn field(
         mode: ScenarioMode::Match,
         name: "ledger".into(),
         map,
-        players: [Faction::Ferrous, Faction::Cupric]
-            .into_iter()
-            .enumerate()
-            .map(|(seat, faction)| PlayerSpec {
+        players: (0..2)
+            .map(|seat| PlayerSpec {
                 name: format!("seat {seat}"),
-                faction,
                 team: None,
                 scrap,
                 bot: false,

@@ -20,7 +20,6 @@ use crate::theme::{
 use crate::typography::entity_name;
 use macroquad::prelude::*;
 use oxide_protocol::{Key, RawEvent};
-use oxide_sim::Faction;
 use oxide_sim::stats::{BuildingKind, Domain, UnitKind};
 use std::fmt::Write as _;
 
@@ -156,9 +155,8 @@ impl CodexScreen {
     }
 
     /// Draws the list and the selected page — the caller draws the
-    /// veil first, so both land above it. `viewer` is the faction
-    /// whose paint shared kinds wear; faction kinds wear their own.
-    pub fn draw(&self, sprites: &Sprites, viewer: Faction) {
+    /// veil first, so both land above it.
+    pub fn draw(&self, sprites: &Sprites) {
         self.menu
             .draw("every machine and works, in the order the factories unlock them");
         let Some(entry) = self.selected_entry() else {
@@ -177,30 +175,10 @@ impl CodexScreen {
         let plate_x = x + pad;
         let plate_y = top + pad;
 
-        let (name, faction_line, sprite_factions): (String, String, Vec<Faction>) = match entry {
-            Entry::Unit(kind) => {
-                let owner = kind.faction();
-                (
-                    entity_name(kind.name()),
-                    match owner {
-                        Some(Faction::Ferrous) => "Ferrous only".to_string(),
-                        Some(Faction::Cupric) => "Cupric only".to_string(),
-                        None => "shared roster".to_string(),
-                    },
-                    match owner {
-                        Some(f) => vec![f],
-                        None => vec![viewer, other(viewer)],
-                    },
-                )
-            }
-            Entry::Building(kind) => (
-                entity_name(kind.name()),
-                "shared roster".to_string(),
-                vec![viewer, other(viewer)],
-            ),
+        let name = match entry {
+            Entry::Unit(kind) => entity_name(kind.name()),
+            Entry::Building(kind) => entity_name(kind.name()),
         };
-        let plates = sprite_factions.len() as f32;
-        let plates_w = plate * plates + 6.0 * s * (plates - 1.0);
         let role = match entry {
             Entry::Unit(kind) => {
                 let stats = kind.stats();
@@ -208,12 +186,12 @@ impl CodexScreen {
                     Domain::Ground => "ground",
                     Domain::Air => "air",
                 };
-                format!("{faction_line} | {domain} | {} scrap", stats.cost)
+                format!("{domain} | {} scrap", stats.cost)
             }
-            Entry::Building(kind) => match kind.base_stats().construction {
-                Some(c) => format!("{faction_line} | {} scrap", c.cost),
-                None => faction_line,
-            },
+            Entry::Building(kind) => kind
+                .base_stats()
+                .construction
+                .map_or_else(String::new, |c| format!("{} scrap", c.cost)),
         };
 
         // The page: description, figures, weapons, and what else the
@@ -266,28 +244,21 @@ impl CodexScreen {
             Stroke::Edge.at(s),
             BORDER_STRONG,
         );
-        draw_rectangle(plate_x, plate_y, plates_w, plate, CHIP);
-        for (i, faction) in sprite_factions.iter().enumerate() {
-            let dest = Rect::new(
-                plate_x + i as f32 * (plate + 6.0 * s),
-                plate_y,
-                plate,
-                plate,
-            );
-            match entry {
-                Entry::Unit(kind) => {
-                    sprites.draw_portrait(dest, &[(sprites.unit(kind, *faction), WHITE)]);
+        draw_rectangle(plate_x, plate_y, plate, plate, CHIP);
+        let dest = Rect::new(plate_x, plate_y, plate, plate);
+        match entry {
+            Entry::Unit(kind) => {
+                sprites.draw_portrait(dest, &[(sprites.unit(kind), WHITE)]);
+            }
+            Entry::Building(kind) => {
+                let mut layers = vec![(sprites.building(kind), WHITE)];
+                if let Some(mount) = sprites.defense_mount(kind, 0) {
+                    layers.push((mount, WHITE));
                 }
-                Entry::Building(kind) => {
-                    let mut layers = vec![(sprites.building(kind, *faction), WHITE)];
-                    if let Some(mount) = sprites.defense_mount(kind, 0, *faction) {
-                        layers.push((mount, WHITE));
-                    }
-                    sprites.draw_portrait(dest, &layers);
-                }
+                sprites.draw_portrait(dest, &layers);
             }
         }
-        let text_x = plate_x + plates_w + pad;
+        let text_x = plate_x + plate + pad;
         draw_text(
             &name,
             text_x,
@@ -310,13 +281,6 @@ impl CodexScreen {
             draw_text(&line, x + pad, y, body_size, color);
             y += line_h;
         }
-    }
-}
-
-fn other(faction: Faction) -> Faction {
-    match faction {
-        Faction::Ferrous => Faction::Cupric,
-        Faction::Cupric => Faction::Ferrous,
     }
 }
 

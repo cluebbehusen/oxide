@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PIL import Image, ImageChops, ImageDraw
+from PIL import Image, ImageDraw
 
 from tools.gen_sprites import (
-    FACTIONS,
+    PALETTES,
     IRON,
     IRON_DARK,
     IRON_LIGHT,
@@ -16,7 +16,6 @@ from tools.gen_sprites import (
     SCRAP_LIGHT,
     rim_light,
 )
-from tools.production_sprite_sources import air_base as air_shapes
 from tools.production_sprite_sources.ground_base import (
     GroundUnitFrame,
     GroundUnitSequence,
@@ -24,14 +23,10 @@ from tools.production_sprite_sources.ground_base import (
 
 SIZE = 64
 SS = 4
-FERROUS = FACTIONS["ferrous"]
-CUPRIC = FACTIONS["cupric"]
+BASE = PALETTES["base"]
 Palette = dict[str, tuple[int, int, int]]
 Drawer = Callable[[int, str], Image.Image]
 Box = tuple[int, int, int, int]
-_LOCOMOTION_WINDOWS: dict[str, tuple[Box, ...]] = {
-    "darter_shear_wing": ((19, 41, 24, 51), (40, 41, 45, 51))
-}
 
 
 def _rgba(color: tuple[int, int, int]) -> tuple[int, int, int, int]:
@@ -124,7 +119,7 @@ def _fan(
         ((0, -radius + 3), (0, radius - 3)),
     )
     (x0, y0), (x1, y1) = blades[phase % len(blades)]
-    _line(draw, ((cx + x0, cy + y0), (cx + x1, cy + y1)), FERROUS["light"], 2)
+    _line(draw, ((cx + x0, cy + y0), (cx + x1, cy + y1)), BASE["light"], 2)
     draw.ellipse(_box((cx - 2, cy - 2, cx + 2, cy + 2)), fill=_rgba(IRON_LIGHT))
 
 
@@ -160,9 +155,9 @@ def _forward_gun(
 def _buzzard_quad_fan_carriage(phase: int, state: str) -> Image.Image:
     image, draw = _canvas()
     for center in ((13, 22), (51, 22), (13, 48), (51, 48)):
-        _line(draw, ((32, 35), center), FERROUS["dark"], 4)
+        _line(draw, ((32, 35), center), BASE["dark"], 4)
         _fan(draw, center, 8, phase + center[1])
-    _plate(draw, (23, 16, 41, 55), fill=FERROUS["base"], radius=4)
+    _plate(draw, (23, 16, 41, 55), fill=BASE["base"], radius=4)
     draw.rectangle(_box((26, 33, 38, 52)), fill=_rgba(IRON_DARK))
     _forward_gun(draw, state=state)
     return _finish(image)
@@ -179,60 +174,6 @@ def _engine_pod(
         y = vent_top + 2 + index * 3
         color = palette["light"] if index == phase % 3 else palette["dark"]
         draw.rectangle(_box((x0 + 3, y, x1 - 3, y + 1)), fill=_rgba(color))
-
-
-def _internal_locomotion(idle: Image.Image, stem: str, phase: int) -> Image.Image:
-    palette = FERROUS if stem.startswith(("buzzard_", "talon_")) else CUPRIC
-    overlay = Image.new("RGBA", idle.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
-    for index, (x0, y0, x1, y1) in enumerate(_LOCOMOTION_WINDOWS[stem]):
-        width = x1 - x0
-        height = y1 - y0
-        if height >= width:
-            span = max(2, height - 3)
-            travel = phase if span <= 3 else phase * 3
-            y = y0 + 1 + (travel + index * 3) % span
-            draw.rectangle(
-                (x0 + 1, y, x1 - 1, min(y + 2, y1 - 1)), fill=_rgba(palette["light"])
-            )
-        else:
-            span = max(2, width - 3)
-            travel = phase if span <= 3 else phase * 3
-            x = x0 + 1 + (travel + index * 3) % span
-            draw.rectangle(
-                (x, y0 + 1, min(x + 2, x1 - 1), y1 - 1), fill=_rgba(palette["light"])
-            )
-    original_alpha = idle.getchannel("A")
-    overlay_alpha = ImageChops.multiply(overlay.getchannel("A"), original_alpha)
-    overlay.putalpha(overlay_alpha)
-    result = idle.copy()
-    result.alpha_composite(overlay)
-    result.putalpha(original_alpha)
-    return result
-
-
-def _carry(sequence: GroundUnitSequence) -> GroundUnitSequence:
-    idle = sequence.frames[0]
-    first = GroundUnitFrame(
-        _internal_locomotion(idle.image, sequence.stem, 1),
-        sequence.frames[1].duration_ms,
-        "locomotion",
-        "internal_propulsion_a",
-    )
-    second = GroundUnitFrame(
-        _internal_locomotion(idle.image, sequence.stem, 2),
-        sequence.frames[2].duration_ms,
-        "locomotion",
-        "internal_propulsion_b",
-    )
-    return GroundUnitSequence(
-        stem=sequence.stem,
-        title=sequence.title,
-        mechanism=sequence.mechanism,
-        mechanism_box=sequence.mechanism_box,
-        attack_contract=sequence.attack_contract,
-        frames=(idle, first, second, *sequence.frames[3:]),
-    )
 
 
 def _state_color(state: str, palette: Palette) -> tuple[int, int, int]:
@@ -267,53 +208,21 @@ def _talon_compact_interceptor(phase: int, state: str) -> Image.Image:
     )
     draw.polygon(
         _points(((8, 28), (24, 20), (29, 32), (20, 42), (10, 39))),
-        fill=_rgba(FERROUS["dark"]),
+        fill=_rgba(BASE["dark"]),
     )
     draw.polygon(
         _points(((56, 28), (40, 20), (35, 32), (44, 42), (54, 39))),
-        fill=_rgba(FERROUS["dark"]),
+        fill=_rgba(BASE["dark"]),
     )
-    _engine_pod(draw, (7, 28, 18, 46), FERROUS, phase)
-    _engine_pod(draw, (46, 28, 57, 46), FERROUS, phase + 1)
-    _plate(draw, (24, 19, 40, 53), fill=FERROUS["base"], radius=4)
+    _engine_pod(draw, (7, 28, 18, 46), BASE, phase)
+    _engine_pod(draw, (46, 28, 57, 46), BASE, phase + 1)
+    _plate(draw, (24, 19, 40, 53), fill=BASE["base"], radius=4)
     pinch = {"idle": 0, "ready": 1, "attack": 3, "recover": 1}[state]
-    _rail(draw, ((26 + pinch, 30), (23 + pinch, 8)), accent=FERROUS["dark"], width=5)
-    _rail(draw, ((38 - pinch, 30), (41 - pinch, 8)), accent=FERROUS["dark"], width=5)
+    _rail(draw, ((26 + pinch, 30), (23 + pinch, 8)), accent=BASE["dark"], width=5)
+    _rail(draw, ((38 - pinch, 30), (41 - pinch, 8)), accent=BASE["dark"], width=5)
     offset = {"idle": 0, "ready": -2, "attack": -8, "recover": -3}[state]
     _rail(draw, ((32, 32 + offset), (32, 16 + offset)), width=3)
-    draw.rectangle(_box((28, 30, 36, 36)), fill=_rgba(_state_color(state, FERROUS)))
-    return _finish(image)
-
-
-def _rotor(
-    draw: ImageDraw.ImageDraw, center: tuple[int, int], palette: Palette, phase: int
-) -> None:
-    cx, cy = center
-    draw.ellipse(_box((cx - 5, cy - 5, cx + 5, cy + 5)), fill=_rgba(IRON_LIGHT))
-    draw.ellipse(_box((cx - 3, cy - 3, cx + 3, cy + 3)), fill=_rgba(IRON_DARK))
-    vectors = ((3, 0), (2, 2), (0, 3))
-    dx, dy = vectors[phase % len(vectors)]
-    draw.line(
-        _points(((cx - dx, cy - dy), (cx + dx, cy + dy))),
-        fill=_rgba(palette["light"]),
-        width=_s(2),
-    )
-    draw.ellipse(_box((cx - 1, cy - 1, cx + 1, cy + 1)), fill=_rgba(IRON))
-
-
-def _wisp_quadcopter(phase: int, state: str) -> Image.Image:
-    image, draw = _canvas()
-    centers = ((20, 18), (44, 18), (20, 42), (44, 42))
-    for center in centers:
-        _rail(draw, ((32, 31), center), accent=CUPRIC["dark"], width=2)
-    for index, center in enumerate(centers):
-        _rotor(draw, center, CUPRIC, phase + index % 2)
-    _plate(draw, (26, 24, 38, 42), fill=CUPRIC["base"], radius=3)
-    draw.rectangle(_box((29, 28, 35, 37)), fill=_rgba(IRON_DARK))
-    draw.rectangle(_box((31, 29, 33, 36)), fill=_rgba(CUPRIC["light"]))
-    offset = {"idle": 0, "ready": -2, "attack": -6, "recover": -3}[state]
-    _rail(draw, ((32, 31 + offset), (32, 20 + offset)), width=2)
-    draw.rectangle(_box((29, 36, 35, 40)), fill=_rgba(_state_color(state, CUPRIC)))
+    draw.rectangle(_box((28, 30, 36, 36)), fill=_rgba(_state_color(state, BASE)))
     return _finish(image)
 
 
@@ -328,10 +237,6 @@ def _sequence(
     recovery_event: str,
     recoil_px: int,
     drawer: Drawer,
-    movement_events: tuple[str, str] = (
-        "internal_propulsion_a",
-        "internal_propulsion_b",
-    ),
 ) -> GroundUnitSequence:
     return GroundUnitSequence(
         stem=stem,
@@ -341,8 +246,12 @@ def _sequence(
         attack_contract=f"one physical attack and one logical damage event: {attack_event}",
         frames=(
             GroundUnitFrame(drawer(0, "idle"), 420, "idle", "idle"),
-            GroundUnitFrame(drawer(1, "idle"), 150, "locomotion", movement_events[0]),
-            GroundUnitFrame(drawer(2, "idle"), 150, "locomotion", movement_events[1]),
+            GroundUnitFrame(
+                drawer(1, "idle"), 150, "locomotion", "internal_propulsion_a"
+            ),
+            GroundUnitFrame(
+                drawer(2, "idle"), 150, "locomotion", "internal_propulsion_b"
+            ),
             GroundUnitFrame(drawer(0, "idle"), 220, "settle", "motion_settle"),
             GroundUnitFrame(
                 drawer(0, "ready"), 170, "anticipation", anticipation_event
@@ -427,10 +336,6 @@ def buzzard_sequence() -> GroundUnitSequence:
     )
 
 
-def darter_sequence() -> GroundUnitSequence:
-    return _carry(air_shapes.darter_shear_wing_sequence())
-
-
 def talon_sequence() -> GroundUnitSequence:
     return _sequence(
         stem="talon_compact_interceptor",
@@ -442,19 +347,4 @@ def talon_sequence() -> GroundUnitSequence:
         recovery_event="pursuit_forks_release",
         recoil_px=5,
         drawer=_talon_compact_interceptor,
-    )
-
-
-def wisp_sequence() -> GroundUnitSequence:
-    return _sequence(
-        stem="wisp_quadcopter",
-        title="Wisp / Four-Rotor Relay",
-        mechanism="four indexed rotor pods feeding one tiny central pursuit striker",
-        mechanism_box=(14, 12, 50, 45),
-        anticipation_event="relay_striker_arms",
-        attack_event="damage+relay_striker_snap",
-        recovery_event="relay_striker_returns",
-        recoil_px=2,
-        drawer=_wisp_quadcopter,
-        movement_events=("rotor_phase_a", "rotor_phase_b"),
     )

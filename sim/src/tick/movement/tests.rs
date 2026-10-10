@@ -1,7 +1,6 @@
 use super::super::spatial::UnitIndex;
 use super::*;
 use crate::scenario::{PlayerSpec, Scenario, ScenarioMode, UnitSpec};
-use crate::state::Faction;
 use crate::stats::UnitKind;
 use chassis::grid::as_index;
 
@@ -366,10 +365,9 @@ fn shallow_air_bearing_does_not_alternate_across_the_goal_ray() {
     }
 }
 
-fn seat(name: &str, faction: Faction) -> PlayerSpec {
+fn seat(name: &str) -> PlayerSpec {
     PlayerSpec {
         name: name.into(),
-        faction,
         team: None,
         scrap: 0,
         bot: false,
@@ -391,10 +389,7 @@ fn boundary_pair() -> State {
             "............".into(),
             "............".into(),
         ],
-        players: vec![
-            seat("North", Faction::Ferrous),
-            seat("South", Faction::Cupric),
-        ],
+        players: vec![seat("North"), seat("South")],
         units: vec![
             UnitSpec {
                 player: 0,
@@ -468,10 +463,7 @@ fn corner_shortcut_pair(
         mode: ScenarioMode::Match,
         name: name.into(),
         map,
-        players: vec![
-            seat("West", Faction::Ferrous),
-            seat("East", Faction::Cupric),
-        ],
+        players: vec![seat("West"), seat("East")],
         units: vec![
             UnitSpec {
                 player: 0,
@@ -568,10 +560,7 @@ fn corner_hugging_pair(offset: Vec2Fx, heading: u8, next: u32) -> State {
         mode: ScenarioMode::Match,
         name: "corner-hugging-pair".into(),
         map,
-        players: vec![
-            seat("West", Faction::Ferrous),
-            seat("East", Faction::Cupric),
-        ],
+        players: vec![seat("West"), seat("East")],
         units: [(0, anchor), (1, mirrored_anchor)]
             .into_iter()
             .map(|(player, anchor)| UnitSpec {
@@ -717,10 +706,7 @@ fn collision_trio() -> State {
             "............".into(),
             "............".into(),
         ],
-        players: vec![
-            seat("North", Faction::Ferrous),
-            seat("South", Faction::Cupric),
-        ],
+        players: vec![seat("North"), seat("South")],
         units: vec![
             UnitSpec {
                 player: 0,
@@ -756,10 +742,7 @@ fn replay_center_crossing() -> State {
         mode: ScenarioMode::Match,
         name: "replay-center-crossing".into(),
         map,
-        players: vec![
-            seat("West", Faction::Ferrous),
-            seat("East", Faction::Ferrous),
-        ],
+        players: vec![seat("West"), seat("East")],
         units: [0, 1, 0, 1]
             .into_iter()
             .zip(10..)
@@ -933,10 +916,7 @@ fn mirrored_seat_stacks_ignore_global_id_blocks() {
             "............".into(),
             "............".into(),
         ],
-        players: vec![
-            seat("West", Faction::Ferrous),
-            seat("East", Faction::Ferrous),
-        ],
+        players: vec![seat("West"), seat("East")],
         units: (0..6)
             .map(|slot| UnitSpec {
                 player: u8::from(slot >= 3),
@@ -1203,10 +1183,7 @@ fn passed_waypoint_still_rejects_a_blocked_next_step() {
             "............".into(),
             "............".into(),
         ],
-        players: vec![
-            seat("North", Faction::Ferrous),
-            seat("South", Faction::Cupric),
-        ],
+        players: vec![seat("North"), seat("South")],
         units: vec![UnitSpec {
             player: 0,
             kind: UnitKind::Avalanche,

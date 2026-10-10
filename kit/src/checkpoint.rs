@@ -262,7 +262,7 @@ pub(crate) fn validate_setup(scenario: &Scenario, state: &State) -> Result<()> {
                 .players()
                 .iter()
                 .zip(state.players())
-                .all(|(a, b)| a.faction == b.faction && a.team == b.team),
+                .all(|(a, b)| a.team == b.team),
         "checkpoint seats mismatch"
     );
     Ok(())

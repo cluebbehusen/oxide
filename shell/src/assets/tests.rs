@@ -1,6 +1,6 @@
 use super::*;
 
-const SOUND_NAMES: [&str; 40] = [
+const SOUND_NAMES: [&str; 37] = [
     "ack",
     "alert",
     "artillery_boom",
@@ -9,16 +9,13 @@ const SOUND_NAMES: [&str; 40] = [
     "attack_bombard",
     "attack_breaker",
     "attack_buzzard",
-    "attack_darter",
     "attack_flak_turret",
     "attack_flakhound",
     "attack_lancer",
     "attack_scuttler",
     "attack_sentinel",
-    "attack_stinger",
     "attack_talon",
     "attack_warden",
-    "attack_wisp",
     "avalanche_launch",
     "avalanche_motor",
     "bomb_release",
@@ -73,14 +70,13 @@ fn array_layers_require_both_tiers_and_every_allegiance_mask() {
     assert!(array_rig(&atlas).unwrap().is_none());
     for tier in 0..2 {
         for (part_index, part) in ["base", "rotor"].into_iter().enumerate() {
-            for (faction_index, faction) in ["ferrous", "cupric", "accent"].into_iter().enumerate()
-            {
+            for (variant_index, variant) in ["", "_accent"].into_iter().enumerate() {
                 atlas.insert(
-                    format!("rig_array_t{tier}_{part}_{faction}"),
+                    format!("rig_array_t{tier}_{part}{variant}"),
                     [
                         tier as f32,
                         part_index as f32,
-                        faction_index as f32 + 128.0,
+                        variant_index as f32 + 128.0,
                         128.0,
                     ],
                 );
@@ -88,9 +84,9 @@ fn array_layers_require_both_tiers_and_every_allegiance_mask() {
         }
     }
     let rig = array_rig(&atlas).unwrap().unwrap();
-    let layers = rig.layers(1, Faction::Cupric);
-    assert_eq!(layers[0].0, Rect::new(1.0, 0.0, 129.0, 128.0));
-    assert_eq!(layers[1].1, Rect::new(1.0, 1.0, 130.0, 128.0));
+    let layers = rig.layers(1);
+    assert_eq!(layers[0].0, Rect::new(1.0, 0.0, 128.0, 128.0));
+    assert_eq!(layers[1].1, Rect::new(1.0, 1.0, 129.0, 128.0));
     for key in atlas.keys() {
         let mut incomplete = atlas.clone();
         incomplete.remove(key);
@@ -105,18 +101,17 @@ fn articulated_unit_bank_is_optional_but_must_be_complete() {
         ("warden", 4),
         ("lancer", 6),
         ("buzzard", 4),
-        ("wisp", 4),
         ("skyhook", 4),
     ] {
         assert!(unit_rig(&manifest(), stem, actions).unwrap().is_some());
         let mut atlas = Manifest::default();
         assert!(unit_rig(&atlas, stem, actions).unwrap().is_none());
-        atlas.insert(format!("rig_{stem}_hull_ferrous"), [0.0, 0.0, 128.0, 128.0]);
+        atlas.insert(format!("rig_{stem}_hull"), [0.0, 0.0, 128.0, 128.0]);
         assert!(unit_rig(&atlas, stem, actions).is_err());
-        for faction in ["ferrous", "cupric", "accent"] {
+        for variant in ["", "_accent"] {
             for suffix in ["", "_move1", "_move2"] {
                 atlas.insert(
-                    format!("rig_{stem}_hull_{faction}{suffix}"),
+                    format!("rig_{stem}_hull{variant}{suffix}"),
                     [8.0, 16.0, 128.0, 128.0],
                 );
             }
@@ -127,18 +122,15 @@ fn articulated_unit_bank_is_optional_but_must_be_complete() {
                     format!("_action{action}")
                 };
                 atlas.insert(
-                    format!("rig_{stem}_mount_{faction}{suffix}"),
+                    format!("rig_{stem}_mount{variant}{suffix}"),
                     [action as f32, 16.0, 128.0, 128.0],
                 );
             }
         }
         let rig = unit_rig(&atlas, stem, actions).unwrap().unwrap();
+        assert_eq!(rig.hull(2).0, Rect::new(8.0, 16.0, 128.0, 128.0));
         assert_eq!(
-            rig.hull(Faction::Cupric, 2).0,
-            Rect::new(8.0, 16.0, 128.0, 128.0)
-        );
-        assert_eq!(
-            rig.mount(Faction::Ferrous, Some(actions - 1)).1,
+            rig.mount(Some(actions - 1)).1,
             Rect::new(actions as f32, 16.0, 128.0, 128.0)
         );
         atlas.remove(&format!("rig_{stem}_mount_accent_action{actions}"));
@@ -147,7 +139,7 @@ fn articulated_unit_bank_is_optional_but_must_be_complete() {
 }
 
 #[test]
-fn harvester_body_layers_require_every_cargo_and_faction_mask() {
+fn harvester_body_layers_require_every_cargo_and_its_accent_mask() {
     let mut atlas = Manifest::new();
     assert!(harvester_body_rows(&atlas).unwrap().is_none());
     for cargo in 0..6 {
@@ -431,23 +423,12 @@ fn opaque_span(image: &macroquad::prelude::Image) -> (usize, usize) {
 }
 
 fn assert_animation_variant(stem: &str, suffix: &str) {
-    let ferrous = sprite_image(&format!("{stem}_ferrous{suffix}"));
-    let cupric = sprite_image(&format!("{stem}_cupric{suffix}"));
+    let base = sprite_image(&format!("{stem}{suffix}"));
     let accent = sprite_image(&format!("{stem}_accent{suffix}"));
     assert_eq!(
-        (ferrous.width, ferrous.height),
-        (cupric.width, cupric.height),
-        "{stem}{suffix} faction frames must share a footprint"
-    );
-    assert_eq!(
-        (ferrous.width, ferrous.height),
+        (base.width, base.height),
         (accent.width, accent.height),
         "{stem}{suffix} accent must share the frame footprint"
-    );
-    assert_eq!(
-        alpha_bytes(&ferrous).collect::<Vec<_>>(),
-        alpha_bytes(&cupric).collect::<Vec<_>>(),
-        "{stem}{suffix} variants must share a silhouette"
     );
     assert!(
         alpha_bytes(&accent).any(|alpha| alpha > 0),
@@ -456,7 +437,7 @@ fn assert_animation_variant(stem: &str, suffix: &str) {
 }
 
 #[test]
-fn authored_animation_families_are_complete_distinct_and_faction_safe() {
+fn authored_animation_families_are_complete_distinct_and_masked() {
     for (stem, suffixes) in [
         ("harvester", TREAD_SUFFIXES),
         ("sentinel", MOVE_SUFFIXES),
@@ -464,37 +445,26 @@ fn authored_animation_families_are_complete_distinct_and_faction_safe() {
         ("lancer", MOVE_SUFFIXES),
         ("bombard", MOVE_SUFFIXES),
         ("flakhound", TREAD_SUFFIXES),
-        ("stinger", MOVE_SUFFIXES),
         ("buzzard", MOVE_SUFFIXES),
-        ("darter", MOVE_SUFFIXES),
         ("talon", MOVE_SUFFIXES),
-        ("wisp", MOVE_SUFFIXES),
     ] {
-        let mut ferrous_seen = vec![sprite_image(&format!("{stem}_ferrous")).bytes];
-        let mut cupric_seen = vec![sprite_image(&format!("{stem}_cupric")).bytes];
+        let mut seen = vec![sprite_image(stem).bytes];
         for suffix in suffixes {
             assert_animation_variant(stem, suffix);
-            let ferrous = sprite_image(&format!("{stem}_ferrous{suffix}")).bytes;
-            let cupric = sprite_image(&format!("{stem}_cupric{suffix}")).bytes;
+            let frame = sprite_image(&format!("{stem}{suffix}")).bytes;
             assert_ne!(
-                ferrous_seen.last().unwrap(),
-                &ferrous,
+                seen.last().unwrap(),
+                &frame,
                 "{stem}{suffix} must advance its locomotion cycle"
             );
-            assert_ne!(
-                cupric_seen.last().unwrap(),
-                &cupric,
-                "{stem}{suffix} must advance its locomotion cycle"
-            );
-            ferrous_seen.push(ferrous);
-            cupric_seen.push(cupric);
+            seen.push(frame);
         }
     }
 
-    let harvester = sprite_image("harvester_ferrous");
+    let harvester = sprite_image("harvester");
     let base_alpha = alpha_bytes(&harvester).collect::<Vec<_>>();
     for suffix in TREAD_SUFFIXES {
-        let tread = sprite_image(&format!("harvester_ferrous{suffix}"));
+        let tread = sprite_image(&format!("harvester{suffix}"));
         assert_eq!(
             alpha_bytes(&tread).collect::<Vec<_>>(),
             base_alpha,
@@ -511,37 +481,37 @@ fn authored_animation_families_are_complete_distinct_and_faction_safe() {
         .filter(|(_, work)| !work.is_empty());
     for (kind, work) in working {
         let stem = building_stem(kind);
-        let base = sprite_image(&format!("{stem}_ferrous"));
+        let base = sprite_image(stem);
         let mut changed = false;
         for suffix in &work {
             assert_animation_variant(stem, suffix);
-            changed |= sprite_image(&format!("{stem}_ferrous{suffix}")).bytes != base.bytes;
+            changed |= sprite_image(&format!("{stem}{suffix}")).bytes != base.bytes;
         }
         assert!(changed, "{stem} needs at least one visible work pose");
     }
-    let refinery = sprite_image("reclaimer_t1_ferrous");
+    let refinery = sprite_image("reclaimer_t1");
     let mut changed = false;
     for suffix in numbered_suffixes(&manifest(), "reclaimer_t1", "work").unwrap() {
         assert_animation_variant("reclaimer_t1", &suffix);
-        changed |= sprite_image(&format!("reclaimer_t1_ferrous{suffix}")).bytes != refinery.bytes;
+        changed |= sprite_image(&format!("reclaimer_t1{suffix}")).bytes != refinery.bytes;
     }
     assert!(changed, "reclaimer_t1 needs at least one visible work pose");
-    let deep_array = sprite_image("array_t1_ferrous");
+    let deep_array = sprite_image("array_t1");
     let mut changed = false;
     for suffix in numbered_suffixes(&manifest(), "array_t1", "work").unwrap() {
         assert_animation_variant("array_t1", &suffix);
-        changed |= sprite_image(&format!("array_t1_ferrous{suffix}")).bytes != deep_array.bytes;
+        changed |= sprite_image(&format!("array_t1{suffix}")).bytes != deep_array.bytes;
     }
     assert!(changed, "array_t1 needs at least one visible work pose");
     for kind in BuildingKind::ALL {
         let stem = building_stem(kind);
-        let base = sprite_image(&format!("{stem}_ferrous"));
+        let base = sprite_image(stem);
         for stage in 0..SITE_STAGES {
             let mut phases = Vec::new();
             for phase in 0..SITE_PHASES {
                 let suffix = format!("_site{stage}_{phase}");
                 assert_animation_variant(stem, &suffix);
-                let frame = sprite_image(&format!("{stem}_ferrous{suffix}"));
+                let frame = sprite_image(&format!("{stem}{suffix}"));
                 assert_eq!(
                     (frame.width, frame.height),
                     (base.width, base.height),
@@ -602,27 +572,14 @@ fn production_action_and_cargo_rows_match_the_runtime_contract() {
 #[test]
 fn defense_mount_art_covers_its_pivot_and_carries_an_allegiance_mask() {
     for (_, stem) in defense_rungs() {
-        let ferrous = sprite_image(&format!("{stem}_ferrous"));
-        let cupric = sprite_image(&format!("{stem}_cupric"));
+        let base = sprite_image(&stem);
         let accent = sprite_image(&format!("{stem}_accent"));
 
-        assert_eq!(
-            (ferrous.width, ferrous.height),
-            (cupric.width, cupric.height)
-        );
-        assert_eq!(
-            (ferrous.width, ferrous.height),
-            (accent.width, accent.height)
-        );
-        assert_eq!(
-            alpha_bytes(&ferrous).collect::<Vec<_>>(),
-            alpha_bytes(&cupric).collect::<Vec<_>>(),
-            "{stem} variants must rotate as one silhouette"
-        );
+        assert_eq!((base.width, base.height), (accent.width, accent.height));
 
-        let (min_x, min_y, max_x, max_y) = opaque_bounds(&ferrous);
-        let center_x = usize::from(ferrous.width / 2);
-        let center_y = usize::from(ferrous.height / 2);
+        let (min_x, min_y, max_x, max_y) = opaque_bounds(&base);
+        let center_x = usize::from(base.width / 2);
+        let center_y = usize::from(base.height / 2);
         assert!(
             min_x <= center_x && center_x <= max_x && min_y <= center_y && center_y <= max_y,
             "{stem} opaque bounds must straddle its centered rotation pivot"
@@ -636,8 +593,8 @@ fn defense_mount_art_covers_its_pivot_and_carries_an_allegiance_mask() {
 
 #[test]
 fn defense_mounts_preserve_separate_banks_and_a_compact_siege_carriage() {
-    let flak = sprite_image("flak_mount_ferrous");
-    let upgraded_flak = sprite_image("flak_mount_t1_ferrous");
+    let flak = sprite_image("flak_mount");
+    let upgraded_flak = sprite_image("flak_mount_t1");
     for image in [&flak, &upgraded_flak] {
         let width = usize::from(image.width);
         let row = &image.bytes.as_chunks::<4>().0[25 * width..26 * width];
@@ -657,7 +614,7 @@ fn defense_mounts_preserve_separate_banks_and_a_compact_siege_carriage() {
     }
     assert!(opaque_span(&upgraded_flak).0 > opaque_span(&flak).0);
 
-    let bastion = sprite_image("bastion_mount_ferrous");
+    let bastion = sprite_image("bastion_mount");
     let (width, height) = opaque_span(&bastion);
     assert!(
         width * 2 < height,

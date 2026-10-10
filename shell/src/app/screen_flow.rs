@@ -534,8 +534,7 @@ fn codex_frame(
         &app.config.bindings,
     );
     veil();
-    let viewer = app.game.state.player(app.game.presentation.human).faction;
-    codex.draw(&app.sprites, viewer);
+    codex.draw(&app.sprites);
     crate::button::draw_back(app.input.mouse);
     if out == screens::codex::Out::Leave {
         *back

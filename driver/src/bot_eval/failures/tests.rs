@@ -1,6 +1,6 @@
 use super::*;
+use oxide_sim::Scenario;
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, ScenarioMode, UnitSpec};
-use oxide_sim::{Faction, Scenario};
 
 /// The Scuttler, the cheapest unit a Foundry trains.
 const CHEAPEST_FOUNDRY_UNIT: u32 = 40;
@@ -16,11 +16,10 @@ fn scenario(buildings: Vec<BuildingSpec>, scrap: u32) -> Scenario {
         mode: ScenarioMode::Match,
         name: "detectors".into(),
         map,
-        players: [Faction::Ferrous, Faction::Cupric]
+        players: ["West", "East"]
             .into_iter()
-            .map(|faction| PlayerSpec {
-                name: format!("{faction:?}"),
-                faction,
+            .map(|name| PlayerSpec {
+                name: name.into(),
                 team: None,
                 scrap,
                 bot: false,
@@ -311,39 +310,25 @@ fn a_busy_or_unaffordable_seat_is_not_starved() {
 }
 
 #[test]
-fn legal_units_follow_faction_and_prerequisites() {
-    let mut buildings = fabricator();
-    buildings.push(BuildingSpec {
-        player: 1,
-        kind: BuildingKind::Fabricator,
-        x: 14,
-        y: 6,
-    });
-    let state = scenario(buildings, 0).build().unwrap();
-    let producer = |player: u8, kind: BuildingKind| {
+fn legal_units_follow_the_roster_and_prerequisites() {
+    let state = scenario(fabricator(), 0).build().unwrap();
+    let producer = |kind: BuildingKind| {
         state
             .buildings()
             .iter()
-            .find(|building| building.player == PlayerId(player) && building.kind == kind)
+            .find(|building| building.player == PlayerId(0) && building.kind == kind)
             .unwrap()
     };
     let fabricator = BuildingKind::Fabricator;
-    let ferrous = producer(0, fabricator);
-    let cupric = producer(1, fabricator);
     assert_eq!(
-        cheapest_legal_unit(&state, ferrous, &[]),
+        cheapest_legal_unit(producer(fabricator), &[]),
         Some(UnitKind::Flakhound)
     );
+    let foundry = producer(BuildingKind::Foundry);
+    assert!(!legal_units(foundry, &[]).any(|kind| kind == UnitKind::Excavator));
+    assert!(legal_units(foundry, &[fabricator]).any(|kind| kind == UnitKind::Excavator));
     assert_eq!(
-        cheapest_legal_unit(&state, cupric, &[]),
-        Some(UnitKind::Stinger)
-    );
-    assert!(legal_units(&state, ferrous, &[]).all(|kind| kind != UnitKind::Stinger));
-    let foundry = producer(0, BuildingKind::Foundry);
-    assert!(!legal_units(&state, foundry, &[]).any(|kind| kind == UnitKind::Excavator));
-    assert!(legal_units(&state, foundry, &[fabricator]).any(|kind| kind == UnitKind::Excavator));
-    assert_eq!(
-        cheapest_legal_unit(&state, foundry, &[fabricator]).map(|kind| kind.stats().cost),
+        cheapest_legal_unit(foundry, &[fabricator]).map(|kind| kind.stats().cost),
         Some(CHEAPEST_FOUNDRY_UNIT)
     );
 }

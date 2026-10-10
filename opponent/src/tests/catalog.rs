@@ -140,7 +140,7 @@ fn every_building_and_upgrade_is_bought_somewhere() {
     }
     for x in 18..=21 {
         for y in 1..=3 {
-            built.units.push(unit(1, UnitKind::Darter, x, y));
+            built.units.push(unit(1, UnitKind::Buzzard, x, y));
         }
     }
     built.buildings.extend([
@@ -225,8 +225,6 @@ fn every_unit_outside_the_army_is_trained_somewhere() {
         UnitKind::Kestrel,
         trained(&scouting, 1_800, UnitKind::Kestrel),
     ));
-    scouting.players[0].faction = Faction::Cupric;
-    rows.push((UnitKind::Gnat, trained(&scouting, 1_800, UnitKind::Gnat)));
 
     let mut lifting = super::lift::strait();
     lifting.units.retain(|unit| unit.kind != UnitKind::Skyhook);

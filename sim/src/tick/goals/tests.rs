@@ -1,6 +1,5 @@
 use super::*;
 use crate::scenario::{PlayerSpec, ScenarioMode, UnitSpec};
-use crate::state::Faction;
 use crate::stats::UnitKind;
 use crate::{Command, PlayerCommand, Scenario};
 
@@ -25,7 +24,6 @@ fn world(map: &[&str], units: &[(UnitKind, i32, i32)]) -> State {
         map: map.iter().map(|row| (*row).to_owned()).collect(),
         players: vec![PlayerSpec {
             name: "p0".into(),
-            faction: Faction::Ferrous,
             team: None,
             scrap: 0,
             bot: false,

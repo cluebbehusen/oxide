@@ -116,56 +116,48 @@
  ],
  "players": [
   {
-   "name": "Northwest Anchorage Ferrous",
-   "faction": "ferrous",
+   "name": "Northwest Anchorage",
    "scrap": 200,
    "bot": false
   },
   {
-   "name": "North Anchorage Cupric",
-   "faction": "cupric",
+   "name": "North Anchorage",
    "scrap": 200,
    "bot": true,
    "bot_config": {}
   },
   {
-   "name": "Northeast Anchorage Ferrous",
-   "faction": "ferrous",
+   "name": "Northeast Anchorage",
    "scrap": 200,
    "bot": true,
    "bot_config": {}
   },
   {
-   "name": "West Anchorage Cupric",
-   "faction": "cupric",
+   "name": "West Anchorage",
    "scrap": 200,
    "bot": true,
    "bot_config": {}
   },
   {
-   "name": "East Anchorage Ferrous",
-   "faction": "ferrous",
+   "name": "East Anchorage",
    "scrap": 200,
    "bot": true,
    "bot_config": {}
   },
   {
-   "name": "Southwest Anchorage Cupric",
-   "faction": "cupric",
+   "name": "Southwest Anchorage",
    "scrap": 200,
    "bot": true,
    "bot_config": {}
   },
   {
-   "name": "South Anchorage Ferrous",
-   "faction": "ferrous",
+   "name": "South Anchorage",
    "scrap": 200,
    "bot": true,
    "bot_config": {}
   },
   {
-   "name": "Southeast Anchorage Cupric",
-   "faction": "cupric",
+   "name": "Southeast Anchorage",
    "scrap": 200,
    "bot": true,
    "bot_config": {}
@@ -228,7 +220,7 @@
   },
   {
    "player": 1,
-   "kind": "gnat",
+   "kind": "kestrel",
    "x": 74,
    "y": 23
   },
@@ -288,7 +280,7 @@
   },
   {
    "player": 3,
-   "kind": "gnat",
+   "kind": "kestrel",
    "x": 51,
    "y": 58
   },
@@ -348,7 +340,7 @@
   },
   {
    "player": 5,
-   "kind": "gnat",
+   "kind": "kestrel",
    "x": 28,
    "y": 92
   },
@@ -408,7 +400,7 @@
   },
   {
    "player": 7,
-   "kind": "gnat",
+   "kind": "kestrel",
    "x": 118,
    "y": 92
   }

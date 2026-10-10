@@ -29,9 +29,9 @@ BONE = (232, 228, 216)
 RUST = (196, 87, 59)
 RUST_DARK = (126, 56, 38)
 RUST_LIGHT = (232, 137, 107)
-CUPRIC_DARK = (39, 96, 79)
-CUPRIC = (63, 148, 130)
-CUPRIC_LIGHT = (119, 196, 176)
+PATINA_DARK = (39, 96, 79)
+PATINA = (63, 148, 130)
+PATINA_LIGHT = (119, 196, 176)
 
 
 def render_master() -> Image.Image:
@@ -139,7 +139,7 @@ def render_master() -> Image.Image:
             (91, 84),
             (96, 84),
         ),
-        CUPRIC_DARK,
+        PATINA_DARK,
     )
     polygon(
         (
@@ -158,10 +158,10 @@ def render_master() -> Image.Image:
             (94, 84),
             (98, 84),
         ),
-        CUPRIC,
+        PATINA,
     )
-    line(((98, 78), (101, 78), (103, 76)), CUPRIC_LIGHT)
-    line(((82, 102), (87, 97), (91, 95)), CUPRIC_LIGHT)
+    line(((98, 78), (101, 78), (103, 76)), PATINA_LIGHT)
+    line(((82, 102), (87, 97), (91, 95)), PATINA_LIGHT)
     rectangle((13, 77, 34, 78), VOID)
     line(((15, 79), (33, 79)), IRON_LIGHT)
     rectangle((94, 51, 114, 52), VOID)

@@ -8,7 +8,7 @@ fn sandbox() -> Scenario {
         r#"{
             "name": "Unit sandbox", "mode": "sandbox",
             "map": ["............", "............", "............", "............", "............", "............"],
-            "players": [{"name": "Local", "faction": "ferrous", "scrap": 0, "bot": false}],
+            "players": [{"name": "Local", "scrap": 0, "bot": false}],
             "units": [{"player": 0, "kind": "scuttler", "x": 2, "y": 2}]
         }"#,
     )

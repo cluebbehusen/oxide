@@ -15,6 +15,8 @@ from pathlib import Path
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
+from tools.gen_sprites import save_sprite, variant_tag
+
 Registry = dict[str, Image.Image]
 Color = tuple[int, int, int]
 Point = tuple[int, int]
@@ -41,21 +43,21 @@ class Palette:
 
 
 PALETTES = {
-    "ferrous": Palette((176, 75, 52), (105, 43, 33)),
-    "cupric": Palette((48, 132, 113), (29, 79, 68)),
+    "base": Palette((176, 75, 52), (105, 43, 33)),
+    "probe": Palette((48, 132, 113), (29, 79, 68)),
 }
 
 TENDER_STATES = ("idle", "deploy", "contact", "weld", "recover")
 CONDOR_STATES = ("idle", "crack", "open", "release", "recover")
 
 # Semantic RGBA digest of the original approved Tender 301 frames for both
-# factions and Condor 305's Ferrous frames, retained as the production control.
+# palettes and Condor 305's base frames, retained as the production control.
 ORIGINAL_APPROVED_SOURCE_RGBA_SHA256 = (
     "16cecca7a8851ba4aaf55a587fcb19e8fde3fbfc4d3f3e08932c24a24134cdeb"
 )
 
 # Semantic RGBA digest of the current production Tender frames for both
-# factions and Condor 305's Ferrous frames, in the state order declared above.
+# palettes and Condor 305's base frames, in the state order declared above.
 PRODUCTION_SOURCE_RGBA_SHA256 = (
     "6bf645624c18b4c531872cd4bb5d04640987bd19e99760639f1de3e1b673b421"
 )
@@ -196,17 +198,17 @@ def _hose(
 
 
 def render_tender(
-    faction: str,
+    variant: str,
     state: str = "idle",
     move_phase: int = 0,
 ) -> Image.Image:
     """Render one approved 64x64 Tender frame."""
-    if faction not in PALETTES:
-        raise ValueError(f"unknown faction: {faction}")
+    if variant not in PALETTES:
+        raise ValueError(f"unknown variant: {variant}")
     if state not in TENDER_STATES:
         raise ValueError(f"unknown Tender state: {state}")
     image, draw = _canvas(TENDER_SIZE)
-    palette = PALETTES[faction]
+    palette = PALETTES[variant]
     active = state != "idle"
     _track(draw, (7, 17, 19, 58), move_phase % 3)
     _track(draw, (45, 17, 57, 58), move_phase % 3)
@@ -280,14 +282,14 @@ def _bay(
         )
 
 
-def render_condor(faction: str, state: str = "idle") -> Image.Image:
+def render_condor(variant: str, state: str = "idle") -> Image.Image:
     """Render one approved 128x128 Condor frame."""
-    if faction not in PALETTES:
-        raise ValueError(f"unknown faction: {faction}")
+    if variant not in PALETTES:
+        raise ValueError(f"unknown variant: {variant}")
     if state not in CONDOR_STATES:
         raise ValueError(f"unknown Condor state: {state}")
     image, draw = _canvas(CONDOR_SIZE)
-    palette = PALETTES[faction]
+    palette = PALETTES[variant]
     outer = (
         (56, 19),
         (72, 19),
@@ -332,7 +334,7 @@ def render_condor(faction: str, state: str = "idle") -> Image.Image:
 
 
 def _put(registry: Registry, out: Path, key: str, image: Image.Image) -> None:
-    image.save(out / f"{key}.png")
+    save_sprite(image, out, key)
     registry[key] = image
 
 
@@ -340,31 +342,32 @@ def install_tender_condor(registry: Registry, out: Path) -> None:
     """Install the approved idle, locomotion, and action rows."""
     tender_actions = ("deploy", "contact", "weld", "recover")
     condor_actions = ("crack", "open", "release", "recover")
-    for faction in PALETTES:
-        _put(registry, out, f"tender_{faction}", render_tender(faction))
+    for variant in PALETTES:
+        tag = variant_tag(variant)
+        _put(registry, out, f"tender{tag}", render_tender(variant))
         for phase in (1, 2):
             _put(
                 registry,
                 out,
-                f"tender_{faction}_move{phase}",
-                render_tender(faction, move_phase=phase),
+                f"tender{tag}_move{phase}",
+                render_tender(variant, move_phase=phase),
             )
         for index, state in enumerate(tender_actions, start=1):
             _put(
                 registry,
                 out,
-                f"tender_{faction}_action{index}",
-                render_tender(faction, state),
+                f"tender{tag}_action{index}",
+                render_tender(variant, state),
             )
 
-        idle = render_condor(faction)
-        _put(registry, out, f"condor_{faction}", idle)
+        idle = render_condor(variant)
+        _put(registry, out, f"condor{tag}", idle)
         for phase in (1, 2):
-            _put(registry, out, f"condor_{faction}_move{phase}", idle.copy())
+            _put(registry, out, f"condor{tag}_move{phase}", idle.copy())
         for index, state in enumerate(condor_actions, start=1):
             _put(
                 registry,
                 out,
-                f"condor_{faction}_action{index}",
-                render_condor(faction, state),
+                f"condor{tag}_action{index}",
+                render_condor(variant, state),
             )

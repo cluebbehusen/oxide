@@ -129,17 +129,7 @@ pub(crate) fn draft_scenario(
             )
         });
     }
-    // Per-seat faction chips: Auto keeps the authored roster; an override
-    // retints only that seat, starting units remapped through their roles.
-    // Same-faction opponents stay readable because allegiance accents
-    // carry friend-or-foe.
-    for (i, plan) in draft.seats.iter().enumerate() {
-        if let Some(faction) = super::faction_override(plan.faction_choice) {
-            scenario.retint_seat(i, faction);
-        }
-    }
-    // Per-seat team chips regroup seats without touching factions: an FFA
-    // chip drops the seat onto its own team, and the sim densifies chosen
+    // Per-seat team chips regroup seats: an FFA chip drops the seat onto its own team, and the sim densifies chosen
     // ids by first appearance at build. The scenario carries the choice,
     // so saves and replays reproduce the grouping. An all-one-team draft
     // fails the build (OneTeam) like any other launch error; the wizard
@@ -148,9 +138,9 @@ pub(crate) fn draft_scenario(
         scenario.players[i].team = super::team_override(plan.team_choice);
     }
     // Seat names must stay unique: the victory banner, the panel, and
-    // the stats screen all address seats by name. Retints can land two
-    // seats on one faction-derived label ("North West Ferrous" twice),
-    // so duplicates take an ordinal instead of refusing to launch.
+    // the stats screen all address seats by name. An authored map may
+    // repeat one, so duplicates take an ordinal instead of refusing to
+    // launch.
     let mut seen: Vec<String> = Vec::new();
     for player in &mut scenario.players {
         if seen.contains(&player.name) {

@@ -33,7 +33,7 @@ fn every_production_pose_resolves_to_authored_work_art() {
             };
             assert!(
                 atlas
-                    .get(format!("{}_ferrous_work{}", kind.name(), frame + 1))
+                    .get(format!("{}_work{}", kind.name(), frame + 1))
                     .is_some(),
                 "{kind:?} selects missing work pose {frame}"
             );
@@ -72,7 +72,6 @@ fn tread_loop_includes_the_base_phase_instead_of_reversing_between_two_frames() 
         UnitKind::Avalanche,
         UnitKind::Bombard,
         UnitKind::Flakhound,
-        UnitKind::Stinger,
         UnitKind::Tender,
     ] {
         let mut state = unit_state();
@@ -382,7 +381,7 @@ fn tender_welds_only_while_real_repair_work_is_active() {
 fn lift_rotors_run_at_rest_and_attacks_override_them() {
     let mut state = unit_state();
     state.propulsion = PropulsionState::LiftRotors { cycle: 0.75 };
-    for kind in [UnitKind::Buzzard, UnitKind::Wisp] {
+    for kind in [UnitKind::Buzzard, UnitKind::Skyhook] {
         assert_eq!(unit_frame(kind, state), UnitFrame::Moving(1));
     }
 
@@ -395,7 +394,7 @@ fn lift_rotors_run_at_rest_and_attacks_override_them() {
     state.attack = None;
     state.propulsion = PropulsionState::LiftRotors { cycle: 0.0 };
     assert_eq!(unit_frame(UnitKind::Buzzard, state), UnitFrame::Idle);
-    assert_eq!(unit_frame(UnitKind::Wisp, state), UnitFrame::Idle);
+    assert_eq!(unit_frame(UnitKind::Skyhook, state), UnitFrame::Idle);
 }
 
 #[test]
@@ -443,7 +442,7 @@ fn lift_rotors_use_the_complete_three_phase_loop_at_rest_and_in_motion() {
         (0.34, UnitFrame::Moving(0)),
         (0.67, UnitFrame::Moving(1)),
     ] {
-        for kind in [UnitKind::Buzzard, UnitKind::Wisp, UnitKind::Skyhook] {
+        for kind in [UnitKind::Buzzard, UnitKind::Skyhook] {
             state.propulsion = PropulsionState::LiftRotors { cycle };
             assert_eq!(unit_frame(kind, state), expected);
             state.locomotion = LocomotionState::Moving { cycle: 0.99 };
@@ -488,44 +487,6 @@ fn every_unit_action_row_stays_inside_its_contract() {
             assert!(unit_preparation_frame(kind, progress) < count);
         }
     }
-}
-
-#[test]
-fn moth_stays_spent_during_egress_and_reloads_only_at_the_end_of_cooldown() {
-    let mut state = unit_state();
-    state.locomotion = LocomotionState::Moving { cycle: 0.5 };
-    for progress in [0.0, 0.5, 0.99] {
-        state.attack = Some(AttackPhase::Report {
-            weapon: 0,
-            progress,
-        });
-        assert_eq!(unit_frame(UnitKind::Moth, state), UnitFrame::Action(0));
-        state.attack = Some(AttackPhase::Recover {
-            weapon: 0,
-            progress,
-        });
-        assert_eq!(unit_frame(UnitKind::Moth, state), UnitFrame::Action(1));
-    }
-    state.attack = None;
-    for (progress, pose) in [
-        (0.07, 2),
-        (0.50, 2),
-        (0.83, 2),
-        (0.85, 3),
-        (0.91, 4),
-        (0.97, 5),
-    ] {
-        state.weapons[0] = WeaponCycle::Preparing { progress };
-        assert_eq!(unit_frame(UnitKind::Moth, state), UnitFrame::Action(pose));
-        let mut parked = state;
-        parked.locomotion = LocomotionState::Rest;
-        assert_eq!(unit_frame(UnitKind::Moth, parked), UnitFrame::Action(pose));
-    }
-    state.weapons[0] = WeaponCycle::Ready;
-    assert!(matches!(
-        unit_frame(UnitKind::Moth, state),
-        UnitFrame::Moving(_)
-    ));
 }
 
 #[test]

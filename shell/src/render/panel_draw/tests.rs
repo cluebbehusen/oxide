@@ -153,123 +153,105 @@ fn fabricator_corner_reaches_wrapped_actions_and_keeps_queue_above_it() {
 #[test]
 fn production_cards_stay_inside_the_band_across_layouts_and_actions() {
     use crate::action::BindingMap;
-    use oxide_sim::{BuildingKind, Command, Faction, PlayerCommand, Scenario};
+    use oxide_sim::{BuildingKind, Command, PlayerCommand, Scenario};
 
-    for faction in [Faction::Ferrous, Faction::Cupric] {
-        for kind in BuildingKind::ALL
-            .into_iter()
-            .filter(|kind| !kind.base_stats().produces.is_empty())
-        {
-            for full_queue in [false, true] {
-                let mut scenario = Scenario::skirmish();
-                scenario.players[0].faction = faction;
-                scenario.players[0].scrap = if full_queue { 10_000 } else { 0 };
-                if kind != BuildingKind::Foundry {
-                    scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
-                        player: 0,
-                        kind,
-                        x: 9,
-                        y: 3,
-                    });
+    for kind in BuildingKind::ALL
+        .into_iter()
+        .filter(|kind| !kind.base_stats().produces.is_empty())
+    {
+        for full_queue in [false, true] {
+            let mut scenario = Scenario::skirmish();
+            scenario.players[0].scrap = if full_queue { 10_000 } else { 0 };
+            if kind != BuildingKind::Foundry {
+                scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+                    player: 0,
+                    kind,
+                    x: 9,
+                    y: 3,
+                });
+            }
+            let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
+            let building = game
+                .state
+                .buildings()
+                .iter()
+                .find(|building| {
+                    building.player == game.presentation.human && building.kind == kind
+                })
+                .unwrap()
+                .id;
+            game.presentation.selection.buildings = vec![building];
+            if full_queue {
+                let unit = *kind.base_stats().produces.first().unwrap();
+                for _ in 0..oxide_sim::stats::QUEUE_CAP {
+                    game.state.tick(&[PlayerCommand {
+                        player: game.presentation.human,
+                        command: Command::Train {
+                            building,
+                            kind: unit,
+                        },
+                    }]);
                 }
-                let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
-                let building = game
-                    .state
-                    .buildings()
-                    .iter()
-                    .find(|building| {
-                        building.player == game.presentation.human && building.kind == kind
-                    })
-                    .unwrap()
-                    .id;
-                game.presentation.selection.buildings = vec![building];
-                if full_queue {
-                    let unit = *kind
-                        .base_stats()
-                        .produces
-                        .iter()
-                        .find(|unit| unit.faction().is_none_or(|owner| owner == faction))
+                assert_eq!(
+                    game.state.building(building).unwrap().queue.len(),
+                    oxide_sim::stats::QUEUE_CAP
+                );
+            }
+            for rally in [false, true] {
+                if rally {
+                    game.state.tick(&[PlayerCommand {
+                        player: game.presentation.human,
+                        command: Command::SetRally {
+                            building,
+                            rally: Some(chassis::grid::TilePos::new(12, 8)),
+                        },
+                    }]);
+                }
+                let panel =
+                    crate::panel::build_for_palette(&game.view(), &BindingMap::classic(), false)
                         .unwrap();
-                    for _ in 0..oxide_sim::stats::QUEUE_CAP {
-                        game.state.tick(&[PlayerCommand {
-                            player: game.presentation.human,
-                            command: Command::Train {
-                                building,
-                                kind: unit,
-                            },
-                        }]);
-                    }
-                    assert_eq!(
-                        game.state.building(building).unwrap().queue.len(),
-                        oxide_sim::stats::QUEUE_CAP
-                    );
-                }
-                for rally in [false, true] {
-                    if rally {
-                        game.state.tick(&[PlayerCommand {
-                            player: game.presentation.human,
-                            command: Command::SetRally {
-                                building,
-                                rally: Some(chassis::grid::TilePos::new(12, 8)),
-                            },
-                        }]);
-                    }
-                    let panel = crate::panel::build_for_palette(
-                        &game.view(),
-                        &BindingMap::classic(),
-                        false,
-                    )
-                    .unwrap();
-                    for width in (640..=1920).step_by(17).chain([799, 800, 1280, 1440, 1920]) {
-                        for height in [400, 499, 500, 600, 800, 1080] {
-                            let viewport = vec2(width as f32, height as f32);
-                            for preference in [0.75, 1.0, 1.25, 1.5] {
-                                let scale = effective_ui_scale(preference, viewport);
-                                let minimap = minimap_rect_scaled(40, 24, viewport, scale);
-                                let packing = panel_packing(
-                                    viewport,
-                                    minimap,
-                                    scale,
-                                    panel.cards.len(),
-                                    rally_card_count(&panel.cards),
+                for width in (640..=1920).step_by(17).chain([799, 800, 1280, 1440, 1920]) {
+                    for height in [400, 499, 500, 600, 800, 1080] {
+                        let viewport = vec2(width as f32, height as f32);
+                        for preference in [0.75, 1.0, 1.25, 1.5] {
+                            let scale = effective_ui_scale(preference, viewport);
+                            let minimap = minimap_rect_scaled(40, 24, viewport, scale);
+                            let packing = panel_packing(
+                                viewport,
+                                minimap,
+                                scale,
+                                panel.cards.len(),
+                                rally_card_count(&panel.cards),
+                            );
+                            let (slots, right) =
+                                command_card_geometry(viewport, scale, packing, &panel.cards);
+                            assert_eq!(slots.len(), panel.cards.len());
+                            let rally_count = rally_card_count(&panel.cards);
+                            if rally_count > 0 {
+                                let context = rally_context_rect(slots[0], scale);
+                                assert!(context.x >= card_metrics(viewport, scale).0);
+                                assert!(context.y >= packing.top && context.bottom() <= viewport.y);
+                                assert!(slots.iter().all(|slot| !context.overlaps(slot)));
+                                assert!(slots[..rally_count].iter().all(|r| r.y == slots[0].y));
+                                let production_x = slots[rally_count].x;
+                                assert!(slots[rally_count..].iter().all(|r| r.x >= production_x));
+                            }
+                            assert!(packing.top >= crate::layout::TOP_BAR_H * scale);
+                            for (index, rect) in slots.iter().enumerate() {
+                                assert!(
+                                    rect.x + rect.w + CARD_RIGHT_INSET * scale <= right + 0.001,
+                                    "{kind:?} rally={rally} queue={full_queue} viewport={viewport:?} scale={scale}: card {index} ends at {}, band ends at {right}",
+                                    rect.x + rect.w
                                 );
-                                let (slots, right) =
-                                    command_card_geometry(viewport, scale, packing, &panel.cards);
-                                assert_eq!(slots.len(), panel.cards.len());
-                                let rally_count = rally_card_count(&panel.cards);
-                                if rally_count > 0 {
-                                    let context = rally_context_rect(slots[0], scale);
-                                    assert!(context.x >= card_metrics(viewport, scale).0);
-                                    assert!(
-                                        context.y >= packing.top && context.bottom() <= viewport.y
-                                    );
-                                    assert!(slots.iter().all(|slot| !context.overlaps(slot)));
-                                    assert!(slots[..rally_count].iter().all(|r| r.y == slots[0].y));
-                                    let production_x = slots[rally_count].x;
-                                    assert!(
-                                        slots[rally_count..].iter().all(|r| r.x >= production_x)
-                                    );
-                                }
-                                assert!(packing.top >= crate::layout::TOP_BAR_H * scale);
-                                for (index, rect) in slots.iter().enumerate() {
-                                    assert!(
-                                        rect.x + rect.w + CARD_RIGHT_INSET * scale <= right + 0.001,
-                                        "{kind:?} {faction:?} rally={rally} queue={full_queue} viewport={viewport:?} scale={scale}: card {index} ends at {}, band ends at {right}",
-                                        rect.x + rect.w
-                                    );
-                                    assert!(
-                                        rect.y >= packing.top
-                                            && rect.y + rect.h <= viewport.y + 0.001
-                                    );
-                                    assert!(
-                                        rect.w >= crate::theme::MIN_TOUCH_TARGET * scale
-                                            && rect.h >= crate::theme::MIN_TOUCH_TARGET * scale
-                                    );
-                                    assert!(
-                                        slots[..index].iter().all(|other| !rect.overlaps(other))
-                                    );
-                                    assert!(packing.hides_minimap || !rect.overlaps(&minimap));
-                                }
+                                assert!(
+                                    rect.y >= packing.top && rect.y + rect.h <= viewport.y + 0.001
+                                );
+                                assert!(
+                                    rect.w >= crate::theme::MIN_TOUCH_TARGET * scale
+                                        && rect.h >= crate::theme::MIN_TOUCH_TARGET * scale
+                                );
+                                assert!(slots[..index].iter().all(|other| !rect.overlaps(other)));
+                                assert!(packing.hides_minimap || !rect.overlaps(&minimap));
                             }
                         }
                     }
@@ -318,98 +300,91 @@ fn construction_catalog_keeps_every_choice_and_minimap_at_supported_sizes() {
 #[test]
 fn rally_changes_preserve_single_and_grouped_production_geometry() {
     use crate::action::BindingMap;
-    use oxide_sim::{BuildingKind, Command, Faction, PlayerCommand, Scenario};
+    use oxide_sim::{BuildingKind, Command, PlayerCommand, Scenario};
 
-    for faction in [Faction::Ferrous, Faction::Cupric] {
-        for kind in BuildingKind::ALL
-            .into_iter()
-            .filter(|kind| !kind.base_stats().produces.is_empty())
-        {
-            let mut scenario = Scenario::skirmish();
-            scenario.players[0].faction = faction;
-            for x in [9, 14] {
-                scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
-                    player: 0,
-                    kind,
-                    x,
-                    y: 3,
-                });
-            }
-            let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
-            let producers: Vec<_> = game
-                .state
+    for kind in BuildingKind::ALL
+        .into_iter()
+        .filter(|kind| !kind.base_stats().produces.is_empty())
+    {
+        let mut scenario = Scenario::skirmish();
+        for x in [9, 14] {
+            scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+                player: 0,
+                kind,
+                x,
+                y: 3,
+            });
+        }
+        let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
+        let producers: Vec<_> = game
+            .state
+            .buildings()
+            .iter()
+            .filter(|b| b.player == game.presentation.human && b.kind == kind)
+            .map(|b| b.id)
+            .collect();
+        for selection in [
+            vec![producers[0]],
+            producers.clone(),
+            game.state
                 .buildings()
                 .iter()
-                .filter(|b| b.player == game.presentation.human && b.kind == kind)
+                .filter(|b| b.player == game.presentation.human)
                 .map(|b| b.id)
-                .collect();
-            for selection in [
-                vec![producers[0]],
-                producers.clone(),
-                game.state
-                    .buildings()
-                    .iter()
-                    .filter(|b| b.player == game.presentation.human)
-                    .map(|b| b.id)
-                    .collect(),
-            ] {
-                game.presentation.selection.buildings = selection.clone();
-                let geometry = |game: &Game| {
+                .collect(),
+        ] {
+            game.presentation.selection.buildings = selection.clone();
+            let geometry = |game: &Game| {
+                let panel =
+                    crate::panel::build_for_palette(&game.view(), &BindingMap::classic(), false)
+                        .unwrap();
+                assert_eq!(rally_card_count(&panel.cards), 2);
+                let mut result = Vec::new();
+                for viewport in [
+                    vec2(640.0, 400.0),
+                    vec2(800.0, 600.0),
+                    vec2(1280.0, 800.0),
+                    vec2(1920.0, 1080.0),
+                ] {
+                    for preference in [0.75, 1.0, 1.25, 1.5] {
+                        let scale = effective_ui_scale(preference, viewport);
+                        let minimap = minimap_rect_scaled(40, 24, viewport, scale);
+                        let packing = panel_packing(viewport, minimap, scale, panel.cards.len(), 2);
+                        let (slots, right) =
+                            command_card_geometry(viewport, scale, packing, &panel.cards);
+                        assert_eq!(slots[0].y, slots[1].y);
+                        assert!(slots[1].x >= slots[0].right());
+                        if viewport == vec2(1920.0, 1080.0) && preference == 1.0 {
+                            assert_eq!(packing.band_h, 72.0);
+                        }
+                        result.push((packing, slots, right));
+                    }
+                }
+                result
+            };
+            let baseline = geometry(&game);
+            // Partial and shared rallies exercise both grouped panel states.
+            for ids in [vec![selection[0]], selection.clone()] {
+                for rally in [Some(chassis::grid::TilePos::new(20, 10)), None] {
+                    let commands: Vec<_> = ids
+                        .iter()
+                        .map(|id| PlayerCommand {
+                            player: game.presentation.human,
+                            command: Command::SetRally {
+                                building: *id,
+                                rally,
+                            },
+                        })
+                        .collect();
+                    game.state.tick(&commands);
+                    assert_eq!(geometry(&game), baseline);
                     let panel = crate::panel::build_for_palette(
                         &game.view(),
                         &BindingMap::classic(),
                         false,
                     )
                     .unwrap();
-                    assert_eq!(rally_card_count(&panel.cards), 2);
-                    let mut result = Vec::new();
-                    for viewport in [
-                        vec2(640.0, 400.0),
-                        vec2(800.0, 600.0),
-                        vec2(1280.0, 800.0),
-                        vec2(1920.0, 1080.0),
-                    ] {
-                        for preference in [0.75, 1.0, 1.25, 1.5] {
-                            let scale = effective_ui_scale(preference, viewport);
-                            let minimap = minimap_rect_scaled(40, 24, viewport, scale);
-                            let packing =
-                                panel_packing(viewport, minimap, scale, panel.cards.len(), 2);
-                            let (slots, right) =
-                                command_card_geometry(viewport, scale, packing, &panel.cards);
-                            assert_eq!(slots[0].y, slots[1].y);
-                            assert!(slots[1].x >= slots[0].right());
-                            if viewport == vec2(1920.0, 1080.0) && preference == 1.0 {
-                                assert_eq!(packing.band_h, 72.0);
-                            }
-                            result.push((packing, slots, right));
-                        }
-                    }
-                    result
-                };
-                let baseline = geometry(&game);
-                // Partial and shared rallies exercise both grouped panel states.
-                for ids in [vec![selection[0]], selection.clone()] {
-                    for rally in [Some(chassis::grid::TilePos::new(20, 10)), None] {
-                        let commands: Vec<_> = ids
-                            .iter()
-                            .map(|id| PlayerCommand {
-                                player: game.presentation.human,
-                                command: Command::SetRally {
-                                    building: *id,
-                                    rally,
-                                },
-                            })
-                            .collect();
-                        game.state.tick(&commands);
-                        assert_eq!(geometry(&game), baseline);
-                        let panel = crate::panel::build_for_palette(
-                            &game.view(),
-                            &BindingMap::classic(),
-                            false,
-                        )
-                        .unwrap();
-                        assert_eq!(panel.cards[1].enabled, rally.is_some());
-                    }
+                    assert_eq!(panel.cards[1].enabled, rally.is_some());
                 }
             }
         }

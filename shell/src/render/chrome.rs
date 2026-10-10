@@ -453,12 +453,7 @@ pub(super) fn ribbon_layout(
     })
 }
 
-fn draw_mode_ribbon(
-    game: &crate::game::Scene<'_>,
-    sprites: &Sprites,
-    layout: &RibbonLayout,
-    s: f32,
-) {
+fn draw_mode_ribbon(sprites: &Sprites, layout: &RibbonLayout, s: f32) {
     let RibbonLayout {
         rect: ribbon,
         label,
@@ -476,9 +471,8 @@ fn draw_mode_ribbon(
     stroke_rect(ribbon, crate::theme::Stroke::Edge.at(s), SCRAP_COLOR);
     let mut x = ribbon.x + 10.0 * s;
     if let Some(kind) = building {
-        let faction = game.state.player(game.presentation.human).faction;
-        let mut layers = vec![(sprites.building_tiered(kind, 0, faction), WHITE)];
-        if let Some(mount) = sprites.defense_mount(kind, 0, faction) {
+        let mut layers = vec![(sprites.building_tiered(kind, 0), WHITE)];
+        if let Some(mount) = sprites.defense_mount(kind, 0) {
             layers.push((mount, WHITE));
         }
         let icon = Rect::new(
@@ -743,7 +737,7 @@ pub(crate) fn draw_hud(
         draw_group_column(column, s);
     }
     if let Some(ribbon) = &hud.ribbon {
-        draw_mode_ribbon(game, sprites, ribbon, s);
+        draw_mode_ribbon(sprites, ribbon, s);
     }
     if let Some(rect) = hud.queue_toggle {
         draw_queue_toggle(rect, input.queue_toggle, s);

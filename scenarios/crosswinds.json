@@ -54,31 +54,27 @@
  ],
  "players": [
   {
-   "name": "Northwest Ferrous",
-   "faction": "ferrous",
+   "name": "Northwest",
    "scrap": 260,
    "bot": false,
    "team": 0
   },
   {
-   "name": "Southeast Cupric",
-   "faction": "cupric",
+   "name": "Southeast",
    "scrap": 260,
    "bot": true,
    "team": 1,
    "bot_config": {}
   },
   {
-   "name": "Southwest Ferrous",
-   "faction": "ferrous",
+   "name": "Southwest",
    "scrap": 260,
    "bot": true,
    "team": 0,
    "bot_config": {}
   },
   {
-   "name": "Northeast Cupric",
-   "faction": "cupric",
+   "name": "Northeast",
    "scrap": 260,
    "bot": true,
    "team": 1,
@@ -130,7 +126,7 @@
   },
   {
    "player": 1,
-   "kind": "gnat",
+   "kind": "kestrel",
    "x": 72,
    "y": 35
   },
@@ -178,7 +174,7 @@
   },
   {
    "player": 3,
-   "kind": "gnat",
+   "kind": "kestrel",
    "x": 72,
    "y": 14
   }

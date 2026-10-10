@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw
 
 from tools.gen_sprites import (
     BONE,
-    FACTIONS,
+    PALETTES,
     GROUND_DARK,
     IRON,
     IRON_DARK,
@@ -26,11 +26,11 @@ def _finish(image: Image.Image, side: int) -> Image.Image:
     return rim_light(image.resize((side, side), Image.Resampling.LANCZOS))
 
 
-def foundry_frame(faction: str, work: int) -> Image.Image:
+def foundry_frame(variant: str, work: int) -> Image.Image:
     """Draw the Foundry with a fixed gantry and centered production eye."""
     if work not in range(4):
         raise ValueError(f"invalid Foundry work frame: {work}")
-    palette = FACTIONS[faction]
+    palette = PALETTES[variant]
     image, draw = canvas(128)
     draw.rounded_rectangle(
         [s(8), s(8), s(120), s(120)],
@@ -82,11 +82,11 @@ def foundry_frame(faction: str, work: int) -> Image.Image:
     return _finish(image, 128)
 
 
-def bastion_base(faction: str, charge: int) -> Image.Image:
+def bastion_base(variant: str, charge: int) -> Image.Image:
     """Draw the open service carriage and its single five-cell charge rack."""
     if charge not in range(6):
         raise ValueError(f"invalid Bastion charge: {charge}")
-    palette = FACTIONS[faction]
+    palette = PALETTES[variant]
     image, draw = canvas(128)
     draw.ellipse([s(6), s(6), s(122), s(122)], fill=(*IRON_DARK, 255))
     draw.ellipse([s(12), s(12), s(116), s(116)], fill=(*IRON, 255))
@@ -139,11 +139,11 @@ def bastion_base(faction: str, charge: int) -> Image.Image:
     return _finish(image, 128)
 
 
-def bastion_mount(faction: str, phase: int) -> Image.Image:
+def bastion_mount(variant: str, phase: int) -> Image.Image:
     """Draw the service-deck breech through charge, report, and recoil."""
     if phase not in range(10):
         raise ValueError(f"invalid Bastion action phase: {phase}")
-    palette = FACTIONS[faction]
+    palette = PALETTES[variant]
     image, draw = canvas(128)
     report = phase == 6
     recoil = {7: 10, 8: 4}.get(phase, 0)
@@ -203,7 +203,7 @@ def bastion_mount(faction: str, phase: int) -> Image.Image:
 
 
 BASTION_APPROVED_VISIBLE_RGBA_SHA256 = (
-    "5cc15839228f11455710e46803c5fea9a77ac867b2e7ea8a8ee5e856b10c159e"
+    "0cb3ba40c7fbbf9194a9cb6a67b466a7d8707faa0964e31ec3fda5cfe8f52d3a"
 )
 
 
@@ -218,12 +218,12 @@ def _visible_rgba_bytes(image: Image.Image) -> bytes:
 def bastion_source_visible_digest() -> str:
     """Hash the approved single-gauge review sequence without invisible RGB."""
     digest = hashlib.sha256()
-    for faction in ("ferrous", "cupric"):
+    for variant in ("base", "probe"):
         for phase in range(10):
-            base = bastion_base(faction, min(phase, 5))
+            base = bastion_base(variant, min(phase, 5))
             frame = base.copy()
-            frame.alpha_composite(bastion_mount(faction, phase))
+            frame.alpha_composite(bastion_mount(variant, phase))
             frame.alpha_composite(base.crop((7, 40, 35, 113)), (7, 40))
-            digest.update(f"bastion/{faction}/{phase}".encode())
+            digest.update(f"bastion/{variant}/{phase}".encode())
             digest.update(_visible_rgba_bytes(frame))
     return digest.hexdigest()

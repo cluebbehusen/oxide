@@ -14,10 +14,10 @@ Registry = dict[str, Image.Image]
 
 SS = 4
 BARRICADE_SOURCE_RGBA_SHA256 = (
-    "a90a9c6d4239fb80d770daccbd0e520d937d38dbd03b733f9222a4e91f3b6653"
+    "407d8413a2c97d901bdf4e5905eb5d4777450c3e400f5369d5ade43f4b63352d"
 )
 SCUTTLE_CHARGE_SOURCE_RGBA_SHA256 = (
-    "06e4784d5d38a8104fb413bcc60e4a7f9efd3cd5cc39abfe1b2000bdde76a4ea"
+    "3c451576ec1f7231be6736070ee94e75dd2810ec962a28a98daa7c68a7ee4561"
 )
 
 
@@ -82,9 +82,9 @@ def _bolt(draw: ImageDraw.ImageDraw, x: float, y: float) -> None:
     )
 
 
-def render_barricade(faction: str) -> Image.Image:
+def render_barricade(variant: str) -> Image.Image:
     """Render the connected bulkhead wall."""
-    palette = gen.FACTIONS[faction]
+    palette = gen.PALETTES[variant]
     image, draw = _new_sprite()
     draw.rounded_rectangle(
         _box((1, 44, 63, 59)), radius=_s(3), fill=_rgba(gen.IRON_DARK)
@@ -125,9 +125,9 @@ def _anchor(draw: ImageDraw.ImageDraw, x: float, y: float, orientation: str) -> 
     _bolt(draw, x, y)
 
 
-def render_scuttle_charge(faction: str) -> Image.Image:
+def render_scuttle_charge(variant: str) -> Image.Image:
     """Render the recessed shaped-charge iris."""
-    palette = gen.FACTIONS[faction]
+    palette = gen.PALETTES[variant]
     image, draw = _new_sprite()
     draw.ellipse(_box((10, 11, 54, 55)), fill=_rgba((14, 15, 19), 220))
     for x, y, orientation in (
@@ -157,9 +157,9 @@ def render_scuttle_charge(faction: str) -> Image.Image:
 
 def _source_digest(renderer: Callable[[str], Image.Image]) -> str:
     digest = hashlib.sha256()
-    for faction in sorted(gen.FACTIONS):
-        image = renderer(faction)
-        digest.update(faction.encode())
+    for variant in sorted(gen.PALETTES):
+        image = renderer(variant)
+        digest.update(variant.encode())
         digest.update(image.mode.encode())
         digest.update(bytes(image.size))
         digest.update(image.tobytes())
@@ -175,14 +175,15 @@ def scuttle_charge_source_rgba_digest() -> str:
 
 
 def source_frames() -> Iterator[tuple[str, Image.Image]]:
-    for faction in ("ferrous", "cupric"):
-        yield f"barricade_{faction}", render_barricade(faction)
-        yield f"scuttle_charge_{faction}", render_scuttle_charge(faction)
+    for variant in ("base", "probe"):
+        tag = gen.variant_tag(variant)
+        yield f"barricade{tag}", render_barricade(variant)
+        yield f"scuttle_charge{tag}", render_scuttle_charge(variant)
 
 
 def install_field_structures(registry: Registry, out: Path) -> None:
     """Install both approved field structures into the production bank."""
     out.mkdir(parents=True, exist_ok=True)
     for key, image in source_frames():
-        image.save(out / f"{key}.png")
+        gen.save_sprite(image, out, key)
         registry[key] = image

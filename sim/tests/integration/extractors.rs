@@ -784,7 +784,7 @@ fn an_unfinished_foundry_does_not_support_until_construction_completes() {
 fn destroying_the_supporting_foundry_returns_the_extractor_to_remote_yield() {
     let attackers = (0..3)
         .map(|offset| common::unit(1, UnitKind::Avalanche, 25, 4 + offset))
-        .chain(std::iter::once(common::unit(1, UnitKind::Wisp, 15, 5)))
+        .chain(std::iter::once(common::unit(1, UnitKind::Talon, 15, 5)))
         .collect();
     let mut state = support_arena(
         0,

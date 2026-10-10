@@ -72,7 +72,7 @@ fn mature_armies_mirror_an_army_and_structures_for_each_seat() {
             .units()
             .iter()
             .filter(|unit| unit.player == player)
-            .map(|unit| unit.kind.role() as u8)
+            .map(|unit| unit.kind)
             .collect();
         units.sort_unstable();
         let mut structures: Vec<_> = state

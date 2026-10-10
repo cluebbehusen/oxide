@@ -875,22 +875,14 @@ pub(crate) fn draw_panel(
 ) {
     use crate::panel::{CardAction, CardIcon};
     let s = ui_scale();
-    // The panel says whose colors it wears: an inspected ally or
-    // enemy draws in its owner's faction, not the viewer's. Own
-    // panels carry the human's faction, so roster cards stay right.
-    let faction = panel.faction;
     let blit = |dest: Rect, source: Rect, tint: Color| {
         sprites.draw_canvas(dest, &[(source, tint)]);
     };
     // Defense art is authored as a base plus a north-facing live mount.
     // Static cards compose the same silhouette without inventing aim.
-    let blit_building = |dest: Rect,
-                         kind: oxide_sim::BuildingKind,
-                         tier: u8,
-                         faction: oxide_sim::Faction,
-                         tint: Color| {
-        let mut layers = vec![(sprites.building_tiered(kind, tier, faction), tint)];
-        if let Some(mount) = sprites.defense_mount(kind, tier, faction) {
+    let blit_building = |dest: Rect, kind: oxide_sim::BuildingKind, tier: u8, tint: Color| {
+        let mut layers = vec![(sprites.building_tiered(kind, tier), tint)];
+        if let Some(mount) = sprites.defense_mount(kind, tier) {
             layers.push((mount, tint));
         }
         sprites.draw_portrait(dest, &layers);
@@ -908,9 +900,9 @@ pub(crate) fn draw_panel(
         else {
             match icon {
                 CardIcon::Unit(kind) => {
-                    sprites.draw_portrait(dest, &[(sprites.unit(*kind, faction), tint)]);
+                    sprites.draw_portrait(dest, &[(sprites.unit(*kind), tint)]);
                 }
-                CardIcon::Building(kind, tier) => blit_building(dest, *kind, *tier, faction, tint),
+                CardIcon::Building(kind, tier) => blit_building(dest, *kind, *tier, tint),
                 CardIcon::Verb(v) => blit(dest, sprites.verb_icon(*v), tint),
                 CardIcon::Salvage { wreck } => blit(
                     dest,
@@ -928,18 +920,16 @@ pub(crate) fn draw_panel(
             }
             return;
         };
-        // The subject draws in its own owner's colors: an attack chip's
-        // victim is not the panel owner's faction.
         let hull = if *ghost {
             Color::new(tint.r, tint.g, tint.b, tint.a * 0.7)
         } else {
             tint
         };
         let mut layers = match subject {
-            crate::panel::OrderSubject::Unit(kind, f) => vec![(sprites.unit(*kind, *f), hull)],
-            crate::panel::OrderSubject::Building(kind, f) => {
-                let mut layers = vec![(sprites.building(*kind, *f), hull)];
-                if !*ghost && let Some(mount) = sprites.defense_mount(*kind, 0, *f) {
+            crate::panel::OrderSubject::Unit(kind) => vec![(sprites.unit(*kind), hull)],
+            crate::panel::OrderSubject::Building(kind) => {
+                let mut layers = vec![(sprites.building(*kind), hull)];
+                if !*ghost && let Some(mount) = sprites.defense_mount(*kind, 0) {
                     layers.push((mount, hull));
                 }
                 layers

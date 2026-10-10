@@ -14,6 +14,8 @@ from pathlib import Path
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
+from tools.gen_sprites import save_sprite, variant_tag
+
 Registry = dict[str, Image.Image]
 Color = tuple[int, int, int]
 Point = tuple[int, int]
@@ -38,7 +40,7 @@ FLASH = (255, 220, 132)
 
 @dataclass(frozen=True)
 class Palette:
-    """Faction paint over the shared industrial chassis."""
+    """Accent paint over the shared industrial chassis."""
 
     base: Color
     dark: Color
@@ -46,12 +48,12 @@ class Palette:
 
 
 PALETTES = {
-    "ferrous": Palette((176, 75, 52), (105, 43, 33), (217, 116, 86)),
-    "cupric": Palette((48, 132, 113), (29, 79, 68), (101, 181, 157)),
+    "base": Palette((176, 75, 52), (105, 43, 33), (217, 116, 86)),
+    "probe": Palette((48, 132, 113), (29, 79, 68), (101, 181, 157)),
 }
 
 APPROVED_SOURCE_RGBA_SHA256 = (
-    "3417752f20bf1badef6f7e52b6b756cc9131160fa93b756cad071c2c1643b0b8"
+    "1a19f7c7f327665296ad91c9dc433bc6289ffed6f120c90597d9d54f19c29679"
 )
 
 
@@ -167,9 +169,9 @@ def _cargo_vault(draw: ImageDraw.ImageDraw, box: Box, action: int, palette: Pale
         draw.line((mid, y0 + 4, mid, y1 - 4), fill=_rgba(palette.dark), width=2)
 
 
-def render_skyhook(faction: str, move_phase: int = 0, action: int = 0) -> Image.Image:
+def render_skyhook(variant: str, move_phase: int = 0, action: int = 0) -> Image.Image:
     """Render approved Clampwing Hauler art on its 128-pixel canvas."""
-    palette = PALETTES[faction]
+    palette = PALETTES[variant]
     if action not in range(5):
         raise ValueError(f"unknown Skyhook action: {action}")
     image, draw = _canvas(64)
@@ -249,9 +251,9 @@ def _detonation_flash(draw: ImageDraw.ImageDraw, center: Point, action: int) -> 
     draw.rectangle((x - 2, y - 2, x + 2, y + 2), fill=_rgba(BONE))
 
 
-def render_sapper(faction: str, move_phase: int = 0, action: int = 0) -> Image.Image:
+def render_sapper(variant: str, move_phase: int = 0, action: int = 0) -> Image.Image:
     """Render approved Blast Beetle art and its demolition states."""
-    palette = PALETTES[faction]
+    palette = PALETTES[variant]
     if action not in range(5):
         raise ValueError(f"unknown Sapper action: {action}")
     image, draw = _canvas(SAPPER_SIZE)
@@ -350,9 +352,9 @@ def _furnace(
         _bolt(draw, (x, y))
 
 
-def render_crucible(faction: str, work: int = 0) -> Image.Image:
+def render_crucible(variant: str, work: int = 0) -> Image.Image:
     """Render approved Hammer Mill art and one production phase."""
-    palette = PALETTES[faction]
+    palette = PALETTES[variant]
     if work not in range(4):
         raise ValueError(f"unknown Crucible work phase: {work}")
     image, draw = _canvas(CRUCIBLE_SIZE)
@@ -379,7 +381,7 @@ def render_crucible(faction: str, work: int = 0) -> Image.Image:
 def source_rgba_digest() -> str:
     """Digest every approved source frame in stable order."""
     digest = hashlib.sha256()
-    for faction in ("ferrous", "cupric"):
+    for variant in ("base", "probe"):
         for stem, renderer, size in (
             ("skyhook", render_skyhook, SKYHOOK_SIZE),
             ("sapper", render_sapper, SAPPER_SIZE),
@@ -393,52 +395,53 @@ def source_rgba_digest() -> str:
                 ("action3", 2, 3),
                 ("action4", 3, 4),
             ):
-                image = renderer(faction, move_phase, action)
+                image = renderer(variant, move_phase, action)
                 if image.size != (size, size):
                     raise AssertionError(f"{stem} produced {image.size}")
-                digest.update(f"{stem}/{faction}/{label}".encode())
+                digest.update(f"{stem}/{variant}/{label}".encode())
                 digest.update(image.tobytes())
         for work in range(4):
-            image = render_crucible(faction, work)
-            digest.update(f"crucible/{faction}/work{work}".encode())
+            image = render_crucible(variant, work)
+            digest.update(f"crucible/{variant}/work{work}".encode())
             digest.update(image.tobytes())
     return digest.hexdigest()
 
 
 def _put(registry: Registry, out: Path, key: str, image: Image.Image) -> None:
     native = image.convert("RGBA")
-    native.save(out / f"{key}.png")
+    save_sprite(native, out, key)
     registry[key] = native
 
 
 def install_skyhook_sapper_crucible(registry: Registry, out: Path) -> None:
     """Install the three approved rows into the production sprite bank."""
     out.mkdir(parents=True, exist_ok=True)
-    for faction in ("ferrous", "cupric"):
+    for variant in ("base", "probe"):
+        tag = variant_tag(variant)
         for stem, renderer, action_count in (
             ("skyhook", render_skyhook, 4),
             ("sapper", render_sapper, 3),
         ):
-            _put(registry, out, f"{stem}_{faction}", renderer(faction, 0, 0))
+            _put(registry, out, f"{stem}{tag}", renderer(variant, 0, 0))
             for move_phase in (1, 2):
                 _put(
                     registry,
                     out,
-                    f"{stem}_{faction}_move{move_phase}",
-                    renderer(faction, move_phase, 0),
+                    f"{stem}{tag}_move{move_phase}",
+                    renderer(variant, move_phase, 0),
                 )
             for action in range(1, action_count + 1):
                 _put(
                     registry,
                     out,
-                    f"{stem}_{faction}_action{action}",
-                    renderer(faction, action - 1, action),
+                    f"{stem}{tag}_action{action}",
+                    renderer(variant, action - 1, action),
                 )
-        _put(registry, out, f"crucible_{faction}", render_crucible(faction, 0))
+        _put(registry, out, f"crucible{tag}", render_crucible(variant, 0))
         for work in range(1, 4):
             _put(
                 registry,
                 out,
-                f"crucible_{faction}_work{work}",
-                render_crucible(faction, work),
+                f"crucible{tag}_work{work}",
+                render_crucible(variant, work),
             )

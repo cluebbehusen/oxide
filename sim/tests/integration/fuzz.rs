@@ -169,29 +169,23 @@ fn tag_of(command: &Command) -> CommandTag {
     }
 }
 
-/// The whole roster, cross-faction kinds included — `apply_train` owes
-/// every one of them a verdict. Exhaustive by the same rule as the verbs.
-const UNIT_KINDS: [UnitKind; 24] = [
+/// The whole roster — `apply_train` owes every one of them a verdict.
+/// Exhaustive by the same rule as the verbs.
+const UNIT_KINDS: [UnitKind; 18] = [
     UnitKind::Harvester,
     UnitKind::Sentinel,
     UnitKind::Scuttler,
     UnitKind::Lancer,
     UnitKind::Bombard,
     UnitKind::Flakhound,
-    UnitKind::Stinger,
     UnitKind::Buzzard,
-    UnitKind::Darter,
     UnitKind::Talon,
-    UnitKind::Wisp,
     UnitKind::Warden,
     UnitKind::Tender,
     UnitKind::Excavator,
     UnitKind::Kestrel,
-    UnitKind::Gnat,
     UnitKind::Shrike,
-    UnitKind::Sylph,
     UnitKind::Condor,
-    UnitKind::Moth,
     UnitKind::Breaker,
     UnitKind::Avalanche,
     UnitKind::Skyhook,
@@ -206,24 +200,18 @@ fn unit_kind_index(kind: UnitKind) -> usize {
         UnitKind::Lancer => 3,
         UnitKind::Bombard => 4,
         UnitKind::Flakhound => 5,
-        UnitKind::Stinger => 6,
-        UnitKind::Buzzard => 7,
-        UnitKind::Darter => 8,
-        UnitKind::Talon => 9,
-        UnitKind::Wisp => 10,
-        UnitKind::Warden => 11,
-        UnitKind::Tender => 12,
-        UnitKind::Excavator => 13,
-        UnitKind::Kestrel => 14,
-        UnitKind::Gnat => 15,
-        UnitKind::Shrike => 16,
-        UnitKind::Sylph => 17,
-        UnitKind::Condor => 18,
-        UnitKind::Skyhook => 22,
-        UnitKind::Sapper => 23,
-        UnitKind::Moth => 19,
-        UnitKind::Breaker => 20,
-        UnitKind::Avalanche => 21,
+        UnitKind::Buzzard => 6,
+        UnitKind::Talon => 7,
+        UnitKind::Warden => 8,
+        UnitKind::Tender => 9,
+        UnitKind::Excavator => 10,
+        UnitKind::Kestrel => 11,
+        UnitKind::Shrike => 12,
+        UnitKind::Condor => 13,
+        UnitKind::Breaker => 14,
+        UnitKind::Avalanche => 15,
+        UnitKind::Skyhook => 16,
+        UnitKind::Sapper => 17,
     }
 }
 
@@ -684,7 +672,7 @@ fn exercise_cancel_found_reach(state: &mut State) {
         .units()
         .iter()
         .find(|unit| unit.player == player && unit.kind == UnitKind::Harvester)
-        .expect("fuzz arena has a Ferrous Harvester")
+        .expect("fuzz arena has a seat-0 Harvester")
         .id;
     let kind = BuildingKind::Turret;
     let anchor = TilePos::new(12, 5);
@@ -738,7 +726,7 @@ fn exercise_cancel_order_reach(state: &mut State) {
         .units()
         .iter()
         .find(|unit| unit.player == player && unit.kind == UnitKind::Harvester)
-        .expect("fuzz arena has a Ferrous Harvester")
+        .expect("fuzz arena has a seat-0 Harvester")
         .id;
     let here = state.unit(walker).unwrap().tile();
     let (a, b) = (here.offset(2, 0), here.offset(0, 2));

@@ -197,7 +197,7 @@ the known threat, Extractor restoration, expansion timing, tech prerequisites,
 memory of failed objectives, a response to stalled production, focus fire, and
 pulling wounded units back between fights. It does no other per-unit micro. It
 builds every building kind, reaches every upgrade tier, and trains every unit
-its faction fields.
+kind.
 
 ## Difficulty, stance and personality
 

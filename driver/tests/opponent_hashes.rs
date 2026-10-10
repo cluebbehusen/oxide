@@ -9,7 +9,7 @@ use oxide_kit::GameReplay;
 use oxide_kit::controller::{SeatController, record_events, seat_controllers};
 use oxide_sim::scenario::{BotConfig, PlayerSpec, ScenarioMode, UnitSpec};
 use oxide_sim::{
-    Command, Event, Faction, Order, PlayerCommand, PlayerId, Scenario, State, TickReport, UnitKind,
+    Command, Event, Order, PlayerCommand, PlayerId, Scenario, State, TickReport, UnitKind,
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -29,7 +29,6 @@ fn scenario(name: &str, scrap: u32, worker: bool) -> Scenario {
         players: vec![
             PlayerSpec {
                 name: "Controller".into(),
-                faction: Faction::Ferrous,
                 team: None,
                 scrap,
                 bot: true,
@@ -37,7 +36,6 @@ fn scenario(name: &str, scrap: u32, worker: bool) -> Scenario {
             },
             PlayerSpec {
                 name: "Idle opponent".into(),
-                faction: Faction::Cupric,
                 team: None,
                 scrap: 0,
                 bot: false,

@@ -5,7 +5,7 @@ import math
 from PIL import Image, ImageDraw
 
 from tools.gen_sprites import (
-    FACTIONS,
+    PALETTES,
     IRON,
     IRON_DARK,
     SCRAP_DARK,
@@ -15,7 +15,7 @@ from tools.gen_sprites import (
 )
 
 SIZE = 64
-PAL = FACTIONS["ferrous"]
+PAL = PALETTES["base"]
 
 
 def _native(img: Image.Image) -> Image.Image:

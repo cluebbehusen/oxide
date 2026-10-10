@@ -1,5 +1,5 @@
-//! The strike wing: attack runs, the Moth's stick, the Crucible gates,
-//! and the tier-three heavies.
+//! The strike wing: attack runs, the Crucible gates, and the tier-three
+//! heavies.
 
 use crate::common;
 use common::{cmd, players, unit};
@@ -210,71 +210,6 @@ fn a_condor_replans_when_its_wide_turn_meets_a_peak() {
         release_ticks.len() >= 2,
         "the Condor never completed a second pass: {release_ticks:?}"
     );
-}
-
-#[test]
-fn the_moth_lays_its_whole_stick_in_one_release() {
-    let mut state = arena(
-        1_000,
-        vec![
-            unit(1, UnitKind::Moth, 5, 4),
-            unit(1, UnitKind::Gnat, 13, 3),
-        ],
-        vec![BuildingSpec {
-            player: 0,
-            kind: BuildingKind::Turret,
-            x: 15,
-            y: 4,
-        }],
-    )
-    .build()
-    .unwrap();
-    let moth = state.units()[0].id;
-    let turret = state
-        .buildings()
-        .iter()
-        .find(|b| b.player == PlayerId(0))
-        .unwrap()
-        .id;
-    state.tick(&[]);
-    state.tick(&[cmd(
-        1,
-        Command::Attack {
-            units: vec![moth],
-            target: Target::Building(turret).into(),
-            queue: false,
-        },
-    )]);
-    for _ in 0..600 {
-        let report = state.tick(&[]);
-        let impacts: Vec<_> = report
-            .events
-            .iter()
-            .filter_map(|event| match event {
-                Event::ShellLaunched {
-                    shooter: Target::Unit(u),
-                    to,
-                    ..
-                } if *u == moth => Some(*to),
-                _ => None,
-            })
-            .collect();
-        if impacts.is_empty() {
-            continue;
-        }
-        assert_eq!(impacts.len(), 6, "the stick is six bombs, all at once");
-        // Laid in a line: consecutive impacts sit a fixed spacing apart,
-        // and the whole stick spans several tiles.
-        let first = impacts[0];
-        let last = impacts[5];
-        let span = first.dist(last);
-        assert!(
-            span > chassis::fx::Fx::lit("3.5") && span < chassis::fx::Fx::lit("4.5"),
-            "stick span off: {span}"
-        );
-        return;
-    }
-    panic!("the moth never released");
 }
 
 #[test]

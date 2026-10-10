@@ -68,7 +68,7 @@ fn ground_cannot_cross_but_air_flies_straight_over() {
         1,
         vec![
             unit(0, UnitKind::Scuttler, 8, 5),
-            unit(0, UnitKind::Wisp, 8, 7),
+            unit(0, UnitKind::Talon, 8, 7),
         ],
     )
     .build()
@@ -172,7 +172,7 @@ fn artillery_arcs_sail_over_the_chasm() {
         4,
         vec![
             unit(0, UnitKind::Bombard, 8, 5),
-            unit(0, UnitKind::Wisp, 14, 5),
+            unit(0, UnitKind::Talon, 14, 5),
             unit(1, UnitKind::Harvester, 17, 5),
         ],
     )
@@ -203,17 +203,17 @@ fn a_flyer_downed_over_the_void_leaves_nothing() {
         2,
         vec![
             unit(0, UnitKind::Flakhound, 10, 5),
-            unit(1, UnitKind::Wisp, 12, 5),
+            unit(1, UnitKind::Talon, 12, 5),
         ],
     )
     .build()
     .unwrap();
-    let (flak, wisp) = (state.units()[0].id, state.units()[1].id);
+    let (flak, talon) = (state.units()[0].id, state.units()[1].id);
     state.tick(&[cmd(
         0,
         Command::Attack {
             units: vec![flak],
-            target: Target::Unit(wisp).into(),
+            target: Target::Unit(talon).into(),
             queue: false,
         },
     )]);
@@ -221,8 +221,8 @@ fn a_flyer_downed_over_the_void_leaves_nothing() {
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, Event::UnitDied { unit, .. } if *unit == wisp)),
-        "the wisp went down"
+            .any(|e| matches!(e, Event::UnitDied { unit, .. } if *unit == talon)),
+        "the talon went down"
     );
     for x in 12..14 {
         for y in 1..11 {
@@ -289,7 +289,7 @@ fn a_chasm_map_reproduces_bit_identically() {
         vec![
             unit(0, UnitKind::Sentinel, 10, 4),
             unit(1, UnitKind::Sentinel, 15, 6),
-            unit(0, UnitKind::Wisp, 9, 7),
+            unit(0, UnitKind::Talon, 9, 7),
         ],
     );
     let mut a = scenario.build().unwrap();

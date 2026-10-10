@@ -210,13 +210,13 @@ fn a_short_role_whose_best_unit_needs_a_crucible_pulls_toward_one() {
     assert_eq!(crucible(&needs.pull(&observation)), None, "not wanted");
 }
 
-/// Six Stingers packed on two rows, at full health.
+/// Six Flakhounds packed on two rows, at full health.
 fn clump() -> Vec<(TilePos, u32)> {
     (0..6)
         .map(|index| {
             (
                 TilePos::new(20 + index % 3, 20 + index / 3),
-                UnitKind::Stinger.stats().max_hp,
+                UnitKind::Flakhound.stats().max_hp,
             )
         })
         .collect()
@@ -235,20 +235,19 @@ fn a_seat_that_can_only_lift_scores_bombers_by_the_clump_one_blast_takes() {
         .into_iter()
         .map(|(tile, hp)| (TilePos::new(tile.x * 8, tile.y), hp))
         .collect();
-    assert!(condor(true, spread) < clumped, "one blast, one Stinger");
+    assert!(condor(true, spread) < clumped, "one blast, one Flakhound");
     assert!(
         condor(false, clump()) < clumped,
         "a seat whose ground reaches the enemy weighs splash as before"
     );
 }
 
-/// Skirmish's west seat as Ferrous with its Foundry and `producers`.
+/// Skirmish's west seat with its Foundry and `producers`.
 fn producing(producers: &[BuildingKind]) -> ObservationData {
     use oxide_sim::observation::BuildingObs;
-    use oxide_sim::{BuildingId, Faction, PlayerId, Scenario};
+    use oxide_sim::{BuildingId, PlayerId, Scenario};
     let state = Scenario::skirmish().build().unwrap();
     let mut observation = ObservationData::fog_honest(&state, PlayerId(0));
-    observation.faction = Faction::Ferrous;
     let template = observation.my_buildings[0].clone();
     for (id, kind) in (900..).zip(producers) {
         observation.my_buildings.push(BuildingObs {
@@ -301,7 +300,7 @@ fn a_seat_that_can_only_lift_pulls_toward_the_tech_its_bombers_need() {
 #[test]
 fn every_army_unit_gets_its_turn() {
     use oxide_sim::observation::BuildingObs;
-    use oxide_sim::{BuildingId, Faction, PlayerId, Scenario};
+    use oxide_sim::{BuildingId, PlayerId, Scenario};
     let state = Scenario::skirmish().build().unwrap();
     let producers = [
         BuildingKind::Foundry,
@@ -309,40 +308,37 @@ fn every_army_unit_gets_its_turn() {
         BuildingKind::Airworks,
         BuildingKind::Crucible,
     ];
-    for faction in [Faction::Ferrous, Faction::Cupric] {
-        let mut observation = ObservationData::fog_honest(&state, PlayerId(0));
-        observation.faction = faction;
-        let template = observation.my_buildings[0].clone();
-        for (id, kind) in (900..).zip(&producers[1..]) {
-            observation.my_buildings.push(BuildingObs {
-                id: BuildingId(id),
-                kind: *kind,
-                built: true,
-                ..template.clone()
-            });
-        }
-        let mut trained = Vec::new();
-        for clustered in [false, true] {
-            for role in ROLES {
-                let mut needs = needs(None, clustered);
-                needs.enemy.air = 1_000;
-                needs.income = 3_000;
-                needs.need[role as usize] = 100_000;
-                for _ in 0..12 {
-                    for producer in producers {
-                        if let Some(kind) = needs.unit(&observation, producer, role, 10_000) {
-                            trained.push(kind);
-                            needs.queued(kind);
-                        }
+    let mut observation = ObservationData::fog_honest(&state, PlayerId(0));
+    let template = observation.my_buildings[0].clone();
+    for (id, kind) in (900..).zip(&producers[1..]) {
+        observation.my_buildings.push(BuildingObs {
+            id: BuildingId(id),
+            kind: *kind,
+            built: true,
+            ..template.clone()
+        });
+    }
+    let mut trained = Vec::new();
+    for clustered in [false, true] {
+        for role in ROLES {
+            let mut needs = needs(None, clustered);
+            needs.enemy.air = 1_000;
+            needs.income = 3_000;
+            needs.need[role as usize] = 100_000;
+            for _ in 0..12 {
+                for producer in producers {
+                    if let Some(kind) = needs.unit(&observation, producer, role, 10_000) {
+                        trained.push(kind);
+                        needs.queued(kind);
                     }
                 }
             }
         }
-        let missing: Vec<UnitKind> = UnitKind::ALL
-            .into_iter()
-            .filter(|kind| role(*kind).is_some() && legal(&observation, *kind))
-            .filter(|kind| !trained.contains(kind))
-            .collect();
-        assert!(missing.is_empty(), "{faction:?} never trains {missing:?}");
     }
+    let missing: Vec<UnitKind> = UnitKind::ALL
+        .into_iter()
+        .filter(|kind| role(*kind).is_some())
+        .filter(|kind| !trained.contains(kind))
+        .collect();
+    assert!(missing.is_empty(), "never trains {missing:?}");
 }
