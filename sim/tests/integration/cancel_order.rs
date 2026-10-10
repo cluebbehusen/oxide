@@ -10,8 +10,8 @@ use oxide_sim::command::RejectReason;
 use oxide_sim::scenario::{PlayerSpec, ScenarioMode, UnitSpec};
 use oxide_sim::stats::BuildingKind;
 use oxide_sim::{
-    AttackTarget, Command, Event, Faction, Order, OrderKey, PlayerCommand, PlayerId, Scenario,
-    State, Target, UnitId, UnitKind,
+    AttackTarget, Command, Event, Order, OrderKey, PlayerCommand, PlayerId, Scenario, State,
+    Target, UnitId, UnitKind,
 };
 
 /// An open sandbox, `width` by `height`.
@@ -20,12 +20,9 @@ fn sandbox(width: usize, height: usize, units: &[(u8, UnitKind, i32, i32)]) -> S
         mode: ScenarioMode::Sandbox,
         name: "cancel-order".into(),
         map: vec![".".repeat(width); height],
-        players: [Faction::Ferrous, Faction::Cupric]
-            .into_iter()
-            .enumerate()
-            .map(|(seat, faction)| PlayerSpec {
+        players: (0..2)
+            .map(|seat| PlayerSpec {
                 name: format!("seat {seat}"),
-                faction,
                 team: None,
                 scrap: 1_000,
                 bot: false,

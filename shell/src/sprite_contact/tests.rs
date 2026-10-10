@@ -54,7 +54,7 @@ fn fabricator_reports_reach_solid_pixels_in_idle_work_and_construction_frames() 
     let mut pages = std::collections::BTreeMap::from([(0, first)]);
     let mut count = 0;
     for (name, [x, y, width, height]) in manifest {
-        if !name.starts_with("fabricator_") || name.contains("accent") {
+        if !(name == "fabricator" || name.starts_with("fabricator_")) || name.contains("accent") {
             continue;
         }
         let page = y / page_height;
@@ -91,7 +91,7 @@ fn fabricator_reports_reach_solid_pixels_in_idle_work_and_construction_frames() 
                 })
             });
             assert!(on_solid, "{name}: {from:?} -> {contact:?}");
-            if name == "fabricator_cupric" {
+            if name == "fabricator" {
                 assert!(
                     contact.distance(aim) > 0.1,
                     "the reported footprint still misses the body"
@@ -104,8 +104,5 @@ fn fabricator_reports_reach_solid_pixels_in_idle_work_and_construction_frames() 
         }
         count += 1;
     }
-    assert_eq!(
-        count, 22,
-        "two factions, each with idle, four work, and six construction frames"
-    );
+    assert_eq!(count, 11, "idle, four work, and six construction frames");
 }

@@ -4,14 +4,13 @@ use crate::action::{Action, BindingMap};
 use crate::game::{Game, Scene};
 use crate::panel::{Card, CardAction, CardIcon, VerbIcon, tick_time_label};
 use crate::typography::entity_name;
-use oxide_sim::{Building, BuildingId, BuildingKind, Command, Faction};
+use oxide_sim::{Building, BuildingId, BuildingKind, Command};
 
 #[derive(Clone)]
 pub(crate) struct SelectedBuildings {
     pub buildings: Vec<Building>,
     pub tech: Vec<BuildingKind>,
     pub scrap: u32,
-    pub faction: Faction,
     pub accepts: bool,
 }
 
@@ -39,7 +38,6 @@ impl SelectedBuildings {
                 .map(|b| b.kind)
                 .collect(),
             scrap,
-            faction: game.state.player(game.presentation.human).faction,
             accepts,
         };
         if game.pending.is_empty() {

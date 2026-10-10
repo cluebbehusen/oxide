@@ -1,7 +1,7 @@
 use super::*;
 use oxide_sim::command::{Command, PlayerCommand, RejectReason};
 use oxide_sim::scenario::{PlayerSpec, ScenarioMode, UnitSpec};
-use oxide_sim::{Faction, StallReason, UnitKind};
+use oxide_sim::{StallReason, UnitKind};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_REPLAY_ID: AtomicU64 = AtomicU64::new(0);
@@ -36,7 +36,6 @@ fn firing_squad() -> Scenario {
         players: vec![
             PlayerSpec {
                 name: "attacker".into(),
-                faction: Faction::Ferrous,
                 team: None,
                 scrap: 100,
                 bot: false,
@@ -44,7 +43,6 @@ fn firing_squad() -> Scenario {
             },
             PlayerSpec {
                 name: "victim".into(),
-                faction: Faction::Cupric,
                 team: None,
                 scrap: 100,
                 bot: false,
@@ -89,7 +87,6 @@ fn one_evaluation_trace() -> EvaluationTraceRow {
         prime_matchup(),
         prime_config().personality_seed,
         false,
-        EvaluationFactionCell::Authored,
         EvaluationGeometry::Authored,
     )
     .unwrap()
@@ -113,7 +110,6 @@ fn profile_pair_swaps_only_controllers_on_one_transformed_scenario() {
         prime_matchup(),
         prime_config().personality_seed,
         true,
-        EvaluationFactionCell::Cf,
         EvaluationGeometry::Rot180,
     )
     .unwrap();
@@ -124,18 +120,7 @@ fn profile_pair_swaps_only_controllers_on_one_transformed_scenario() {
     assert_eq!(swapped.leg, EvaluationLeg::Swapped);
     assert_eq!(forward.geometry, EvaluationGeometry::Rot180);
     assert_eq!(swapped.geometry, EvaluationGeometry::Rot180);
-    assert_eq!(forward.faction_cell, EvaluationFactionCell::Cf);
-    assert_eq!(swapped.faction_cell, EvaluationFactionCell::Cf);
     assert_eq!(forward.scenario, swapped.scenario);
-    assert_eq!(
-        forward
-            .scenario
-            .players
-            .iter()
-            .map(|player| player.faction)
-            .collect::<Vec<_>>(),
-        [Faction::Cupric, Faction::Ferrous]
-    );
     assert!(
         forward
             .scenario
@@ -161,55 +146,6 @@ fn profile_pair_swaps_only_controllers_on_one_transformed_scenario() {
 }
 
 #[test]
-fn controlled_faction_cells_retint_players_and_starting_rosters() {
-    let source = Scenario::skirmish();
-    let fc = configured_matchup_plans(
-        &source,
-        prime_matchup(),
-        prime_config().personality_seed,
-        false,
-        EvaluationFactionCell::Fc,
-        EvaluationGeometry::Authored,
-    )
-    .unwrap()
-    .remove(0);
-    let cf = configured_matchup_plans(
-        &source,
-        prime_matchup(),
-        prime_config().personality_seed,
-        false,
-        EvaluationFactionCell::Cf,
-        EvaluationGeometry::Authored,
-    )
-    .unwrap()
-    .remove(0);
-
-    assert_eq!(
-        fc.scenario
-            .players
-            .iter()
-            .map(|player| player.faction)
-            .collect::<Vec<_>>(),
-        [Faction::Ferrous, Faction::Cupric]
-    );
-    assert_eq!(fc.scenario.units, source.units);
-    assert_eq!(
-        cf.scenario
-            .players
-            .iter()
-            .map(|player| player.faction)
-            .collect::<Vec<_>>(),
-        [Faction::Cupric, Faction::Ferrous]
-    );
-    for (actual, authored) in cf.scenario.units.iter().zip(&source.units) {
-        let faction = cf.scenario.players[usize::from(actual.player)].faction;
-        assert_eq!(actual.player, authored.player);
-        assert_eq!((actual.x, actual.y), (authored.x, authored.y));
-        assert_eq!(actual.kind, authored.kind.role().unit_for(faction));
-    }
-}
-
-#[test]
 fn controlled_geometry_records_and_applies_the_exact_half_turn() {
     let source = Scenario::skirmish();
     let authored = configured_matchup_plans(
@@ -217,7 +153,6 @@ fn controlled_geometry_records_and_applies_the_exact_half_turn() {
         prime_matchup(),
         prime_config().personality_seed,
         false,
-        EvaluationFactionCell::Cf,
         EvaluationGeometry::Authored,
     )
     .unwrap()
@@ -227,7 +162,6 @@ fn controlled_geometry_records_and_applies_the_exact_half_turn() {
         prime_matchup(),
         prime_config().personality_seed,
         false,
-        EvaluationFactionCell::Cf,
         EvaluationGeometry::Rot180,
     )
     .unwrap()
@@ -244,13 +178,12 @@ fn controlled_geometry_records_and_applies_the_exact_half_turn() {
 }
 
 #[test]
-fn configured_evaluation_records_exact_controller_and_roster_provenance() {
+fn configured_evaluation_records_exact_controller_provenance() {
     let plans = configured_matchup_plans(
         &Scenario::skirmish(),
         prime_matchup(),
         prime_config().personality_seed,
         true,
-        EvaluationFactionCell::Cf,
         EvaluationGeometry::Authored,
     )
     .unwrap();
@@ -258,20 +191,13 @@ fn configured_evaluation_records_exact_controller_and_roster_provenance() {
     for plan in plans {
         let (row, replay) = evaluate_plan_artifact(&plan, 1, "candidate-a").unwrap();
         let expected = match plan.leg {
-            EvaluationLeg::Forward => [
-                (Faction::Cupric, Some(prime_config())),
-                (Faction::Ferrous, Some(opponent_config())),
-            ],
-            EvaluationLeg::Swapped => [
-                (Faction::Cupric, Some(opponent_config())),
-                (Faction::Ferrous, Some(prime_config())),
-            ],
+            EvaluationLeg::Forward => [Some(prime_config()), Some(opponent_config())],
+            EvaluationLeg::Swapped => [Some(opponent_config()), Some(prime_config())],
             EvaluationLeg::Single => panic!("paired plans cannot contain a single leg"),
         };
 
         assert_eq!(row.leg, plan.leg);
         assert_eq!(row.geometry, EvaluationGeometry::Authored);
-        assert_eq!(row.faction_cell, EvaluationFactionCell::Cf);
         assert_eq!(
             row.scenario_fingerprint,
             scenario_fingerprint(&plan.scenario).unwrap()
@@ -281,9 +207,8 @@ fn configured_evaluation_records_exact_controller_and_roster_provenance() {
             evaluation_fingerprint(&plan).unwrap()
         );
         assert_eq!(replay.setup, plan.scenario);
-        for (seat_index, (seat, (faction, config))) in row.seats.iter().zip(expected).enumerate() {
+        for (seat_index, (seat, config)) in row.seats.iter().zip(expected).enumerate() {
             assert_eq!(seat.seat, u8::try_from(seat_index).unwrap());
-            assert_eq!(seat.faction, faction);
             assert_eq!(seat.config, config);
             assert_eq!(seat.profile, config.map(ResolvedProfile::resolve));
         }
@@ -305,7 +230,6 @@ fn traced_evaluation_is_deterministic_and_does_not_change_authoritative_evidence
         prime_matchup(),
         prime_config().personality_seed,
         false,
-        EvaluationFactionCell::Cf,
         EvaluationGeometry::Authored,
     )
     .unwrap()
@@ -362,40 +286,40 @@ fn traced_evaluation_is_deterministic_and_does_not_change_authoritative_evidence
 #[test]
 fn nominal_axis_aliases_share_one_execution_identity_and_are_refused() {
     let source = Scenario::skirmish();
-    let authored = configured_matchup_plans(
+    let single = configured_matchup_plans(
         &source,
         prime_matchup(),
         prime_config().personality_seed,
         false,
-        EvaluationFactionCell::Authored,
         EvaluationGeometry::Authored,
     )
     .unwrap()
     .remove(0);
-    let explicit = configured_matchup_plans(
+    let forward = configured_matchup_plans(
         &source,
         prime_matchup(),
         prime_config().personality_seed,
-        false,
-        EvaluationFactionCell::Fc,
+        true,
         EvaluationGeometry::Authored,
     )
     .unwrap()
     .remove(0);
 
-    assert_eq!(authored.scenario, explicit.scenario);
-    assert_eq!(authored.controllers, explicit.controllers);
+    assert_eq!(single.leg, EvaluationLeg::Single);
+    assert_eq!(forward.leg, EvaluationLeg::Forward);
+    assert_eq!(single.scenario, forward.scenario);
+    assert_eq!(single.controllers, forward.controllers);
     assert_ne!(
-        evaluation_fingerprint(&authored).unwrap(),
-        evaluation_fingerprint(&explicit).unwrap(),
+        evaluation_fingerprint(&single).unwrap(),
+        evaluation_fingerprint(&forward).unwrap(),
         "the nominal provenance labels remain distinguishable"
     );
     assert_eq!(
-        execution_fingerprint(&authored).unwrap(),
-        execution_fingerprint(&explicit).unwrap(),
-        "execution identity must ignore the aliasing faction label"
+        execution_fingerprint(&single).unwrap(),
+        execution_fingerprint(&forward).unwrap(),
+        "execution identity must ignore the aliasing leg label"
     );
-    let error = ensure_unique_execution_plans([&authored, &explicit]).unwrap_err();
+    let error = ensure_unique_execution_plans([&single, &forward]).unwrap_err();
     assert!(
         error.to_string().contains("duplicate executable cells"),
         "alias refusal should identify the evidence problem: {error:#}"
@@ -433,7 +357,6 @@ fn controller_swaps_have_one_scenario_but_distinct_evidence_identities() {
         prime_matchup(),
         prime_config().personality_seed,
         true,
-        EvaluationFactionCell::Fc,
         EvaluationGeometry::Rot180,
     )
     .unwrap();
@@ -471,7 +394,6 @@ fn evaluation_plan_refuses_missing_or_excess_controller_slots() {
             scenario: scenario.clone(),
             controllers,
             geometry: EvaluationGeometry::Authored,
-            faction_cell: EvaluationFactionCell::Authored,
         };
 
         let fingerprint_error = evaluation_fingerprint(&plan).unwrap_err();
@@ -504,7 +426,6 @@ fn controlled_plans_refuse_non_duel_scenarios_before_transforming_them() {
             prime_matchup(),
             prime_config().personality_seed,
             true,
-            EvaluationFactionCell::Fc,
             EvaluationGeometry::Authored,
         )
         .unwrap_err();
@@ -526,7 +447,6 @@ fn controlled_plans_refuse_two_seats_on_the_same_team() {
         prime_matchup(),
         prime_config().personality_seed,
         true,
-        EvaluationFactionCell::Fc,
         EvaluationGeometry::Authored,
     )
     .unwrap_err();
@@ -598,7 +518,6 @@ fn rows_record_teams_eliminations_detectors_income_and_provenance() {
         ProfileMatchup::uniform(BotDifficulty::Standard, BotStance::Balanced),
         8_100,
         false,
-        EvaluationFactionCell::Authored,
         EvaluationGeometry::Authored,
     )
     .unwrap()
@@ -815,7 +734,6 @@ fn a_trace_publication_collision_rolls_back_the_compact_index() {
         prime_matchup(),
         prime_config().personality_seed,
         false,
-        EvaluationFactionCell::Authored,
         EvaluationGeometry::Authored,
     )
     .unwrap()
@@ -1104,11 +1022,9 @@ fn cross_difficulty_legs_share_identity_and_swap_complete_configs() {
 
     for seat in 0..source.players.len() {
         assert_eq!(forward.players[seat].name, source.players[seat].name);
-        assert_eq!(forward.players[seat].faction, source.players[seat].faction);
         assert_eq!(forward.players[seat].team, source.players[seat].team);
         assert_eq!(forward.players[seat].scrap, source.players[seat].scrap);
         assert_eq!(swapped.players[seat].name, source.players[seat].name);
-        assert_eq!(swapped.players[seat].faction, source.players[seat].faction);
         assert_eq!(swapped.players[seat].team, source.players[seat].team);
         assert_eq!(swapped.players[seat].scrap, source.players[seat].scrap);
     }

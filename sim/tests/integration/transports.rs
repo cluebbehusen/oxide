@@ -10,7 +10,7 @@ use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
 use oxide_sim::scenario::UnitSpec;
 use oxide_sim::state::Order;
-use oxide_sim::{Command, Event, Faction, Scenario, State, Target, UnitId, UnitKind};
+use oxide_sim::{Command, Event, Scenario, State, Target, UnitId, UnitKind};
 
 fn arena(map: Vec<String>, units: Vec<UnitSpec>) -> Scenario {
     Scenario {
@@ -165,7 +165,7 @@ fn cargo_dies_with_the_airframe() {
         vec![
             unit(0, UnitKind::Skyhook, 4, 4),
             unit(0, UnitKind::Sentinel, 3, 4),
-            unit(1, UnitKind::Stinger, 8, 4),
+            unit(1, UnitKind::Flakhound, 8, 4),
         ],
     )
     .build()
@@ -628,7 +628,6 @@ fn a_rider_survives_when_its_sling_is_destroyed_during_boarding() {
             unit(0, UnitKind::Sentinel, 9, 4),
         ],
     );
-    scenario.players[1].faction = Faction::Ferrous;
     scenario.units.extend(
         [(8, 2), (10, 2), (12, 2), (8, 4), (12, 4), (9, 6), (11, 6)]
             .into_iter()

@@ -404,7 +404,7 @@ impl FailureDetectors {
                     producers += 1;
                     let idle = building.queue.is_empty();
                     all_idle &= idle;
-                    let unit = cheapest_legal_unit(state, building, &completed);
+                    let unit = cheapest_legal_unit(building, &completed);
                     if let Some(unit) = unit
                         && cheapest.is_none_or(|kind| unit.stats().cost < kind.stats().cost)
                     {
@@ -642,34 +642,22 @@ fn observe<'a>(
 }
 
 /// The cheapest unit `producer` may train now under the shared production
-/// rules: its roster, the seat's faction and completed prerequisites. Equal
-/// prices keep roster order.
-fn cheapest_legal_unit(
-    state: &State,
-    producer: &Building,
-    completed: &[BuildingKind],
-) -> Option<UnitKind> {
-    legal_units(state, producer, completed).min_by_key(|kind| kind.stats().cost)
+/// rules: its roster and completed prerequisites. Equal prices keep roster
+/// order.
+fn cheapest_legal_unit(producer: &Building, completed: &[BuildingKind]) -> Option<UnitKind> {
+    legal_units(producer, completed).min_by_key(|kind| kind.stats().cost)
 }
 
 fn legal_units<'a>(
-    state: &State,
     producer: &'a Building,
     completed: &'a [BuildingKind],
 ) -> impl Iterator<Item = UnitKind> + 'a {
-    let faction = state.player(producer.player).faction;
-    producer
-        .stats()
-        .produces
-        .iter()
-        .copied()
-        .filter(move |kind| kind.faction().is_none_or(|owner| owner == faction))
-        .filter(|kind| {
-            kind.stats()
-                .requires
-                .iter()
-                .all(|required| completed.contains(required))
-        })
+    producer.stats().produces.iter().copied().filter(|kind| {
+        kind.stats()
+            .requires
+            .iter()
+            .all(|required| completed.contains(required))
+    })
 }
 
 #[cfg(test)]

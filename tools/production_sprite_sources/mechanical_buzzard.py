@@ -19,9 +19,9 @@ from tools.production_sprite_sources.mechanical_ground import (
 )
 
 
-def hull(faction, move=0):
+def hull(variant, move=0):
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     for x, y in ((25, 40), (103, 40), (25, 94), (103, 94)):
         strut(d, (64, 64 if y < 64 else 84), (x, y), 7)
         fan(d, x, y, 20, move, paint)
@@ -54,9 +54,9 @@ def hull(faction, move=0):
     return finish(im)
 
 
-def mount(faction, action=0):
+def mount(variant, action=0):
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     poly(
         d,
         [
@@ -97,9 +97,9 @@ def mount(faction, action=0):
     return finish(im, False)
 
 
-def buzzard(faction, move=0, action=0):
-    image = hull(faction, move)
-    image.alpha_composite(mount(faction, action))
+def buzzard(variant, move=0, action=0):
+    image = hull(variant, move)
+    image.alpha_composite(mount(variant, action))
     return image
 
 

@@ -5,8 +5,8 @@ use chassis::grid::as_index;
 use oxide_kit::GameReplay;
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, ScenarioMode, UnitSpec};
 use oxide_sim::{
-    AttackTarget, BuildingId, BuildingKind, Command, Event, Faction, GameResult, Order,
-    PlayerCommand, PlayerId, Scenario, State, Target, UnitId, UnitKind,
+    AttackTarget, BuildingId, BuildingKind, Command, Event, GameResult, Order, PlayerCommand,
+    PlayerId, Scenario, State, Target, UnitId, UnitKind,
 };
 use std::collections::BTreeMap;
 
@@ -25,11 +25,10 @@ fn arena(name: &str, units: Vec<UnitSpec>) -> Scenario {
             .into_iter()
             .map(|row| row.into_iter().collect())
             .collect(),
-        players: [Faction::Ferrous, Faction::Cupric]
+        players: ["North West", "South East"]
             .into_iter()
-            .map(|faction| PlayerSpec {
-                name: format!("{faction:?}"),
-                faction,
+            .map(|name| PlayerSpec {
+                name: name.into(),
                 team: None,
                 scrap: 4_000,
                 bot: false,
@@ -477,8 +476,8 @@ fn fog() -> BTreeMap<String, String> {
     let mut scenario = arena(
         "fog",
         vec![
-            unit(0, UnitKind::Gnat, 16, 6),
-            unit(1, UnitKind::Gnat, 14, 8),
+            unit(0, UnitKind::Kestrel, 16, 6),
+            unit(1, UnitKind::Kestrel, 14, 8),
         ],
     );
     scenario.buildings = vec![
@@ -502,7 +501,7 @@ fn fog() -> BTreeMap<String, String> {
         },
     ];
     let mut p = Probe::new(scenario);
-    let scout = p.unit(0, UnitKind::Gnat);
+    let scout = p.unit(0, UnitKind::Kestrel);
     let gun = p.building(0, BuildingKind::Bastion);
     let site = TilePos::new(18, 6);
     assert!(p.state.can_see(PlayerId(0), site));
@@ -601,12 +600,11 @@ fn fog() -> BTreeMap<String, String> {
 }
 
 fn teams() -> BTreeMap<String, String> {
-    let mut scenario = arena("teams", vec![unit(0, UnitKind::Gnat, 12, 12)]);
+    let mut scenario = arena("teams", vec![unit(0, UnitKind::Kestrel, 12, 12)]);
     scenario.players[0].team = Some(0);
     scenario.players[1].team = Some(0);
     scenario.players.push(PlayerSpec {
         name: "Enemy".into(),
-        faction: Faction::Ferrous,
         team: Some(1),
         scrap: 0,
         bot: false,

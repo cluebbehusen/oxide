@@ -96,9 +96,10 @@ load it as a live continuation rather than exposing a fog-free mid-match viewer.
 ## Inspect native presentation
 
 Capture the real shell whenever judging appearance, animation, interaction, or
-audio. Exercise the relevant camera zoom, fog state, faction, selection state,
-and actual action trigger. Read every captured PNG or sequence at normal play
-scale; do not judge the game from generated review cards or the CPU renderer.
+audio. Exercise the relevant camera zoom, fog state, allegiance, selection
+state, and actual action trigger. Read every captured PNG or sequence at normal
+play scale; do not judge the game from generated review cards or the CPU
+renderer.
 
 For typography trials, launch with
 `OXIDE_REVIEW_FONT=/absolute/path/to/font.ttf` to replace both body and display

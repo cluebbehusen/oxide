@@ -6,7 +6,7 @@ use oxide_sim::scenario::ScenarioMode;
 fn record_activity(ticks: u64) -> GameReplay {
     use chassis::grid::TilePos;
     use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
-    use oxide_sim::{BuildingKind, Command, Event, Faction, PlayerCommand, Target, UnitKind};
+    use oxide_sim::{BuildingKind, Command, Event, PlayerCommand, Target, UnitKind};
     let mut map = vec![vec!['.'; 30]; 20];
     map[1][1] = '1';
     map[17][27] = '2';
@@ -18,11 +18,10 @@ fn record_activity(ticks: u64) -> GameReplay {
             .into_iter()
             .map(|row| row.into_iter().collect())
             .collect(),
-        players: [Faction::Ferrous, Faction::Cupric]
+        players: ["West", "East"]
             .into_iter()
-            .map(|faction| PlayerSpec {
-                name: format!("{faction:?}"),
-                faction,
+            .map(|name| PlayerSpec {
+                name: name.into(),
                 team: None,
                 scrap: 2000,
                 bot: false,

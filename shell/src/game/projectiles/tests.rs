@@ -5,62 +5,60 @@ use oxide_sim::{Command, PlayerCommand, PlayerId, Scenario, UnitId};
 
 #[test]
 fn edge_release_uses_the_firing_pose_before_egress_and_survives_shooter_loss() {
-    for kind in [UnitKind::Condor, UnitKind::Moth] {
-        let mut map = vec!["........................".to_string(); 20];
-        map[1] = ".1......................".into();
-        map[17] = ".....................2..".into();
-        let scenario: Scenario = serde_json::from_value(serde_json::json!({
-            "name": "Edge release", "map": map,
-            "players": [
-                {"name":"Own", "faction":"ferrous", "scrap":0, "bot":false},
-                {"name":"Enemy", "faction":"cupric", "scrap":0, "bot":false}
-            ],
-            "units": [{"player":0, "kind":kind, "x":20, "y":10}],
-            "buildings": [{"player":1, "kind":"barricade", "x":22, "y":10}]
-        }))
-        .unwrap();
-        let mut value = serde_json::to_value(scenario.build().unwrap()).unwrap();
-        value["units"][0]["heading"] = serde_json::json!(0);
-        let mut state: State = serde_json::from_value(value).unwrap();
-        let report = state.tick(&[PlayerCommand {
-            player: PlayerId(0),
-            command: Command::Attack {
-                units: vec![UnitId(0)],
-                target: Target::Building(oxide_sim::BuildingId(2)).into(),
-                queue: false,
-            },
-        }]);
-        assert_ne!(
-            state.unit(UnitId(0)).unwrap().heading,
-            0,
-            "egress bends at the edge"
-        );
-        assert!(!state.shells().is_empty());
-        let mut releases = ProjectileReleases::default();
-        releases.observe(&state, &report.events);
-        let check = |releases: &ProjectileReleases, state: &State| {
-            for i in 0..state.shells().len() {
-                let pose = releases.release(state.shells(), i).unwrap();
-                assert_eq!(pose.heading, vec2(1.0, 0.0));
-                assert_eq!(pose.kind, kind);
-                assert_eq!(pose.slot, i);
-            }
-        };
-        check(&releases, &state);
-        let mut value = serde_json::to_value(&state).unwrap();
-        value["units"] = serde_json::json!([]);
-        for view in value["vision"].as_array_mut().unwrap() {
-            view["tracking"]["tracks"] = serde_json::json!([]);
+    let kind = UnitKind::Condor;
+    let mut map = vec!["........................".to_string(); 20];
+    map[1] = ".1......................".into();
+    map[17] = ".....................2..".into();
+    let scenario: Scenario = serde_json::from_value(serde_json::json!({
+        "name": "Edge release", "map": map,
+        "players": [
+            {"name":"Own", "scrap":0, "bot":false},
+            {"name":"Enemy", "scrap":0, "bot":false}
+        ],
+        "units": [{"player":0, "kind":kind, "x":20, "y":10}],
+        "buildings": [{"player":1, "kind":"barricade", "x":22, "y":10}]
+    }))
+    .unwrap();
+    let mut value = serde_json::to_value(scenario.build().unwrap()).unwrap();
+    value["units"][0]["heading"] = serde_json::json!(0);
+    let mut state: State = serde_json::from_value(value).unwrap();
+    let report = state.tick(&[PlayerCommand {
+        player: PlayerId(0),
+        command: Command::Attack {
+            units: vec![UnitId(0)],
+            target: Target::Building(oxide_sim::BuildingId(2)).into(),
+            queue: false,
+        },
+    }]);
+    assert_ne!(
+        state.unit(UnitId(0)).unwrap().heading,
+        0,
+        "egress bends at the edge"
+    );
+    assert!(!state.shells().is_empty());
+    let mut releases = ProjectileReleases::default();
+    releases.observe(&state, &report.events);
+    let check = |releases: &ProjectileReleases, state: &State| {
+        for i in 0..state.shells().len() {
+            let pose = releases.release(state.shells(), i).unwrap();
+            assert_eq!(pose.heading, vec2(1.0, 0.0));
+            assert_eq!(pose.kind, kind);
         }
-        let after_loss: State = serde_json::from_value(value).unwrap();
-        let mut releases = ProjectileReleases::default();
-        releases.observe(&after_loss, &report.events);
-        check(&releases, &after_loss);
+    };
+    check(&releases, &state);
+    let mut value = serde_json::to_value(&state).unwrap();
+    value["units"] = serde_json::json!([]);
+    for view in value["vision"].as_array_mut().unwrap() {
+        view["tracking"]["tracks"] = serde_json::json!([]);
     }
+    let after_loss: State = serde_json::from_value(value).unwrap();
+    let mut releases = ProjectileReleases::default();
+    releases.observe(&after_loss, &report.events);
+    check(&releases, &after_loss);
 }
 
 #[test]
-fn replay_projectile_releases_retain_heading_slots_and_simulation_parity() {
+fn replay_projectile_releases_retain_heading_and_simulation_parity() {
     let scenario: Scenario = serde_json::from_value(serde_json::json!({
         "name": "Bomber release", "map": [
             "....................................",
@@ -81,34 +79,25 @@ fn replay_projectile_releases_retain_heading_slots_and_simulation_parity() {
             "...................................."
         ],
         "players": [
-            {"name":"You", "faction":"ferrous", "scrap":0, "bot":false},
-            {"name":"Target", "faction":"cupric", "scrap":0, "bot":true}
+            {"name":"You", "scrap":0, "bot":false},
+            {"name":"Target", "scrap":0, "bot":true}
         ],
-        "units": [
-            {"player":0, "kind":"condor", "x":16, "y":8},
-            {"player":0, "kind":"moth", "x":16, "y":12}
-        ],
-        "buildings": [
-            {"player":1, "kind":"repair_bay", "x":25, "y":7},
-            {"player":1, "kind":"repair_bay", "x":25, "y":11}
-        ]
+        "units": [{"player":0, "kind":"condor", "x":16, "y":8}],
+        "buildings": [{"player":1, "kind":"repair_bay", "x":25, "y":7}]
     }))
     .unwrap();
     let mut game = Game::with_viewport(scenario, vec2(1440.0, 900.0)).unwrap();
-    for (unit, y) in [(0, 8), (1, 12)] {
-        game.pending.push(PlayerCommand {
-            player: PlayerId(0),
-            command: Command::Hunt {
-                units: vec![UnitId(unit)],
-                goal: TilePos::new(27, y),
-                queue: false,
-            },
-        });
-    }
-    let mut saw_moth = false;
+    game.pending.push(PlayerCommand {
+        player: PlayerId(0),
+        command: Command::Hunt {
+            units: vec![UnitId(0)],
+            goal: TilePos::new(27, 8),
+            queue: false,
+        },
+    });
     let mut condor = None;
     for _ in 0..240 {
-        let report = game.do_tick();
+        game.do_tick();
         let shells = game.state.shells();
         for (index, shell) in shells.iter().enumerate() {
             let pose = game
@@ -116,60 +105,8 @@ fn replay_projectile_releases_retain_heading_slots_and_simulation_parity() {
                 .projectile_releases
                 .release(shells, index)
                 .unwrap();
-            if shell.shooter == Target::Unit(UnitId(1)) {
-                assert_eq!(pose.kind, UnitKind::Moth);
-                if !saw_moth {
-                    let moth: Vec<_> = shells
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, s)| s.shooter == shell.shooter)
-                        .map(|(i, _)| {
-                            game.presentation
-                                .projectile_releases
-                                .release(shells, i)
-                                .unwrap()
-                        })
-                        .collect();
-                    assert_eq!(
-                        moth.iter().map(|p| p.slot).collect::<Vec<_>>(),
-                        vec![0, 1, 2, 3, 4, 5]
-                    );
-                    let mut replay = game.recorder.clone();
-                    replay.meta.ticks = Some(game.state.current_tick());
-                    let loaded = Game::from_replay(replay).unwrap();
-                    assert_eq!(loaded.hash_hex(), game.hash_hex());
-                    for i in 0..shells.len() {
-                        assert_eq!(
-                            loaded
-                                .presentation
-                                .projectile_releases
-                                .release(loaded.state.shells(), i),
-                            game.presentation.projectile_releases.release(shells, i)
-                        );
-                    }
-                    let mut clamped_events = report.events.clone();
-                    for event in &mut clamped_events {
-                        if let Event::ShellLaunched { flight, .. } = event {
-                            *flight = 1;
-                        }
-                    }
-                    let mut clamped = shells.to_vec();
-                    for shell in &mut clamped {
-                        shell.arrival = game.state.current_tick();
-                    }
-                    let mut releases = ProjectileReleases::default();
-                    releases.observe(&game.state, &clamped_events);
-                    let slots: Vec<_> = clamped
-                        .iter()
-                        .enumerate()
-                        .map(|(i, _)| releases.release(&clamped, i).unwrap().slot)
-                        .collect();
-                    assert_eq!(slots, vec![0, 1, 2, 3, 4, 5]);
-                    saw_moth = true;
-                }
-            } else if shell.shooter == Target::Unit(UnitId(0)) {
+            if shell.shooter == Target::Unit(UnitId(0)) {
                 assert_eq!(pose.kind, UnitKind::Condor);
-                assert_eq!(pose.slot, 0);
                 condor = Some((shell.clone(), pose));
             }
         }
@@ -177,7 +114,6 @@ fn replay_projectile_releases_retain_heading_slots_and_simulation_parity() {
             break;
         }
     }
-    assert!(saw_moth);
     let (shell, pose) = condor.expect("Condor completes its approach and releases");
     let mut replay = game.recorder.clone();
     replay.meta.ticks = Some(game.state.current_tick());

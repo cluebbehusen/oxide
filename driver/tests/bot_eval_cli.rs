@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::process::Command;
 
 #[test]
-fn controlled_matrix_keeps_controller_faction_and_geometry_provenance_separate() {
+fn controlled_matrix_keeps_controller_and_geometry_provenance_separate() {
     let output = Command::new(env!("CARGO_BIN_EXE_oxide-driver"))
         .args([
             "bot-eval",
@@ -21,8 +21,6 @@ fn controlled_matrix_keeps_controller_faction_and_geometry_provenance_separate()
             "prime",
             "--stance",
             "aggressive",
-            "--faction-cells",
-            "fc,cf",
             "--geometries",
             "authored,rot180",
         ])
@@ -39,7 +37,7 @@ fn controlled_matrix_keeps_controller_faction_and_geometry_provenance_separate()
         .lines()
         .map(|line| serde_json::from_str(line).expect("each line is one JSON object"))
         .collect();
-    assert_eq!(rows.len(), 8, "two factions x two geometries x two legs");
+    assert_eq!(rows.len(), 4, "two geometries x two legs");
 
     let mut cells = BTreeSet::new();
     let (paired_cells, remainder) = rows.as_chunks::<2>();
@@ -48,7 +46,6 @@ fn controlled_matrix_keeps_controller_faction_and_geometry_provenance_separate()
         assert_eq!(legs[0]["leg"], "forward");
         assert_eq!(legs[1]["leg"], "swapped");
         assert_eq!(legs[0]["geometry"], legs[1]["geometry"]);
-        assert_eq!(legs[0]["faction_cell"], legs[1]["faction_cell"]);
         assert_eq!(
             legs[0]["scenario_fingerprint"], legs[1]["scenario_fingerprint"],
             "controller exchange must not alter the transformed scenario"
@@ -58,19 +55,8 @@ fn controlled_matrix_keeps_controller_faction_and_geometry_provenance_separate()
             "controller seat is part of evaluation provenance"
         );
 
-        let faction_cell = legs[0]["faction_cell"].as_str().unwrap();
         let geometry = legs[0]["geometry"].as_str().unwrap();
-        cells.insert((faction_cell.to_string(), geometry.to_string()));
-        let expected_factions = match faction_cell {
-            "fc" => ["ferrous", "cupric"],
-            "cf" => ["cupric", "ferrous"],
-            other => panic!("unexpected faction cell {other}"),
-        };
-
-        for row in legs {
-            assert_eq!(row["seats"][0]["faction"], expected_factions[0]);
-            assert_eq!(row["seats"][1]["faction"], expected_factions[1]);
-        }
+        cells.insert(geometry.to_string());
 
         for (row, first_seat) in [(&legs[0], 0), (&legs[1], 1)] {
             let second_seat = 1 - first_seat;
@@ -86,12 +72,7 @@ fn controlled_matrix_keeps_controller_faction_and_geometry_provenance_separate()
 
     assert_eq!(
         cells,
-        BTreeSet::from([
-            ("cf".to_string(), "authored".to_string()),
-            ("cf".to_string(), "rot180".to_string()),
-            ("fc".to_string(), "authored".to_string()),
-            ("fc".to_string(), "rot180".to_string()),
-        ])
+        BTreeSet::from(["authored".to_string(), "rot180".to_string()])
     );
 }
 
@@ -126,7 +107,6 @@ fn controlled_personality_seed_lists_run_one_cell_each() {
         .map(|row| {
             assert_eq!(row["leg"], "single");
             assert_eq!(row["geometry"], "authored");
-            assert_eq!(row["faction_cell"], "authored");
             row["seats"][0]["config"]["personality_seed"]
                 .as_u64()
                 .unwrap()
@@ -167,7 +147,6 @@ fn controlled_exact_seed_lists_refuse_bases() {
 fn controlled_axes_refuse_duplicate_cells() {
     for (args, option) in [
         (&["--personality-seeds", "40,40"][..], "--personality-seeds"),
-        (&["--faction-cells", "fc,fc"][..], "--faction-cells"),
         (&["--geometries", "authored,authored"][..], "--geometries"),
     ] {
         assert_skirmish_bot_eval_refuses(args, &[option, "contains a duplicate value"]);
@@ -177,8 +156,11 @@ fn controlled_axes_refuse_duplicate_cells() {
 #[test]
 fn controlled_matrix_refuses_nominal_cells_that_execute_identically() {
     assert_skirmish_bot_eval_refuses(
-        &["--faction-cells", "authored,fc"],
-        &["duplicate executable cells", "Authored", "Fc"],
+        &["skirmish", "--geometries", "authored"],
+        &[
+            "duplicate executable cells",
+            "\"Skirmish Basin\" Authored/single",
+        ],
     );
 }
 

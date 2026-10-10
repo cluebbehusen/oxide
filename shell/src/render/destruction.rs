@@ -329,7 +329,7 @@ fn draw_unit_wreck(
         center,
         size: Vec2::splat(scale * zoom),
         rotation: body.rotation,
-        source: sprites.unit(body.kind, body.faction),
+        source: sprites.unit(body.kind),
         accent: sprites.unit_accent(body.kind),
         tint: seat_identity_tint(game, body.player),
     };
@@ -485,7 +485,7 @@ fn draw_air_fragments(
                 - vec2(0.0, pose.lift * zoom),
             size: Vec2::splat(unit_draw_scale(body.kind) * zoom),
             rotation: body.rotation,
-            source: sprites.unit(body.kind, body.faction),
+            source: sprites.unit(body.kind),
             accent: sprites.unit_accent(body.kind),
             tint: seat_identity_tint(game, body.player),
         };
@@ -601,7 +601,7 @@ pub(super) fn draw_falling(
         center: game.presentation.camera.to_screen(pose.body_at),
         size: Vec2::splat(size),
         rotation: pose.rotation,
-        source: sprites.unit(body.kind, body.faction),
+        source: sprites.unit(body.kind),
         accent: sprites.unit_accent(body.kind),
         tint: seat_identity_tint(game, body.player),
     };
@@ -731,7 +731,7 @@ pub(super) fn draw_ground_effects(game: &Scene<'_>, sprites: &Sprites) {
                     rotation: 0.,
                     center,
                     size,
-                    source: sprites.building_tiered(body.kind, body.tier, body.faction),
+                    source: sprites.building_tiered(body.kind, body.tier),
                     accent: sprites.building_tiered_accent(body.kind, body.tier),
                     tint: seat_identity_tint(game, body.player),
                 };
@@ -748,7 +748,7 @@ pub(super) fn draw_ground_effects(game: &Scene<'_>, sprites: &Sprites) {
                         );
                     }
                 }
-                if let Some(source) = sprites.defense_mount(body.kind, body.tier, body.faction) {
+                if let Some(source) = sprites.defense_mount(body.kind, body.tier) {
                     let mount = RigidSprite {
                         rotation: body.rotation,
                         source,

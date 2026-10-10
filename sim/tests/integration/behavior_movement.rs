@@ -5,9 +5,7 @@ use oxide_sim::scenario::ScenarioMode;
 
 use chassis::grid::TilePos;
 use oxide_sim::scenario::PlayerSpec;
-use oxide_sim::{
-    Command, Event, Faction, Order, PlayerId, Scenario, StallReason, State, UnitId, UnitKind,
-};
+use oxide_sim::{Command, Event, Order, PlayerId, Scenario, StallReason, State, UnitId, UnitKind};
 
 use common::*;
 
@@ -265,16 +263,14 @@ fn congestion_survives_nonconsecutive_unit_ids() {
         ],
         players: vec![
             PlayerSpec {
-                name: "Ferrous".into(),
-                faction: Faction::Ferrous,
+                name: "West".into(),
                 team: None,
                 scrap: 0,
                 bot: false,
                 bot_config: None,
             },
             PlayerSpec {
-                name: "Cupric".into(),
-                faction: Faction::Cupric,
+                name: "East".into(),
                 team: None,
                 scrap: 0,
                 bot: false,

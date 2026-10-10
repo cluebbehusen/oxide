@@ -15,7 +15,6 @@ pub(crate) struct CollapseBody {
     pub kind: oxide_sim::BuildingKind,
     pub tier: u8,
     pub player: oxide_sim::PlayerId,
-    pub faction: oxide_sim::Faction,
     pub rotation: f32,
 }
 
@@ -23,7 +22,6 @@ pub(crate) struct CollapseBody {
 pub(crate) struct UnitBody {
     pub kind: oxide_sim::UnitKind,
     pub player: oxide_sim::PlayerId,
-    pub faction: oxide_sim::Faction,
     pub rotation: f32,
     pub velocity: Vec2,
 }
@@ -65,7 +63,6 @@ impl UnitBody {
         Self {
             kind,
             player: unit.player,
-            faction: state.player(unit.player).faction,
             rotation,
             velocity: velocity
                 .clamp_length_max(kind.stats().speed.to_num::<f32>() / super::TICK_DT),
@@ -78,7 +75,6 @@ pub(crate) struct BuildingHit {
     pub id: oxide_sim::BuildingId,
     pub kind: oxide_sim::BuildingKind,
     pub tier: u8,
-    pub faction: oxide_sim::Faction,
     pub anchor: Vec2,
     pub facts: crate::presentation_animation::BuildingAnimationFacts,
 }
@@ -89,7 +85,6 @@ impl BuildingHit {
             id: building.id,
             kind: building.kind,
             tier: building.tier,
-            faction: state.player(building.player).faction,
             anchor: Vec2::new(building.anchor.x as f32, building.anchor.y as f32),
             facts: crate::presentation_animation::BuildingAnimationFacts::capture(state, building),
         }
@@ -175,7 +170,6 @@ impl PreviousEffects {
                             kind: b.kind,
                             tier: b.tier,
                             player: b.player,
-                            faction: state.player(b.player).faction,
                             rotation: game.aim_buildings.get(&b.id.0).map_or(0.0, |pose| pose.0),
                         }),
                         BuildingHit::capture(state, b),
@@ -279,16 +273,10 @@ chassis::listed_enum! {
         BombardFire,
         /// A Flakhound's paired anti-air burst.
         FlakhoundFire,
-        /// A Stinger's light anti-air burst.
-        StingerFire,
         /// A Buzzard's heavy strike.
         BuzzardFire,
-        /// A Darter's fast strike.
-        DarterFire,
         /// A Talon's interceptor burst.
         TalonFire,
-        /// A Wisp's compact interceptor burst.
-        WispFire,
         /// A Bastion's emplaced artillery report.
         BastionFire,
         /// A Flak Turret's paired-yoke burst.
@@ -330,8 +318,6 @@ pub enum PingKind {
 /// Delay between the two visible rounds of one logical flak hit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlakYokeDelay {
-    /// Both barrels fire together.
-    None,
     /// The second yoke fires one simulation tick after the first.
     OneTick,
     /// The second yoke fires halfway through a three-tick report.
@@ -342,7 +328,6 @@ impl FlakYokeDelay {
     /// Authored delay in simulation ticks.
     pub(crate) fn ticks(self) -> f32 {
         match self {
-            Self::None => 0.0,
             Self::OneTick => 1.0,
             Self::OneAndHalfTicks => 1.5,
         }
@@ -388,10 +373,6 @@ impl ShotStyle {
             ShotStyle::Kinetic { heavy: true } => 0.24,
             ShotStyle::Mortar => 0.64,
             ShotStyle::Rail => 0.24,
-            ShotStyle::FlakBurst {
-                yoke_delay: FlakYokeDelay::None,
-                rounds_per_yoke: 1,
-            } => 0.24,
             ShotStyle::FlakBurst { .. } => 0.30,
         }
     }
@@ -505,8 +486,6 @@ pub enum EffectKind {
         rotation: f32,
         /// Owning seat, for the same identity tint the live unit used.
         player: oxide_sim::PlayerId,
-        /// Faction-specific base art.
-        faction: oxide_sim::Faction,
         /// The source position was legitimately known when the report arrived.
         source_witnessed: bool,
         /// The impact position was legitimately known when the report arrived.
@@ -665,7 +644,6 @@ impl Presentation {
                 body: UnitBody {
                     kind: crash.kind,
                     player: crash.player,
-                    faction: state.player(crash.player).faction,
                     rotation: f32::from(crash.heading) * std::f32::consts::TAU / 256.0
                         + std::f32::consts::FRAC_PI_2,
                     velocity: Vec2::ZERO,
@@ -976,7 +954,6 @@ impl Presentation {
                                     blast_at: world_vec(*target_pos),
                                     rotation,
                                     player,
-                                    faction: state.player(player).faction,
                                     source_witnessed,
                                     impact_witnessed,
                                     completed_tick: state.current_tick(),
@@ -1143,7 +1120,6 @@ impl Presentation {
                         UnitBody {
                             kind: *kind,
                             player: *player,
-                            faction: state.player(*player).faction,
                             rotation: self.facing.get(&unit.0).copied().unwrap_or(0.0),
                             velocity: Vec2::ZERO,
                         },
@@ -1252,9 +1228,6 @@ impl Presentation {
                 Event::CommandRejected { player, reason } if *player == self.human => {
                     let why = match reason {
                         oxide_sim::command::RejectReason::NotEnoughScrap => "Not enough scrap",
-                        oxide_sim::command::RejectReason::WrongFaction => {
-                            "That machine belongs to the other faction"
-                        }
                         oxide_sim::command::RejectReason::QueueFull => "Queue is full",
                         oxide_sim::command::RejectReason::UnreachableGoal => "Can't reach that",
                         oxide_sim::command::RejectReason::InvalidTarget => "Can't target that",

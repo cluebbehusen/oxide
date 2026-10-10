@@ -494,11 +494,9 @@ impl Presentation {
                 continue;
             }
             let now = world_vec(unit.pos);
-            let mut moving = false;
             if let Some(prev) = self.prev_pos.get(&unit.id.0) {
                 let delta = now - *prev;
                 if delta.length_squared() > 1e-6 {
-                    moving = true;
                     self.facing.insert(
                         unit.id.0,
                         delta.y.atan2(delta.x) + std::f32::consts::FRAC_PI_2,
@@ -506,19 +504,7 @@ impl Presentation {
                 }
             }
             if let Some(turn) = rotor_hull_turn_rate(unit.kind) {
-                let movement_facing = self.facing.get(&unit.id.0).copied().unwrap_or(0.0);
-                // A rotorcraft whose gun is fixed to its hull turns the hull
-                // to aim while it hovers.
-                let fixed_gun =
-                    unit.kind.stats().can_fight() && unit.kind.stats().turret_turn_rate == 0;
-                let target = if fixed_gun && !moving {
-                    self.aim_units
-                        .get(&unit.id.0)
-                        .filter(|(_, at)| self.fx_time() - at < 1.2)
-                        .map_or(movement_facing, |(angle, _)| *angle)
-                } else {
-                    movement_facing
-                };
+                let target = self.facing.get(&unit.id.0).copied().unwrap_or(0.0);
                 let (previous, current) = self.hull_heading.entry(unit.id.0).or_insert((0.0, 0.0));
                 *previous = *current;
                 *current += angle_delta(*current, target).clamp(-turn, turn);

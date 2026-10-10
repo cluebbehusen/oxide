@@ -87,26 +87,11 @@ SFX_METADATA = (
         "18-sentinel-low-casemate-animated.gif",
     ),
     (
-        "attack_stinger",
-        "generic-weapon",
-        0.25,
-        0.10,
-        "24-stinger-inspection-trike-animated.gif",
-    ),
-    (
         "attack_talon",
         "generic-weapon",
         0.28,
         0.10,
         "42-talon-compact-interceptor-animated.gif",
-    ),
-    ("attack_wisp", "generic-weapon", 0.23, 0.10, "44-wisp-quadcopter-animated.gif"),
-    (
-        "attack_darter",
-        "generic-weapon",
-        0.25,
-        0.10,
-        "40-darter-shear-wing-animated.gif",
     ),
     (
         "attack_buzzard",
@@ -198,15 +183,12 @@ EXPECTED_SFX_SHA256 = {
     "attack_bastion.wav": "a5366dbb160e864d72ee72e8459af0d17848457f3423c3784c574fb4800507fd",
     "attack_bombard.wav": "1848571286a2aca7eabf4c484a4a9bf138517b837098c678cffd6453675e8ea1",
     "attack_buzzard.wav": "1ca99804b3a0db9dd921f6e7eb3211368622d8d1efcae17bca1e7670ef5cfc73",
-    "attack_darter.wav": "094a0e5217308c3478aa6a14dafb538e51b2bf682199a0610b38ad94d4b196a8",
     "attack_flak_turret.wav": "c714bb0819222b727ff6d635971d8df5bf0445d819537fbf740c8246b98cb3fc",
     "attack_flakhound.wav": "c7a38e3db03e0272b601273fee9e923c7d041ae34c2c9a444a3e67e7d9465fbc",
     "attack_lancer.wav": "6669626a430c184db5e4349b3aee202577e3bb5daece6f751af311330bbb2099",
     "attack_scuttler.wav": "8ec9947be252a33d3b07955d3d0b76e840f7837cc74204882b0c167c7667f686",
     "attack_sentinel.wav": "2c72d99ac0ee6cca8c9e9a54e34ad0262fc69731e3d00e378f5b0ea93e352df1",
-    "attack_stinger.wav": "8d1f5e28776e234f6b4d36b705d0a9515e4d2e16049445d54aab16ad074f0a0b",
     "attack_talon.wav": "b0ef6f653c04484795e87cd880448d0035e78adc1ef19b38473fcae92580fbde",
-    "attack_wisp.wav": "1eddeb755bd30db15c4c6bf9d2756a2933aee6fbeac091d0cab857a878218450",
     "building_boom.wav": "47445ba8778ef6badf80ae326f55ccf5a3e65dd4931c320978ef620ceaeeef12",
     "click.wav": "8d148979dc943755b924611a63317e8e48830d0f6e0fe2a5277b97dc05301da4",
     "defeat.wav": "ae70d17788e2a91f63ebac69d0c302ba30d101ec157bd2a30caddff1342a387b",
@@ -983,35 +965,11 @@ def sfx_sentinel() -> np.ndarray:
     )
 
 
-def sfx_stinger() -> np.ndarray:
-    return sfx_finish(
-        sfx_crush(sfx_zap(621, 1600.0, 520.0, 0.07, thump=0.3, snap=0.25), 10, 2),
-        highpass=180,
-        peak=0.82,
-    )
-
-
 def sfx_talon() -> np.ndarray:
     return sfx_finish(
         sfx_crush(sfx_zap(631, 1250.0, 420.0, 0.08, thump=0.4), 10, 2),
         highpass=150,
         peak=0.84,
-    )
-
-
-def sfx_wisp() -> np.ndarray:
-    return sfx_finish(
-        sfx_crush(sfx_zap(641, 1900.0, 700.0, 0.055, thump=0.2, snap=0.2), 10, 2),
-        highpass=250,
-        peak=0.8,
-    )
-
-
-def sfx_darter() -> np.ndarray:
-    return sfx_finish(
-        sfx_crush(sfx_zap(711, 1800.0, 430.0, 0.065, thump=0.4), 10, 2),
-        highpass=140,
-        peak=0.83,
     )
 
 
@@ -1381,10 +1339,7 @@ SFX_BUILDERS = {
     "laser": sfx_laser,
     "laser2": sfx_laser2,
     "attack_sentinel": sfx_sentinel,
-    "attack_stinger": sfx_stinger,
     "attack_talon": sfx_talon,
-    "attack_wisp": sfx_wisp,
-    "attack_darter": sfx_darter,
     "attack_buzzard": sfx_buzzard,
     "attack_lancer": sfx_lancer,
     "attack_scuttler": sfx_scuttler,

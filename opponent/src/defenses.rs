@@ -2214,8 +2214,7 @@ fn strength(stats: &BuildingStats, targets: u64) -> u64 {
                 } else {
                     1_000
                 };
-                u64::from(weapon.damage) * u64::from(weapon.salvo.max(1)) * hits
-                    / u64::from(weapon.cooldown_ticks.max(1))
+                u64::from(weapon.damage) * hits / u64::from(weapon.cooldown_ticks.max(1))
             })
             .sum()
     }

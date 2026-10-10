@@ -2,42 +2,36 @@
  "name": "Scramble Basin",
  "players": [
   {
-   "name": "Seat 1 Ferrous",
-   "faction": "ferrous",
+   "name": "Seat 1",
    "scrap": 150,
    "bot": false
   },
   {
-   "name": "Seat 2 Cupric",
-   "faction": "cupric",
+   "name": "Seat 2",
    "scrap": 150,
    "bot": true,
    "bot_config": {}
   },
   {
-   "name": "Seat 3 Ferrous",
-   "faction": "ferrous",
+   "name": "Seat 3",
    "scrap": 150,
    "bot": true,
    "bot_config": {}
   },
   {
-   "name": "Seat 4 Cupric",
-   "faction": "cupric",
+   "name": "Seat 4",
    "scrap": 150,
    "bot": true,
    "bot_config": {}
   },
   {
-   "name": "Seat 5 Ferrous",
-   "faction": "ferrous",
+   "name": "Seat 5",
    "scrap": 150,
    "bot": true,
    "bot_config": {}
   },
   {
-   "name": "Seat 6 Cupric",
-   "faction": "cupric",
+   "name": "Seat 6",
    "scrap": 150,
    "bot": true,
    "bot_config": {}

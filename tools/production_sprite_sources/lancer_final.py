@@ -58,7 +58,7 @@ def _dark_channel_sprite(
     ground_shapes._tracks(draw, ((8, 30, 18, 59), (46, 30, 56, 59)), tread_phase)
     draw.rectangle(
         ground_shapes._box((20, 37, 44, 57)),
-        fill=ground_shapes._rgba(ground_shapes.FERROUS["dark"]),
+        fill=ground_shapes._rgba(ground_shapes.BASE["dark"]),
     )
     draw.rectangle(ground_shapes._box((25, 42, 39, 53)), fill=(11, 11, 15, 255))
     rail_boxes = ((21, 6, 28, 44), (36, 6, 43, 44))

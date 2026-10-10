@@ -30,7 +30,6 @@ pub(crate) fn draw_placement_ghost(
         .camera
         .to_screen(vec2(anchor.x as f32, anchor.y as f32));
     let dest = vec2(w as f32 * zoom, h as f32 * zoom);
-    let faction = game.state.player(game.presentation.human).faction;
     let tint = if !ok {
         Color::new(1.0, 0.45, 0.4, 0.55)
     } else if crate::input::build_defer_needed(game, kind, anchor) {
@@ -44,7 +43,7 @@ pub(crate) fn draw_placement_ghost(
         tint,
         DrawTextureParams {
             dest_size: Some(dest),
-            source: Some(sprites.construction(kind, faction, 0, 0)),
+            source: Some(sprites.construction(kind, 0, 0)),
             ..Default::default()
         },
     );
@@ -86,7 +85,6 @@ pub(crate) fn draw_selected_pile(game: &crate::game::Scene<'_>) {
 /// ground has been verified.
 pub(crate) fn draw_pending_founds(game: &crate::game::Scene<'_>, sprites: &Sprites) {
     let zoom = game.presentation.camera.zoom;
-    let faction = game.state.player(game.presentation.human).faction;
     for site in game
         .state
         .buildings()
@@ -104,7 +102,7 @@ pub(crate) fn draw_pending_founds(game: &crate::game::Scene<'_>, sprites: &Sprit
             Color::new(1.0, 0.85, 0.45, 0.3),
             DrawTextureParams {
                 dest_size: Some(vec2(w as f32 * zoom, h as f32 * zoom)),
-                source: Some(sprites.construction(site.kind, faction, 0, 0)),
+                source: Some(sprites.construction(site.kind, 0, 0)),
                 ..Default::default()
             },
         );
@@ -303,7 +301,6 @@ fn building_body_sources(
     sprites: &Sprites,
     kind: oxide_sim::BuildingKind,
     tier: u8,
-    faction: oxide_sim::Faction,
     body: super::motion::BuildingBodyFrame,
 ) -> (Rect, Rect) {
     use super::motion::BuildingBodyFrame;
@@ -311,23 +308,23 @@ fn building_body_sources(
         && kind == oxide_sim::BuildingKind::Array
         && let Some(rig) = sprites.array_rig()
     {
-        return rig.layers(tier, faction)[0];
+        return rig.layers(tier)[0];
     }
     match body {
         BuildingBodyFrame::Idle => (
-            sprites.building_tiered(kind, tier, faction),
+            sprites.building_tiered(kind, tier),
             sprites.building_tiered_accent(kind, tier),
         ),
         BuildingBodyFrame::Work(work) => (
-            sprites.building_working(kind, tier, faction, work + 1),
+            sprites.building_working(kind, tier, work + 1),
             sprites.building_working_accent(kind, tier, work + 1),
         ),
         BuildingBodyFrame::Construction { stage, phase } => (
-            sprites.construction(kind, faction, stage, phase),
+            sprites.construction(kind, stage, phase),
             sprites.construction_accent(kind, stage, phase),
         ),
         BuildingBodyFrame::Action(action) => (
-            sprites.building_action(kind, faction, action),
+            sprites.building_action(kind, action),
             sprites.building_action_accent(kind, action),
         ),
     }
@@ -378,7 +375,7 @@ pub(super) fn unit_contact(
     };
     let body = hit.body;
     let center = hit.center;
-    let source = super::unit_body_sources(sprites, body.kind, body.faction, hit.frame).0;
+    let source = super::unit_body_sources(sprites, body.kind, hit.frame).0;
     let size = super::unit_draw_scale(body.kind);
     sprites
         .sprite_contact(
@@ -554,7 +551,7 @@ pub(super) fn building_contact(
         },
     );
     let frame = super::motion::building_frame(hit.kind, animation);
-    let (source, _) = building_body_sources(sprites, hit.kind, hit.tier, hit.faction, frame.body);
+    let (source, _) = building_body_sources(sprites, hit.kind, hit.tier, frame.body);
     let (width, height) = hit.kind.size();
     let size = vec2(width as f32, height as f32);
     let aim = if (aim - from).length_squared() < f32::EPSILON {
@@ -574,7 +571,6 @@ fn draw_defense_mount(
     let draw = |x, y, tint, params| {
         sprites.draw_building(x, y, tint, params, game.presentation.camera.zoom);
     };
-    let faction = game.state.player(building.player).faction;
     let screen = game
         .presentation
         .camera
@@ -585,8 +581,8 @@ fn draw_defense_mount(
         height as f32 * game.presentation.camera.zoom,
     );
     let source = match action {
-        Some(frame) => sprites.defense_mount_action(building.kind, building.tier, faction, frame),
-        None => sprites.defense_mount(building.kind, building.tier, faction),
+        Some(frame) => sprites.defense_mount_action(building.kind, building.tier, frame),
+        None => sprites.defense_mount(building.kind, building.tier),
     };
     let Some(source) = source else {
         return;
@@ -679,7 +675,6 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                 game.presentation.fx_time() - stamp
             };
             let fade = 1.0 - super::staleness_fade(age);
-            let faction = game.state.player(ghost.owner).faction;
             let screen = game
                 .presentation
                 .camera
@@ -709,9 +704,9 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                 seat_identity_tint(game, ghost.owner).map(|c| Color::new(c.r, c.g, c.b, tint.a));
             let dest = vec2(w as f32 * zoom, h as f32 * zoom);
             let body = if ghost.built {
-                sprites.building(ghost.kind, faction)
+                sprites.building(ghost.kind)
             } else {
-                sprites.construction(ghost.kind, faction, 0, 0)
+                sprites.construction(ghost.kind, 0, 0)
             };
             let body_accent = if ghost.built {
                 sprites.building_accent(ghost.kind)
@@ -723,7 +718,7 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                 layers.push((body_accent, accent));
             }
             if ghost.built
-                && let Some(mount) = sprites.defense_mount(ghost.kind, 0, faction)
+                && let Some(mount) = sprites.defense_mount(ghost.kind, 0)
             {
                 // Defense bases ship bare; memories retain a static,
                 // north-facing silhouette without inventing live aim.
@@ -773,7 +768,6 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
         {
             continue;
         }
-        let faction = game.state.player(building.player).faction;
         let screen = game.presentation.camera.to_screen(anchor);
         let (w, h) = building.kind.size();
         let dest = vec2(w as f32 * zoom, h as f32 * zoom);
@@ -792,9 +786,9 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
         let array_layers = (building.built() && building.kind == oxide_sim::BuildingKind::Array)
             .then(|| sprites.array_rig())
             .flatten()
-            .map(|rig| rig.layers(building.tier, faction));
+            .map(|rig| rig.layers(building.tier));
         let (source, accent_source) =
-            building_body_sources(sprites, building.kind, building.tier, faction, frame.body);
+            building_body_sources(sprites, building.kind, building.tier, frame.body);
         draw(
             screen.x,
             screen.y,
@@ -956,7 +950,6 @@ fn bomber_release(game: &crate::game::Scene<'_>, index: usize) -> Option<crate::
                 )
                 .normalize_or_zero(),
                 kind,
-                slot: 0,
             })
         })
 }
@@ -968,36 +961,6 @@ fn condor_bomb_pose(launch: Vec2, impact: Vec2, heading: Vec2, t: f32) -> (Vec2,
     let lead = 0.65_f32.min(start.distance(impact) * 0.4);
     let c1 = start + heading * lead;
     let c2 = impact - (impact - start).normalize_or_zero() * lead;
-    let q = 1.0 - t;
-    let position = start
-        .lerp(c1, t)
-        .lerp(c1.lerp(c2, t), t)
-        .lerp(c1.lerp(c2, t).lerp(c2.lerp(impact, t), t), t);
-    let tangent = (c1 - start) * (q * q) + (c2 - c1) * (2.0 * q * t) + (impact - c2) * (t * t);
-    (position, tangent.normalize_or_zero())
-}
-
-fn moth_bomb_pose(
-    launch: Vec2,
-    impact: Vec2,
-    release: crate::game::LaunchPose,
-    t: f32,
-    total: f32,
-) -> (Vec2, Vec2) {
-    let heading = release.heading;
-    let side = vec2(-heading.y, heading.x);
-    let row = release.slot / 2;
-    let lateral = if release.slot.is_multiple_of(2) {
-        -0.234_375
-    } else {
-        0.234_375
-    };
-    let start = launch + side * lateral + heading * ((19.0 - row as f32 * 14.0) / 64.0);
-    let lead = (oxide_sim::UnitKind::Moth.stats().speed.to_num::<f32>() * total / 3.0)
-        .min(start.distance(impact) * 0.4);
-    let c1 = start + heading * lead;
-    let c2 = impact - (impact - start).normalize_or_zero() * lead;
-    let t = t.clamp(0.0, 1.0);
     let q = 1.0 - t;
     let position = start
         .lerp(c1, t)
@@ -1023,18 +986,7 @@ fn draw_bomber_bombs(game: &crate::game::Scene<'_>, sprites: &Sprites) {
         let t = (crate::audio_timeline::projectile_elapsed_ticks(now, shell.arrival, total)
             / total)
             .clamp(0.0, 1.0);
-        // A bomber releasing a stick drops it along its run.
-        let moth = release
-            .kind
-            .stats()
-            .weapons
-            .iter()
-            .any(|weapon| weapon.salvo > 1);
-        let (position, direction) = if moth {
-            moth_bomb_pose(launch, impact, release, t, total)
-        } else {
-            condor_bomb_pose(launch, impact, release.heading, t)
-        };
+        let (position, direction) = condor_bomb_pose(launch, impact, release.heading, t);
         if !game.presentation.all_seeing()
             && game.state.hostile(game.presentation.human, shell.player)
             && !game.my_vision().visible(TilePos::new(
@@ -1049,7 +1001,7 @@ fn draw_bomber_bombs(game: &crate::game::Scene<'_>, sprites: &Sprites) {
             .airframe
             .map_or(0.0, |airframe| airframe.lift);
         let center = flat - vec2(0.0, zoom * lift * (1.0 - t * t));
-        let scale = zoom * (1.0 - 0.15 * t) * if moth { 0.70 } else { 1.0 };
+        let scale = zoom * (1.0 - 0.15 * t);
         let normal = vec2(-direction.y, direction.x);
         let nose = center + direction * scale * 0.14;
         let back = center - direction * scale * 0.14;
@@ -1842,7 +1794,6 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                 blast_at,
                 rotation,
                 player,
-                faction,
                 source_witnessed,
                 impact_witnessed,
                 ..
@@ -1866,11 +1817,7 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                         Color::new(1.0, 1.0, 1.0, fade),
                         DrawTextureParams {
                             dest_size: Some(body_size),
-                            source: Some(sprites.unit_action(
-                                oxide_sim::UnitKind::Sapper,
-                                faction,
-                                2,
-                            )),
+                            source: Some(sprites.unit_action(oxide_sim::UnitKind::Sapper, 2)),
                             rotation,
                             ..Default::default()
                         },

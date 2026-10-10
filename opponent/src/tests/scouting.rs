@@ -73,7 +73,7 @@ fn stale_trio(units: Vec<UnitSpec>, scrap: u32) -> (Scenario, State) {
 
 #[test]
 fn each_stale_start_draws_its_own_scout() {
-    let kestrel = oxide_sim::stats::Role::Scout.unit_for(Faction::Ferrous);
+    let kestrel = UnitKind::Kestrel;
     let (scenario, state) = stale_trio(vec![unit(0, kestrel, 8, 9), unit(0, kestrel, 9, 9)], 0);
     let (commands, trace) = seat(&scenario, 0).act_traced(&state, &mut OwnEvents::default());
     let missions = scouts(&trace.unwrap().missions);
@@ -398,7 +398,7 @@ fn air_defenders_guard_the_building_a_flyer_raids() {
     });
     scenario.units.extend([
         unit(0, UnitKind::Sentinel, 11, 9),
-        unit(1, UnitKind::Darter, 17, 10),
+        unit(1, UnitKind::Buzzard, 17, 10),
     ]);
     let state = scenario.build().unwrap();
     let commands = seat(&scenario, 0).act(&state, &mut OwnEvents::default());

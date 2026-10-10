@@ -74,10 +74,6 @@ fn every_discovered_map_lands_on_setup_and_launches_as_authored() {
         assert_eq!(wizard.step, Step::Setup, "map {index} skipped setup");
         assert_eq!(draft.scenario_path, expected_path, "map {index} changed");
         assert_eq!(draft.seats.len(), expected_seats, "map {index} seat count");
-        assert!(
-            draft.seats.iter().all(|plan| plan.faction_choice == 0),
-            "map {index} did not preserve its authored factions"
-        );
         assert_eq!(draft.seat_choice, 0, "map {index} did not open on seat 0");
         assert_eq!(
             wizard.setup_sel,
@@ -107,13 +103,11 @@ fn a_stale_seat_never_carries_across_maps() {
     let mut draft = NewMatchDraft::default();
     draft.set_scenario(team.clone(), path.clone());
     draft.seat_choice = 5;
-    draft.seats[3].faction_choice = 2;
+    let stance = cycle_stance(draft.seats[3].stance, 1);
+    draft.seats[3].stance = stance;
     draft.set_scenario(team, path);
     assert_eq!(draft.seat_choice, 5, "same map: the chair survives Back");
-    assert_eq!(
-        draft.seats[3].faction_choice, 2,
-        "same map: choices survive"
-    );
+    assert_eq!(draft.seats[3].stance, stance, "same map: choices survive");
     draft.set_scenario(Scenario::skirmish(), None);
     assert_eq!(draft.seat_choice, 0, "new map: the chair resets");
     assert!(draft.seats.iter().all(|p| *p == SeatPlan::default()));
@@ -187,10 +181,9 @@ fn the_team_chip_cycles_through_ffa_and_every_team() {
     pick_first_map(&mut w, &mut draft); // a duel: FFA, Team 1, Team 2
     let order = seat_display_order(draft.scenario.as_deref().unwrap());
 
-    // Your own card skips the absent opponent chip: Right lands on
-    // faction, then team.
+    // Your own card skips the absent opponent chips: Right lands on
+    // team.
     drive(&mut w, &mut draft, Key::Home);
-    drive(&mut w, &mut draft, Key::Right);
     drive(&mut w, &mut draft, Key::Right);
     assert_eq!(w.setup_cell, Cell::Team, "the team chip is the last cell");
     drive(&mut w, &mut draft, Key::Enter);
@@ -215,6 +208,19 @@ fn the_team_chip_cycles_through_ffa_and_every_team() {
     drive(&mut w, &mut draft, Key::Down);
     drive(&mut w, &mut draft, Key::Enter);
     assert_eq!(draft.seats[order[1]].team_choice, 1);
+    // Left from team walks the two visible bot controls before the
+    // seat action. The hidden seeded identity is never exposed.
+    drive(&mut w, &mut draft, Key::Left);
+    assert_eq!(w.setup_cell, Cell::Stance);
+    drive(&mut w, &mut draft, Key::Left);
+    assert_eq!(w.setup_cell, Cell::Difficulty);
+    drive(&mut w, &mut draft, Key::Left);
+    assert_eq!(w.setup_cell, Cell::Seat);
+    drive(&mut w, &mut draft, Key::Enter);
+    assert_eq!(
+        draft.seat_choice, order[1],
+        "the next cell left of difficulty is the seat"
+    );
 }
 
 #[test]
@@ -222,8 +228,8 @@ fn setup_cells_wrap_past_the_dead_ones() {
     let mut draft = NewMatchDraft::default();
     let mut w = Wizard::open(&draft);
     pick_first_map(&mut w, &mut draft);
-    // Your own card has no difficulty or stance chip: the seat, faction
-    // and team cells are live.
+    // Your own card has no difficulty or stance chip: the seat and team
+    // cells are live.
     drive(&mut w, &mut draft, Key::Home);
     assert_eq!(w.setup_cell, Cell::Seat);
     drive(&mut w, &mut draft, Key::Left);
@@ -239,11 +245,7 @@ fn setup_cells_wrap_past_the_dead_ones() {
         "right from the team chip wraps to the seat"
     );
     drive(&mut w, &mut draft, Key::Right);
-    assert_eq!(
-        w.setup_cell,
-        Cell::Faction,
-        "the opponent chips are skipped"
-    );
+    assert_eq!(w.setup_cell, Cell::Team, "the opponent chips are skipped");
     // An AI card has every cell.
     drive(&mut w, &mut draft, Key::Down);
     drive(&mut w, &mut draft, Key::Left);
@@ -554,46 +556,6 @@ fn omitted_singleton_teams_keep_their_setup_card() {
 }
 
 #[test]
-fn the_faction_chip_cycles_on_every_card_including_yours() {
-    let (mut w, mut draft) = explicit_team_setup();
-    let order = seat_display_order(draft.scenario.as_deref().unwrap());
-    assert_eq!(order[0], draft.seat_choice, "the human opens in seat 0");
-
-    // Your own card: Right reaches the faction chip; Enter cycles
-    // Auto to Ferrous.
-    drive(&mut w, &mut draft, Key::Home);
-    drive(&mut w, &mut draft, Key::Right);
-    drive(&mut w, &mut draft, Key::Enter);
-    assert_eq!(
-        draft.seats[draft.seat_choice].faction_choice, 1,
-        "your own chip cycled to Ferrous"
-    );
-    assert_eq!(
-        w.step,
-        Step::Setup,
-        "cycling a chip never leaves the screen"
-    );
-
-    // The sticky column carries the faction cell onto an AI card.
-    drive(&mut w, &mut draft, Key::Down);
-    drive(&mut w, &mut draft, Key::Enter);
-    assert_eq!(draft.seats[order[1]].faction_choice, 1);
-    // Left from faction walks the two visible bot controls before the
-    // seat action. The hidden seeded identity is never exposed.
-    drive(&mut w, &mut draft, Key::Left);
-    assert_eq!(w.setup_cell, Cell::Stance);
-    drive(&mut w, &mut draft, Key::Left);
-    assert_eq!(w.setup_cell, Cell::Difficulty);
-    drive(&mut w, &mut draft, Key::Left);
-    assert_eq!(w.setup_cell, Cell::Seat);
-    drive(&mut w, &mut draft, Key::Enter);
-    assert_eq!(
-        draft.seat_choice, order[1],
-        "the next cell left of faction is the seat"
-    );
-}
-
-#[test]
 fn keyboard_cycles_difficulty_and_stance_directly_and_independently() {
     let (mut wizard, mut draft) = explicit_team_setup();
     let order = seat_display_order(draft.scenario.as_deref().unwrap());
@@ -608,10 +570,6 @@ fn keyboard_cycles_difficulty_and_stance_directly_and_independently() {
     assert_eq!(wizard.mode_name(), "match_setup");
     assert_eq!(draft.seats[opponent].difficulty, BotDifficulty::Veteran);
     assert_eq!(draft.seats[opponent].stance, original.stance);
-    assert_eq!(
-        draft.seats[opponent].faction_choice,
-        original.faction_choice
-    );
     assert_eq!(draft.seats[opponent].team_choice, original.team_choice);
 
     drive(&mut wizard, &mut draft, Key::Right);
@@ -619,10 +577,6 @@ fn keyboard_cycles_difficulty_and_stance_directly_and_independently() {
     drive(&mut wizard, &mut draft, Key::Enter);
     assert_eq!(draft.seats[opponent].difficulty, BotDifficulty::Veteran);
     assert_eq!(draft.seats[opponent].stance, BotStance::Aggressive);
-    assert_eq!(
-        draft.seats[opponent].faction_choice,
-        original.faction_choice
-    );
     assert_eq!(draft.seats[opponent].team_choice, original.team_choice);
 
     let (title, items, selected) = wizard.ui_surface(&draft);
@@ -772,7 +726,7 @@ fn the_difficulty_chip_cycles_through_remote_and_hosting_follows_it() {
     drive(&mut wizard, &mut draft, Key::Right);
     assert_eq!(
         wizard.setup_cell,
-        Cell::Faction,
+        Cell::Team,
         "the stance chip is inert on a remote chair"
     );
     let layout = setup_layout(
@@ -910,7 +864,7 @@ fn compact_setup_touch_only_edges_activate_every_editable_chip() {
         "/../scenarios/compass-grand.json"
     ));
 
-    for cell in [Cell::Difficulty, Cell::Stance, Cell::Faction, Cell::Team] {
+    for cell in [Cell::Difficulty, Cell::Stance, Cell::Team] {
         let scenario = Scenario::load(&path).expect("shipped eight-seat map");
         let mut draft = NewMatchDraft::default();
         draft.set_scenario(scenario, Some(path.clone()));
@@ -920,7 +874,6 @@ fn compact_setup_touch_only_edges_activate_every_editable_chip() {
         assert_ne!(seat, draft.seat_choice);
         let initial_difficulty = draft.seats[seat].difficulty;
         let initial_stance = draft.seats[seat].stance;
-        let initial_faction = draft.seats[seat].faction_choice;
         let initial_team = draft.seats[seat].team_choice;
         let mut wizard = Wizard::open(&draft);
         wizard.goto(Step::Setup, &draft);
@@ -974,10 +927,6 @@ fn compact_setup_touch_only_edges_activate_every_editable_chip() {
                 assert_eq!(draft.seats[seat].stance, initial_stance);
             }
             Cell::Stance => assert_eq!(draft.seats[seat].stance, cycle_stance(initial_stance, 1)),
-            Cell::Faction => assert_eq!(
-                draft.seats[seat].faction_choice,
-                (initial_faction + 1) % FACTION_CHIP_ITEMS.len()
-            ),
             Cell::Team => assert_eq!(
                 draft.seats[seat].team_choice,
                 (initial_team + 1) % (draft.seats.len() + 1)
@@ -1002,9 +951,10 @@ fn setup_mouse_activation_requires_release_on_the_armed_cell() {
     let row = 1;
     let seat = order[row];
     let seat_at = card(&layout, row).seat.center();
-    let faction_at = card(&layout, row).faction.center();
     let team_at = card(&layout, row).team.center();
+    let stance_at = card(&layout, row).stance.unwrap().center();
     let start_at = layout.start.unwrap().center();
+    let initial = draft.seats[seat];
     let mut mouse = Vec2::ZERO;
     let mut sounds = Vec::new();
 
@@ -1013,8 +963,31 @@ fn setup_mouse_activation_requires_release_on_the_armed_cell() {
             &[
                 RawEvent::MouseDown {
                     button: MouseButton::Left,
-                    x: faction_at.x,
-                    y: faction_at.y,
+                    x: team_at.x,
+                    y: team_at.y,
+                },
+                RawEvent::MouseUp {
+                    button: MouseButton::Left,
+                    x: stance_at.x,
+                    y: stance_at.y,
+                },
+            ],
+            &mut mouse,
+            &mut draft,
+            &mut sounds,
+        )
+        .expect("update");
+    assert_eq!(out, Out::Stay);
+    assert_eq!(draft.seats[seat], initial);
+    assert!(sounds.is_empty(), "a canceled click is silent");
+
+    let out = wizard
+        .update(
+            &[
+                RawEvent::MouseDown {
+                    button: MouseButton::Left,
+                    x: team_at.x,
+                    y: team_at.y,
                 },
                 RawEvent::MouseUp {
                     button: MouseButton::Left,
@@ -1028,32 +1001,13 @@ fn setup_mouse_activation_requires_release_on_the_armed_cell() {
         )
         .expect("update");
     assert_eq!(out, Out::Stay);
-    assert_eq!(draft.seats[seat].faction_choice, 0);
-    assert!(sounds.is_empty(), "a canceled click is silent");
-
-    let out = wizard
-        .update(
-            &[
-                RawEvent::MouseDown {
-                    button: MouseButton::Left,
-                    x: faction_at.x,
-                    y: faction_at.y,
-                },
-                RawEvent::MouseUp {
-                    button: MouseButton::Left,
-                    x: faction_at.x,
-                    y: faction_at.y,
-                },
-            ],
-            &mut mouse,
-            &mut draft,
-            &mut sounds,
-        )
-        .expect("update");
-    assert_eq!(out, Out::Stay);
-    assert_eq!(draft.seats[seat].faction_choice, 1);
+    assert_eq!(
+        draft.seats[seat].team_choice,
+        (initial.team_choice + 1) % (draft.seats.len() + 1)
+    );
+    assert_eq!(draft.seats[seat].stance, initial.stance);
     assert_eq!(wizard.setup_sel, row);
-    assert_eq!(wizard.setup_cell, Cell::Faction);
+    assert_eq!(wizard.setup_cell, Cell::Team);
 
     let out = wizard
         .update(
@@ -1114,9 +1068,10 @@ fn setup_touch_activation_belongs_to_its_first_finger_and_armed_cell() {
     );
     let row = 1;
     let seat = order[row];
-    let faction = card(&layout, row).faction;
-    let faction_at = faction.center();
-    let team_at = card(&layout, row).team.center();
+    let team = card(&layout, row).team;
+    let team_at = team.center();
+    let stance_at = card(&layout, row).stance.unwrap().center();
+    let initial = draft.seats[seat];
     let mut mouse = Vec2::ZERO;
     let mut sounds = Vec::new();
 
@@ -1124,8 +1079,8 @@ fn setup_touch_activation_belongs_to_its_first_finger_and_armed_cell() {
         .update(
             &[RawEvent::TouchDown {
                 id: 7,
-                x: faction_at.x,
-                y: faction_at.y,
+                x: team_at.x,
+                y: team_at.y,
             }],
             &mut mouse,
             &mut draft,
@@ -1138,11 +1093,11 @@ fn setup_touch_activation_belongs_to_its_first_finger_and_armed_cell() {
             7,
             SetupZone::Card {
                 row,
-                cell: Cell::Faction
+                cell: Cell::Team
             }
         ))
     );
-    assert_eq!(mouse, faction_at);
+    assert_eq!(mouse, team_at);
 
     // A second finger cannot steal or resolve the first finger's press.
     wizard
@@ -1150,13 +1105,13 @@ fn setup_touch_activation_belongs_to_its_first_finger_and_armed_cell() {
             &[
                 RawEvent::TouchDown {
                     id: 8,
-                    x: team_at.x,
-                    y: team_at.y,
+                    x: stance_at.x,
+                    y: stance_at.y,
                 },
                 RawEvent::TouchUp {
                     id: 8,
-                    x: team_at.x,
-                    y: team_at.y,
+                    x: stance_at.x,
+                    y: stance_at.y,
                 },
             ],
             &mut mouse,
@@ -1170,11 +1125,11 @@ fn setup_touch_activation_belongs_to_its_first_finger_and_armed_cell() {
             7,
             SetupZone::Card {
                 row,
-                cell: Cell::Faction
+                cell: Cell::Team
             }
         ))
     );
-    assert_eq!(mouse, faction_at);
+    assert_eq!(mouse, team_at);
 
     // The owner releases over another cell, so the gesture cancels.
     wizard
@@ -1182,13 +1137,13 @@ fn setup_touch_activation_belongs_to_its_first_finger_and_armed_cell() {
             &[
                 RawEvent::TouchMove {
                     id: 7,
-                    x: team_at.x,
-                    y: team_at.y,
+                    x: stance_at.x,
+                    y: stance_at.y,
                 },
                 RawEvent::TouchUp {
                     id: 7,
-                    x: team_at.x,
-                    y: team_at.y,
+                    x: stance_at.x,
+                    y: stance_at.y,
                 },
             ],
             &mut mouse,
@@ -1197,18 +1152,18 @@ fn setup_touch_activation_belongs_to_its_first_finger_and_armed_cell() {
         )
         .expect("update");
     assert_eq!(wizard.setup_press.armed_touch(), None);
-    assert_eq!(draft.seats[seat].faction_choice, 0);
+    assert_eq!(draft.seats[seat], initial);
     assert!(sounds.is_empty());
 
     // A fresh gesture may move within the armed cell and still commit.
-    let inside = vec2(faction.x + 2.0, faction.y + 2.0);
+    let inside = vec2(team.x + 2.0, team.y + 2.0);
     let out = wizard
         .update(
             &[
                 RawEvent::TouchDown {
                     id: 9,
-                    x: faction_at.x,
-                    y: faction_at.y,
+                    x: team_at.x,
+                    y: team_at.y,
                 },
                 RawEvent::TouchMove {
                     id: 9,
@@ -1227,9 +1182,13 @@ fn setup_touch_activation_belongs_to_its_first_finger_and_armed_cell() {
         )
         .expect("update");
     assert_eq!(out, Out::Stay);
-    assert_eq!(draft.seats[seat].faction_choice, 1);
+    assert_eq!(
+        draft.seats[seat].team_choice,
+        (initial.team_choice + 1) % (draft.seats.len() + 1)
+    );
+    assert_eq!(draft.seats[seat].stance, initial.stance);
     assert_eq!(wizard.setup_sel, row);
-    assert_eq!(wizard.setup_cell, Cell::Faction);
+    assert_eq!(wizard.setup_cell, Cell::Team);
     assert_eq!(sounds, vec![(SoundKind::Click, None)]);
 }
 
@@ -1289,10 +1248,8 @@ fn the_setup_layout_fits_the_smallest_supported_window() {
                         "semantic setup targets never overlap"
                     );
                 }
-                for chip in [rects.faction, rects.team] {
-                    assert!(chip.h <= card.h + 0.01);
-                    assert!(chip.x >= card.x);
-                }
+                assert!(rects.team.h <= card.h + 0.01);
+                assert!(rects.team.x >= card.x);
             }
         }
         seen.sort_unstable();
@@ -1359,52 +1316,20 @@ fn seat_anchors_reads_the_authored_digits() {
 }
 
 #[test]
-fn the_setup_card_and_its_protocol_row_show_the_retinted_name() {
+fn the_setup_protocol_rows_name_each_seat_as_authored() {
     let mut draft = NewMatchDraft::default();
     draft.set_scenario(Scenario::skirmish(), None);
-    let sc = draft.scenario.as_deref().unwrap().clone();
 
-    // Auto keeps the authored names, both seats.
-    assert_eq!(effective_name(&sc, &draft, 0), "Ferrous");
-    assert_eq!(effective_name(&sc, &draft, 1), "Cupric");
-
-    // Overrides retint the label with the disc, both directions.
-    draft.seats[0].faction_choice = 2; // Cupric
-    draft.seats[1].faction_choice = 1; // Ferrous
-    assert_eq!(effective_name(&sc, &draft, 0), "Cupric");
-    assert_eq!(effective_name(&sc, &draft, 1), "Ferrous");
-
-    // QueryUi speaks the same name: the card and the automation
-    // surface can't disagree.
+    // QueryUi speaks the card's name and chips: the card and the
+    // automation surface can't disagree.
     let mut w = Wizard::open(&draft);
     w.step = Step::Setup;
     let (_, items, _) = w.ui_surface(&draft);
-    assert_eq!(items[0], "1. Cupric (you) | Cupric | FFA");
+    assert_eq!(items[0], "1. North West (you) | FFA");
     assert_eq!(
-        items[1], "2. Ferrous | Difficulty Standard | Stance Balanced | Ferrous | FFA",
+        items[1], "2. South East | Difficulty Standard | Stance Balanced | FFA",
         "the protocol row matches the visible opponent card"
     );
-}
-
-#[test]
-fn the_previewed_name_is_the_launched_name() {
-    // The preview reads the same rule launch applies
-    // (`Scenario::retint_seat`); a shell-side reimplementation of the
-    // rename would diverge on a name without a faction word.
-    let mut draft = NewMatchDraft::default();
-    draft.set_scenario(Scenario::skirmish(), None);
-    draft.seats[0].faction_choice = 2; // Cupric
-    draft.seats[1].faction_choice = 1; // Ferrous
-    let sc = draft.scenario.as_deref().unwrap().clone();
-    for seat in 0..sc.players.len() {
-        let previewed = effective_name(&sc, &draft, seat);
-        let mut launched = sc.clone();
-        launched.retint_seat(seat, effective_faction(&sc, &draft, seat));
-        assert_eq!(
-            previewed, launched.players[seat].name,
-            "seat {seat}: the card promised a name launch didn't deliver"
-        );
-    }
 }
 
 fn grid_entries(n: usize) -> Vec<ScenarioEntry> {

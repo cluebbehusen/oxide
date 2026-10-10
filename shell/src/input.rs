@@ -1015,8 +1015,7 @@ pub fn poll_events(text_entry: bool) -> Vec<RawEvent> {
     }
     // Modifier edges land before ordinary key edges: a chord pressed
     // whole within one frame (Ctrl and F5 together) must resolve as
-    // Ctrl+F5, not as F5 followed by a late Ctrl. Each logical modifier
-    // maps two physical keys; releasing either of a held pair releases it.
+    // Ctrl+F5, not as F5 followed by a late Ctrl.
     for (key, a, b) in [
         (Key::Shift, mq::KeyCode::LeftShift, mq::KeyCode::RightShift),
         (
@@ -1025,12 +1024,7 @@ pub fn poll_events(text_entry: bool) -> Vec<RawEvent> {
             mq::KeyCode::RightControl,
         ),
     ] {
-        if mq::is_key_pressed(a) || mq::is_key_pressed(b) {
-            events.push(RawEvent::KeyDown { key });
-        }
-        if mq::is_key_released(a) || mq::is_key_released(b) {
-            events.push(RawEvent::KeyUp { key });
-        }
+        modifier_edges(key, KeyPoll::of(a), KeyPoll::of(b), &mut events);
     }
     for (key, code) in KEY_MAP {
         if mq::is_key_pressed(code) {
@@ -1059,6 +1053,42 @@ pub fn poll_events(text_entry: bool) -> Vec<RawEvent> {
         }
     }
     events
+}
+
+/// One physical key as this frame's poll saw it.
+#[derive(Debug, Clone, Copy, Default)]
+struct KeyPoll {
+    pressed: bool,
+    released: bool,
+    down: bool,
+}
+
+impl KeyPoll {
+    fn of(code: mq::KeyCode) -> Self {
+        Self {
+            pressed: mq::is_key_pressed(code),
+            released: mq::is_key_released(code),
+            down: mq::is_key_down(code),
+        }
+    }
+
+    /// Whether the key was held as the frame began: not if it was pressed
+    /// this frame, otherwise if it is still down or just came up.
+    fn held_before(self) -> bool {
+        !self.pressed && (self.down || self.released)
+    }
+}
+
+/// The edges of a logical modifier shared by two physical keys. It goes
+/// down with the first key of the pair and up only once neither is held,
+/// so releasing one of a held pair keeps the modifier.
+fn modifier_edges(key: Key, a: KeyPoll, b: KeyPoll, events: &mut Vec<RawEvent>) {
+    if (a.pressed || b.pressed) && !a.held_before() && !b.held_before() {
+        events.push(RawEvent::KeyDown { key });
+    }
+    if (a.released || b.released) && !a.down && !b.down {
+        events.push(RawEvent::KeyUp { key });
+    }
 }
 
 mod dispatch;

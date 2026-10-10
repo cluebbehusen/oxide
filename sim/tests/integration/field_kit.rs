@@ -93,7 +93,7 @@ fn hidden_charge_reports_damage_to_its_victim_for_lethal_and_nonlethal_blasts() 
 
 #[test]
 fn a_charge_is_invisible_until_scouted() {
-    // A Ferrous Warden stands right next to a Cupric charge: full tile
+    // A Warden stands right next to an enemy charge: full tile
     // sight, zero knowledge.
     let mut state = arena(
         open_map(),

@@ -55,9 +55,7 @@ A minimal unit-only sandbox:
     "....................",
     "...................."
   ],
-  "players": [
-    { "name": "Local", "faction": "ferrous", "scrap": 0, "bot": false }
-  ],
+  "players": [{ "name": "Local", "scrap": 0, "bot": false }],
   "units": [{ "player": 0, "kind": "scuttler", "x": 5, "y": 4 }]
 }
 ```

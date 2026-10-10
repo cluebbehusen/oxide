@@ -8,8 +8,8 @@ fn building_game() -> Game {
     let scenario = oxide_sim::Scenario::from_json(
         &serde_json::json!({
             "name": "Double-click selection", "players": [
-                {"name": "You", "faction": "ferrous", "scrap": 1000, "bot": false},
-                {"name": "Opponent", "faction": "cupric", "scrap": 0, "bot": true}
+                {"name": "You", "scrap": 1000, "bot": false},
+                {"name": "Opponent", "scrap": 0, "bot": true}
             ],
             "map": map,
             "units": [],

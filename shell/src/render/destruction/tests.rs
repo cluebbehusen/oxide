@@ -3,11 +3,7 @@ use crate::game::Game;
 
 #[test]
 fn scheduled_airframe_contacts_the_damage_point_with_its_full_level_pose() {
-    for kind in [
-        oxide_sim::UnitKind::Condor,
-        oxide_sim::UnitKind::Moth,
-        oxide_sim::UnitKind::Skyhook,
-    ] {
+    for kind in [oxide_sim::UnitKind::Condor, oxide_sim::UnitKind::Skyhook] {
         let crash = oxide_sim::state::AircraftCrash {
             unit: oxide_sim::UnitId(0),
             player: oxide_sim::PlayerId(0),
@@ -21,7 +17,6 @@ fn scheduled_airframe_contacts_the_damage_point_with_its_full_level_pose() {
         let body = UnitBody {
             kind,
             player: crash.player,
-            faction: oxide_sim::Faction::Ferrous,
             rotation: 1.2,
             velocity: Vec2::ZERO,
         };
@@ -101,7 +96,6 @@ fn aircraft_contact_preserves_heading_and_stops_the_coast() {
     let body = UnitBody {
         kind: oxide_sim::UnitKind::Condor,
         player: oxide_sim::PlayerId(0),
-        faction: oxide_sim::Faction::Ferrous,
         rotation: 2.1,
         velocity: vec2(-2.0, 1.0),
     };
@@ -122,7 +116,6 @@ fn a_hovering_airframe_drops_level_to_its_existing_shadow() {
     let body = UnitBody {
         kind: oxide_sim::UnitKind::Skyhook,
         player: oxide_sim::PlayerId(0),
-        faction: oxide_sim::Faction::Ferrous,
         rotation: 0.0,
         velocity: Vec2::ZERO,
     };
@@ -136,17 +129,13 @@ fn a_hovering_airframe_drops_level_to_its_existing_shadow() {
     assert_eq!(contact.body_at, contact.at);
     assert!(middle.body_at.y > start.body_at.y && middle.body_at.y < contact.body_at.y);
     assert_eq!(middle.rotation, start.rotation);
-    for kind in [
-        oxide_sim::UnitKind::Condor,
-        oxide_sim::UnitKind::Moth,
-        oxide_sim::UnitKind::Skyhook,
-    ] {
+    for kind in [oxide_sim::UnitKind::Condor, oxide_sim::UnitKind::Skyhook] {
         assert!(large_airframe(kind));
     }
     for kind in [
         oxide_sim::UnitKind::Kestrel,
         oxide_sim::UnitKind::Buzzard,
-        oxide_sim::UnitKind::Wisp,
+        oxide_sim::UnitKind::Talon,
     ] {
         assert!(!large_airframe(kind));
     }
@@ -157,7 +146,6 @@ fn small_airframe_breaks_above_ground_then_its_fragments_settle() {
     let body = UnitBody {
         kind: oxide_sim::UnitKind::Kestrel,
         player: oxide_sim::PlayerId(0),
-        faction: oxide_sim::Faction::Ferrous,
         rotation: 0.0,
         velocity: vec2(1.0, 0.0),
     };

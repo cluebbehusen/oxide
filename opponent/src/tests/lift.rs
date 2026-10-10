@@ -712,14 +712,14 @@ fn emptied_carriers_short_of_orders_fly_home_before_the_lift_fights() {
         };
         (spec.x, spec.y) = (x, y);
     }
-    landed.units.push(unit(1, UnitKind::Sylph, 20, 8));
+    landed.units.push(unit(1, UnitKind::Shrike, 20, 8));
     for (x, y) in [(2, 14), (2, 15)] {
         landed.map[y].replace_range(x..=x, "s");
     }
     landed.units.push(harvester(0, 4, 14));
     landed.units.push(harvester(0, 4, 15));
     let mut state = landed.build().unwrap();
-    let interceptor = [(at(&state, 20, 8), "sylph", TilePos::new(20, 8))];
+    let interceptor = [(at(&state, 20, 8), "shrike", TilePos::new(20, 8))];
     let restored = Opponent::restore(&checkpoint, &landed, &state, map(&landed)).unwrap();
     let mut opponent = remembering(&restored, &landed, &state, &interceptor);
     let carriers: Vec<UnitId> = skyhooks(&state, 0).iter().map(|unit| unit.id).collect();

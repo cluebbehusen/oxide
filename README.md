@@ -1,9 +1,8 @@
 # Oxide
 
 Oxide is a 2D real-time strategy game about autonomous machines salvaging an
-exhausted mining world. Ferrous, stained rust orange, and Cupric, crusted in
-teal patina, compete for the last useful scrap at the bottom of abandoned
-open-pit quarries.
+exhausted mining world. Rival machine crews compete for the last useful scrap at
+the bottom of abandoned open-pit quarries.
 
 It is also an experiment in AI-assisted game development. The game is built
 around a pure deterministic simulation, a thin graphical shell, and a driver

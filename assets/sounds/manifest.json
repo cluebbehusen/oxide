@@ -76,35 +76,11 @@
     },
     {
       "category": "generic-weapon",
-      "filename": "attack_stinger.wav",
-      "min_gap": 0.1,
-      "mixer_volume": 0.25,
-      "name": "attack_stinger",
-      "paired_animation": "24-stinger-inspection-trike-animated.gif"
-    },
-    {
-      "category": "generic-weapon",
       "filename": "attack_talon.wav",
       "min_gap": 0.1,
       "mixer_volume": 0.28,
       "name": "attack_talon",
       "paired_animation": "42-talon-compact-interceptor-animated.gif"
-    },
-    {
-      "category": "generic-weapon",
-      "filename": "attack_wisp.wav",
-      "min_gap": 0.1,
-      "mixer_volume": 0.23,
-      "name": "attack_wisp",
-      "paired_animation": "44-wisp-quadcopter-animated.gif"
-    },
-    {
-      "category": "generic-weapon",
-      "filename": "attack_darter.wav",
-      "min_gap": 0.1,
-      "mixer_volume": 0.25,
-      "name": "attack_darter",
-      "paired_animation": "40-darter-shear-wing-animated.gif"
     },
     {
       "category": "generic-weapon",

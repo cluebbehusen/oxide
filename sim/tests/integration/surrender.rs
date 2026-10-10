@@ -9,17 +9,14 @@ use oxide_sim::scenario::ScenarioMode;
 use chassis::replay::Replay;
 use oxide_sim::command::RejectReason;
 use oxide_sim::scenario::PlayerSpec;
-use oxide_sim::{
-    Command, Event, Faction, GameResult, PlayerCommand, PlayerId, SIM_VERSION, Scenario,
-};
+use oxide_sim::{Command, Event, GameResult, PlayerCommand, PlayerId, SIM_VERSION, Scenario};
 
 /// A 2v2 of bare Foundries: west team (seats 0, 1) against east
 /// (seats 2, 3). No armies — concession is the only way anyone here
 /// ever loses.
 fn arena4() -> Scenario {
-    let seat = |name: &str, faction, team| PlayerSpec {
+    let seat = |name: &str, team| PlayerSpec {
         name: name.into(),
-        faction,
         team: Some(team),
         scrap: 100,
         bot: false,
@@ -39,10 +36,10 @@ fn arena4() -> Scenario {
             "####################".into(),
         ],
         players: vec![
-            seat("West Ferrous", Faction::Ferrous, 0),
-            seat("West Cupric", Faction::Cupric, 0),
-            seat("East Ferrous", Faction::Ferrous, 1),
-            seat("East Cupric", Faction::Cupric, 1),
+            seat("North West", 0),
+            seat("South West", 0),
+            seat("South East", 1),
+            seat("North East", 1),
         ],
         units: Vec::new(),
         buildings: Vec::new(),

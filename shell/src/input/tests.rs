@@ -231,8 +231,8 @@ fn skyhook_interaction_game() -> Game {
         "{
         \"name\": \"skyhook interaction\",
         \"players\": [
-            {\"name\": \"F\", \"faction\": \"ferrous\", \"scrap\": 100, \"bot\": false},
-            {\"name\": \"C\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": true}
+            {\"name\": \"F\", \"scrap\": 100, \"bot\": false},
+            {\"name\": \"C\", \"scrap\": 100, \"bot\": true}
         ],
         \"map\": [
             \"####################\",
@@ -671,8 +671,8 @@ fn extractor_input_game() -> Game {
         "{
         \"name\": \"frame input\",
         \"players\": [
-            {\"name\": \"F\", \"faction\": \"ferrous\", \"scrap\": 500, \"bot\": false},
-            {\"name\": \"C\", \"faction\": \"cupric\", \"scrap\": 500, \"bot\": true,
+            {\"name\": \"F\", \"scrap\": 500, \"bot\": false},
+            {\"name\": \"C\", \"scrap\": 500, \"bot\": true,
              \"bot_config\": {}}
         ],
         \"map\": [
@@ -1080,8 +1080,8 @@ fn edge_scrap_game() -> Game {
         "{
         \"name\": \"edge scrap\",
         \"players\": [
-            {\"name\": \"F\", \"faction\": \"ferrous\", \"scrap\": 500, \"bot\": false},
-            {\"name\": \"C\", \"faction\": \"cupric\", \"scrap\": 500, \"bot\": true,
+            {\"name\": \"F\", \"scrap\": 500, \"bot\": false},
+            {\"name\": \"C\", \"scrap\": 500, \"bot\": true,
              \"bot_config\": {}}
         ],
         \"map\": [
@@ -1530,20 +1530,13 @@ fn the_build_palette_offers_every_building_kind() {
 }
 
 #[test]
-fn every_faction_roster_fits_the_production_hotkeys() {
+fn every_producer_roster_fits_the_production_hotkeys() {
     for producer in oxide_sim::BuildingKind::ALL {
-        for faction in [oxide_sim::Faction::Ferrous, oxide_sim::Faction::Cupric] {
-            let roster = producer
-                .base_stats()
-                .produces
-                .iter()
-                .filter(|kind| kind.faction().is_none_or(|f| f == faction))
-                .count();
-            assert!(
-                roster <= usize::from(crate::action::TRAIN_SLOTS),
-                "{producer:?} trains {roster} {faction:?} kinds"
-            );
-        }
+        let roster = producer.base_stats().produces.len();
+        assert!(
+            roster <= usize::from(crate::action::TRAIN_SLOTS),
+            "{producer:?} trains {roster} kinds"
+        );
     }
 }
 
@@ -1632,8 +1625,8 @@ fn a_shift_click_on_the_wounded_wall_queues_the_weld_not_the_rat() {
         "{
         \"name\": \"gnawed wall\",
         \"players\": [
-            {\"name\": \"F\", \"faction\": \"ferrous\", \"scrap\": 100, \"bot\": false},
-            {\"name\": \"C\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": true}
+            {\"name\": \"F\", \"scrap\": 100, \"bot\": false},
+            {\"name\": \"C\", \"scrap\": 100, \"bot\": true}
         ],
         \"map\": [
             \"####################\",
@@ -2213,10 +2206,10 @@ fn team_game() -> Game {
         "{
         \"name\": \"team stage\",
         \"players\": [
-            {\"name\": \"me\", \"faction\": \"ferrous\", \"scrap\": 100, \"bot\": false, \"team\": 1},
-            {\"name\": \"pal\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": true, \"team\": 1,
+            {\"name\": \"me\", \"scrap\": 100, \"bot\": false, \"team\": 1},
+            {\"name\": \"pal\", \"scrap\": 100, \"bot\": true, \"team\": 1,
              \"bot_config\": {}},
-            {\"name\": \"foe\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": true,
+            {\"name\": \"foe\", \"scrap\": 100, \"bot\": true,
              \"bot_config\": {}}
         ],
         \"map\": [
@@ -2292,11 +2285,6 @@ fn an_ally_selection_reads_its_orders_but_takes_none() {
             .iter()
             .all(|chip| chip.action == crate::panel::CardAction::None),
         "an ally's chips remove nothing"
-    );
-    assert_eq!(
-        panel.faction,
-        oxide_sim::Faction::Cupric,
-        "its colors, not mine"
     );
 
     // Every command path refuses: right-click stages nothing…
@@ -3813,9 +3801,8 @@ fn an_allied_site_under_fog_refuses_selection() {
     // BUILT foundry stays selectable: it sees its own ground, and
     // team sight is shared.
     use oxide_sim::scenario::{BotConfig, PlayerSpec, UnitSpec};
-    let seat = |name: &str, faction, team| PlayerSpec {
+    let seat = |name: &str, team| PlayerSpec {
         name: name.into(),
-        faction,
         team: Some(team),
         scrap: 300,
         bot: false,
@@ -3834,11 +3821,7 @@ fn an_allied_site_under_fog_refuses_selection() {
             "#..............................#".into(),
             "################################".into(),
         ],
-        players: vec![
-            seat("West", oxide_sim::Faction::Ferrous, 0),
-            seat("East Ally", oxide_sim::Faction::Cupric, 0),
-            seat("Foe", oxide_sim::Faction::Ferrous, 1),
-        ],
+        players: vec![seat("West", 0), seat("East Ally", 0), seat("Foe", 1)],
         units: vec![UnitSpec {
             player: 1,
             kind: UnitKind::Harvester,
@@ -3973,8 +3956,8 @@ fn a_foreign_box_never_reaches_through_fog() {
         "{
         \"name\": \"fog box\",
         \"players\": [
-            {\"name\": \"me\", \"faction\": \"ferrous\", \"scrap\": 100, \"bot\": false},
-            {\"name\": \"foe\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": true}
+            {\"name\": \"me\", \"scrap\": 100, \"bot\": false},
+            {\"name\": \"foe\", \"scrap\": 100, \"bot\": true}
         ],
         \"map\": [
             \"##############################\",
@@ -4033,8 +4016,8 @@ fn a_selected_hostile_drops_when_fog_recovers_it() {
         "{
         \"name\": \"beacon\",
         \"players\": [
-            {\"name\": \"me\", \"faction\": \"ferrous\", \"scrap\": 100, \"bot\": false},
-            {\"name\": \"foe\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": true}
+            {\"name\": \"me\", \"scrap\": 100, \"bot\": false},
+            {\"name\": \"foe\", \"scrap\": 100, \"bot\": true}
         ],
         \"map\": [
             \"##############################\",
@@ -4142,6 +4125,37 @@ fn only_the_mouse_edge_pans() {
     input.last_pointer = Pointer::Mouse;
     update_held(&mut game, &input, 0.5);
     assert_ne!(game.presentation.camera.center, before);
+fn a_modifier_stays_held_until_both_of_its_keys_come_up() {
+    let poll = |pressed, released, down| KeyPoll {
+        pressed,
+        released,
+        down,
+    };
+    let (idle, held) = (KeyPoll::default(), poll(false, false, true));
+    let (lands, lifts) = (poll(true, false, true), poll(false, true, false));
+    let edges = |a: KeyPoll, b: KeyPoll| {
+        let mut events = Vec::new();
+        modifier_edges(Key::Shift, a, b, &mut events);
+        events
+    };
+    let down = RawEvent::KeyDown { key: Key::Shift };
+    let up = RawEvent::KeyUp { key: Key::Shift };
+    assert_eq!(edges(lands, idle), [down], "the first key presses it");
+    assert_eq!(edges(held, lands), [], "the second key adds nothing");
+    assert_eq!(edges(lifts, held), [], "one of a held pair keeps it");
+    assert_eq!(edges(idle, lifts), [up], "the last release lets go");
+    assert_eq!(edges(lands, lands), [down], "a pair lands as one press");
+    assert_eq!(edges(lifts, lifts), [up], "and lifts as one release");
+    assert_eq!(
+        edges(poll(true, true, false), idle),
+        [down, up],
+        "a tap inside one frame keeps both edges"
+    );
+    assert_eq!(
+        edges(lifts, lands),
+        [],
+        "handing over from one key to the other in a frame keeps it held"
+    );
 }
 
 #[test]
@@ -4718,8 +4732,8 @@ fn a_placement_drag_stamps_a_row_of_queued_builds() {
         &serde_json::json!({
             "name": "Drag Range",
             "players": [
-                {"name": "Mason", "faction": "ferrous", "scrap": 1000, "bot": false},
-                {"name": "Idle", "faction": "cupric", "scrap": 0, "bot": true}
+                {"name": "Mason", "scrap": 1000, "bot": false},
+                {"name": "Idle", "scrap": 0, "bot": true}
             ],
             "map": [
                 "################",
@@ -5131,8 +5145,8 @@ fn drag_arena(scrap: u32) -> Game {
         &serde_json::json!({
             "name": "Drag Bank",
             "players": [
-                {"name": "Mason", "faction": "ferrous", "scrap": scrap, "bot": false},
-                {"name": "Idle", "faction": "cupric", "scrap": 0, "bot": true}
+                {"name": "Mason", "scrap": scrap, "bot": false},
+                {"name": "Idle", "scrap": 0, "bot": true}
             ],
             "map": [
                 "######################",
@@ -5521,8 +5535,8 @@ fn fog_corridor_game(kind: &str, units: impl IntoIterator<Item = (i32, i32)>) ->
         &serde_json::json!({
             "name": "Corridor",
             "players": [
-                {"name": "Walker", "faction": "ferrous", "scrap": 0, "bot": false},
-                {"name": "Idle", "faction": "cupric", "scrap": 0, "bot": true}
+                {"name": "Walker", "scrap": 0, "bot": false},
+                {"name": "Idle", "scrap": 0, "bot": true}
             ],
             "map": [
                 "################################################",
@@ -5656,8 +5670,8 @@ fn an_attack_on_an_even_footprint_draws_at_its_center() {
         &serde_json::json!({
             "name": "Even footprint",
             "players": [
-                {"name": "Raider", "faction": "ferrous", "scrap": 0, "bot": false},
-                {"name": "Target", "faction": "cupric", "scrap": 0, "bot": true}
+                {"name": "Raider", "scrap": 0, "bot": false},
+                {"name": "Target", "scrap": 0, "bot": true}
             ],
             "map": [
                 "########################",
@@ -5721,8 +5735,8 @@ fn work_on_an_even_footprint_draws_at_its_center() {
         &serde_json::json!({
             "name": "Even footprint work",
             "players": [
-                {"name": "Builder", "faction": "ferrous", "scrap": 1000, "bot": false},
-                {"name": "Rival", "faction": "cupric", "scrap": 0, "bot": true}
+                {"name": "Builder", "scrap": 1000, "bot": false},
+                {"name": "Rival", "scrap": 0, "bot": true}
             ],
             "map": [
                 "########################",
@@ -5832,8 +5846,8 @@ fn the_docks_subject_always_draws_its_trail() {
         &serde_json::json!({
             "name": "Crowd",
             "players": [
-                {"name": "Mass", "faction": "ferrous", "scrap": 0, "bot": false},
-                {"name": "Idle", "faction": "cupric", "scrap": 0, "bot": true}
+                {"name": "Mass", "scrap": 0, "bot": false},
+                {"name": "Idle", "scrap": 0, "bot": true}
             ],
             "map": [
                 "######################",
@@ -7157,7 +7171,7 @@ fn knowledge_attack_game() -> Game {
         },
         UnitSpec {
             player: 1,
-            kind: UnitKind::Gnat,
+            kind: UnitKind::Kestrel,
             x: 14,
             y: 8,
         },
@@ -7336,7 +7350,7 @@ fn a_hidden_mine_does_not_change_placement_selection_or_resume_input() {
     let anchor = TilePos::new(12, 4);
     for mined in [false, true] {
         let scenario=oxide_sim::Scenario::from_json(&serde_json::json!({
-            "name":"Mine placement","players":[{"name":"Builder","faction":"ferrous","scrap":800,"bot":false},{"name":"Mines","faction":"cupric","scrap":0,"bot":true}],
+            "name":"Mine placement","players":[{"name":"Builder","scrap":800,"bot":false},{"name":"Mines","scrap":0,"bot":true}],
             "map":["########################","#1.....................#","#......................#","#......................#","#......................#","#......................#","#......................#","#...................2..#","#......................#","########################"],
             "units":[{"player":0,"kind":"harvester","x":4,"y":4},{"player":0,"kind":"harvester","x":10,"y":2}],
             "buildings":if mined {vec![serde_json::json!({"player":1,"kind":"scuttle_charge","x":12,"y":4})]}else{vec![]}
@@ -7390,7 +7404,7 @@ fn a_hidden_mine_does_not_change_placement_selection_or_resume_input() {
 fn selecting_an_unfinished_mine_does_not_reveal_its_condition_after_concealment() {
     use oxide_sim::BuildingKind;
     let scenario=oxide_sim::Scenario::from_json(&serde_json::json!({
-        "name":"Mine visibility","players":[{"name":"Observer","faction":"ferrous","scrap":800,"bot":false},{"name":"Mines","faction":"cupric","scrap":800,"bot":true}],
+        "name":"Mine visibility","players":[{"name":"Observer","scrap":800,"bot":false},{"name":"Mines","scrap":800,"bot":true}],
         "map":["########################","#1.....................#","#......................#","#......................#","#......................#","#......................#","#......................#","#...................2..#","#......................#","########################"],
         "units":[{"player":0,"kind":"harvester","x":10,"y":2},{"player":1,"kind":"harvester","x":13,"y":4}],
         "buildings":[{"player":1,"kind":"fabricator","x":17,"y":2}]

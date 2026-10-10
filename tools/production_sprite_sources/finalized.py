@@ -32,14 +32,14 @@ from tools.production_sprite_sources import (
     heavy_structures,
     installed_defenses_final,
     mechanical_final,
-    moth_warden_final,
-    shrike_sylph_final,
+    shrike_final,
     skyhook_sapper_crucible_final,
     specialists_final,
     structures_base,
     tender_condor_final,
     tier_one_combat_final,
     turret_family,
+    warden_final,
 )
 
 Registry = dict[str, Image.Image]
@@ -52,11 +52,8 @@ UNIT_MOVEMENT: dict[str, tuple[str, ...]] = {
     "lancer": ("_move1", "_move2"),
     "bombard": ("_move1", "_move2"),
     "flakhound": ("_tread1", "_tread2"),
-    "stinger": ("_move1", "_move2"),
     "buzzard": ("_move1", "_move2"),
-    "darter": ("_move1", "_move2"),
     "talon": ("_move1", "_move2"),
-    "wisp": ("_move1", "_move2"),
 }
 
 UNIT_ACTIONS: dict[str, tuple[str, ...]] = {
@@ -65,11 +62,8 @@ UNIT_ACTIONS: dict[str, tuple[str, ...]] = {
     "lancer": tuple(f"_action{i}" for i in range(1, 7)),
     "bombard": tuple(f"_action{i}" for i in range(1, 7)),
     "flakhound": tuple(f"_action{i}" for i in range(1, 10)),
-    "stinger": tuple(f"_action{i}" for i in range(1, 5)),
     "buzzard": tuple(f"_action{i}" for i in range(1, 5)),
-    "darter": tuple(f"_action{i}" for i in range(1, 5)),
     "talon": tuple(f"_action{i}" for i in range(1, 5)),
-    "wisp": tuple(f"_action{i}" for i in range(1, 5)),
 }
 
 HARVESTER_ACTIONS = ("", "_scoop1", "_scoop2", "_scoop1", "")
@@ -105,29 +99,32 @@ ACTION_COUNTS = {
     **{stem: len(frames) for stem, frames in DEFENSE_BASE_ACTIONS.items()},
 }
 
-WISP_CONTINUOUS_IDLE_SUFFIXES = ("_move1", "_move2")
 HARVESTER_CARGO_LEVELS = 5
 
 
 @contextmanager
-def _faction_palette(faction: str) -> Iterator[None]:
-    """Render role-colored sources in the requested allegiance palette."""
-    if faction not in gen.FACTIONS:
-        raise ValueError(f"unknown faction: {faction}")
-    saved = {name: palette.copy() for name, palette in gen.FACTIONS.items()}
-    chosen = saved[faction]
+def _variant_palette(variant: str) -> Iterator[None]:
+    """Render role-colored sources in the requested palette variant.
+
+    Every palette dict is updated in place, so module aliases bound at import
+    (such as ``BASE = PALETTES["base"]``) render the chosen variant too.
+    """
+    if variant not in gen.PALETTES:
+        raise ValueError(f"unknown variant: {variant}")
+    saved = {name: palette.copy() for name, palette in gen.PALETTES.items()}
+    chosen = saved[variant]
     try:
-        for palette in gen.FACTIONS.values():
+        for palette in gen.PALETTES.values():
             palette.update(chosen)
         yield
     finally:
-        for name, palette in gen.FACTIONS.items():
+        for name, palette in gen.PALETTES.items():
             palette.update(saved[name])
 
 
 def _put(registry: Registry, out: Path, key: str, image: Image.Image) -> None:
     native = image.convert("RGBA")
-    native.save(out / f"{key}.png")
+    gen.save_sprite(native, out, key)
     registry[key] = native
 
 
@@ -171,30 +168,28 @@ def _unit_sequences() -> dict[str, SequenceBuilder]:
         "lancer": tier_one_combat_final.lancer_sequence,
         "bombard": tier_one_combat_final.bombard_sequence,
         "flakhound": tier_one_combat_final.flakhound_sequence,
-        "stinger": tier_one_combat_final.stinger_sequence,
         "buzzard": air_support_final.buzzard_sequence,
-        "darter": air_support_final.darter_sequence,
         "talon": air_support_final.talon_sequence,
-        "wisp": air_support_final.wisp_sequence,
     }
 
 
-def _install_units(registry: Registry, out: Path, faction: str) -> None:
-    with _faction_palette(faction):
+def _install_units(registry: Registry, out: Path, variant: str) -> None:
+    tag = gen.variant_tag(variant)
+    with _variant_palette(variant):
         for stem, builder in _unit_sequences().items():
             sequence = builder()
-            _put(registry, out, f"{stem}_{faction}", sequence.frames[0].image)
+            _put(registry, out, f"{stem}{tag}", sequence.frames[0].image)
             for suffix, frame in zip(
                 UNIT_MOVEMENT[stem], sequence.frames[1:3], strict=True
             ):
-                _put(registry, out, f"{stem}_{faction}{suffix}", frame.image)
+                _put(registry, out, f"{stem}{tag}{suffix}", frame.image)
             action_frames = sequence.frames[4:]
             for suffix, frame in zip(UNIT_ACTIONS[stem], action_frames, strict=True):
-                _put(registry, out, f"{stem}_{faction}{suffix}", frame.image)
+                _put(registry, out, f"{stem}{tag}{suffix}", frame.image)
 
 
-def _harvester_body(faction: str, tread_phase: int, cargo_level: int) -> Image.Image:
-    palette = gen.FACTIONS[faction]
+def _harvester_body(variant: str, tread_phase: int, cargo_level: int) -> Image.Image:
+    palette = gen.PALETTES[variant]
     image, draw = gen.canvas(64)
     _harvester_tracks(draw, palette, tread_phase % 3)
     draw.rectangle(
@@ -239,39 +234,40 @@ def _harvester_tool(source: Image.Image) -> Image.Image:
     return tool
 
 
-def _install_harvester(registry: Registry, out: Path, faction: str) -> None:
+def _install_harvester(registry: Registry, out: Path, variant: str) -> None:
+    tag = gen.variant_tag(variant)
     source = {
-        "": _harvester_tool(registry[f"harvester_{faction}"].copy()),
-        "_scoop1": _harvester_tool(registry[f"harvester_{faction}_scoop1"].copy()),
-        "_scoop2": _harvester_tool(registry[f"harvester_{faction}_scoop2"].copy()),
+        "": _harvester_tool(registry[f"harvester{tag}"].copy()),
+        "_scoop1": _harvester_tool(registry[f"harvester{tag}_scoop1"].copy()),
+        "_scoop2": _harvester_tool(registry[f"harvester{tag}_scoop2"].copy()),
     }
     for cargo in range(HARVESTER_CARGO_LEVELS):
-        cargo_prefix = f"harvester_{faction}_cargo{cargo}"
-        idle = Image.alpha_composite(_harvester_body(faction, 0, cargo), source[""])
+        cargo_prefix = f"harvester{tag}_cargo{cargo}"
+        idle = Image.alpha_composite(_harvester_body(variant, 0, cargo), source[""])
         _put(registry, out, cargo_prefix, idle)
         for phase in (1, 2):
             moving = Image.alpha_composite(
-                _harvester_body(faction, phase, cargo), source[""]
+                _harvester_body(variant, phase, cargo), source[""]
             )
             _put(registry, out, f"{cargo_prefix}_tread{phase}", moving)
         for phase in (1, 2):
             working = Image.alpha_composite(
-                _harvester_body(faction, 0, cargo), source[f"_scoop{phase}"]
+                _harvester_body(variant, 0, cargo), source[f"_scoop{phase}"]
             )
             _put(registry, out, f"{cargo_prefix}_scoop{phase}", working)
     aliases = {
-        f"harvester_{faction}": f"harvester_{faction}_cargo0",
-        f"harvester_{faction}_tread1": f"harvester_{faction}_cargo0_tread1",
-        f"harvester_{faction}_tread2": f"harvester_{faction}_cargo0_tread2",
-        f"harvester_{faction}_scoop1": f"harvester_{faction}_cargo0_scoop1",
-        f"harvester_{faction}_scoop2": f"harvester_{faction}_cargo0_scoop2",
+        f"harvester{tag}": f"harvester{tag}_cargo0",
+        f"harvester{tag}_tread1": f"harvester{tag}_cargo0_tread1",
+        f"harvester{tag}_tread2": f"harvester{tag}_cargo0_tread2",
+        f"harvester{tag}_scoop1": f"harvester{tag}_cargo0_scoop1",
+        f"harvester{tag}_scoop2": f"harvester{tag}_cargo0_scoop2",
     }
     for alias, source_key in aliases.items():
         _put(registry, out, alias, registry[source_key])
 
 
-def _family_tuned_foundry(source: Image.Image, faction: str) -> Image.Image:
-    palette = gen.FACTIONS[faction]
+def _family_tuned_foundry(source: Image.Image, variant: str) -> Image.Image:
+    palette = gen.PALETTES[variant]
     image = Image.new("RGBA", (128, 128), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
 
@@ -311,8 +307,8 @@ def _family_tuned_foundry(source: Image.Image, faction: str) -> Image.Image:
     return image
 
 
-def _octagonal_repair_frame(source: Image.Image, faction: str) -> Image.Image:
-    palette = gen.FACTIONS[faction]
+def _octagonal_repair_frame(source: Image.Image, variant: str) -> Image.Image:
+    palette = gen.PALETTES[variant]
     mask = Image.new("L", source.size, 0)
     ImageDraw.Draw(mask).polygon(
         (
@@ -354,52 +350,53 @@ def _octagonal_repair_frame(source: Image.Image, faction: str) -> Image.Image:
     return clipped
 
 
-def _install_working_buildings(registry: Registry, out: Path, faction: str) -> None:
-    with _faction_palette(faction):
+def _install_working_buildings(registry: Registry, out: Path, variant: str) -> None:
+    tag = gen.variant_tag(variant)
+    with _variant_palette(variant):
         fabricator = air_support_final.fabricator_frames()
-        _put(registry, out, f"fabricator_{faction}", fabricator[0].image)
+        _put(registry, out, f"fabricator{tag}", fabricator[0].image)
         for suffix, frame in zip(
             BUILDING_WORK["fabricator"], fabricator[1:], strict=True
         ):
-            _put(registry, out, f"fabricator_{faction}{suffix}", frame.image)
+            _put(registry, out, f"fabricator{tag}{suffix}", frame.image)
 
         repair = tuple(
-            _octagonal_repair_frame(frame.image, faction)
+            _octagonal_repair_frame(frame.image, variant)
             for frame in structures_base.repair_bay_frames()
         )
-        _put(registry, out, f"repair_bay_{faction}", repair[0])
+        _put(registry, out, f"repair_bay{tag}", repair[0])
         for suffix, image in zip(BUILDING_WORK["repair_bay"], repair[1:], strict=True):
-            _put(registry, out, f"repair_bay_{faction}{suffix}", image)
+            _put(registry, out, f"repair_bay{tag}{suffix}", image)
 
         headings = (225, 285, 345, 405, 465, 525, 585)
         array_frames = tuple(
             structures_base._array_sprite(heading=heading) for heading in headings
         )
-        _put(registry, out, f"array_{faction}", array_frames[0])
+        _put(registry, out, f"array{tag}", array_frames[0])
         for suffix, image in zip(BUILDING_WORK["array"], array_frames[1:], strict=True):
-            _put(registry, out, f"array_{faction}{suffix}", image)
+            _put(registry, out, f"array{tag}{suffix}", image)
 
         reclaimer_frames = tuple(
             economy_mechanisms.render_reclaimer(phase) for phase in range(4)
         )
-        _put(registry, out, f"reclaimer_{faction}", reclaimer_frames[0])
+        _put(registry, out, f"reclaimer{tag}", reclaimer_frames[0])
         for suffix, image in zip(
             BUILDING_WORK["reclaimer"], reclaimer_frames[1:], strict=True
         ):
-            _put(registry, out, f"reclaimer_{faction}{suffix}", image)
+            _put(registry, out, f"reclaimer{tag}{suffix}", image)
 
-    sources = [heavy_structures.foundry_frame(faction, work) for work in range(4)]
+    sources = [heavy_structures.foundry_frame(variant, work) for work in range(4)]
     sources.append(sources[0])
-    tuned = tuple(_family_tuned_foundry(source, faction) for source in sources)
-    _put(registry, out, f"foundry_{faction}", tuned[0])
+    tuned = tuple(_family_tuned_foundry(source, variant) for source in sources)
+    _put(registry, out, f"foundry{tag}", tuned[0])
     for suffix, image in zip(BUILDING_WORK["foundry"], tuned[1:], strict=True):
-        _put(registry, out, f"foundry_{faction}{suffix}", image)
+        _put(registry, out, f"foundry{tag}{suffix}", image)
 
 
 def _flak_base_and_mount(
-    faction: str, *, phase: int, charge: int
+    variant: str, *, phase: int, charge: int
 ) -> tuple[Image.Image, Image.Image]:
-    palette = gen.FACTIONS[faction]
+    palette = gen.PALETTES[variant]
     base, draw = gen.canvas(64)
     draw.ellipse(
         [gen.s(10), gen.s(10), gen.s(54), gen.s(54)],
@@ -436,7 +433,8 @@ def _flak_base_and_mount(
     )
 
 
-def _install_defenses(registry: Registry, out: Path, faction: str) -> None:
+def _install_defenses(registry: Registry, out: Path, variant: str) -> None:
+    tag = gen.variant_tag(variant)
     for tier, (base_stem, mount_stem) in enumerate(
         (
             ("turret", "turret_barrel"),
@@ -447,15 +445,15 @@ def _install_defenses(registry: Registry, out: Path, faction: str) -> None:
         _put(
             registry,
             out,
-            f"{base_stem}_{faction}",
-            turret_family.turret_base(faction, tier),
+            f"{base_stem}{tag}",
+            turret_family.turret_base(variant, tier),
         )
         mounts = tuple(
-            turret_family.turret_mount(faction, tier, phase) for phase in range(5)
+            turret_family.turret_mount(variant, tier, phase) for phase in range(5)
         )
-        _put(registry, out, f"{mount_stem}_{faction}", mounts[0])
+        _put(registry, out, f"{mount_stem}{tag}", mounts[0])
         for suffix, mount in zip(DEFENSE_ACTIONS[mount_stem], mounts[1:], strict=True):
-            _put(registry, out, f"{mount_stem}_{faction}{suffix}", mount)
+            _put(registry, out, f"{mount_stem}{tag}{suffix}", mount)
 
     flak_specs = (
         (0, 0),
@@ -469,15 +467,15 @@ def _install_defenses(registry: Registry, out: Path, faction: str) -> None:
         (0, 0),
     )
     flak_frames = tuple(
-        _flak_base_and_mount(faction, phase=phase, charge=charge)
+        _flak_base_and_mount(variant, phase=phase, charge=charge)
         for phase, charge in flak_specs
     )
-    _put(registry, out, f"flak_turret_{faction}", flak_frames[0][0])
-    _put(registry, out, f"flak_mount_{faction}", flak_frames[0][1])
+    _put(registry, out, f"flak_turret{tag}", flak_frames[0][0])
+    _put(registry, out, f"flak_mount{tag}", flak_frames[0][1])
     for suffix, (_, mount) in zip(
         DEFENSE_ACTIONS["flak_mount"], flak_frames[1:], strict=True
     ):
-        _put(registry, out, f"flak_mount_{faction}{suffix}", mount)
+        _put(registry, out, f"flak_mount{tag}{suffix}", mount)
 
     # The base frame is a ready weapon, so its rack is full. Report holds
     # full through the muzzle frame; recovery empties it before the next
@@ -485,18 +483,18 @@ def _install_defenses(registry: Registry, out: Path, faction: str) -> None:
     charges = (5, 1, 2, 3, 4, 5, 5, 0, 0, 0)
     bastion_frames = tuple(
         (
-            heavy_structures.bastion_base(faction, charge),
-            heavy_structures.bastion_mount(faction, index),
+            heavy_structures.bastion_base(variant, charge),
+            heavy_structures.bastion_mount(variant, index),
         )
         for index, charge in enumerate(charges)
     )
-    _put(registry, out, f"bastion_{faction}", bastion_frames[0][0])
-    _put(registry, out, f"bastion_mount_{faction}", bastion_frames[0][1])
+    _put(registry, out, f"bastion{tag}", bastion_frames[0][0])
+    _put(registry, out, f"bastion_mount{tag}", bastion_frames[0][1])
     for suffix, (base, mount) in zip(
         DEFENSE_ACTIONS["bastion_mount"], bastion_frames[1:], strict=True
     ):
-        _put(registry, out, f"bastion_{faction}{suffix}", base)
-        _put(registry, out, f"bastion_mount_{faction}{suffix}", mount)
+        _put(registry, out, f"bastion{tag}{suffix}", base)
+        _put(registry, out, f"bastion_mount{tag}{suffix}", mount)
 
 
 def install_finalized_sprites(registry: Registry, out: Path) -> None:
@@ -508,15 +506,15 @@ def install_finalized_sprites(registry: Registry, out: Path) -> None:
     replace their complete rows. No external presentation asset is read.
     """
     out.mkdir(parents=True, exist_ok=True)
-    for faction in ("ferrous", "cupric"):
-        _install_harvester(registry, out, faction)
-        _install_units(registry, out, faction)
-        _install_working_buildings(registry, out, faction)
-        _install_defenses(registry, out, faction)
+    for variant in ("base", "probe"):
+        _install_harvester(registry, out, variant)
+        _install_units(registry, out, variant)
+        _install_working_buildings(registry, out, variant)
+        _install_defenses(registry, out, variant)
     tender_condor_final.install_tender_condor(registry, out)
     crucible_final.install_crucible_units(registry, out)
-    moth_warden_final.install_moth_warden(registry, out)
-    shrike_sylph_final.install_shrike_sylph(registry, out)
+    warden_final.install_warden(registry, out)
+    shrike_final.install_shrike(registry, out)
     excavator_final.install_excavator(registry, out)
     skyhook_sapper_crucible_final.install_skyhook_sapper_crucible(registry, out)
     airworks_scouts_final.install_airworks_scouts(registry, out)

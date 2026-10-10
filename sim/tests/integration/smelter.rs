@@ -10,7 +10,7 @@ use common::open_arena;
 use chassis::grid::TilePos;
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, ScenarioMode, UnitSpec};
 use oxide_sim::stats::{BuildingKind, CRUCIBLE_SMELT_PERIOD};
-use oxide_sim::{Faction, PlayerId, Scenario, State, UnitKind};
+use oxide_sim::{PlayerId, Scenario, State, UnitKind};
 
 /// A walled yard: seat 0 owns a Crucible with a Turret beside it and a
 /// second Turret far outside the smelter ring; seat 1's two doomed
@@ -21,16 +21,14 @@ fn yard() -> Scenario {
     Scenario {
         players: vec![
             PlayerSpec {
-                name: "Ferrous".into(),
-                faction: Faction::Ferrous,
+                name: "West".into(),
                 team: None,
                 scrap: 0,
                 bot: false,
                 bot_config: None,
             },
             PlayerSpec {
-                name: "Cupric".into(),
-                faction: Faction::Cupric,
+                name: "East".into(),
                 team: None,
                 scrap: 0,
                 bot: false,
@@ -169,7 +167,6 @@ fn mirrored_crucibles_smelt_mirrored_wreck_tiles() {
         players: vec![
             PlayerSpec {
                 name: "West".into(),
-                faction: Faction::Ferrous,
                 team: None,
                 scrap: 0,
                 bot: false,
@@ -177,7 +174,6 @@ fn mirrored_crucibles_smelt_mirrored_wreck_tiles() {
             },
             PlayerSpec {
                 name: "East".into(),
-                faction: Faction::Cupric,
                 team: None,
                 scrap: 0,
                 bot: false,
@@ -263,7 +259,6 @@ fn a_centered_crucible_smelts_in_its_owners_home_frame() {
             players: vec![
                 PlayerSpec {
                     name: "West".into(),
-                    faction: Faction::Ferrous,
                     team: None,
                     scrap: 0,
                     bot: false,
@@ -271,7 +266,6 @@ fn a_centered_crucible_smelts_in_its_owners_home_frame() {
                 },
                 PlayerSpec {
                     name: "East".into(),
-                    faction: Faction::Cupric,
                     team: None,
                     scrap: 0,
                     bot: false,

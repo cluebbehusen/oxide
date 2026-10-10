@@ -25,7 +25,7 @@ AMBER = (151, 93, 38)
 AMBER_LIGHT = (218, 151, 65)
 
 APPROVED_SOURCE_RGBA_SHA256 = (
-    "2b2778b466cf24fe0d4a66b3b826d7db036a54ab2936137bcb1eb4fa1adff159"
+    "33424e54cf4fac9d1b6975949f8bdd56a59153fb3cd5cf68ec74e732998a7ce8"
 )
 
 
@@ -96,8 +96,8 @@ def _strut(
     draw.line(_points((start, end)), fill=(*color, 255), width=_s(width))
 
 
-def _foundation(draw: ImageDraw.ImageDraw, size: int, faction: str) -> None:
-    palette = gen.FACTIONS[faction]
+def _foundation(draw: ImageDraw.ImageDraw, size: int, variant: str) -> None:
+    palette = gen.PALETTES[variant]
     inset = 7 if size == 128 else 4
     outer = size - inset
     draw.rounded_rectangle(
@@ -128,12 +128,12 @@ def _foundation(draw: ImageDraw.ImageDraw, size: int, faction: str) -> None:
 def _hopper(
     draw: ImageDraw.ImageDraw,
     bounds: tuple[float, float, float, float],
-    faction: str,
+    variant: str,
     *,
     split: bool = False,
 ) -> None:
     x0, y0, x1, y1 = bounds
-    palette = gen.FACTIONS[faction]
+    palette = gen.PALETTES[variant]
     draw.polygon(
         _points(((x0, y0), (x1, y0), (x1 - 5, y1), (x0 + 5, y1))),
         fill=(*gen.IRON_DARK, 255),
@@ -167,11 +167,11 @@ def _belt(
     bounds: tuple[float, float, float, float],
     phase: int,
     *,
-    faction: str,
+    variant: str,
     step: int = 3,
 ) -> None:
     x0, y0, x1, y1 = bounds
-    palette = gen.FACTIONS[faction]
+    palette = gen.PALETTES[variant]
     draw.rounded_rectangle(_box(bounds), radius=_s(2), fill=(*gen.IRON_DARK, 255))
     draw.rectangle(_box((x0 + 2, y0 + 2, x1 - 2, y1 - 2)), fill=(*VOID, 255))
     offset = phase * step % 8
@@ -190,12 +190,12 @@ def _cutter_ring(
     center: tuple[float, float],
     radius: float,
     phase: int,
-    faction: str,
+    variant: str,
     *,
     teeth: int,
 ) -> None:
     cx, cy = center
-    palette = gen.FACTIONS[faction]
+    palette = gen.PALETTES[variant]
     draw.ellipse(
         _box((cx - radius, cy - radius, cx + radius, cy + radius)),
         fill=(*gen.IRON_DARK, 255),
@@ -227,11 +227,11 @@ def _cutter_ring(
         draw.rectangle(_box((x - 1, y - 1, x + 1, y + 1)), fill=(*gen.SCRAP, 255))
 
 
-def render_extractor(faction: str, phase: int) -> Image.Image:
+def render_extractor(variant: str, phase: int) -> Image.Image:
     """Render approved radial-auger Extractor candidate 469."""
     image, draw = _new_sprite(128)
-    palette = gen.FACTIONS[faction]
-    _foundation(draw, 128, faction)
+    palette = gen.PALETTES[variant]
+    _foundation(draw, 128, variant)
     center = (63.0, 58.0)
     for angle in (0, math.pi / 2, math.pi, 3 * math.pi / 2):
         dx, dy = math.cos(angle), math.sin(angle)
@@ -284,7 +284,7 @@ def render_extractor(faction: str, phase: int) -> Image.Image:
         (14, 88, 41, 110),
         (87, 88, 114, 110),
     ):
-        _hopper(draw, bounds, faction)
+        _hopper(draw, bounds, variant)
         x0, _y0, x1, y1 = bounds
         draw.rectangle(
             _box((x0 + 7, y1 - 8, x1 - 7, y1 - 4)),
@@ -300,13 +300,13 @@ def render_extractor(faction: str, phase: int) -> Image.Image:
     return _finish(image, 128)
 
 
-def render_refinery(faction: str, phase: int) -> Image.Image:
+def render_refinery(variant: str, phase: int) -> Image.Image:
     """Render approved twin-hammer Refinery candidate 471."""
     image, draw = _new_sprite(64)
-    palette = gen.FACTIONS[faction]
-    _foundation(draw, 64, faction)
-    _hopper(draw, (7, 8, 31, 25), faction)
-    _hopper(draw, (33, 8, 57, 25), faction)
+    palette = gen.PALETTES[variant]
+    _foundation(draw, 64, variant)
+    _hopper(draw, (7, 8, 31, 25), variant)
+    _hopper(draw, (33, 8, 57, 25), variant)
     _plate(draw, (8, 24, 56, 48), fill=IRON_DEEP, radius=3)
     for cx, direction in ((25, 1), (39, -1)):
         draw.ellipse(_box((cx - 10, 27, cx + 10, 45)), fill=(*palette["base"], 255))
@@ -327,8 +327,8 @@ def render_refinery(faction: str, phase: int) -> Image.Image:
     return _finish(image, 64)
 
 
-def _reclaimer_shell(draw: ImageDraw.ImageDraw, faction: str) -> None:
-    palette = gen.FACTIONS[faction]
+def _reclaimer_shell(draw: ImageDraw.ImageDraw, variant: str) -> None:
+    palette = gen.PALETTES[variant]
     draw.rounded_rectangle(
         _box((6, 7, 58, 57)),
         radius=_s(6),
@@ -344,14 +344,14 @@ def _reclaimer_shell(draw: ImageDraw.ImageDraw, faction: str) -> None:
     draw.rectangle(_box((27, 9, 37, 13)), fill=(*palette["dark"], 255))
 
 
-def render_reclaimer(faction: str, phase: int) -> Image.Image:
+def render_reclaimer(variant: str, phase: int) -> Image.Image:
     """Render approved guarded-feed Reclaimer candidate 476."""
     image, draw = _new_sprite(64)
-    palette = gen.FACTIONS[faction]
-    _reclaimer_shell(draw, faction)
-    _hopper(draw, (21, 11, 43, 24), faction, split=True)
-    _belt(draw, (25, 20, 39, 45), phase, faction=faction)
-    _cutter_ring(draw, (32, 40), 13, phase, faction, teeth=8)
+    palette = gen.PALETTES[variant]
+    _reclaimer_shell(draw, variant)
+    _hopper(draw, (21, 11, 43, 24), variant, split=True)
+    _belt(draw, (25, 20, 39, 45), phase, variant=variant)
+    _cutter_ring(draw, (32, 40), 13, phase, variant, teeth=8)
     draw.arc(
         _box((17, 24, 47, 55)),
         195,
@@ -375,28 +375,28 @@ def render_reclaimer(faction: str, phase: int) -> Image.Image:
 def source_rgba_digest() -> str:
     """Hash every approved native frame in stable production-key order."""
     digest = hashlib.sha256()
-    for faction in ("ferrous", "cupric"):
+    for variant in ("base", "probe"):
         for stem, renderer in (
             ("extractor", render_extractor),
             ("reclaimer_t1", render_refinery),
             ("reclaimer", render_reclaimer),
         ):
             for phase in range(4):
-                digest.update(f"{stem}/{faction}/{phase}".encode())
-                digest.update(renderer(faction, phase).tobytes())
+                digest.update(f"{stem}/{variant}/{phase}".encode())
+                digest.update(renderer(variant, phase).tobytes())
     return digest.hexdigest()
 
 
 def _put(registry: Registry, out: Path, key: str, image: Image.Image) -> None:
     native = image.convert("RGBA")
-    native.save(out / f"{key}.png")
+    gen.save_sprite(native, out, key)
     registry[key] = native
 
 
 def install_extractor_reclaimer(registry: Registry, out: Path) -> None:
     """Install the approved building frames into the generator bank."""
     out.mkdir(parents=True, exist_ok=True)
-    for faction in ("ferrous", "cupric"):
+    for variant in ("base", "probe"):
         for stem, renderer in (
             ("extractor", render_extractor),
             ("reclaimer_t1", render_refinery),
@@ -404,5 +404,8 @@ def install_extractor_reclaimer(registry: Registry, out: Path) -> None:
         ):
             for phase, suffix in enumerate(WORK_SUFFIXES):
                 _put(
-                    registry, out, f"{stem}_{faction}{suffix}", renderer(faction, phase)
+                    registry,
+                    out,
+                    f"{stem}{gen.variant_tag(variant)}{suffix}",
+                    renderer(variant, phase),
                 )

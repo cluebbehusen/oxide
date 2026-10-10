@@ -28,9 +28,8 @@ const TRIO: [&str; 16] = [
 
 /// The trio with each seat on the given team, and four West Sentinels.
 pub(super) fn trio(teams: [Option<u8>; 3]) -> Scenario {
-    let seat = |name: &str, faction, team| PlayerSpec {
+    let seat = |name: &str, team| PlayerSpec {
         name: name.into(),
-        faction,
         team,
         scrap: 0,
         bot: true,
@@ -41,9 +40,9 @@ pub(super) fn trio(teams: [Option<u8>; 3]) -> Scenario {
         name: "opponent trio".into(),
         map: TRIO.map(str::to_owned).to_vec(),
         players: vec![
-            seat("west", Faction::Ferrous, teams[0]),
-            seat("south", Faction::Cupric, teams[1]),
-            seat("east", Faction::Cupric, teams[2]),
+            seat("west", teams[0]),
+            seat("south", teams[1]),
+            seat("east", teams[2]),
         ],
         units: [(8, 9), (8, 10), (9, 9), (9, 10)]
             .into_iter()

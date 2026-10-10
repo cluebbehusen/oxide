@@ -2,31 +2,27 @@
  "name": "Crucible Crossing",
  "players": [
   {
-   "name": "North West Ferrous",
-   "faction": "ferrous",
+   "name": "North West",
    "scrap": 150,
    "bot": false,
    "team": 0
   },
   {
-   "name": "South West Ferrous",
-   "faction": "ferrous",
+   "name": "South West",
    "scrap": 150,
    "bot": true,
    "team": 0,
    "bot_config": {}
   },
   {
-   "name": "South East Cupric",
-   "faction": "cupric",
+   "name": "South East",
    "scrap": 150,
    "bot": true,
    "team": 1,
    "bot_config": {}
   },
   {
-   "name": "North East Cupric",
-   "faction": "cupric",
+   "name": "North East",
    "scrap": 150,
    "bot": true,
    "team": 1,

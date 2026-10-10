@@ -133,7 +133,6 @@ fn sandbox(map: &[&str], units: &[(crate::UnitKind, i32, i32)]) -> crate::State 
         map: map.iter().map(|row| (*row).to_owned()).collect(),
         players: vec![crate::scenario::PlayerSpec {
             name: "p0".into(),
-            faction: crate::Faction::Ferrous,
             team: None,
             scrap: 0,
             bot: false,
@@ -169,7 +168,7 @@ fn a_hovering_flier_sent_onto_a_raw_peak_stops_beside_it() {
         "............",
     ];
     let peak = TilePos::new(5, 3);
-    for kind in [UnitKind::Wisp, UnitKind::Skyhook] {
+    for kind in [UnitKind::Talon, UnitKind::Skyhook] {
         let mut state = sandbox(&map, &[(kind, 1, 1)]);
         let flier = state.units()[0].id;
         // Commands snap peaks away; a forged order may not.

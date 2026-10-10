@@ -51,7 +51,7 @@ fn blip(state: &oxide_sim::State) -> AttackTarget {
 
 #[test]
 fn bastion_expends_a_blind_shot_on_an_air_contact() {
-    let mut state = radar_scene(None, Some(BuildingKind::Bastion), UnitKind::Gnat);
+    let mut state = radar_scene(None, Some(BuildingKind::Bastion), UnitKind::Kestrel);
     let enemy = state.units()[0].id;
     let hp = state.unit(enemy).unwrap().hp;
     let report = state.tick(&[]);
@@ -70,7 +70,7 @@ fn bastion_expends_a_blind_shot_on_an_air_contact() {
 
 #[test]
 fn explicit_contact_is_retained_and_stop_clears_defense_focus() {
-    let mut state = radar_scene(None, Some(BuildingKind::Bastion), UnitKind::Gnat);
+    let mut state = radar_scene(None, Some(BuildingKind::Bastion), UnitKind::Kestrel);
     let id = state
         .buildings()
         .iter()
@@ -97,7 +97,7 @@ fn explicit_contact_is_retained_and_stop_clears_defense_focus() {
 
 #[test]
 fn automatic_avalanche_fires_without_pursuing_but_explicit_attack_pursues() {
-    let mut state = radar_scene(Some(UnitKind::Avalanche), None, UnitKind::Gnat);
+    let mut state = radar_scene(Some(UnitKind::Avalanche), None, UnitKind::Kestrel);
     let gun = state
         .units()
         .iter()
@@ -145,7 +145,7 @@ fn automatic_avalanche_fires_without_pursuing_but_explicit_attack_pursues() {
 
 #[test]
 fn lost_contact_clears_preference_and_returning_detection_has_a_new_id() {
-    let mut state = radar_scene(None, Some(BuildingKind::Bastion), UnitKind::Gnat);
+    let mut state = radar_scene(None, Some(BuildingKind::Bastion), UnitKind::Kestrel);
     let gun = state
         .buildings()
         .iter()
@@ -198,7 +198,7 @@ fn visible_attack_becomes_anonymous_when_only_radar_remains() {
         30,
         vec![
             unit(0, UnitKind::Harvester, 12, 8),
-            unit(1, UnitKind::Gnat, 14, 8),
+            unit(1, UnitKind::Kestrel, 14, 8),
         ],
     );
     scenario.buildings = vec![
@@ -243,7 +243,7 @@ fn visible_attack_becomes_anonymous_when_only_radar_remains() {
 
 #[test]
 fn unknown_contact_command_is_hash_inert_at_dispatch() {
-    let state = radar_scene(Some(UnitKind::Avalanche), None, UnitKind::Gnat);
+    let state = radar_scene(Some(UnitKind::Avalanche), None, UnitKind::Kestrel);
     let gun = state
         .units()
         .iter()
@@ -268,7 +268,7 @@ fn unknown_contact_command_is_hash_inert_at_dispatch() {
 
 #[test]
 fn contact_histories_round_trip_and_replay_deterministically() {
-    let mut state = radar_scene(Some(UnitKind::Avalanche), None, UnitKind::Gnat);
+    let mut state = radar_scene(Some(UnitKind::Avalanche), None, UnitKind::Kestrel);
     let enemy = state.units()[0].id;
     state.tick(&[cmd(
         1,
@@ -382,7 +382,7 @@ fn remembered_building_keeps_taking_fire_until_scouting_confirms_its_loss() {
 
 #[test]
 fn fabricated_and_corrupted_contact_histories_are_rejected() {
-    let state = radar_scene(None, Some(BuildingKind::Bastion), UnitKind::Gnat);
+    let state = radar_scene(None, Some(BuildingKind::Bastion), UnitKind::Kestrel);
     let base = serde_json::to_value(state).unwrap();
     for field in ["id", "tile", "visible_unit", "history"] {
         let mut data = base.clone();
@@ -477,7 +477,7 @@ fn every_ground_combat_chassis_can_act_on_a_building_memory() {
 
 #[test]
 fn concealed_identity_domain_health_and_position_do_not_change_firing_decisions() {
-    let base = radar_scene(None, Some(BuildingKind::Bastion), UnitKind::Gnat);
+    let base = radar_scene(None, Some(BuildingKind::Bastion), UnitKind::Kestrel);
     let mut air = base.clone();
     let target = blip(&base);
     let gun = base
@@ -553,7 +553,7 @@ fn concealed_identity_domain_health_and_position_do_not_change_firing_decisions(
 
 #[test]
 fn expired_queued_contact_cannot_bind_to_its_reappearance() {
-    let mut state = radar_scene(Some(UnitKind::Avalanche), None, UnitKind::Gnat);
+    let mut state = radar_scene(Some(UnitKind::Avalanche), None, UnitKind::Kestrel);
     let enemy = state.units()[0].id;
     let gun = state.units()[1].id;
     let old = blip(&state);
@@ -623,7 +623,7 @@ fn removing_the_array_ends_its_contacts_and_defense_preference() {
         30,
         vec![
             unit(0, UnitKind::Harvester, 4, 16),
-            unit(1, UnitKind::Gnat, 14, 8),
+            unit(1, UnitKind::Kestrel, 14, 8),
         ],
     );
     scenario.buildings = vec![
@@ -690,7 +690,7 @@ fn explicit_radar_attack_routes_to_a_firing_stand_beside_impassable_ground() {
         30,
         vec![
             unit(0, UnitKind::Avalanche, 2, 27),
-            unit(1, UnitKind::Gnat, 14, 8),
+            unit(1, UnitKind::Kestrel, 14, 8),
         ],
         |rows| rows[8][14] = '#',
     );
@@ -763,7 +763,7 @@ fn unreachable_blind_attacks_stall_once_and_clear_the_program() {
                     .buildings
                     .push(common::building(1, BuildingKind::Reclaimer, 22, 10));
             } else {
-                scenario.units.push(unit(1, UnitKind::Gnat, 22, 10));
+                scenario.units.push(unit(1, UnitKind::Kestrel, 22, 10));
             }
             let mut state = scenario.build().unwrap();
             let gun = state.units()[0].id;
@@ -839,7 +839,7 @@ fn unreachable_blind_attacks_stall_once_and_clear_the_program() {
 fn a_focus_on_a_friendly_hidden_or_incompatible_unit_is_rejected() {
     for case in ["friendly", "hidden", "air"] {
         let enemy_kind = if case == "air" {
-            UnitKind::Gnat
+            UnitKind::Kestrel
         } else {
             UnitKind::Harvester
         };

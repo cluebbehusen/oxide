@@ -10,7 +10,7 @@ use chassis::replay::ReplayMeta;
 use oxide_kit::runner::GameReplay;
 use oxide_protocol::{FogView, StateFilter, StateView, hash_hex};
 use oxide_sim::scenario::BotConfig;
-use oxide_sim::{Command, Faction, GameResult, PlayerId, SIM_VERSION};
+use oxide_sim::{Command, GameResult, PlayerId, SIM_VERSION};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -56,8 +56,6 @@ pub struct ReplayPlayerSummary {
     pub seat: u8,
     /// Display name.
     pub name: String,
-    /// Unit roster and sprite tint.
-    pub faction: Faction,
     /// Normalized team id used by the simulation.
     pub team: u8,
     /// Whether the scenario assigns this seat to a built-in bot.
@@ -243,7 +241,6 @@ fn scenario_summary(replay: &GameReplay, initial_state: &oxide_sim::State) -> Sc
         .map(|(seat, spec)| ReplayPlayerSummary {
             seat: u8::try_from(seat).expect("seat indices fit in u8"),
             name: spec.name.clone(),
-            faction: spec.faction,
             team: initial_state.players()[seat].team,
             bot: spec.bot,
             bot_config: spec.bot_config,

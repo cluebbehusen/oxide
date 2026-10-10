@@ -2,7 +2,6 @@ use super::super::super::spatial::UnitIndex;
 use super::*;
 use crate::command::{Command, PlayerCommand};
 use crate::scenario::{PlayerSpec, Scenario, ScenarioMode, UnitSpec};
-use crate::state::Faction;
 use crate::stats::UnitKind;
 
 /// The reference acquisition: a full scan of the unit list. The indexed
@@ -64,10 +63,9 @@ fn linear_acquire(state: &State, id: UnitId) -> Option<Target> {
         .map(|(_, bid)| Target::Building(bid))
 }
 
-fn seat(name: &str, faction: Faction) -> PlayerSpec {
+fn seat(name: &str) -> PlayerSpec {
     PlayerSpec {
         name: name.into(),
-        faction,
         team: None,
         scrap: 0,
         bot: false,
@@ -89,10 +87,7 @@ fn boundary_duel() -> State {
             "............".into(),
             "............".into(),
         ],
-        players: vec![
-            seat("North", Faction::Ferrous),
-            seat("South", Faction::Cupric),
-        ],
+        players: vec![seat("North"), seat("South")],
         units: vec![
             UnitSpec {
                 player: 0,
@@ -173,9 +168,9 @@ fn indexed_acquisition_matches_the_linear_scan() {
         UnitKind::Sentinel,
         UnitKind::Scuttler,
         UnitKind::Lancer,
-        UnitKind::Stinger,
-        UnitKind::Darter,
-        UnitKind::Wisp,
+        UnitKind::Flakhound,
+        UnitKind::Buzzard,
+        UnitKind::Talon,
         UnitKind::Harvester,
     ];
     let mut units = Vec::new();
@@ -201,10 +196,7 @@ fn indexed_acquisition_matches_the_linear_scan() {
         mode: ScenarioMode::Match,
         name: "acquisition-differential".into(),
         map: rows.into_iter().map(|r| r.into_iter().collect()).collect(),
-        players: vec![
-            seat("West", Faction::Ferrous),
-            seat("East", Faction::Cupric),
-        ],
+        players: vec![seat("West"), seat("East")],
         units,
         buildings: Vec::new(),
         meta: None,
@@ -309,9 +301,9 @@ fn windowed_sidearm_victim_matches_the_linear_scan() {
     let east: &[UnitKind] = &[
         UnitKind::Sentinel,
         UnitKind::Sentinel,
-        UnitKind::Wisp,
-        UnitKind::Wisp,
-        UnitKind::Darter,
+        UnitKind::Talon,
+        UnitKind::Talon,
+        UnitKind::Buzzard,
         UnitKind::Scuttler,
     ];
     let mut units = Vec::new();
@@ -337,10 +329,7 @@ fn windowed_sidearm_victim_matches_the_linear_scan() {
         mode: ScenarioMode::Match,
         name: "sidearm-differential".into(),
         map: rows.into_iter().map(|r| r.into_iter().collect()).collect(),
-        players: vec![
-            seat("West", Faction::Ferrous),
-            seat("East", Faction::Cupric),
-        ],
+        players: vec![seat("West"), seat("East")],
         units,
         buildings: Vec::new(),
         meta: None,

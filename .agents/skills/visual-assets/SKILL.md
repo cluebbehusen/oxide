@@ -19,7 +19,7 @@ semantics remain recognizable at actual battlefield scale.
 
 1. Read the relevant production generator code, animation trigger code, and the
    complete current in-game sequence before designing. For a new machine family,
-   study the finalized Harvester, Lancer, Bombard, Flakhound, Buzzard, Wisp,
+   study the finalized Harvester, Lancer, Bombard, Flakhound, Buzzard, Skyhook,
    Foundry, Fabricator, Reclaimer, and Repair Bay as applicable, including their
    movement, action, work, cargo, charge, or construction states. A single idle
    PNG is not a sufficient control.
@@ -123,7 +123,7 @@ Review each candidate in all relevant contexts:
 - isolated static at nearest-neighbor enlargement;
 - animated without interpolation;
 - native gameplay scale on the real floor palette;
-- faction colors and full rim;
+- owner tints and full rim;
 - air shadow or other role context when silhouette alone is misleading;
 - construction, selection, fog, damage, projectile, and orientation states as
   applicable.

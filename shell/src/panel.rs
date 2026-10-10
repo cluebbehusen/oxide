@@ -25,7 +25,7 @@ use std::fmt::Write as _;
 /// What a card wears.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CardIcon {
-    /// A unit sprite (drawn in the human's faction colors).
+    /// A unit sprite.
     Unit(UnitKind),
     /// A building sprite.
     Building(BuildingKind, u8),
@@ -51,14 +51,13 @@ pub enum CardIcon {
     },
 }
 
-/// What an order chip is about, with the colors that subject actually
-/// wears: an attack victim is not the panel owner's faction.
+/// What an order chip is about.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum OrderSubject {
     /// A machine: an attack victim.
-    Unit(UnitKind, oxide_sim::Faction),
+    Unit(UnitKind),
     /// Works: a site being raised, a patient, a strip job, a victim.
-    Building(BuildingKind, oxide_sim::Faction),
+    Building(BuildingKind),
 }
 
 /// The atlas's verb pictograms, in `Sprites::verb_icons` order.
@@ -219,9 +218,6 @@ pub struct Panel {
     pub summary: String,
     /// Portrait icon.
     pub portrait: CardIcon,
-    /// Whose colors the portrait and queue sprites wear: the selected
-    /// entity's owner, not the viewer's.
-    pub faction: oxide_sim::Faction,
     /// A mixed selection's unit-kind filters. Kept separate from
     /// command cards so choosing a roster slice can never crowd out a
     /// verb or make the verb row look like more selected units.
@@ -493,7 +489,6 @@ fn order_subject(
     order: &Order,
     projection: Option<&Projection>,
 ) -> Option<(OrderSubject, String, bool, Option<f32>)> {
-    let faction_of = |p| game.state.player(p).faction;
     match order {
         Order::Build { site } => {
             let b = projection.map_or_else(
@@ -504,7 +499,7 @@ fn order_subject(
             let frac =
                 (b.construction_progress().unwrap_or(0) as f32 / ticks as f32).clamp(0.0, 1.0);
             Some((
-                OrderSubject::Building(b.kind, faction_of(b.player)),
+                OrderSubject::Building(b.kind),
                 entity_name(b.kind.tier_name(b.tier)),
                 !b.built(),
                 Some(frac),
@@ -514,7 +509,7 @@ fn order_subject(
             let b = game.state.building(*building)?;
             let frac = (b.hp as f32 / b.stats().max_hp.max(1) as f32).clamp(0.0, 1.0);
             Some((
-                OrderSubject::Building(b.kind, faction_of(b.player)),
+                OrderSubject::Building(b.kind),
                 entity_name(b.kind.tier_name(b.tier)),
                 !b.built(),
                 Some(frac),
@@ -525,7 +520,7 @@ fn order_subject(
             .attack_objective(game.presentation.human, *target)?
         {
             oxide_sim::AttackTarget::RememberedBuilding(memory) => Some((
-                OrderSubject::Building(memory.building_kind, faction_of(memory.owner)),
+                OrderSubject::Building(memory.building_kind),
                 entity_name(memory.building_kind.name()),
                 false,
                 None,
@@ -535,7 +530,7 @@ fn order_subject(
                 if let Some(uid) = track.visible_unit {
                     let unit = game.state.unit(uid)?;
                     Some((
-                        OrderSubject::Unit(unit.kind, faction_of(unit.player)),
+                        OrderSubject::Unit(unit.kind),
                         entity_name(unit.kind.name()),
                         false,
                         None,
@@ -551,7 +546,7 @@ fn order_subject(
         Order::ReturnCargo { foundry, .. } => {
             let building = game.state.building(*foundry)?;
             Some((
-                OrderSubject::Building(building.kind, faction_of(building.player)),
+                OrderSubject::Building(building.kind),
                 entity_name(building.kind.name()),
                 false,
                 None,
@@ -561,7 +556,7 @@ fn order_subject(
             let u = game.state.unit(*unit)?;
             let frac = (u.hp as f32 / u.kind.stats().max_hp.max(1) as f32).clamp(0.0, 1.0);
             Some((
-                OrderSubject::Unit(u.kind, faction_of(u.player)),
+                OrderSubject::Unit(u.kind),
                 entity_name(u.kind.name()),
                 false,
                 Some(frac),
@@ -570,7 +565,7 @@ fn order_subject(
         // A pending found's subject is the kind it will claim — drawn as
         // a ghost, since nothing stands yet.
         Order::Found { kind, .. } => Some((
-            OrderSubject::Building(*kind, faction_of(game.presentation.human)),
+            OrderSubject::Building(*kind),
             entity_name(kind.name()),
             true,
             None,
@@ -943,7 +938,6 @@ fn pile_panel(game: &Scene<'_>, tile: chassis::grid::TilePos) -> Option<Panel> {
         title: if wreck { "Wreck" } else { "Scrap pile" }.into(),
         summary: String::new(),
         portrait: CardIcon::Salvage { wreck },
-        faction: game.state.player(game.presentation.human).faction,
         roster: Vec::new(),
         cards: Vec::new(),
         queue: Vec::new(),
@@ -986,7 +980,6 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
             },
             summary: String::new(),
             portrait: CardIcon::Building(first.kind, first.tier),
-            faction: game.state.player(owner).faction,
             roster: Vec::new(),
             cards: Vec::new(),
             queue: Vec::new(),
@@ -1137,7 +1130,6 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
             }
         },
         portrait: CardIcon::Unit(first.kind),
-        faction: game.state.player(owner).faction,
         roster: Vec::new(),
         cards: Vec::new(),
         queue: Vec::new(),

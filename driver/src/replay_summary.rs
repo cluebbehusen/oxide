@@ -17,7 +17,7 @@ use chassis::grid::as_index;
 use oxide_kit::runner::GameReplay;
 use oxide_sim::scenario::BotConfig;
 use oxide_sim::{
-    BuildingId, BuildingKind, Event, Faction, GameResult, Order, PlayerId, SIM_VERSION, State,
+    BuildingId, BuildingKind, Event, GameResult, Order, PlayerId, SIM_VERSION, State,
     TICKS_PER_SECOND, Target, UnitId, UnitKind,
 };
 use serde::Serialize;
@@ -53,7 +53,6 @@ const LOUD_UNITS: &[UnitKind] = &[
     UnitKind::Breaker,
     UnitKind::Avalanche,
     UnitKind::Condor,
-    UnitKind::Moth,
     UnitKind::Skyhook,
 ];
 
@@ -126,8 +125,6 @@ pub struct SeatLine {
     pub seat: u8,
     /// Display name.
     pub name: String,
-    /// Unit roster and sprite tint.
-    pub faction: Faction,
     /// Normalized team id used by the simulation.
     pub team: u8,
     /// Whether the scenario assigns this seat to a built-in bot.
@@ -653,7 +650,6 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
         .map(|(seat, spec)| SeatLine {
             seat: u8::try_from(seat).expect("seat indices fit in u8"),
             name: spec.name.clone(),
-            faction: spec.faction,
             team: state.players()[seat].team,
             bot: spec.bot,
             bot_config: spec.bot_config,
@@ -1488,10 +1484,9 @@ impl SummaryReport {
         for seat in &self.seats {
             let _ = writeln!(
                 out,
-                "  seat {}: {}  {:?}  team {}  {}",
+                "  seat {}: {}  team {}  {}",
                 seat.seat,
                 seat.name,
-                seat.faction,
                 seat.team,
                 controller_label(seat),
             );

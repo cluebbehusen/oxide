@@ -2,15 +2,13 @@
  "name": "Mature Armies",
  "players": [
   {
-   "name": "Ferrous",
-   "faction": "ferrous",
+   "name": "North West",
    "scrap": 1000,
    "bot": true,
    "bot_config": {}
   },
   {
-   "name": "Cupric",
-   "faction": "cupric",
+   "name": "South East",
    "scrap": 1000,
    "bot": true,
    "bot_config": {}
@@ -625,25 +623,25 @@
   },
   {
    "player": 1,
-   "kind": "stinger",
+   "kind": "flakhound",
    "x": 41,
    "y": 25
   },
   {
    "player": 1,
-   "kind": "stinger",
+   "kind": "flakhound",
    "x": 39,
    "y": 25
   },
   {
    "player": 1,
-   "kind": "stinger",
+   "kind": "flakhound",
    "x": 37,
    "y": 25
   },
   {
    "player": 1,
-   "kind": "stinger",
+   "kind": "flakhound",
    "x": 35,
    "y": 25
   },
@@ -661,61 +659,61 @@
   },
   {
    "player": 1,
-   "kind": "darter",
+   "kind": "buzzard",
    "x": 50,
    "y": 24
   },
   {
    "player": 1,
-   "kind": "darter",
+   "kind": "buzzard",
    "x": 48,
    "y": 24
   },
   {
    "player": 1,
-   "kind": "darter",
+   "kind": "buzzard",
    "x": 46,
    "y": 24
   },
   {
    "player": 1,
-   "kind": "darter",
+   "kind": "buzzard",
    "x": 44,
    "y": 24
   },
   {
    "player": 1,
-   "kind": "wisp",
+   "kind": "talon",
    "x": 42,
    "y": 24
   },
   {
    "player": 1,
-   "kind": "wisp",
+   "kind": "talon",
    "x": 40,
    "y": 24
   },
   {
    "player": 1,
-   "kind": "wisp",
+   "kind": "talon",
    "x": 38,
    "y": 24
   },
   {
    "player": 1,
-   "kind": "sylph",
+   "kind": "shrike",
    "x": 36,
    "y": 24
   },
   {
    "player": 1,
-   "kind": "sylph",
+   "kind": "shrike",
    "x": 34,
    "y": 24
   },
   {
    "player": 1,
-   "kind": "gnat",
+   "kind": "kestrel",
    "x": 53,
    "y": 23
   }

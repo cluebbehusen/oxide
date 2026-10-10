@@ -70,6 +70,33 @@ class SpriteReproducibilityTests(unittest.TestCase):
             gen_sprites.pack_atlas()
         self.assertFalse((self.actual / "atlas_1.png").exists())
 
+    def test_probe_renders_become_masks_and_never_ship(self) -> None:
+        self.assertEqual(gen_sprites.variant_tag("base"), "")
+        self.assertEqual(gen_sprites.variant_tag("probe"), gen_sprites.PROBE_TAG)
+        with self.assertRaises(ValueError):
+            gen_sprites.variant_tag("other")
+        base = Image.new("RGBA", (2, 1), (52, 52, 62, 255))
+        base.putpixel((0, 0), (*gen_sprites.PALETTES["base"]["base"], 255))
+        probe = base.copy()
+        probe.putpixel((0, 0), (*gen_sprites.PALETTES["probe"]["base"], 255))
+        registry = {}
+        for variant, image in (("base", base), ("probe", probe)):
+            name = f"unit{gen_sprites.variant_tag(variant)}"
+            gen_sprites.save_sprite(image, self.actual, name)
+            registry[name] = image
+        with (
+            patch.object(gen_sprites, "OUT", self.actual),
+            patch.object(gen_sprites, "REGISTRY", registry),
+        ):
+            gen_sprites.accent_masks()
+        self.assertEqual(set(registry), {"unit", "unit_accent"})
+        self.assertEqual(
+            {path.name for path in self.actual.iterdir()},
+            {"unit.png", "unit_accent.png"},
+        )
+        self.assertGreater(registry["unit_accent"].getpixel((0, 0))[3], 0)
+        self.assertEqual(registry["unit_accent"].getpixel((1, 0))[3], 0)
+
     def test_png_compression_differences_preserve_reproducibility(self) -> None:
         pixels = Image.new("RGBA", (3, 2))
         pixels.putdata(

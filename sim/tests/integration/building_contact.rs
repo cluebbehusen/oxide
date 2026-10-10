@@ -6,7 +6,7 @@ use serde_json::json;
 fn scene(kind: &str, own_building: bool) -> State {
     let scenario: Scenario = serde_json::from_value(json!({
         "name":"local contact", "mode":"sandbox", "map":vec!["................................";24],
-        "players":[{"name":"Local","faction":"ferrous","scrap":10000,"bot":false},{"name":"Target","faction":"cupric","scrap":0,"bot":false}],
+        "players":[{"name":"Local","scrap":10000,"bot":false},{"name":"Target","scrap":0,"bot":false}],
         "units":[{"player":0,"kind":kind,"x":12,"y":9}],
         "buildings":[{"player":i32::from(!own_building),"kind":"fabricator","x":10,"y":10}]
     })).unwrap();
@@ -141,7 +141,7 @@ fn worker_repairs_at_the_surface_then_obeys_a_new_move() {
 fn rectangular_building_wall_still_blocks_ordinary_travel() {
     let scenario:Scenario=serde_json::from_value(json!({
         "name":"sealed wall", "mode":"sandbox", "map":vec!["........................";16],
-        "players":[{"name":"Local","faction":"ferrous","scrap":0,"bot":false},{"name":"Target","faction":"cupric","scrap":0,"bot":false}],
+        "players":[{"name":"Local","scrap":0,"bot":false},{"name":"Target","scrap":0,"bot":false}],
         "units":[{"player":0,"kind":"harvester","x":7,"y":7}],
         "buildings":(0..16).step_by(2).map(|y|json!({"player":1,"kind":"fabricator","x":12,"y":y})).collect::<Vec<_>>()
     })).unwrap();
@@ -172,8 +172,8 @@ fn unusable_building_stances_stall_once_and_obey_order_failure_policy() {
         }
         let scenario: Scenario = serde_json::from_value(json!({
             "name":"unusable stance", "mode":"sandbox", "map":map.into_iter().map(|row| row.into_iter().collect::<String>()).collect::<Vec<_>>(),
-            "players":[{"name":"Local","faction":"ferrous","scrap":10000,"bot":false},
-                       {"name":"Target","faction":"cupric","scrap":0,"bot":false}],
+            "players":[{"name":"Local","scrap":10000,"bot":false},
+                       {"name":"Target","scrap":0,"bot":false}],
             "units":[{"player":0,"kind":kind,"x":4,"y":4}],
             "buildings":[{"player":i32::from(!own_building),"kind":"foundry","x":5,"y":5}]
         })).unwrap();
@@ -246,7 +246,7 @@ fn builders_reach_a_stance_past_a_neighboring_footprint_corner() {
     for x in [19, 21] {
         let scenario: Scenario = serde_json::from_value(json!({
             "name":"neighbor corner", "mode":"sandbox", "map":vec!["................................";24],
-            "players":[{"name":"Local","faction":"ferrous","scrap":10000,"bot":false}],
+            "players":[{"name":"Local","scrap":10000,"bot":false}],
             "units":[{"player":0,"kind":"harvester","x":x,"y":12}],
             "buildings":[{"player":0,"kind":"flak_turret","x":20,"y":15}]
         }))
@@ -299,7 +299,7 @@ fn paid_site(
         .push(json!({"player":0,"kind":"fabricator","x":28,"y":20}));
     let scenario: Scenario = serde_json::from_value(json!({
         "name":"paid site", "mode":"sandbox", "map":vec!["................................";24],
-        "players":[{"name":"Local","faction":"ferrous","scrap":10000,"bot":false}],
+        "players":[{"name":"Local","scrap":10000,"bot":false}],
         "units":[{"player":0,"kind":"harvester","x":anchor.x,"y":anchor.y + 4}],
         "buildings": buildings,
     }))

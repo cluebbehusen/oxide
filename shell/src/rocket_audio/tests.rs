@@ -62,8 +62,8 @@ fn real_missile_launch_flight_impact_fog_and_reconstruction_follow_state() {
     let scenario = serde_json::from_value(serde_json::json!({
         "name": "Rocket audio lifecycle", "map": map,
         "players": [
-            {"name": "You", "faction": "ferrous", "bot": false},
-            {"name": "Target", "faction": "cupric", "bot": true}
+            {"name": "You", "bot": false},
+            {"name": "Target", "bot": true}
         ],
         "units": [
             {"player": 0, "kind": "avalanche", "x": 20, "y": 10},

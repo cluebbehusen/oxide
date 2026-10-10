@@ -44,14 +44,8 @@ impl Production {
                 .is_some_and(|b| !b.kind.base_stats().produces.is_empty())
     }
 
-    fn roster(&self, building: &Building) -> impl Iterator<Item = UnitKind> + '_ {
-        building
-            .kind
-            .base_stats()
-            .produces
-            .iter()
-            .copied()
-            .filter(|kind| kind.faction().is_none_or(|f| f == self.selected.faction))
+    fn roster(building: &Building) -> impl Iterator<Item = UnitKind> {
+        building.kind.base_stats().produces.iter().copied()
     }
 
     pub fn batch(&self, slot: usize) -> Option<Batch> {
@@ -60,8 +54,8 @@ impl Production {
             .selected
             .buildings
             .iter()
-            .find(|b| (homogeneous || b.built()) && self.roster(b).nth(slot).is_some())?;
-        let kind = self.roster(first).nth(slot)?;
+            .find(|b| (homogeneous || b.built()) && Self::roster(b).nth(slot).is_some())?;
+        let kind = Self::roster(first).nth(slot)?;
         let candidates: Vec<_> = self
             .selected
             .buildings
@@ -148,7 +142,7 @@ impl Production {
         let Some(first) = self.selected.buildings.first() else {
             return Vec::new();
         };
-        self.roster(first)
+        Self::roster(first)
             .enumerate()
             .filter_map(|(slot, kind)| {
                 let batch = self.batch(slot)?;

@@ -107,7 +107,7 @@ fn units_take_automatic_priority_but_explicit_building_focus_wins() {
 #[test]
 fn ineligible_air_unit_does_not_block_ground_building_fallback() {
     let mut scenario = scene(BuildingKind::Turret, BuildingKind::Reclaimer);
-    scenario.units.push(unit(1, UnitKind::Gnat, 8, 8));
+    scenario.units.push(unit(1, UnitKind::Kestrel, 8, 8));
     let mut state = scenario.build().unwrap();
     let defense = id(&state, BuildingKind::Turret);
     let target = id(&state, BuildingKind::Reclaimer);

@@ -66,14 +66,14 @@ fn anti_air(kinds: &[UnitKind]) -> bool {
 
 #[test]
 fn seen_enemy_air_brings_anti_air_in_proportion() {
-    let darters = [(UnitKind::Darter, 6, 8), (UnitKind::Darter, 7, 9)];
-    assert!(anti_air(&fabricator_trains(&armed(&darters, &[]))));
+    let buzzards = [(UnitKind::Buzzard, 6, 8), (UnitKind::Buzzard, 7, 9)];
+    assert!(anti_air(&fabricator_trains(&armed(&buzzards, &[]))));
     assert!(
         !anti_air(&fabricator_trains(&armed(&[], &[]))),
         "no air, no anti-air"
     );
 
-    let mut covered = armed(&darters, &[]);
+    let mut covered = armed(&buzzards, &[]);
     covered.units.extend([
         UnitSpec {
             player: 0,
@@ -90,7 +90,7 @@ fn seen_enemy_air_brings_anti_air_in_proportion() {
     ]);
     assert!(
         !anti_air(&fabricator_trains(&covered)),
-        "two Flakhounds already answer two Darters"
+        "two Flakhounds already answer two Buzzards"
     );
 }
 
@@ -320,14 +320,14 @@ fn the_most_wanted_role_takes_the_scrap_before_a_nearer_producer() {
         player.scrap = 200;
     }
     let state = scenario.build().unwrap();
-    // Two Darters seen over the East base: anti-air is wanted, and nothing
+    // Two Buzzards seen over the East base: anti-air is wanted, and nothing
     // is in sight to defend against.
     let mut json = serde_json::to_value(seat(&scenario, 0).checkpoint()).unwrap();
     json["memory"]["units"] = (0..2)
         .map(|index: u32| {
             serde_json::json!({
                 "id": 1_000 + index,
-                "kind": "darter",
+                "kind": "buzzard",
                 "tile": {"x": 20, "y": 2 + index},
                 "seen": state.current_tick(),
             })

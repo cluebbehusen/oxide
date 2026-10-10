@@ -54,47 +54,41 @@
  ],
  "players": [
   {
-   "name": "West Causeway Ferrous",
-   "faction": "ferrous",
+   "name": "West Causeway",
    "scrap": 150,
    "bot": false,
    "team": 0
   },
   {
-   "name": "West Plate Cupric",
-   "faction": "cupric",
+   "name": "West Plate",
    "scrap": 150,
    "bot": true,
    "team": 0,
    "bot_config": {}
   },
   {
-   "name": "West Alley Ferrous",
-   "faction": "ferrous",
+   "name": "West Alley",
    "scrap": 150,
    "bot": true,
    "team": 0,
    "bot_config": {}
   },
   {
-   "name": "East Causeway Cupric",
-   "faction": "cupric",
+   "name": "East Causeway",
    "scrap": 150,
    "bot": true,
    "team": 1,
    "bot_config": {}
   },
   {
-   "name": "East Plate Ferrous",
-   "faction": "ferrous",
+   "name": "East Plate",
    "scrap": 150,
    "bot": true,
    "team": 1,
    "bot_config": {}
   },
   {
-   "name": "East Alley Cupric",
-   "faction": "cupric",
+   "name": "East Alley",
    "scrap": 150,
    "bot": true,
    "team": 1,

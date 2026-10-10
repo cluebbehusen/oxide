@@ -2,8 +2,8 @@
 //! families, match modes, fully seated plans, and publishing rows.
 
 use crate::bot_eval::{
-    EvaluationController, EvaluationFactionCell, EvaluationGeometry, EvaluationLeg, EvaluationPlan,
-    EvidenceBatch, preflight_destinations,
+    EvaluationController, EvaluationGeometry, EvaluationLeg, EvaluationPlan, EvidenceBatch,
+    preflight_destinations,
 };
 use anyhow::{Context, Result, bail};
 use oxide_sim::Scenario;
@@ -160,7 +160,6 @@ pub fn seated_plan(
             .map(|config| Some(EvaluationController::configured(config)))
             .collect(),
         geometry: EvaluationGeometry::Authored,
-        faction_cell: EvaluationFactionCell::Authored,
     }
 }
 

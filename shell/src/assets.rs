@@ -8,17 +8,17 @@ use macroquad::audio::{Sound, load_sound_from_bytes};
 use macroquad::prelude::{
     Color, DrawTextureParams, FilterMode, Image, Rect, Texture2D, Vec2, draw_texture_ex,
 };
-use oxide_sim::{BuildingKind, Faction, UnitKind};
+use oxide_sim::{BuildingKind, UnitKind};
 
 /// Sprite regions share bounded texture pages instead of per-sprite textures.
 pub struct Sprites {
     textures: Vec<Texture2D>,
     entity_lod: crate::entity_lod::EntityLod,
     page_height: f32,
-    harvester_body: Option<[[Rect; 3]; 6]>,
-    excavator_body: Option<[[Rect; 3]; 3]>,
-    scuttler_body: Option<[[Rect; 3]; 3]>,
-    tender_body: Option<[[Rect; 3]; 3]>,
+    harvester_body: Option<[[Rect; 2]; 6]>,
+    excavator_body: Option<[[Rect; 2]; 3]>,
+    scuttler_body: Option<[[Rect; 2]; 3]>,
+    tender_body: Option<[[Rect; 2]; 3]>,
     /// Hull and mount layers for every kind whose look draws a rig.
     unit_rigs: std::collections::HashMap<UnitKind, UnitRig>,
     bombard_spades: Option<[Rect; 5]>,
@@ -51,10 +51,10 @@ pub struct Sprites {
     wreck_pile: Rect,
     air_shadow: Rect,
     burst: Rect,
-    construction: [[Rect; 3]; SITE_FRAME_COUNT * BUILDING_KIND_COUNT],
-    harvester_cargo: [[Rect; 3]; 5],
-    harvester_cargo_scoop: [[[Rect; 3]; 2]; 5],
-    harvester_cargo_tread: [[[Rect; 3]; 2]; 5],
+    construction: [[Rect; 2]; SITE_FRAME_COUNT * BUILDING_KIND_COUNT],
+    harvester_cargo: [[Rect; 2]; 5],
+    harvester_cargo_scoop: [[[Rect; 2]; 2]; 5],
+    harvester_cargo_tread: [[[Rect; 2]; 2]; 5],
     /// Each building kind's art at every rung of its upgrade ladder,
     /// indexed by discriminant then tier.
     buildings: Vec<Vec<RungArt>>,
@@ -65,29 +65,25 @@ pub struct Sprites {
     excavator_cargo: [Rect; EXCAVATOR_CARGO_LEVELS],
 }
 
-fn faction_index(faction: Faction) -> usize {
-    match faction {
-        Faction::Ferrous => 0,
-        Faction::Cupric => 1,
-    }
-}
+/// First slot of every tinted sprite row: the art itself.
+const BASE: usize = 0;
 
-/// Third slot of every faction-varied sprite row: the allegiance-accent
-/// mask (the pixels where the two faction variants differ, grayscale).
-const ACCENT: usize = 2;
+/// Second slot of every tinted sprite row: the allegiance-accent mask, the
+/// art's tintable regions in grayscale.
+const ACCENT: usize = 1;
 
 /// The atlas manifest as `tools/gen_sprites.py` writes it.
 type Manifest = std::collections::HashMap<String, [f32; 4]>;
 
 pub(crate) struct ArrayRig {
-    base: [[Rect; 3]; 2],
-    rotor: [[Rect; 3]; 2],
+    base: [[Rect; 2]; 2],
+    rotor: [[Rect; 2]; 2],
 }
 
 impl ArrayRig {
-    pub(crate) fn layers(&self, tier: u8, faction: Faction) -> [(Rect, Rect); 2] {
+    pub(crate) fn layers(&self, tier: u8) -> [(Rect, Rect); 2] {
         let tier = usize::from(tier.min(1));
-        [self.base[tier], self.rotor[tier]].map(|row| (row[faction_index(faction)], row[ACCENT]))
+        [self.base[tier], self.rotor[tier]].map(|row| (row[BASE], row[ACCENT]))
     }
 }
 
@@ -108,23 +104,23 @@ fn array_rig(rects: &Manifest) -> Result<Option<ArrayRig>> {
 }
 
 pub(crate) struct UnitRig {
-    hull: [[Rect; 3]; 3],
-    mount: Vec<[Rect; 3]>,
+    hull: [[Rect; 2]; 3],
+    mount: Vec<[Rect; 2]>,
 }
 
 impl UnitRig {
-    pub(crate) fn hull(&self, faction: Faction, phase: usize) -> (Rect, Rect) {
+    pub(crate) fn hull(&self, phase: usize) -> (Rect, Rect) {
         let row = self.hull[phase.min(2)];
-        (row[faction_index(faction)], row[ACCENT])
+        (row[BASE], row[ACCENT])
     }
 
-    pub(crate) fn mount(&self, faction: Faction, action: Option<usize>) -> (Rect, Rect) {
+    pub(crate) fn mount(&self, action: Option<usize>) -> (Rect, Rect) {
         let row = self.mount[action.map_or(0, |frame| (frame + 1).min(self.mount.len() - 1))];
-        (row[faction_index(faction)], row[ACCENT])
+        (row[BASE], row[ACCENT])
     }
 }
 
-fn harvester_body_rows(rects: &Manifest) -> Result<Option<[[Rect; 3]; 6]>> {
+fn harvester_body_rows(rects: &Manifest) -> Result<Option<[[Rect; 2]; 6]>> {
     if !rects
         .keys()
         .any(|key| key.starts_with("rig_harvester_body_"))
@@ -140,7 +136,7 @@ fn harvester_body_rows(rects: &Manifest) -> Result<Option<[[Rect; 3]; 6]>> {
     )?))
 }
 
-fn worker_body_rows(rects: &Manifest, stem: &str) -> Result<Option<[[Rect; 3]; 3]>> {
+fn worker_body_rows(rects: &Manifest, stem: &str) -> Result<Option<[[Rect; 2]; 3]>> {
     if !rects.keys().any(|key| key.starts_with(&format!("{stem}_"))) {
         return Ok(None);
     }
@@ -212,7 +208,7 @@ fn quarry_dressing_rows(rects: &Manifest) -> Result<Option<[Rect; 12]>> {
     Ok(Some(pick(rects, keys.each_ref().map(String::as_str))?))
 }
 
-/// Sprites with no faction variants: one region, one name.
+/// Untinted sprites: one region, one name.
 const SINGLE_KEYS: [&str; 10] = [
     "rock_skirt",
     "extractor_frame",
@@ -480,13 +476,9 @@ pub(crate) fn building_stem(kind: BuildingKind) -> &'static str {
     }
 }
 
-/// The three names every faction-varied row carries.
-fn variant_keys(stem: &str, suffix: &str) -> [String; 3] {
-    [
-        format!("{stem}_ferrous{suffix}"),
-        format!("{stem}_cupric{suffix}"),
-        format!("{stem}_accent{suffix}"),
-    ]
+/// The two names every tinted row carries: the art and its accent mask.
+fn variant_keys(stem: &str, suffix: &str) -> [String; 2] {
+    [format!("{stem}{suffix}"), format!("{stem}_accent{suffix}")]
 }
 
 fn lookup(rects: &Manifest, name: &str) -> Result<Rect> {
@@ -505,8 +497,8 @@ fn pick<const N: usize>(rects: &Manifest, keys: [&str; N]) -> Result<[Rect; N]> 
     Ok(out)
 }
 
-fn variant_row(rects: &Manifest, stem: &str, suffix: &str) -> Result<[Rect; 3]> {
-    let mut out = [Rect::new(0.0, 0.0, 0.0, 0.0); 3];
+fn variant_row(rects: &Manifest, stem: &str, suffix: &str) -> Result<[Rect; 2]> {
+    let mut out = [Rect::new(0.0, 0.0, 0.0, 0.0); 2];
     for (slot, key) in out.iter_mut().zip(variant_keys(stem, suffix)) {
         *slot = lookup(rects, &key)?;
     }
@@ -517,8 +509,8 @@ fn variant_rows<const N: usize>(
     rects: &Manifest,
     stem: &str,
     suffixes: [&str; N],
-) -> Result<[[Rect; 3]; N]> {
-    let empty = [Rect::new(0.0, 0.0, 0.0, 0.0); 3];
+) -> Result<[[Rect; 2]; N]> {
+    let empty = [Rect::new(0.0, 0.0, 0.0, 0.0); 2];
     let mut out = [empty; N];
     for (row, suffix) in out.iter_mut().zip(suffixes) {
         *row = variant_row(rects, stem, suffix)?;
@@ -540,7 +532,7 @@ pub(crate) fn numbered_suffixes(rects: &Manifest, stem: &str, label: &str) -> Re
             .count();
         match present {
             0 => break,
-            3 => suffixes.push(suffix),
+            2 => suffixes.push(suffix),
             _ => anyhow::bail!("{stem}{suffix} ships only some of its variants"),
         }
     }
@@ -565,15 +557,15 @@ pub(crate) fn unit_action_frames(kind: UnitKind) -> usize {
     shipped_frames(unit_stem(kind), "action")
 }
 
-fn numbered_rows(rects: &Manifest, stem: &str, label: &str) -> Result<Vec<[Rect; 3]>> {
+fn numbered_rows(rects: &Manifest, stem: &str, label: &str) -> Result<Vec<[Rect; 2]>> {
     numbered_suffixes(rects, stem, label)?
         .iter()
         .map(|suffix| variant_row(rects, stem, suffix))
         .collect()
 }
 
-fn harvester_cargo_rows(rects: &Manifest) -> Result<[[Rect; 3]; HARVESTER_CARGO_LEVELS]> {
-    let empty = [Rect::new(0.0, 0.0, 0.0, 0.0); 3];
+fn harvester_cargo_rows(rects: &Manifest) -> Result<[[Rect; 2]; HARVESTER_CARGO_LEVELS]> {
+    let empty = [Rect::new(0.0, 0.0, 0.0, 0.0); 2];
     let mut out = [empty; HARVESTER_CARGO_LEVELS];
     for (level, row) in out.iter_mut().enumerate() {
         *row = variant_row(rects, "harvester", &format!("_cargo{level}"))?;
@@ -584,8 +576,8 @@ fn harvester_cargo_rows(rects: &Manifest) -> Result<[[Rect; 3]; HARVESTER_CARGO_
 fn harvester_cargo_motion_rows(
     rects: &Manifest,
     suffixes: [&str; 2],
-) -> Result<[[[Rect; 3]; 2]; HARVESTER_CARGO_LEVELS]> {
-    let empty_row = [Rect::new(0.0, 0.0, 0.0, 0.0); 3];
+) -> Result<[[[Rect; 2]; 2]; HARVESTER_CARGO_LEVELS]> {
+    let empty_row = [Rect::new(0.0, 0.0, 0.0, 0.0); 2];
     let mut out = [[empty_row; 2]; HARVESTER_CARGO_LEVELS];
     for (level, rows) in out.iter_mut().enumerate() {
         for (row, suffix) in rows.iter_mut().zip(suffixes) {
@@ -606,9 +598,9 @@ fn excavator_cargo_rows(rects: &Manifest) -> Result<[Rect; EXCAVATOR_CARGO_LEVEL
 /// One unit kind's chassis art: the ready row, its two locomotion poses, and
 /// however many action frames its atlas bank ships.
 struct UnitArt {
-    base: [Rect; 3],
-    moving: [[Rect; 3]; 2],
-    action: Vec<[Rect; 3]>,
+    base: [Rect; 2],
+    moving: [[Rect; 2]; 2],
+    action: Vec<[Rect; 2]>,
 }
 
 /// Loads every kind's art in discriminant order, so accessors can index by
@@ -643,13 +635,13 @@ fn unit_move_suffixes(kind: UnitKind) -> [&'static str; 2] {
 
 /// A building's art at one rung of its upgrade ladder.
 struct RungArt {
-    hull: [Rect; 3],
+    hull: [Rect; 2],
     /// Activity frames after the hull.
-    work: Vec<[Rect; 3]>,
+    work: Vec<[Rect; 2]>,
     /// The hull's charge-rack frames, synchronized with its mount.
-    charge: Vec<[Rect; 3]>,
+    charge: Vec<[Rect; 2]>,
     /// A defense's rotating mount and its firing frames.
-    mount: Option<([Rect; 3], Vec<[Rect; 3]>)>,
+    mount: Option<([Rect; 2], Vec<[Rect; 2]>)>,
 }
 
 /// The atlas stem of a building's hull or mount at `tier`: every upgraded
@@ -706,8 +698,8 @@ fn building_art(rects: &Manifest) -> Result<Vec<Vec<RungArt>>> {
 
 fn construction_rows(
     rects: &Manifest,
-) -> Result<[[Rect; 3]; SITE_FRAME_COUNT * BUILDING_KIND_COUNT]> {
-    let empty = [Rect::new(0.0, 0.0, 0.0, 0.0); 3];
+) -> Result<[[Rect; 2]; SITE_FRAME_COUNT * BUILDING_KIND_COUNT]> {
+    let empty = [Rect::new(0.0, 0.0, 0.0, 0.0); 2];
     let mut out = [empty; SITE_FRAME_COUNT * BUILDING_KIND_COUNT];
     for kind in BuildingKind::ALL {
         for stage in 0..SITE_STAGES {
@@ -964,28 +956,27 @@ impl Sprites {
         })
     }
 
-    pub(crate) fn harvester_body(&self, faction: Faction, cargo: usize) -> Option<(Rect, Rect)> {
+    pub(crate) fn harvester_body(&self, cargo: usize) -> Option<(Rect, Rect)> {
         self.harvester_body.as_ref().map(|rows| {
             let row = rows[cargo.min(5)];
-            (row[faction_index(faction)], row[ACCENT])
+            (row[BASE], row[ACCENT])
         })
     }
 
     pub(crate) fn worker_body(
         &self,
         kind: UnitKind,
-        faction: Faction,
         cargo: usize,
         phase: usize,
     ) -> Option<(Rect, Rect)> {
         let rows = match crate::look::unit(kind).tool? {
-            crate::look::WorkerTool::Scoop => return self.harvester_body(faction, cargo),
+            crate::look::WorkerTool::Scoop => return self.harvester_body(cargo),
             crate::look::WorkerTool::Drum => self.excavator_body.as_ref()?,
             crate::look::WorkerTool::Shears => self.scuttler_body.as_ref()?,
             crate::look::WorkerTool::Welder => self.tender_body.as_ref()?,
         };
         let row = rows[phase.min(2)];
-        Some((row[faction_index(faction)], row[ACCENT]))
+        Some((row[BASE], row[ACCENT]))
     }
 
     pub(crate) fn sprite_contact(
@@ -1123,14 +1114,9 @@ impl Sprites {
     }
 
     /// A defense's tier-appropriate directional mount, if its base art ships bare.
-    pub fn defense_mount(
-        &self,
-        kind: BuildingKind,
-        tier: u8,
-        faction: oxide_sim::Faction,
-    ) -> Option<Rect> {
+    pub fn defense_mount(&self, kind: BuildingKind, tier: u8) -> Option<Rect> {
         let (row, _) = self.rung(kind, tier).mount.as_ref()?;
-        Some(row[faction_index(faction)])
+        Some(row[BASE])
     }
 
     /// The allegiance-accent mask matched to [`Self::defense_mount`].
@@ -1144,23 +1130,17 @@ impl Sprites {
         kind: BuildingKind,
         tier: u8,
         frame: usize,
-    ) -> Option<&[Rect; 3]> {
+    ) -> Option<&[Rect; 2]> {
         let (_, action) = self.rung(kind, tier).mount.as_ref()?;
         action.get(frame)
     }
 
     /// A defense mount's zero-based authored action frame. An out-of-range
     /// frame falls back to the ready mount; unarmed buildings return `None`.
-    pub fn defense_mount_action(
-        &self,
-        kind: BuildingKind,
-        tier: u8,
-        faction: Faction,
-        frame: usize,
-    ) -> Option<Rect> {
+    pub fn defense_mount_action(&self, kind: BuildingKind, tier: u8, frame: usize) -> Option<Rect> {
         self.defense_mount_action_row(kind, tier, frame)
-            .map(|row| row[faction_index(faction)])
-            .or_else(|| self.defense_mount(kind, tier, faction))
+            .map(|row| row[BASE])
+            .or_else(|| self.defense_mount(kind, tier))
     }
 
     /// The allegiance mask matched to [`Self::defense_mount_action`].
@@ -1236,23 +1216,18 @@ impl Sprites {
         self.burst
     }
 
-    /// The building sprite region for a kind and faction.
-    fn building_row(&self, kind: oxide_sim::BuildingKind) -> &[Rect; 3] {
+    /// The building sprite region for a kind.
+    fn building_row(&self, kind: oxide_sim::BuildingKind) -> &[Rect; 2] {
         &self.rung(kind, 0).hull
     }
 
-    pub fn building(&self, kind: oxide_sim::BuildingKind, faction: Faction) -> Rect {
-        self.building_row(kind)[faction_index(faction)]
+    pub fn building(&self, kind: oxide_sim::BuildingKind) -> Rect {
+        self.building_row(kind)[BASE]
     }
 
     /// The hull for a building at its upgrade-ladder rung.
-    pub fn building_tiered(
-        &self,
-        kind: oxide_sim::BuildingKind,
-        tier: u8,
-        faction: Faction,
-    ) -> Rect {
-        self.rung(kind, tier).hull[faction_index(faction)]
+    pub fn building_tiered(&self, kind: oxide_sim::BuildingKind, tier: u8) -> Rect {
+        self.rung(kind, tier).hull[BASE]
     }
 
     /// The allegiance mask matched to [`Self::building_tiered`].
@@ -1260,21 +1235,20 @@ impl Sprites {
         self.rung(kind, tier).hull[ACCENT]
     }
 
-    /// The allegiance-accent mask over a building's faction-colored
-    /// regions: grayscale in the atlas, tinted at draw time.
+    /// The allegiance-accent mask over a building's tintable regions: grayscale in the atlas, tinted at draw time.
     pub fn building_accent(&self, kind: oxide_sim::BuildingKind) -> Rect {
         self.building_row(kind)[ACCENT]
     }
 
-    fn building_action_row(&self, kind: BuildingKind, frame: usize) -> &[Rect; 3] {
+    fn building_action_row(&self, kind: BuildingKind, frame: usize) -> &[Rect; 2] {
         let rung = self.rung(kind, 0);
         rung.charge.get(frame).unwrap_or(&rung.hull)
     }
 
     /// A building base's zero-based authored action frame. Bastion charge
     /// cells live here; other building bases and invalid frames stay ready.
-    pub fn building_action(&self, kind: BuildingKind, faction: Faction, frame: usize) -> Rect {
-        self.building_action_row(kind, frame)[faction_index(faction)]
+    pub fn building_action(&self, kind: BuildingKind, frame: usize) -> Rect {
+        self.building_action_row(kind, frame)[BASE]
     }
 
     /// The allegiance mask matched to [`Self::building_action`].
@@ -1282,7 +1256,7 @@ impl Sprites {
         self.building_action_row(kind, frame)[ACCENT]
     }
 
-    fn building_work_row(&self, kind: BuildingKind, tier: u8, frame: usize) -> &[Rect; 3] {
+    fn building_work_row(&self, kind: BuildingKind, tier: u8, frame: usize) -> &[Rect; 2] {
         let rung = self.rung(kind, tier);
         frame
             .checked_sub(1)
@@ -1292,14 +1266,8 @@ impl Sprites {
 
     /// A complete authored activity frame for a working building. Frame 0
     /// is the ordinary base art and is also the reduced-motion pose.
-    pub fn building_working(
-        &self,
-        kind: BuildingKind,
-        tier: u8,
-        faction: Faction,
-        frame: usize,
-    ) -> Rect {
-        self.building_work_row(kind, tier, frame)[faction_index(faction)]
+    pub fn building_working(&self, kind: BuildingKind, tier: u8, frame: usize) -> Rect {
+        self.building_work_row(kind, tier, frame)[BASE]
     }
 
     /// The allegiance mask matched to [`Self::building_working`].
@@ -1307,7 +1275,7 @@ impl Sprites {
         self.building_work_row(kind, tier, frame)[ACCENT]
     }
 
-    fn construction_row(&self, kind: BuildingKind, stage: usize, phase: usize) -> &[Rect; 3] {
+    fn construction_row(&self, kind: BuildingKind, stage: usize, phase: usize) -> &[Rect; 2] {
         let stage = stage.min(SITE_STAGES - 1);
         let phase = phase.min(SITE_PHASES - 1);
         &self.construction[kind as usize * SITE_FRAME_COUNT + stage * SITE_PHASES + phase]
@@ -1315,14 +1283,8 @@ impl Sprites {
 
     /// A full construction-site frame authored for the final building's
     /// footprint, progress stage, and machinery phase.
-    pub fn construction(
-        &self,
-        kind: BuildingKind,
-        faction: Faction,
-        stage: usize,
-        phase: usize,
-    ) -> Rect {
-        self.construction_row(kind, stage, phase)[faction_index(faction)]
+    pub fn construction(&self, kind: BuildingKind, stage: usize, phase: usize) -> Rect {
+        self.construction_row(kind, stage, phase)[BASE]
     }
 
     /// The allegiance mask matched to [`Self::construction`].
@@ -1330,7 +1292,7 @@ impl Sprites {
         self.construction_row(kind, stage, phase)[ACCENT]
     }
 
-    fn harvester_frame_row(&self, cargo: usize, pose: HarvesterPose) -> &[Rect; 3] {
+    fn harvester_frame_row(&self, cargo: usize, pose: HarvesterPose) -> &[Rect; 2] {
         let cargo = cargo.min(HARVESTER_CARGO_LEVELS - 1);
         match pose {
             HarvesterPose::Idle => &self.harvester_cargo[cargo],
@@ -1343,8 +1305,8 @@ impl Sprites {
 
     /// A complete Harvester frame with its integral cargo meter. Cargo
     /// values above four clamp to the full bay.
-    pub fn harvester_frame(&self, faction: Faction, cargo: usize, pose: HarvesterPose) -> Rect {
-        self.harvester_frame_row(cargo, pose)[faction_index(faction)]
+    pub fn harvester_frame(&self, cargo: usize, pose: HarvesterPose) -> Rect {
+        self.harvester_frame_row(cargo, pose)[BASE]
     }
 
     /// The allegiance mask matched to [`Self::harvester_frame`].
@@ -1352,7 +1314,7 @@ impl Sprites {
         self.harvester_frame_row(cargo, pose)[ACCENT]
     }
 
-    fn excavator_frame_row(&self, pose: ExcavatorPose) -> &[Rect; 3] {
+    fn excavator_frame_row(&self, pose: ExcavatorPose) -> &[Rect; 2] {
         let art = &self.units[UnitKind::Excavator as usize];
         match pose {
             ExcavatorPose::Idle => &art.base,
@@ -1366,8 +1328,8 @@ impl Sprites {
     }
 
     /// A complete Excavator chassis pose beneath its independent cargo meter.
-    pub fn excavator_frame(&self, faction: Faction, pose: ExcavatorPose) -> Rect {
-        self.excavator_frame_row(pose)[faction_index(faction)]
+    pub fn excavator_frame(&self, pose: ExcavatorPose) -> Rect {
+        self.excavator_frame_row(pose)[BASE]
     }
 
     /// The allegiance mask matched to [`Self::excavator_frame`].
@@ -1380,7 +1342,7 @@ impl Sprites {
         self.excavator_cargo[cargo.min(EXCAVATOR_CARGO_LEVELS - 1)]
     }
 
-    fn moving_unit_row(&self, kind: UnitKind, frame: usize) -> &[Rect; 3] {
+    fn moving_unit_row(&self, kind: UnitKind, frame: usize) -> &[Rect; 2] {
         let art = &self.units[kind as usize];
         frame
             .checked_sub(1)
@@ -1390,8 +1352,8 @@ impl Sprites {
 
     /// A unit's authored locomotion phase. Frame 0 is the ordinary base art;
     /// frames 1 and 2 select the two movement poses.
-    pub fn unit_moving(&self, kind: UnitKind, faction: Faction, frame: usize) -> Rect {
-        self.moving_unit_row(kind, frame)[faction_index(faction)]
+    pub fn unit_moving(&self, kind: UnitKind, frame: usize) -> Rect {
+        self.moving_unit_row(kind, frame)[BASE]
     }
 
     /// The allegiance mask matched to [`Self::unit_moving`].
@@ -1409,19 +1371,19 @@ impl Sprites {
         self.debris[variant % 3]
     }
 
-    fn unit_row(&self, kind: UnitKind) -> &[Rect; 3] {
+    fn unit_row(&self, kind: UnitKind) -> &[Rect; 2] {
         &self.units[kind as usize].base
     }
 
-    fn unit_action_row(&self, kind: UnitKind, frame: usize) -> Option<&[Rect; 3]> {
+    fn unit_action_row(&self, kind: UnitKind, frame: usize) -> Option<&[Rect; 2]> {
         self.units[kind as usize].action.get(frame)
     }
 
     /// A unit's zero-based authored action frame. Harvester and invalid frame
     /// requests fall back to the ordinary ready sprite.
-    pub fn unit_action(&self, kind: UnitKind, faction: Faction, frame: usize) -> Rect {
+    pub fn unit_action(&self, kind: UnitKind, frame: usize) -> Rect {
         self.unit_action_row(kind, frame)
-            .unwrap_or_else(|| self.unit_row(kind))[faction_index(faction)]
+            .unwrap_or_else(|| self.unit_row(kind))[BASE]
     }
 
     /// The allegiance mask matched to [`Self::unit_action`].
@@ -1430,9 +1392,9 @@ impl Sprites {
             .unwrap_or_else(|| self.unit_row(kind))[ACCENT]
     }
 
-    /// The unit sprite region for a kind and faction.
-    pub fn unit(&self, kind: UnitKind, faction: Faction) -> Rect {
-        self.unit_row(kind)[faction_index(faction)]
+    /// The unit sprite region for a kind.
+    pub fn unit(&self, kind: UnitKind) -> Rect {
+        self.unit_row(kind)[BASE]
     }
 
     pub(crate) fn unit_rig(&self, kind: UnitKind) -> Option<&UnitRig> {
@@ -1458,8 +1420,7 @@ impl Sprites {
         self.bombard_spades.map(|rows| rows[usize::from(row)])
     }
 
-    /// The allegiance-accent mask over a unit's faction-colored
-    /// regions: grayscale in the atlas, tinted at draw time.
+    /// The allegiance-accent mask over a unit's tintable regions: grayscale in the atlas, tinted at draw time.
     pub fn unit_accent(&self, kind: UnitKind) -> Rect {
         self.unit_row(kind)[ACCENT]
     }

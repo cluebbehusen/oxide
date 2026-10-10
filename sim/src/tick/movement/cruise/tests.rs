@@ -1,9 +1,9 @@
 use super::*;
+use crate::UnitKind;
 use crate::scenario::{PlayerSpec, Scenario, ScenarioMode, UnitSpec};
 use crate::state::PathFollow;
-use crate::{Faction, UnitKind};
 
-/// A Darter pressed against a ridge, nose into it, flying a route
+/// A Kestrel pressed against a ridge, nose into it, flying a route
 /// toward `waypoint`.
 fn against_ridge(waypoint: TilePos) -> (Unit, Map) {
     let state = Scenario {
@@ -22,7 +22,6 @@ fn against_ridge(waypoint: TilePos) -> (Unit, Map) {
         players: ["West", "East"]
             .map(|name| PlayerSpec {
                 name: name.into(),
-                faction: Faction::Ferrous,
                 team: None,
                 scrap: 0,
                 bot: false,
@@ -31,7 +30,7 @@ fn against_ridge(waypoint: TilePos) -> (Unit, Map) {
             .into(),
         units: vec![UnitSpec {
             player: 0,
-            kind: UnitKind::Darter,
+            kind: UnitKind::Kestrel,
             x: 5,
             y: 3,
         }],

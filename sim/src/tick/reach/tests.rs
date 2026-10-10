@@ -1,6 +1,5 @@
 use super::*;
 use crate::scenario::{PlayerSpec, ScenarioMode, UnitSpec};
-use crate::state::Faction;
 use crate::stats::UnitKind;
 use crate::{Event, Scenario};
 
@@ -24,7 +23,6 @@ fn world_with_teams(
             .enumerate()
             .map(|(seat, &team)| PlayerSpec {
                 name: format!("p{seat}"),
-                faction: Faction::Ferrous,
                 team,
                 scrap: 0,
                 bot: false,
@@ -267,7 +265,7 @@ fn a_crowd_chain_reaches_back_from_the_endpoint() {
             (0, UnitKind::Sentinel, 3, 1),
             (0, UnitKind::Sentinel, 4, 1),
             (0, UnitKind::Sentinel, 9, 1),
-            (0, UnitKind::Wisp, 5, 1),
+            (0, UnitKind::Talon, 5, 1),
         ],
     );
     // A line of touching parked bodies from the endpoint eastward.
@@ -372,7 +370,7 @@ fn a_hostile_line_ends_no_walk_whether_or_not_its_side_sees_it() {
         let mut units = vec![(line_owner, UnitKind::Sentinel, 1, 1); LINE];
         units.extend([(0, UnitKind::Sentinel, 1, 1); 2]);
         if spotter {
-            units.push((0, UnitKind::Wisp, 1, 1));
+            units.push((0, UnitKind::Talon, 1, 1));
         }
         let mut state = world_with_teams(
             &["................................"; 3],

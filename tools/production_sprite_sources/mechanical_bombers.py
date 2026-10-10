@@ -1,4 +1,4 @@
-"""Shared aircraft materials with preserved flying-wing and split-wing silhouettes."""
+"""The Condor in shared aircraft materials, keeping its flying-wing silhouette."""
 
 from PIL import Image, ImageDraw
 
@@ -12,7 +12,6 @@ IRON = gen.IRON
 IRON_LIGHT = gen.IRON_LIGHT
 CONDOR_SIZE = 128
 CONDOR_STATES = ("idle", "crack", "open", "release", "recover")
-MOTH_ACTION_COUNT = 6
 SS = 4
 
 
@@ -47,10 +46,6 @@ def _finish(image):
     return gen.rim_light(image.resize((128, 128), Image.Resampling.LANCZOS))
 
 
-def _polygon(draw, points, color):
-    draw.polygon(points, fill=_rgba(color))
-
-
 def condor_panels(draw):
     for side in (-1, 1):
         draw.line(
@@ -67,53 +62,6 @@ def condor_panels(draw):
         draw.rectangle((x, 49, x + 6, 67), fill=_rgba(BLACK))
         draw.line((x + 1, 50, x + 5, 50), fill=_rgba(IRON_LIGHT), width=1)
         draw.rectangle((x + 2, 53, x + 4, 64), fill=_rgba(IRON))
-
-
-def _engine(draw, bounds, phase, accent):
-    x0, y0, x1, y1 = bounds
-    draw.rounded_rectangle(bounds, radius=5, fill=_rgba(BLACK))
-    draw.rounded_rectangle(
-        (x0 + 2, y0 + 2, x1 - 2, y1 - 2), radius=3, fill=_rgba(IRON_DARK)
-    )
-    draw.rectangle((x0 + 5, y0 + 10, x1 - 5, y1 - 10), fill=_rgba(accent))
-    draw.line((x0 + 4, y0 + 3, x1 - 4, y0 + 3), fill=_rgba(IRON_LIGHT), width=1)
-    draw.rectangle((x0 + 6, y0 + 5, x1 - 6, y0 + 8), fill=_rgba(IRON_DEEP))
-    for offset in (-4, 0, 4):
-        x = (x0 + x1) / 2 + offset
-        draw.line(
-            (x, y1 - 8, x, y1 - 4),
-            fill=_rgba(IRON_LIGHT if (offset // 4 + phase) % 2 else IRON),
-            width=1,
-        )
-
-
-def capsule(draw, x, y):
-    draw.rounded_rectangle((x - 4, y - 7, x + 4, y + 7), radius=3, fill=_rgba(BLACK))
-    draw.rounded_rectangle(
-        (x - 2, y - 5, x + 2, y + 5), radius=2, fill=_rgba((116, 112, 103))
-    )
-    draw.line((x - 1, y - 3, x - 1, y + 3), fill=_rgba((157, 149, 133)), width=1)
-    draw.line((x - 3, y + 5, x + 3, y + 5), fill=_rgba(IRON_LIGHT), width=1)
-
-
-def moth_racks(draw, action):
-    loaded = {0: 6, 1: 0, 2: 0, 3: 0, 4: 2, 5: 4, 6: 6}[action]
-    for x in (49, 79):
-        draw.rounded_rectangle((x - 8, 34, x + 8, 85), radius=3, fill=_rgba(BLACK))
-        draw.rectangle((x - 4, 38, x + 4, 81), fill=_rgba(IRON_DEEP))
-        draw.line((x - 6, 38, x - 6, 81), fill=_rgba(IRON), width=1)
-        draw.line((x + 6, 38, x + 6, 81), fill=_rgba(IRON), width=1)
-    positions = [(49, 45), (79, 45), (49, 59), (79, 59), (49, 73), (79, 73)]
-    for slot, (x, y) in enumerate(positions):
-        if slot < loaded:
-            capsule(draw, x, y)
-        elif action == 1:
-            draw.rectangle((x - 3, y - 6, x + 3, y + 6), fill=(0, 0, 0, 0))
-        else:
-            draw.line((x - 3, y, x + 3, y), fill=_rgba(IRON_DARK), width=1)
-    if action in (1, 2):
-        for x in (39, 89):
-            draw.line((x, 40, x, 78), fill=_rgba(IRON_LIGHT), width=1)
 
 
 def nose_bay(
@@ -149,14 +97,14 @@ def nose_bay(
         draw.line((64, 19, 64, 30), fill=_rgba(BLACK), width=1)
 
 
-def render_condor(faction: str, state: str = "idle") -> Image.Image:
+def render_condor(variant: str, state: str = "idle") -> Image.Image:
     """Preserve the flying wing and route its payload through split nose doors."""
-    if faction not in PALETTES:
-        raise ValueError(f"unknown faction: {faction}")
+    if variant not in PALETTES:
+        raise ValueError(f"unknown variant: {variant}")
     if state not in CONDOR_STATES:
         raise ValueError(f"unknown Condor state: {state}")
     image, draw = _canvas(CONDOR_SIZE)
-    palette = PALETTES[faction]
+    palette = PALETTES[variant]
     outer = (
         (56, 19),
         (72, 19),
@@ -198,77 +146,4 @@ def render_condor(faction: str, state: str = "idle") -> Image.Image:
     draw.rectangle((67, 31, 70, 54), fill=_rgba(palette.dark))
     condor_panels(draw)
     nose_bay(image, draw, state, palette.dark)
-    return _finish(image)
-
-
-def render_moth(
-    faction: str,
-    move_phase: int = 0,
-    action: int = 0,
-) -> Image.Image:
-    """Render one approved split-bay Moth frame."""
-    if faction not in PALETTES:
-        raise ValueError(f"unknown faction: {faction}")
-    if action not in range(MOTH_ACTION_COUNT + 1):
-        raise ValueError(f"unknown Moth action: {action}")
-    image, draw = _canvas()
-    primary, dark = PALETTES[faction].base, PALETTES[faction].dark
-    _polygon(
-        draw,
-        (
-            (8, 42),
-            (37, 20),
-            (53, 18),
-            (64, 34),
-            (75, 18),
-            (91, 20),
-            (120, 42),
-            (111, 87),
-            (83, 70),
-            (76, 108),
-            (64, 99),
-            (52, 108),
-            (45, 70),
-            (17, 87),
-        ),
-        BLACK,
-    )
-    _polygon(
-        draw,
-        (
-            (17, 44),
-            (41, 28),
-            (50, 28),
-            (64, 45),
-            (78, 28),
-            (87, 28),
-            (111, 44),
-            (104, 76),
-            (79, 61),
-            (70, 94),
-            (64, 88),
-            (58, 94),
-            (49, 61),
-            (24, 76),
-        ),
-        IRON_DARK,
-    )
-    _engine(draw, (15, 40, 35, 83), move_phase % 3, dark)
-    _engine(draw, (93, 40, 113, 83), move_phase % 3, dark)
-    draw.rectangle((36, 31, 52, 39), fill=_rgba(primary))
-    draw.rectangle((76, 31, 92, 39), fill=_rgba(primary))
-    moth_racks(draw, action)
-    for side in (-1, 1):
-        _polygon(
-            draw,
-            tuple(
-                (64 + side * x, y) for x, y in ((23, 25), (36, 34), (30, 38), (19, 32))
-            ),
-            IRON,
-        )
-        draw.line(
-            [(64 + side * 24, 25), (64 + side * 36, 34)],
-            fill=_rgba(IRON_LIGHT),
-            width=1,
-        )
     return _finish(image)

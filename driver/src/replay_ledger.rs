@@ -1,13 +1,13 @@
 //! `replay-ledger`: the impact ledger over recorded games, for balancing and
 //! review. Each replay or match recording is re-executed through
-//! [`crate::ledger::ImpactLedger`]; the text report pools seats by faction
-//! and controller.
+//! [`crate::ledger::ImpactLedger`]; the text report pools seats by
+//! controller.
 
 use crate::ledger::{ImpactLedger, LedgerPool, SeatLedger, WORTH_PERIOD};
 use anyhow::{Context, Result, bail};
 use oxide_kit::GameReplay;
+use oxide_sim::SIM_VERSION;
 use oxide_sim::scenario::BotConfig;
-use oxide_sim::{Faction, SIM_VERSION};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -26,8 +26,6 @@ pub struct LedgerSeat {
     pub seat: u8,
     /// Seat name.
     pub name: String,
-    /// Faction.
-    pub faction: Faction,
     /// Team.
     pub team: u8,
     /// Who played the seat.
@@ -88,7 +86,6 @@ pub fn ledger(path: &Path, replay: &GameReplay) -> Result<GameLedger> {
         .map(|(seat, (spec, ledger))| LedgerSeat {
             seat: u8::try_from(seat).expect("seat indices fit in u8"),
             name: spec.name.clone(),
-            faction: spec.faction,
             team: state.players()[seat].team,
             controller: if spec.bot {
                 SeatPlayer::Bot {
@@ -155,18 +152,14 @@ pub fn load(path: &Path) -> Result<GameReplay> {
     oxide_kit::load_replay(path).with_context(|| format!("loading {}", path.display()))
 }
 
-/// The label a seat pools under: its faction and, for a bot, its difficulty.
+/// The label a seat pools under: its controller and, for a bot, its
+/// difficulty.
 fn group(seat: &LedgerSeat) -> String {
-    let controller = match seat.controller {
+    match seat.controller {
         SeatPlayer::Human => "human".to_owned(),
         SeatPlayer::Unknown => "unknown controller".to_owned(),
         SeatPlayer::Bot { config } => format!("bot {}", config.difficulty),
-    };
-    let faction = serde_json::to_value(seat.faction)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .unwrap_or_default();
-    format!("{faction}, {controller}")
+    }
 }
 
 /// The text report over `games`.

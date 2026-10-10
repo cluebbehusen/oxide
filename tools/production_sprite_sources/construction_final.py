@@ -35,11 +35,12 @@ DEFENSE_MOUNTS = {
 HULL_OPACITY = (96, 160, 224)
 
 
-def complete_hull(registry: Registry, stem: str, faction: str) -> Image.Image:
+def complete_hull(registry: Registry, stem: str, variant: str) -> Image.Image:
     """Returns the recognizable final hull, including a defense's mount."""
-    hull = registry[f"{stem}_{faction}"].convert("RGBA").copy()
+    tag = gen.variant_tag(variant)
+    hull = registry[f"{stem}{tag}"].convert("RGBA").copy()
     if mount_stem := DEFENSE_MOUNTS.get(stem):
-        hull.alpha_composite(registry[f"{mount_stem}_{faction}"].convert("RGBA"))
+        hull.alpha_composite(registry[f"{mount_stem}{tag}"].convert("RGBA"))
     return hull
 
 
@@ -62,12 +63,12 @@ def dimmed_hull(source: Image.Image, stage: int) -> Image.Image:
 def construction_frame(
     registry: Registry,
     stem: str,
-    faction: str,
+    variant: str,
     stage: int,
     phase: int,
 ) -> Image.Image:
     """Builds one full-hull scaffold-cage frame at native game scale."""
-    source = complete_hull(registry, stem, faction)
+    source = complete_hull(registry, stem, variant)
     width, height = source.size
     scale = width / 64
     frame = Image.new("RGBA", source.size, (0, 0, 0, 0))
@@ -117,7 +118,7 @@ def construction_frame(
         )
         draw.line(
             (contact_x, contact_y - spark, contact_x, contact_y + spark),
-            fill=(*gen.FACTIONS[faction]["light"], 255),
+            fill=(*gen.PALETTES[variant]["light"], 255),
             width=max(1, _scaled(1, scale)),
         )
     return frame
@@ -126,11 +127,11 @@ def construction_frame(
 def install_finalized_construction(registry: Registry, out: Path) -> None:
     """Installs the shared full-hull construction treatment."""
     out.mkdir(parents=True, exist_ok=True)
-    for faction in gen.FACTIONS:
+    for variant in gen.PALETTES:
         for stem in BUILDING_STEMS:
             for stage in range(3):
                 for phase in range(2):
-                    name = f"{stem}_{faction}_site{stage}_{phase}"
-                    frame = construction_frame(registry, stem, faction, stage, phase)
-                    frame.save(out / f"{name}.png")
+                    name = f"{stem}{gen.variant_tag(variant)}_site{stage}_{phase}"
+                    frame = construction_frame(registry, stem, variant, stage, phase)
+                    gen.save_sprite(frame, out, name)
                     registry[name] = frame

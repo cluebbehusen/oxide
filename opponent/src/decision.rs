@@ -18,7 +18,7 @@ use crate::workers;
 use chassis::grid::TilePos;
 use oxide_sim::observation::{BuildingObs, ObservationData, UnitObs};
 use oxide_sim::scenario::{BotDifficulty, BotStance};
-use oxide_sim::stats::{Domain, Role};
+use oxide_sim::stats::Domain;
 use oxide_sim::{BuildingId, BuildingKind, Command, PlayerCommand, PlayerId, UnitId, UnitKind};
 
 /// What one decision emits.
@@ -890,8 +890,8 @@ fn train_carriers(
 }
 
 /// Trains a scout while fewer are in production than the `lacking` stale
-/// places no scout could take but the one it would train could reach: the
-/// faction's air scout at a built Airworks, else a Scuttler at a Foundry.
+/// places no scout could take but the one it would train could reach: a
+/// Kestrel at a built Airworks, else a Scuttler at a Foundry.
 /// Once an air scout can be trained a Scuttler no longer counts, since one
 /// that could reach a stale point would already be scouting.
 fn train_scout(
@@ -900,7 +900,7 @@ fn train_scout(
     lacking: usize,
     ledger: &mut Ledger,
 ) {
-    let air = Role::Scout.unit_for(observation.faction);
+    let air = UnitKind::Kestrel;
     let airworks = producers
         .iter()
         .find(|producer| producer.building.kind == BuildingKind::Airworks);

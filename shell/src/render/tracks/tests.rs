@@ -5,10 +5,10 @@ fn idle_body(kind: UnitKind) -> Image {
     let sprites = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/sprites");
     let name = kind.name();
     let path = [
-        format!("rig_{name}_hull_ferrous"),
-        format!("rig_{name}_body_ferrous"),
-        format!("rig_{name}_body_ferrous_cargo0"),
-        format!("{name}_ferrous"),
+        format!("rig_{name}_hull"),
+        format!("rig_{name}_body"),
+        format!("rig_{name}_body_cargo0"),
+        name.to_owned(),
     ]
     .into_iter()
     .map(|stem| sprites.join(format!("{stem}.png")))

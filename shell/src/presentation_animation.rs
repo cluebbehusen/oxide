@@ -28,7 +28,6 @@ const ARRAY_SWEEP_PERIOD: u64 = 32;
 const EXTRACTOR_PERIOD: u64 = 16;
 const RECLAIMER_PERIOD: u64 = 24;
 const BUZZARD_ROTOR_PERIOD: u64 = 6;
-const WISP_ROTOR_PERIOD: u64 = 6;
 const SKYHOOK_ROTOR_PERIOD: u64 = 9;
 const SKYHOOK_ACTION_TICKS: f32 = 8.0;
 const REPAIR_PULSE_TICKS: f32 = 6.0;
@@ -732,7 +731,7 @@ impl AnimationController {
             attack: self.unit_attack(facts.id, facts.kind, clock),
             weapons,
             propulsion,
-            scanner: (facts.kind.role() == oxide_sim::stats::Role::Scout)
+            scanner: (facts.kind == UnitKind::Kestrel)
                 .then(|| clock.cycle(facts.id.0, 96, options.reduced_motion)),
             transport: self.transport_action(facts.id, clock),
             demolition_preparation: facts
@@ -939,7 +938,7 @@ fn unit_attack_timing(kind: UnitKind) -> AttackTiming {
             report_ticks: 3.0,
             recover_ticks: 5.0,
         },
-        UnitKind::Flakhound | UnitKind::Stinger => AttackTiming {
+        UnitKind::Flakhound => AttackTiming {
             report_ticks: FLAKHOUND_REPORT_TICKS,
             recover_ticks: 3.0,
         },
@@ -951,11 +950,11 @@ fn unit_attack_timing(kind: UnitKind) -> AttackTiming {
             report_ticks: 2.0,
             recover_ticks: 4.0,
         },
-        UnitKind::Shrike | UnitKind::Sylph => AttackTiming {
+        UnitKind::Shrike => AttackTiming {
             report_ticks: 2.0,
             recover_ticks: 3.0,
         },
-        UnitKind::Condor | UnitKind::Moth => AttackTiming {
+        UnitKind::Condor => AttackTiming {
             report_ticks: 3.0,
             recover_ticks: 5.0,
         },
@@ -966,13 +965,12 @@ fn unit_attack_timing(kind: UnitKind) -> AttackTiming {
         UnitKind::Tender
         | UnitKind::Excavator
         | UnitKind::Kestrel
-        | UnitKind::Gnat
         | UnitKind::Skyhook
         | UnitKind::Sapper => AttackTiming {
             report_ticks: 1.0,
             recover_ticks: 1.0,
         },
-        UnitKind::Darter | UnitKind::Talon | UnitKind::Wisp => AttackTiming {
+        UnitKind::Talon => AttackTiming {
             report_ticks: 2.0,
             recover_ticks: 3.0,
         },
@@ -1044,7 +1042,6 @@ fn unit_move_period(kind: UnitKind) -> u64 {
 fn rotor_period(kind: UnitKind) -> Option<u64> {
     match kind {
         UnitKind::Buzzard => Some(BUZZARD_ROTOR_PERIOD),
-        UnitKind::Wisp => Some(WISP_ROTOR_PERIOD),
         UnitKind::Skyhook => Some(SKYHOOK_ROTOR_PERIOD),
         UnitKind::Harvester
         | UnitKind::Sentinel
@@ -1052,18 +1049,13 @@ fn rotor_period(kind: UnitKind) -> Option<u64> {
         | UnitKind::Lancer
         | UnitKind::Bombard
         | UnitKind::Flakhound
-        | UnitKind::Stinger
-        | UnitKind::Darter
         | UnitKind::Talon
         | UnitKind::Warden
         | UnitKind::Tender
         | UnitKind::Excavator
         | UnitKind::Kestrel
-        | UnitKind::Gnat
         | UnitKind::Shrike
-        | UnitKind::Sylph
         | UnitKind::Condor
-        | UnitKind::Moth
         | UnitKind::Breaker
         | UnitKind::Avalanche
         | UnitKind::Sapper => None,

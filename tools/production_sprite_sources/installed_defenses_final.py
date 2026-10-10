@@ -124,9 +124,9 @@ def barrel(d, x, y, bottom, width):
     line(d, [(x - width / 2 + 1, y + 2), (x + width / 2 - 1, y + 2)], VOID, 2)
 
 
-def bastion_base(faction, phase=0):
+def bastion_base(variant, phase=0):
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     plate(d, (22, 28, 109, 111), DEEP, 13)
     plate(d, (28, 34, 103, 105), DARK, 10)
     plate(d, (35, 41, 96, 98), VOID, 9)
@@ -149,9 +149,9 @@ def bastion_base(faction, phase=0):
     return finish(im)
 
 
-def bastion_mount(faction, phase=0):
+def bastion_mount(variant, phase=0):
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     recoil = {6: 2, 7: 7, 8: 3}.get(phase, 0)
     # Traverse fork -> recoil slides -> breech -> barrel, with a rear rammer.
     plate(d, (43, 51, 85, 85), DARK, 5)
@@ -176,11 +176,11 @@ def bastion_mount(faction, phase=0):
     return finish(im, False)
 
 
-def turret_base(faction, tier=0):
+def turret_base(variant, tier=0):
     if tier == 2:
-        return bulwark_base(faction)
+        return bulwark_base(variant)
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     plate(d, (14 - tier * 2, 25 - tier * 3, 114 + tier * 2, 110 + tier * 2), DEEP, 18)
     for x, y in [(24, 36), (104, 36), (24, 99), (104, 99)]:
         plate(d, (x - 8, y - 6, x + 8, y + 7), IRON, 3)
@@ -196,11 +196,11 @@ def turret_base(faction, tier=0):
     return finish(im)
 
 
-def turret_mount(faction, tier=0, phase=0):
+def turret_mount(variant, tier=0, phase=0):
     if tier == 2:
-        return bulwark_mount(faction, phase)
+        return bulwark_mount(variant, phase)
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     recoil = {1: 2, 2: 7, 3: 1}.get(phase, 0)
     plate(d, (43 - tier * 2, 51, 85 + tier * 2, 88), DARK, 7)
     barrel(d, 64, 12 - tier * 2 + recoil, 67 + recoil, 7 + tier * 3)
@@ -221,9 +221,9 @@ def turret_mount(faction, tier=0, phase=0):
     return finish(im, False)
 
 
-def flak_base(faction, tier=0):
+def flak_base(variant, tier=0):
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     for a, b in [((25, 29), (104, 105)), ((103, 29), (24, 105))]:
         _brace(d, a, b, VOID, 18)
         _brace(d, a, b, IRON, 11)
@@ -240,9 +240,9 @@ def flak_base(faction, tier=0):
     return finish(im)
 
 
-def flak_mount(faction, tier=0, phase=0):
+def flak_mount(variant, tier=0, phase=0):
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     plate(d, (33 - tier * 4, 58, 95 + tier * 4, 87), DARK, 6)
     plate(d, (44, 67, 84, 85), paint, 3)
     for side, cx in enumerate((44 - tier * 3, 84 + tier * 3)):
@@ -273,9 +273,9 @@ def flak_mount(faction, tier=0, phase=0):
     return finish(im, False)
 
 
-def barricade(faction):
+def barricade(variant):
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     for x in (9, 104):
         plate(d, (x, 70, x + 16, 111), DEEP, 3)
         poly(d, [(x + 2, 102), (x + 6, 68), (x + 13, 68), (x + 14, 102)], IRON)
@@ -294,9 +294,9 @@ def barricade(faction):
     return finish(im)
 
 
-def scuttle_charge(faction):
+def scuttle_charge(variant):
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["base"]
+    paint = gen.PALETTES[variant]["base"]
     plate(d, (23, 36, 105, 94), DEEP, 14)
     plate(d, (30, 42, 98, 86), IRON, 10)
     plate(d, (37, 47, 91, 79), paint, 7)
@@ -311,9 +311,9 @@ def scuttle_charge(faction):
     return finish(im)
 
 
-def bulwark_base(faction):
+def bulwark_base(variant):
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     plate(d, (13, 29, 115, 116), DEEP, 15)
     plate(d, (20, 35, 108, 110), IRON, 12)
     circle(d, (29, 29, 99, 99), VOID)
@@ -329,9 +329,9 @@ def bulwark_base(faction):
     return finish(im)
 
 
-def bulwark_mount(faction, phase=0):
+def bulwark_mount(variant, phase=0):
     im, d = canvas()
-    paint = gen.FACTIONS[faction]["dark"]
+    paint = gen.PALETTES[variant]["dark"]
     recoil = {1: 2, 2: 7, 3: 2}.get(phase, 0)
     # Armored cheeks shelter twin recoil cylinders and the belt-fed breech.
     plate(d, (29, 42, 99, 101), DARK, 13)
@@ -358,35 +358,36 @@ def bulwark_mount(faction, phase=0):
 
 def source_frames():
     """Yield the complete installed-defense rows before masks and construction."""
-    for faction in gen.FACTIONS:
+    for variant in gen.PALETTES:
+        tag = gen.variant_tag(variant)
         for phase in range(10):
             suffix = f"_action{phase}" if phase else ""
-            yield f"bastion_{faction}{suffix}", bastion_base(faction, phase)
-            yield f"bastion_mount_{faction}{suffix}", bastion_mount(faction, phase)
+            yield f"bastion{tag}{suffix}", bastion_base(variant, phase)
+            yield f"bastion_mount{tag}{suffix}", bastion_mount(variant, phase)
         for tier in range(3):
             tier_suffix = f"_t{tier}" if tier else ""
-            yield f"turret{tier_suffix}_{faction}", turret_base(faction, tier)
+            yield f"turret{tier_suffix}{tag}", turret_base(variant, tier)
             for phase in range(5):
                 suffix = f"_action{phase}" if phase else ""
                 yield (
-                    f"turret_barrel{tier_suffix}_{faction}{suffix}",
-                    turret_mount(faction, tier, phase),
+                    f"turret_barrel{tier_suffix}{tag}{suffix}",
+                    turret_mount(variant, tier, phase),
                 )
         for tier in range(2):
             tier_suffix = f"_t{tier}" if tier else ""
-            yield f"flak_turret{tier_suffix}_{faction}", flak_base(faction, tier)
+            yield f"flak_turret{tier_suffix}{tag}", flak_base(variant, tier)
             for phase in range(9):
                 suffix = f"_action{phase}" if phase else ""
                 yield (
-                    f"flak_mount{tier_suffix}_{faction}{suffix}",
-                    flak_mount(faction, tier, phase),
+                    f"flak_mount{tier_suffix}{tag}{suffix}",
+                    flak_mount(variant, tier, phase),
                 )
-        yield f"scuttle_charge_{faction}", scuttle_charge(faction)
-        yield f"barricade_{faction}", barricade(faction)
+        yield f"scuttle_charge{tag}", scuttle_charge(variant)
+        yield f"barricade{tag}", barricade(variant)
 
 
 def install_defenses(registry, out):
     """Install canonical frames without reading any review workspace."""
     for key, image in source_frames():
         registry[key] = image
-        image.save(out / f"{key}.png")
+        gen.save_sprite(image, out, key)

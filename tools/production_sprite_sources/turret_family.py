@@ -35,11 +35,11 @@ def _sanitize_transparent_fringe(image: Image.Image) -> Image.Image:
     return result
 
 
-def turret_base(faction: str, tier: int) -> Image.Image:
+def turret_base(variant: str, tier: int) -> Image.Image:
     """Draw the circular foundation and increasingly armored traverse ring."""
     if tier not in range(3):
         raise ValueError(f"invalid Turret tier: {tier}")
-    palette = gen.FACTIONS[faction]
+    palette = gen.PALETTES[variant]
     image, draw = gen.canvas(64)
 
     draw.ellipse(
@@ -104,8 +104,8 @@ def turret_base(faction: str, tier: int) -> Image.Image:
     return _finish_without_rim(image)
 
 
-def _gun(faction: str, tier: int, phase: int) -> Image.Image:
-    palette = gen.FACTIONS[faction]
+def _gun(variant: str, tier: int, phase: int) -> Image.Image:
+    palette = gen.PALETTES[variant]
     image, draw = gen.canvas(64)
     report = phase == 1
     recoil = {2: 5, 3: 2}.get(phase, 0)
@@ -275,30 +275,30 @@ def _feed(tier: int, phase: int) -> Image.Image:
     return _finish_without_rim(image)
 
 
-def turret_mount(faction: str, tier: int, phase: int) -> Image.Image:
+def turret_mount(variant: str, tier: int, phase: int) -> Image.Image:
     """Draw one tier-specific firing pose, including its visible shell feeds."""
     if tier not in range(3):
         raise ValueError(f"invalid Turret tier: {tier}")
     if phase not in range(5):
         raise ValueError(f"invalid Turret action phase: {phase}")
-    image = _gun(faction, tier, phase)
+    image = _gun(variant, tier, phase)
     image.alpha_composite(_feed(tier, phase))
-    if faction != "ferrous":
-        silhouette = _gun("ferrous", tier, phase)
+    if variant != "base":
+        silhouette = _gun("base", tier, phase)
         silhouette.alpha_composite(_feed(tier, phase))
         image.putalpha(silhouette.getchannel("A"))
     return image
 
 
-def turret_frame(faction: str, tier: int, phase: int) -> Image.Image:
+def turret_frame(variant: str, tier: int, phase: int) -> Image.Image:
     """Compose a native review-equivalent frame for stability tests."""
-    image = turret_base(faction, tier)
-    image.alpha_composite(turret_mount(faction, tier, phase))
+    image = turret_base(variant, tier)
+    image.alpha_composite(turret_mount(variant, tier, phase))
     return _sanitize_transparent_fringe(image)
 
 
 TURRET_APPROVED_VISIBLE_RGBA_SHA256 = (
-    "9180f207de386758147599607eba761dafe8757c874779d0af10b7d8f878fff4"
+    "e03ab5e27f757ed00d722d645e834bdfcded911fe18c71062819e278362104f2"
 )
 
 
@@ -314,16 +314,16 @@ def _visible_rgba_bytes(image: Image.Image) -> bytes:
 def turret_source_visible_digest() -> str:
     """Hash the approved segmented twin-feed sequence without invisible RGB."""
     digest = hashlib.sha256()
-    for faction in ("ferrous", "cupric"):
+    for variant in ("base", "probe"):
         for tier in range(3):
             for phase in range(5):
-                digest.update(f"turret/{faction}/{tier}/{phase}".encode())
-                digest.update(_visible_rgba_bytes(turret_frame(faction, tier, phase)))
+                digest.update(f"turret/{variant}/{tier}/{phase}".encode())
+                digest.update(_visible_rgba_bytes(turret_frame(variant, tier, phase)))
     return digest.hexdigest()
 
 
-def factions_share_silhouette(tier: int, phase: int) -> bool:
-    """Return whether both allegiance variants occupy the same pixels."""
-    ferrous = turret_frame("ferrous", tier, phase).getchannel("A")
-    cupric = turret_frame("cupric", tier, phase).getchannel("A")
-    return ImageChops.difference(ferrous, cupric).getbbox() is None
+def variants_share_silhouette(tier: int, phase: int) -> bool:
+    """Return whether the base and probe renders occupy the same pixels."""
+    base = turret_frame("base", tier, phase).getchannel("A")
+    probe = turret_frame("probe", tier, phase).getchannel("A")
+    return ImageChops.difference(base, probe).getbbox() is None

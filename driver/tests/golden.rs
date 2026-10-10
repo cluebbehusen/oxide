@@ -12,8 +12,7 @@ use chassis::grid::TilePos;
 use oxide_kit::render;
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, ScenarioMode, UnitSpec};
 use oxide_sim::{
-    BuildingKind, Command, Faction, PlayerCommand, PlayerId, Scenario, State, Target, UnitId,
-    UnitKind,
+    BuildingKind, Command, PlayerCommand, PlayerId, Scenario, State, Target, UnitId, UnitKind,
 };
 use std::path::PathBuf;
 
@@ -66,8 +65,8 @@ fn skirmish_opening_matches_golden() {
 // program until the final state carries every branch of
 // `kit/src/render.rs`: every terrain, rubble, scrap full and rich and
 // worked down past half, a wreck tile, standing and half-built structures
-// of every kind, damaged machines of every kind on both rosters, a laden
-// harvester, and a same-faction hostile pair.
+// of every kind, damaged machines of every kind, a laden harvester, and
+// three hostile seats in distinct colours.
 //
 // `showcase_covers_every_rendered_feature` is the readable half of the
 // contract: it names each of those, so a script that quietly stops
@@ -75,7 +74,7 @@ fn skirmish_opening_matches_golden() {
 
 /// The showcase playfield. Anchor `1` is seat 0's north-west base beside
 /// the worked node, `2` seat 1's south-east construction yard, `3` seat
-/// 2's south-west corner — Ferrous like seat 0, and hostile to it.
+/// 2's south-west corner, a third seat hostile to both.
 const SHOWCASE_MAP: [&str; 30] = [
     "################################################",
     "#..............................................#",
@@ -140,10 +139,9 @@ impl Roster {
     }
 }
 
-fn seat(name: &str, faction: Faction, scrap: u32) -> PlayerSpec {
+fn seat(name: &str, scrap: u32) -> PlayerSpec {
     PlayerSpec {
         name: name.into(),
-        faction,
         team: None,
         scrap,
         bot: false,
@@ -161,14 +159,14 @@ struct Cast {
     west: Vec<UnitId>,
     /// Seat 1's battle line, west to east.
     east: Vec<UnitId>,
-    /// Seat 2's lone machine: hostile to seat 0 and wearing its colours.
+    /// Seat 2's lone machine, hostile to both other seats.
     interloper: UnitId,
     /// The two Bombards, shelling each other across open ground.
     guns: (UnitId, UnitId),
     /// Seat 0's tier-three annex: Condor, Flakhound wounder, Breaker.
-    annex_f: Vec<UnitId>,
-    /// Seat 1's tier-three annex: Moth, Stinger wounder, Breaker.
-    annex_c: Vec<UnitId>,
+    annex_w: Vec<UnitId>,
+    /// Seat 1's tier-three annex: Condor, Flakhound wounder, Breaker.
+    annex_e: Vec<UnitId>,
     /// The Avalanche pair, trading one volley across their blind rings.
     avalanches: (UnitId, UnitId),
 }
@@ -195,49 +193,43 @@ fn showcase_scenario() -> (Scenario, Cast) {
     let builder = roster.add(1, UnitKind::Harvester, 36, 25);
 
     // The battle line: seat 0 north, seat 1 south, two tiles apart. Both
-    // rosters take the same slot order, so opposite slots always agree on
-    // movement domain and weapon coverage — slot 4 is each roster's
-    // anti-air, slot 5 its ground-attack flyer, slot 6 its interceptor.
-    let line = |faction| {
-        [
-            UnitKind::Harvester,
-            UnitKind::Sentinel,
-            UnitKind::Scuttler,
-            UnitKind::Sentinel,
-            oxide_sim::stats::Role::AntiAir.unit_for(faction),
-            oxide_sim::stats::Role::AirGround.unit_for(faction),
-            oxide_sim::stats::Role::AirAir.unit_for(faction),
-            UnitKind::Lancer,
-            UnitKind::Sentinel,
-            UnitKind::Sentinel,
-            UnitKind::Sentinel,
-            // Interleaved so every victim's shooter stands one column
-            // over (2.24 tiles, inside every range).
-            UnitKind::Warden,
-            UnitKind::Tender,
-            UnitKind::Sentinel,
-            UnitKind::Excavator,
-            UnitKind::Sentinel,
-            oxide_sim::stats::Role::Scout.unit_for(faction),
-            oxide_sim::stats::Role::Interceptor.unit_for(faction),
-            oxide_sim::stats::Role::AntiAir.unit_for(faction),
-        ]
-    };
-    let west: Vec<UnitId> = line(Faction::Ferrous)
+    // seats field the same slot order, so opposite slots always agree on
+    // movement domain and weapon coverage — slot 4 is the anti-air, slot 5
+    // the ground-attack flyer, slot 6 the air-superiority flyer.
+    let line = [
+        UnitKind::Harvester,
+        UnitKind::Sentinel,
+        UnitKind::Scuttler,
+        UnitKind::Sentinel,
+        UnitKind::Flakhound,
+        UnitKind::Buzzard,
+        UnitKind::Talon,
+        UnitKind::Lancer,
+        UnitKind::Sentinel,
+        UnitKind::Sentinel,
+        UnitKind::Sentinel,
+        // Interleaved so every victim's shooter stands one column
+        // over (2.24 tiles, inside every range).
+        UnitKind::Warden,
+        UnitKind::Tender,
+        UnitKind::Sentinel,
+        UnitKind::Excavator,
+        UnitKind::Sentinel,
+        UnitKind::Kestrel,
+        UnitKind::Shrike,
+        UnitKind::Flakhound,
+    ];
+    let west: Vec<UnitId> = line
         .into_iter()
         .enumerate()
         .map(|(i, kind)| roster.add(0, kind, 8 + i32::try_from(i).unwrap(), 20))
         .collect();
-    let east: Vec<UnitId> = line(Faction::Cupric)
+    let east: Vec<UnitId> = line
         .into_iter()
         .enumerate()
         .map(|(i, kind)| roster.add(1, kind, 8 + i32::try_from(i).unwrap(), 22))
         .collect();
     let interloper = roster.add(2, UnitKind::Sentinel, 20, 20);
-    // The same-faction-foes pin must not depend on the interloper
-    // surviving its cameo among thirty-eight hostiles: a second South
-    // Ferrous machine idles in the far corner where nothing ever walks.
-    roster.add(2, UnitKind::Harvester, 44, 2);
 
     // Artillery: far enough off the line that the splash reaches only
     // the other gun, close enough that each is its own spotter.
@@ -248,10 +240,10 @@ fn showcase_scenario() -> (Scenario, Cast) {
     // Avalanches wait separately for their turn and missile exchange.
     // Bombers are victims here, not shooters — a released bomb's 2.2
     // splash would rewrite the carefully bounded wounds around it.
-    let condor = roster.add(0, UnitKind::Condor, 39, 12);
-    let stinger_annex = roster.add(1, UnitKind::Stinger, 40, 12);
-    let flakhound_annex = roster.add(0, UnitKind::Flakhound, 43, 12);
-    let moth = roster.add(1, UnitKind::Moth, 44, 12);
+    let condor_w = roster.add(0, UnitKind::Condor, 39, 12);
+    let flakhound_annex_e = roster.add(1, UnitKind::Flakhound, 40, 12);
+    let flakhound_annex_w = roster.add(0, UnitKind::Flakhound, 43, 12);
+    let condor_e = roster.add(1, UnitKind::Condor, 44, 12);
     let breaker_w = roster.add(0, UnitKind::Breaker, 40, 9);
     let breaker_e = roster.add(1, UnitKind::Breaker, 43, 9);
     // Five tiles apart: outside both blind rings, inside both reaches,
@@ -261,8 +253,8 @@ fn showcase_scenario() -> (Scenario, Cast) {
     // The unarmed slings, each with its own flak wounder, two tiles
     // below the Avalanche exchange (outside its 1.6 splash).
     let skyhook_w = roster.add(0, UnitKind::Skyhook, 39, 18);
-    let stinger_sling = roster.add(1, UnitKind::Stinger, 40, 18);
-    let flakhound_sling = roster.add(0, UnitKind::Flakhound, 43, 18);
+    let flakhound_sling_e = roster.add(1, UnitKind::Flakhound, 40, 18);
+    let flakhound_sling_w = roster.add(0, UnitKind::Flakhound, 43, 18);
     let skyhook_e = roster.add(1, UnitKind::Skyhook, 44, 18);
     // The sapper pair, each nicked by a line sentinel; sappers have no
     // aggro of their own and stand their wounds passively.
@@ -336,11 +328,7 @@ fn showcase_scenario() -> (Scenario, Cast) {
         mode: ScenarioMode::Match,
         name: "renderer showcase".into(),
         map: SHOWCASE_MAP.iter().map(|r| (*r).to_string()).collect(),
-        players: vec![
-            seat("West Ferrous", Faction::Ferrous, 700),
-            seat("East Cupric", Faction::Cupric, 2000),
-            seat("South Ferrous", Faction::Ferrous, 100),
-        ],
+        players: vec![seat("West", 700), seat("East", 2000), seat("South", 100)],
         units: roster.units,
         buildings,
         meta: None,
@@ -354,21 +342,21 @@ fn showcase_scenario() -> (Scenario, Cast) {
             east,
             interloper,
             guns: (gun_west, gun_east),
-            annex_f: vec![
-                condor,
-                flakhound_annex,
+            annex_w: vec![
+                condor_w,
+                flakhound_annex_w,
                 breaker_w,
                 skyhook_w,
-                flakhound_sling,
+                flakhound_sling_w,
                 sapper_w,
                 sentinel_sapper_w,
             ],
-            annex_c: vec![
-                moth,
-                stinger_annex,
+            annex_e: vec![
+                condor_e,
+                flakhound_annex_e,
                 breaker_e,
                 skyhook_e,
-                stinger_sling,
+                flakhound_sling_e,
                 sapper_e,
                 sentinel_sapper_e,
             ],
@@ -502,16 +490,16 @@ fn opening_orders(cast: &Cast) -> Vec<PlayerCommand> {
         // The annex wounds: Breakers trade one 90-point blow, the
         // Avalanches trade one spotter-lit volley, and each seat's flak
         // clips the other's bomber.
-        attack(0, cast.annex_f[2], cast.annex_c[2]),
-        attack(1, cast.annex_c[2], cast.annex_f[2]),
-        attack(0, cast.annex_f[1], cast.annex_c[0]),
-        attack(1, cast.annex_c[1], cast.annex_f[0]),
+        attack(0, cast.annex_w[2], cast.annex_e[2]),
+        attack(1, cast.annex_e[2], cast.annex_w[2]),
+        attack(0, cast.annex_w[1], cast.annex_e[0]),
+        attack(1, cast.annex_e[1], cast.annex_w[0]),
         attack(0, cast.avalanches.0, cast.avalanches.1),
         attack(1, cast.avalanches.1, cast.avalanches.0),
-        attack(0, cast.annex_f[4], cast.annex_c[3]),
-        attack(1, cast.annex_c[4], cast.annex_f[3]),
-        attack(0, cast.annex_f[6], cast.annex_c[5]),
-        attack(1, cast.annex_c[6], cast.annex_f[5]),
+        attack(0, cast.annex_w[4], cast.annex_e[3]),
+        attack(1, cast.annex_e[4], cast.annex_w[3]),
+        attack(0, cast.annex_w[6], cast.annex_e[5]),
+        attack(1, cast.annex_e[6], cast.annex_w[5]),
     ]);
     commands
 }
@@ -525,8 +513,8 @@ fn disengage(cast: &Cast) -> Vec<PlayerCommand> {
         // Clear of the west column's march lane, where idle aggro would
         // kill it.
         walk(2, vec![cast.interloper], 36, 6),
-        walk(0, cast.annex_f.clone(), 32, 15),
-        walk(1, cast.annex_c.clone(), 47, 27),
+        walk(0, cast.annex_w.clone(), 32, 15),
+        walk(1, cast.annex_e.clone(), 47, 27),
     ]
 }
 
@@ -644,42 +632,6 @@ fn showcase_state() -> State {
     state
 }
 
-/// Every kind, on every roster that can field it.
-fn every_kind_and_faction() -> impl Iterator<Item = (UnitKind, Faction)> {
-    const KINDS: [UnitKind; 24] = [
-        UnitKind::Harvester,
-        UnitKind::Sentinel,
-        UnitKind::Scuttler,
-        UnitKind::Lancer,
-        UnitKind::Bombard,
-        UnitKind::Flakhound,
-        UnitKind::Stinger,
-        UnitKind::Buzzard,
-        UnitKind::Darter,
-        UnitKind::Talon,
-        UnitKind::Wisp,
-        UnitKind::Warden,
-        UnitKind::Tender,
-        UnitKind::Excavator,
-        UnitKind::Kestrel,
-        UnitKind::Gnat,
-        UnitKind::Shrike,
-        UnitKind::Sylph,
-        UnitKind::Condor,
-        UnitKind::Moth,
-        UnitKind::Breaker,
-        UnitKind::Avalanche,
-        UnitKind::Skyhook,
-        UnitKind::Sapper,
-    ];
-    KINDS.into_iter().flat_map(|kind| {
-        [Faction::Ferrous, Faction::Cupric]
-            .into_iter()
-            .filter(move |f| kind.faction().is_none_or(|bound| bound == *f))
-            .map(move |f| (kind, f))
-    })
-}
-
 /// What the golden is *for*. Every branch `kit/src/render.rs` can take
 /// is named here, so a showcase that quietly stops covering one fails
 /// with a sentence instead of a silent pixel match.
@@ -752,14 +704,13 @@ fn showcase_covers_every_rendered_feature() {
         );
     }
 
-    for (kind, faction) in every_kind_and_faction() {
+    for kind in UnitKind::ALL {
         assert!(
-            state.units().iter().any(|u| {
-                u.kind == kind
-                    && state.player(u.player).faction == faction
-                    && u.hp < kind.stats().max_hp
-            }),
-            "no wounded {faction:?} {kind:?} to draw a health bar for"
+            state
+                .units()
+                .iter()
+                .any(|u| u.kind == kind && u.hp < kind.stats().max_hp),
+            "no wounded {kind:?} to draw a health bar for"
         );
     }
     assert!(
@@ -770,16 +721,31 @@ fn showcase_covers_every_rendered_feature() {
         "no laden harvester: the carried-scrap dot goes unrendered"
     );
 
-    // Two seats on one roster, at each other's throats: the software
-    // renderer paints allegiance by faction alone, and this is the pair
-    // that pins it.
-    let same_faction_foes = state.units().iter().any(|a| {
-        state.units().iter().any(|b| {
-            state.hostile(a.player, b.player)
-                && state.player(a.player).faction == state.player(b.player).faction
-        })
+    // Three mutually hostile seats, one past the first two palette
+    // entries: each seat's standing Foundry must paint in its own colour.
+    let picture = render::render_state(&state);
+    let tile = picture.width() / u32::try_from(state.map().width()).unwrap();
+    let seats = [PlayerId(0), PlayerId(1), PlayerId(2)];
+    let fills = seats.map(|seat| {
+        let foundry = state
+            .buildings()
+            .iter()
+            .find(|b| b.player == seat && b.kind == BuildingKind::Foundry && b.built())
+            .unwrap_or_else(|| panic!("{seat:?} has no standing Foundry to sample"));
+        let centre = |anchor: i32| (u32::try_from(anchor).unwrap() + 1) * tile;
+        picture
+            .pixel(centre(foundry.anchor.x), centre(foundry.anchor.y))
+            .unwrap()
     });
-    assert!(same_faction_foes, "no same-faction hostile pair on the map");
+    for (i, a) in seats.iter().enumerate() {
+        for (j, b) in seats.iter().enumerate().skip(i + 1) {
+            assert!(state.hostile(*a, *b), "{a:?} and {b:?} must be foes");
+            assert_ne!(
+                fills[i], fills[j],
+                "{a:?} and {b:?} paint in the same colour"
+            );
+        }
+    }
 }
 
 #[test]

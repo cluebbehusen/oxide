@@ -1,6 +1,6 @@
 use super::*;
 use macroquad::prelude::vec2;
-use oxide_sim::{BuildingKind, Faction, PlayerCommand, Scenario};
+use oxide_sim::{BuildingKind, PlayerCommand, Scenario};
 
 fn factories(scrap: u32) -> Game {
     let mut scenario = Scenario::skirmish();
@@ -291,24 +291,16 @@ fn grouped_production_observes_pending_invalid_purchases_and_refunds_without_cha
 }
 
 #[test]
-fn collective_rosters_fit_the_dock_for_both_factions() {
-    for faction in [Faction::Ferrous, Faction::Cupric] {
-        for kind in [
-            BuildingKind::Foundry,
-            BuildingKind::Fabricator,
-            BuildingKind::Airworks,
-            BuildingKind::Crucible,
-        ] {
-            let roster: Vec<_> = kind
-                .base_stats()
-                .produces
-                .iter()
-                .filter(|k| k.faction().is_none_or(|f| f == faction))
-                .collect();
-            assert!(
-                roster.len() <= 8,
-                "{kind:?} must retain access to every aggregate"
-            );
-        }
+fn collective_rosters_fit_the_dock() {
+    for kind in [
+        BuildingKind::Foundry,
+        BuildingKind::Fabricator,
+        BuildingKind::Airworks,
+        BuildingKind::Crucible,
+    ] {
+        assert!(
+            kind.base_stats().produces.len() <= 8,
+            "{kind:?} must retain access to every aggregate"
+        );
     }
 }

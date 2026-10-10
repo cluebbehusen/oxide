@@ -14,7 +14,7 @@ fn automatic_radar_uses_a_secondary_solution_without_pursuit() {
         },
         UnitSpec {
             player: 1,
-            kind: UnitKind::Gnat,
+            kind: UnitKind::Kestrel,
             x: 14,
             y: 8,
         },
@@ -174,7 +174,7 @@ fn impact_scene() -> State {
         },
         UnitSpec {
             player: 1,
-            kind: UnitKind::Gnat,
+            kind: UnitKind::Kestrel,
             x: 8,
             y: 7,
         },

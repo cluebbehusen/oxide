@@ -11,7 +11,7 @@ use chassis::grid::TilePos;
 use oxide_sim::event::StallReason;
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, ScenarioMode, UnitSpec};
 use oxide_sim::stats::BuildingKind;
-use oxide_sim::{Command, Event, Faction, Order, Scenario, State, UnitId, UnitKind};
+use oxide_sim::{Command, Event, Order, Scenario, State, UnitId, UnitKind};
 
 /// A home shore whose eastern edge recedes at 45 degrees from a convex tip
 /// at (14, 5), and an island (columns 21-28) across the rock. The tip is the
@@ -41,7 +41,6 @@ fn sandbox(map: &[&str], units: Vec<UnitSpec>, buildings: Vec<BuildingSpec>) -> 
         map: map.iter().map(|row| (*row).to_owned()).collect(),
         players: vec![PlayerSpec {
             name: "Home".into(),
-            faction: Faction::Ferrous,
             team: None,
             scrap: 5_000,
             bot: false,
@@ -282,7 +281,6 @@ fn mirrored_groups_sent_into_mirrored_enclosures_settle_symmetrically() {
         |pos: Vec2Fx| Vec2Fx::new(Fx::from_num(width) - pos.x, Fx::from_num(height) - pos.y);
     let seat = |player: u8| PlayerSpec {
         name: format!("Seat {player}"),
-        faction: Faction::Ferrous,
         team: None,
         scrap: 0,
         bot: false,

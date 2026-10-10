@@ -1,6 +1,6 @@
 use super::*;
 use oxide_sim::scenario::{PlayerSpec, ScenarioMode, UnitSpec};
-use oxide_sim::{Faction, PlayerId, Scenario, UnitKind};
+use oxide_sim::{PlayerId, Scenario, UnitKind};
 
 /// A 20 by 9 field, starts at (2, 1) and (17, 1), with a one-tile chasm
 /// down column 8 when `chasm` holds; West's `members` and one East
@@ -38,11 +38,10 @@ fn field(chasm: bool, members: &[(UnitKind, i32, i32)], enemy: (UnitKind, i32, i
         mode: ScenarioMode::Match,
         name: "focus".into(),
         map,
-        players: [Faction::Ferrous, Faction::Cupric]
+        players: ["West", "East"]
             .into_iter()
-            .map(|faction| PlayerSpec {
-                name: format!("{faction:?}"),
-                faction,
+            .map(|name| PlayerSpec {
+                name: name.into(),
                 team: None,
                 scrap: 0,
                 bot: false,
