@@ -208,6 +208,30 @@ fn the_team_chip_cycles_through_ffa_and_every_team() {
 }
 
 #[test]
+fn setup_cells_wrap_past_the_dead_ones() {
+    let mut draft = NewMatchDraft::default();
+    let mut w = Wizard::open(&draft);
+    pick_first_map(&mut w, &mut draft);
+    // Your own card has no difficulty or stance chip: the seat, faction
+    // and team cells are live.
+    drive(&mut w, &mut draft, Key::Home);
+    assert_eq!(w.setup_cell, 0);
+    drive(&mut w, &mut draft, Key::Left);
+    assert_eq!(w.setup_cell, 4, "left from the seat wraps to the team chip");
+    drive(&mut w, &mut draft, Key::Right);
+    assert_eq!(
+        w.setup_cell, 0,
+        "right from the team chip wraps to the seat"
+    );
+    drive(&mut w, &mut draft, Key::Right);
+    assert_eq!(w.setup_cell, 3, "the opponent chips are skipped");
+    // An AI card has every cell.
+    drive(&mut w, &mut draft, Key::Down);
+    drive(&mut w, &mut draft, Key::Left);
+    assert_eq!(w.setup_cell, 2);
+}
+
+#[test]
 fn a_stale_team_choice_never_carries_across_maps() {
     // As with the chair: re-entering the same map keeps the choice, and a
     // different map re-derives the authored defaults, so a Team 5 chosen

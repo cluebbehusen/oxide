@@ -50,6 +50,50 @@ fn arrows_walk_the_grid_by_row_and_column() {
 }
 
 #[test]
+fn the_grid_wraps_at_its_edges() {
+    let entries = shelf();
+    let mut b = Browser::new();
+    press(&mut b, &entries, Key::Left);
+    assert_eq!(b.selected, 10, "left from the first card wraps to the last");
+    press(&mut b, &entries, Key::Right);
+    assert_eq!(b.selected, 0, "right from the last card wraps to the first");
+    press(&mut b, &entries, Key::Right);
+    press(&mut b, &entries, Key::Up);
+    assert_eq!(
+        b.selected, 10,
+        "up from the top row wraps to the bottom row"
+    );
+    press(&mut b, &entries, Key::Down);
+    assert_eq!(b.selected, 1, "down from the bottom row wraps to the top");
+    press(&mut b, &entries, Key::Right);
+    press(&mut b, &entries, Key::Right);
+    press(&mut b, &entries, Key::Right);
+    assert_eq!(
+        b.selected, 4,
+        "right from a row's end takes the next row's first"
+    );
+}
+
+#[test]
+fn paging_moves_whole_rows_and_stops_at_the_ends() {
+    let entries = shelf();
+    let mut b = Browser::new();
+    press(&mut b, &entries, Key::PageDown);
+    assert!(b.selected > 0);
+    for _ in 0..4 {
+        press(&mut b, &entries, Key::PageDown);
+    }
+    assert!(b.selected >= 9, "paging settles on the bottom row");
+    let bottom = b.selected;
+    press(&mut b, &entries, Key::PageDown);
+    assert_eq!(b.selected, bottom, "and stops there");
+    for _ in 0..5 {
+        press(&mut b, &entries, Key::PageUp);
+    }
+    assert_eq!(b.selected, 0, "paging back stops on the top row");
+}
+
+#[test]
 fn wheel_scroll_moves_the_window_and_only_the_window() {
     let entries = shelf();
     let mut b = Browser::new();

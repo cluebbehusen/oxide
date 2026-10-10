@@ -9,6 +9,7 @@
 use crate::bot_label::{difficulty_name, stance_name};
 use crate::game::SoundKind;
 use crate::menu::{PreviewCache, ScenarioEntry, discover_scenarios};
+use crate::nav::{Axis, Nav, step_line};
 use crate::numeric;
 use crate::numeric::Fit;
 use crate::press::{Fed, Press};
@@ -897,41 +898,6 @@ impl Wizard {
                     self.goto(Step::Map, draft);
                     return None;
                 }
-                RawEvent::KeyDown { key: Key::Up } => {
-                    self.setup_sel = self.setup_sel.checked_sub(1).unwrap_or(start_index);
-                    self.setup_page = self.setup_sel / COMPACT_PAGE_ITEMS;
-                }
-                RawEvent::KeyDown { key: Key::Down } => {
-                    self.setup_sel = (self.setup_sel + 1) % (start_index + 1);
-                    self.setup_page = self.setup_sel / COMPACT_PAGE_ITEMS;
-                }
-                RawEvent::KeyDown { key: Key::Left } => {
-                    let mut c = self.setup_cell;
-                    while c > 0 {
-                        c -= 1;
-                        if cell_live(self.setup_sel, c) {
-                            break;
-                        }
-                    }
-                    self.setup_cell = c;
-                }
-                RawEvent::KeyDown { key: Key::Right } => {
-                    let mut c = self.setup_cell + 1;
-                    while c <= 4 && !cell_live(self.setup_sel, c) {
-                        c += 1;
-                    }
-                    if c <= 4 && cell_live(self.setup_sel, c) {
-                        self.setup_cell = c;
-                    }
-                }
-                RawEvent::KeyDown { key: Key::Home } => {
-                    self.setup_sel = 0;
-                    self.setup_page = 0;
-                }
-                RawEvent::KeyDown { key: Key::End } => {
-                    self.setup_sel = start_index;
-                    self.setup_page = start_index / COMPACT_PAGE_ITEMS;
-                }
                 RawEvent::KeyDown { key: Key::Enter } => {
                     // The sticky column falls back to the seat zone on
                     // rows where its cell is dead.
@@ -942,6 +908,29 @@ impl Wizard {
                     };
                     activate = Some((self.setup_sel, cell));
                     break;
+                }
+                RawEvent::KeyDown { .. } => {
+                    let Some(nav) = Nav::decode(event) else {
+                        continue;
+                    };
+                    let rows = start_index + 1;
+                    if let Some(row) = step_line(
+                        rows,
+                        self.setup_sel,
+                        nav,
+                        Axis::Vertical,
+                        COMPACT_PAGE_ITEMS,
+                        |_| true,
+                    ) {
+                        self.setup_sel = row;
+                        self.setup_page = row / COMPACT_PAGE_ITEMS;
+                    } else if let Some(cell) =
+                        step_line(5, self.setup_cell, nav, Axis::Horizontal, 1, |cell| {
+                            cell_live(self.setup_sel, cell)
+                        })
+                    {
+                        self.setup_cell = cell;
+                    }
                 }
                 RawEvent::MouseMove { x, y } => *mouse = vec2(x, y),
                 RawEvent::MouseDown {

@@ -7,6 +7,7 @@ use crate::action::{Action, BindingMap, Chord};
 use crate::config::Config;
 use crate::game::SoundKind;
 use crate::menu::Menu;
+use crate::nav::{Axis, Nav, step_line};
 use crate::numeric;
 use crate::render;
 use macroquad::prelude::{Vec2, draw_text, measure_text};
@@ -597,19 +598,18 @@ impl SettingsScreen {
                 let x_pressed = events
                     .iter()
                     .any(|e| matches!(e, RawEvent::KeyDown { key: Key::X }));
-                if let Some(key) = events.iter().find_map(|event| match event {
-                    RawEvent::KeyDown { key }
-                        if matches!(key, Key::Left | Key::Right | Key::Tab) =>
-                    {
-                        Some(*key)
-                    }
-                    _ => None,
-                }) {
-                    self.binding_slot = match key {
-                        Key::Left => 0,
-                        Key::Right => 1,
-                        _ => 1 - self.binding_slot,
+                // Tab steps right, as the column hint's arrows do.
+                if let Some(slot) = events.iter().find_map(|event| {
+                    let nav = match event {
+                        RawEvent::KeyDown { key: Key::Tab } => Nav::Right,
+                        RawEvent::KeyDown {
+                            key: Key::Left | Key::Right,
+                        } => Nav::decode(event)?,
+                        _ => return None,
                     };
+                    step_line(2, self.binding_slot, nav, Axis::Horizontal, 1, |_| true)
+                }) {
+                    self.binding_slot = slot;
                     let row = self.menu.selected;
                     self.goto_controls(config, row);
                 } else if escaped {

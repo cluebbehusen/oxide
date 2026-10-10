@@ -8,7 +8,7 @@
 use crate::numeric;
 use crate::numeric::Fit;
 use macroquad::prelude::*;
-use oxide_protocol::{Key, MouseButton, RawEvent};
+use oxide_protocol::{MouseButton, RawEvent};
 use oxide_sim::Scenario;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -179,7 +179,7 @@ impl Menu {
             headers,
             shift: 0.0,
         };
-        menu.selected = menu.snap_clamped(0, 1);
+        menu.selected = menu.settle(0, false);
         menu
     }
 
@@ -188,57 +188,17 @@ impl Menu {
         self.headers.contains(&index)
     }
 
-    /// The nearest non-header row from `index`, walking in `dir` and
-    /// wrapping, as the arrow keys do (Up from the first real row lands on
-    /// the last). Falls back to `index` on an all-header list.
-    fn snap(&self, index: usize, dir: i64) -> usize {
-        let n = self.items.len();
-        if n == 0 {
-            return 0;
-        }
-        let mut i = index.min(n - 1);
-        for _ in 0..n {
-            if !self.is_header(i) {
-                return i;
-            }
-            i = (i.fit::<i64>() + dir)
-                .rem_euclid(n.fit::<i64>())
-                .fit::<usize>();
-        }
-        index.min(n - 1)
-    }
-
-    /// The nearest non-header row from `index` without wrapping: walk
-    /// `dir` to the list's edge, then fall back the other way. Jump keys
-    /// (Home, End, paging) and programmatic selects land near their
-    /// target instead of wrapping across the list past a section header.
-    fn snap_clamped(&self, index: usize, dir: i64) -> usize {
-        let n = self.items.len().fit::<i64>();
-        if n == 0 {
-            return 0;
-        }
-        let start = index.fit::<i64>().min(n - 1);
-        let mut i = start;
-        while (0..n).contains(&i) {
-            if !self.is_header(i.fit::<usize>()) {
-                return i.fit::<usize>();
-            }
-            i += dir;
-        }
-        let mut i = start - dir;
-        while (0..n).contains(&i) {
-            if !self.is_header(i.fit::<usize>()) {
-                return i.fit::<usize>();
-            }
-            i -= dir;
-        }
-        start.fit::<usize>()
+    /// The nearest non-header row from `index`, toward the start when
+    /// `back`, without wrapping; `index` itself on an all-header list.
+    fn settle(&self, index: usize, back: bool) -> usize {
+        crate::nav::nearest(self.items.len(), index, back, |row| !self.is_header(row))
+            .unwrap_or(index)
     }
 
     /// Moves the keyboard cursor and scrolls just enough to show it —
     /// the only coupling between selection and the scroll window.
     pub fn select(&mut self, index: usize) {
-        self.selected = self.snap_clamped(index.min(self.items.len().saturating_sub(1)), 1);
+        self.selected = self.settle(index.min(self.items.len().saturating_sub(1)), false);
         self.ensure_visible();
     }
 
@@ -263,7 +223,7 @@ impl Menu {
         let clamped = self
             .selected
             .clamp(self.scroll, self.scroll + visible.saturating_sub(1));
-        self.selected = self.snap_clamped(clamped, if clamped < self.selected { -1 } else { 1 });
+        self.selected = self.settle(clamped, clamped < self.selected);
     }
 
     /// Follows the dragging finger to `y`. Past the slop the drag owns
@@ -447,45 +407,27 @@ impl Menu {
                         return Some(row);
                     }
                 }
-                RawEvent::KeyDown { key: Key::Up } => {
-                    self.hover = None;
-                    let up = self.selected.checked_sub(1).unwrap_or(self.items.len() - 1);
-                    self.selected = self.snap(up, -1);
-                    self.ensure_visible();
-                }
-                RawEvent::KeyDown { key: Key::Down } => {
-                    self.hover = None;
-                    self.selected = self.snap((self.selected + 1) % self.items.len(), 1);
-                    self.ensure_visible();
-                }
-                RawEvent::KeyDown { key: Key::PageUp } => {
-                    self.hover = None;
-                    let (_, _, _, visible) = self.layout();
-                    self.selected = self.snap_clamped(self.selected.saturating_sub(visible), -1);
-                    self.ensure_visible();
-                }
-                RawEvent::KeyDown { key: Key::PageDown } => {
-                    self.hover = None;
-                    let (_, _, _, visible) = self.layout();
-                    self.selected = self.snap_clamped(
-                        (self.selected + visible).min(self.items.len().saturating_sub(1)),
-                        1,
-                    );
-                    self.ensure_visible();
-                }
-                RawEvent::KeyDown { key: Key::Home } => {
-                    self.hover = None;
-                    self.selected = self.snap_clamped(0, 1);
-                    self.ensure_visible();
-                }
-                RawEvent::KeyDown { key: Key::End } => {
-                    self.hover = None;
-                    self.selected = self.snap_clamped(self.items.len().saturating_sub(1), -1);
-                    self.ensure_visible();
-                }
-                RawEvent::KeyDown { key: Key::Enter } if !self.is_header(self.selected) => {
-                    return Some(self.selected);
-                }
+                RawEvent::KeyDown { .. } => match crate::nav::Nav::decode(event) {
+                    Some(crate::nav::Nav::Confirm) if !self.is_header(self.selected) => {
+                        return Some(self.selected);
+                    }
+                    Some(nav) => {
+                        let (_, _, _, visible) = self.layout();
+                        if let Some(row) = crate::nav::step_line(
+                            self.items.len(),
+                            self.selected,
+                            nav,
+                            crate::nav::Axis::Vertical,
+                            visible,
+                            |row| !self.is_header(row),
+                        ) {
+                            self.hover = None;
+                            self.selected = row;
+                            self.ensure_visible();
+                        }
+                    }
+                    None => {}
+                },
                 _ => {}
             }
         }

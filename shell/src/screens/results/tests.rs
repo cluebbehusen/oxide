@@ -110,6 +110,22 @@ fn keyboard_wraps_and_escape_goes_home() {
 }
 
 #[test]
+fn home_and_end_jump_to_the_first_and_last_action() {
+    let mut screen = ResultsScreen::open();
+    let mut mouse = vec2(0.0, 0.0);
+    let mut sounds = Vec::new();
+    let mut press = |screen: &mut ResultsScreen, k: Key| {
+        screen.update(&[key(k)], &mut mouse, vec2(640.0, 400.0), 1.0, &mut sounds)
+    };
+    assert_eq!(press(&mut screen, Key::End), Out::Stay);
+    assert_eq!(screen.selected(), 3);
+    assert_eq!(press(&mut screen, Key::Home), Out::Stay);
+    assert_eq!(screen.selected(), 0);
+    press(&mut screen, Key::PageDown);
+    assert_eq!(screen.selected(), 3, "paging stops at the last action");
+}
+
+#[test]
 fn final_map_action_is_touchable_and_named_for_automation() {
     let viewport = vec2(640.0, 400.0);
     let rect = action_rects(viewport, 1.0)[2];

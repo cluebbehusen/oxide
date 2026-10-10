@@ -8,8 +8,8 @@
 //! rects it publishes.
 
 use crate::menu::{PreviewCache, ScenarioEntry};
+use crate::nav::{Nav, step_grid};
 use crate::numeric;
-use crate::numeric::Fit;
 use crate::render::prim::{fill_rect, stroke_rect};
 use macroquad::prelude::{
     Color, DrawTextureParams, Rect, Vec2, draw_rectangle, draw_text, draw_texture_ex, measure_text,
@@ -326,7 +326,6 @@ impl Browser {
             }
         }
         let (_, _, _, _, _, shelf_top, shelf_bottom) = metrics(view, ui);
-        let last = entries.len() - 1;
         let card_at = |browser: &Self, p: Vec2| {
             if p.y < shelf_top || p.y >= shelf_bottom {
                 return None;
@@ -355,40 +354,28 @@ impl Browser {
                     }
                     self.ensure_visible(entries);
                 }
-                RawEvent::KeyDown { key: Key::Left } => {
-                    self.selected = self.selected.saturating_sub(1);
-                    self.ensure_visible(entries);
-                }
-                RawEvent::KeyDown { key: Key::Right } => {
-                    self.selected = (self.selected + 1).min(last);
-                    self.ensure_visible(entries);
-                }
-                RawEvent::KeyDown {
-                    key: Key::Up | Key::Down,
-                } => {
-                    let down = matches!(*event, RawEvent::KeyDown { key: Key::Down });
-                    let all = lines(entries, cols);
-                    let (li, ci) = Self::locate(entries, cols, self.selected);
-                    let mut target = li.fit::<i64>();
-                    loop {
-                        target += if down { 1 } else { -1 };
-                        if target < 0 || target.fit::<usize>() >= all.len() {
-                            break;
-                        }
-                        if let Line::Cards(row) = &all[target.fit::<usize>()] {
-                            self.selected = row[ci.min(row.len() - 1)];
-                            break;
+                RawEvent::KeyDown { .. } => {
+                    let Some(nav) = Nav::decode(event) else {
+                        continue;
+                    };
+                    let rows: Vec<usize> = lines(entries, cols)
+                        .iter()
+                        .filter_map(|line| match line {
+                            Line::Cards(row) => Some(row.len()),
+                            Line::Heading(_) => None,
+                        })
+                        .collect();
+                    let (_, _, _, card_h, _, top, bottom) = metrics(view, ui);
+                    let page_rows =
+                        numeric::to_usize(((bottom - top) / (card_h + 16.0 * ui)).floor());
+                    if let Some(next) = step_grid(&rows, self.selected, nav, page_rows) {
+                        self.selected = next;
+                        if nav == Nav::Home {
+                            self.scroll_y = 0.0;
+                        } else {
+                            self.ensure_visible(entries);
                         }
                     }
-                    self.ensure_visible(entries);
-                }
-                RawEvent::KeyDown { key: Key::Home } => {
-                    self.selected = 0;
-                    self.scroll_y = 0.0;
-                }
-                RawEvent::KeyDown { key: Key::End } => {
-                    self.selected = last;
-                    self.ensure_visible(entries);
                 }
                 RawEvent::Wheel { delta } => {
                     if !delta.is_finite() {

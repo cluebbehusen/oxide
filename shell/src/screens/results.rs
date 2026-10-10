@@ -4,6 +4,7 @@
 
 use crate::bot_label::{BotLabelStyle, bot_label};
 use crate::game::{Game, SoundKind};
+use crate::nav::{Axis, Nav, step_line};
 use crate::numeric;
 use crate::numeric::Fit;
 use crate::press::Press;
@@ -365,18 +366,6 @@ impl ResultsScreen {
                         return out_for(armed);
                     }
                 }
-                RawEvent::KeyDown {
-                    key: Key::Left | Key::Up,
-                } => {
-                    self.hover = None;
-                    self.selected = self.selected.checked_sub(1).unwrap_or(ACTIONS.len() - 1);
-                }
-                RawEvent::KeyDown {
-                    key: Key::Right | Key::Down,
-                } => {
-                    self.hover = None;
-                    self.selected = (self.selected + 1) % ACTIONS.len();
-                }
                 RawEvent::KeyDown { key: Key::Enter } => {
                     sounds.push((SoundKind::Click, None));
                     return out_for(self.selected);
@@ -384,6 +373,21 @@ impl ResultsScreen {
                 RawEvent::KeyDown { key: Key::Escape } => {
                     sounds.push((SoundKind::Click, None));
                     return Out::Home;
+                }
+                RawEvent::KeyDown { .. } => {
+                    if let Some(next) = Nav::decode(event).and_then(|nav| {
+                        step_line(
+                            ACTIONS.len(),
+                            self.selected,
+                            nav,
+                            Axis::Both,
+                            ACTIONS.len(),
+                            |_| true,
+                        )
+                    }) {
+                        self.hover = None;
+                        self.selected = next;
+                    }
                 }
                 _ => {}
             }

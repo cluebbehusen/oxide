@@ -27,6 +27,7 @@ mod layout;
 mod look;
 mod menu;
 mod mixer;
+mod nav;
 mod netplay;
 mod numeric;
 mod panel;

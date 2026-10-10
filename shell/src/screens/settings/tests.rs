@@ -526,6 +526,28 @@ fn clicking_the_secondary_column_selects_it_even_when_release_is_a_later_frame()
     );
 }
 
+#[test]
+fn chord_columns_wrap_and_tab_steps_right() {
+    let mut config = Config::default();
+    let mut screen = SettingsScreen::open(&config);
+    screen.goto_controls(&config, 1);
+    assert_eq!(screen.binding_slot, 0);
+    drive(&mut screen, &mut config, &press(Key::Left), false);
+    assert_eq!(
+        screen.binding_slot, 1,
+        "left from primary wraps to secondary"
+    );
+    drive(&mut screen, &mut config, &press(Key::Right), false);
+    assert_eq!(
+        screen.binding_slot, 0,
+        "right from secondary wraps to primary"
+    );
+    drive(&mut screen, &mut config, &press(Key::Tab), false);
+    assert_eq!(screen.binding_slot, 1);
+    drive(&mut screen, &mut config, &press(Key::Tab), false);
+    assert_eq!(screen.binding_slot, 0);
+}
+
 /// The Pan up row's columns, as the Controls face draws them.
 fn pan_up_columns(screen: &SettingsScreen) -> crate::menu::BindingColumns {
     let row = control_rows()
