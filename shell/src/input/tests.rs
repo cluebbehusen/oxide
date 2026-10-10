@@ -128,26 +128,16 @@ fn contested_producer_game() -> Game {
 /// A 1280x800 layout with a panel band and no other chrome; each test
 /// places the one rect it exercises.
 fn bare_layout(panel_top: f32, panel_right: f32) -> crate::layout::LayoutModel {
-    let zero = macroquad::math::Rect::new(0.0, 0.0, 0.0, 0.0);
-    let none = (zero, crate::panel::CardAction::None);
-    crate::layout::LayoutModel::compute(
-        vec2(1280.0, 800.0),
-        1.0,
+    crate::layout::LayoutModel {
+        top_bar_h: crate::layout::TOP_BAR_H,
         panel_top,
         panel_right,
-        zero,
-        zero,
-        zero,
-        zero,
-        zero,
-        zero,
-        [none; 8],
-        0,
-        [none; 16],
-        0,
-        [none; 8],
-        0,
-    )
+        panel_regions: [
+            macroquad::math::Rect::new(0.0, panel_top, panel_right, (800.0 - panel_top).max(0.0)),
+            macroquad::math::Rect::new(0.0, 0.0, 0.0, 0.0),
+        ],
+        ..crate::layout::LayoutModel::default()
+    }
 }
 
 fn left_down(p: Vec2) -> RawEvent {

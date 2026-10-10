@@ -1,7 +1,7 @@
 //! Standing chrome and overlays: the top bar with its controls hint,
 //! toasts, the salvage hover tooltip, the omniscient debug overlay,
-//! and the endgame verdict. The HUD publishes the `LayoutModel` so drawn
-//! and clickable regions cannot disagree.
+//! and the endgame verdict. Their geometry comes from the HUD layout
+//! pass (`super::hud`), the same one input hit-tests.
 
 use super::*;
 use crate::numeric;
@@ -111,33 +111,30 @@ fn draw_group_slot(
     }
 }
 
+/// The control-group column: its plate, and each slot with what it does
+/// and how many machines its group holds.
+pub(crate) struct GroupColumnLayout {
+    pub(super) plate: Rect,
+    pub(super) slots: [(Rect, crate::layout::GroupSlot, usize); crate::action::CONTROL_GROUPS],
+    current: Option<u8>,
+}
+
 /// The control-group column above the minimap, once groups are in use
 /// or there is a selection to save: every group keeps its place, empty
-/// ones as faint outlines. Returns the plate and the published slots.
-fn draw_group_column(
+/// ones as faint outlines.
+pub(super) fn group_column_layout(
     game: &crate::game::Scene<'_>,
     input: &InputState,
     minimap: Rect,
     s: f32,
-) -> (
-    Rect,
-    [Option<(Rect, crate::layout::GroupSlot)>; crate::action::CONTROL_GROUPS],
-) {
-    let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
-    let mut published = [None; crate::action::CONTROL_GROUPS];
+) -> Option<GroupColumnLayout> {
     let counts = input.group_counts(game);
     let offer = input.group_on_offer(game);
     let shown = crate::render::control_groups()
         && (counts.iter().any(|count| *count > 0) || offer.is_some());
-    let Some(column) =
-        crate::layout::group_column(s, crate::platform::TOUCH_ONLY, minimap).filter(|_| shown)
-    else {
-        return (zero, published);
-    };
-    fill_rect(column.plate, Color::from_rgba(20, 20, 24, 255));
-    stroke_rect(column.plate, 1.5 * s, Color::new(0.6, 0.6, 0.65, 0.4));
-    let current = input.selected_group(game);
-    for (slot, rect) in column.slots.iter().enumerate() {
+    let column =
+        crate::layout::group_column(s, crate::platform::TOUCH_ONLY, minimap).filter(|_| shown)?;
+    let slots = std::array::from_fn(|slot| {
         let number = slot.fit::<u8>() + 1;
         let action = if counts[slot] > 0 {
             crate::layout::GroupSlot::Recall(number)
@@ -146,10 +143,21 @@ fn draw_group_column(
         } else {
             crate::layout::GroupSlot::Empty(number)
         };
-        draw_group_slot(*rect, action, counts[slot], current == Some(number), s);
-        published[slot] = Some((*rect, action));
+        (column.slots[slot], action, counts[slot])
+    });
+    Some(GroupColumnLayout {
+        plate: column.plate,
+        slots,
+        current: input.selected_group(game),
+    })
+}
+
+fn draw_group_column(column: &GroupColumnLayout, s: f32) {
+    fill_rect(column.plate, Color::from_rgba(20, 20, 24, 255));
+    stroke_rect(column.plate, 1.5 * s, Color::new(0.6, 0.6, 0.65, 0.4));
+    for (rect, slot, count) in column.slots {
+        draw_group_slot(rect, slot, count, column.current == Some(slot.number()), s);
     }
-    (column.plate, published)
 }
 
 /// Three bars on the badge fill: the glyph needs no font coverage or
@@ -341,7 +349,7 @@ pub(super) fn queue_toggle_shown(
 /// Where the QUEUE toggle sits: over the panel's left corner, in the
 /// orders dock's column, so it never moves as orders queue up; the dock
 /// stacks above it instead.
-fn queue_toggle_rect(viewport: Vec2, scale: f32, regions: &[Rect; 2]) -> Rect {
+pub(super) fn queue_toggle_rect(viewport: Vec2, scale: f32, regions: &[Rect; 2]) -> Rect {
     let size = crate::layout::MIN_TOUCH_TARGET * scale;
     let x = 8.0 * scale;
     let floor = regions
@@ -380,21 +388,27 @@ fn draw_queue_toggle(rect: Rect, on: bool, s: f32) {
     }
 }
 
-/// The armed-mode ribbon, while a mode is armed. Returns its rect (zero
-/// when absent).
-fn draw_mode_ribbon(
-    game: &crate::game::Scene<'_>,
-    sprites: &Sprites,
+/// The armed-mode ribbon: where it sits and what it names.
+pub(crate) struct RibbonLayout {
+    pub(super) rect: Rect,
+    label: String,
+    cost: Option<String>,
+    building: Option<oxide_sim::BuildingKind>,
+    label_w: f32,
+    icon_w: f32,
+}
+
+/// The armed-mode ribbon, while a mode is armed.
+pub(super) fn ribbon_layout(
     input: &InputState,
     regions: &[Rect; 2],
     minimap: Rect,
-) -> Rect {
-    let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
-    let Some(mode) = input.armed_mode() else {
-        return zero;
-    };
-    let s = ui_scale();
-    let viewport = vec2(screen_width(), screen_height());
+    env: super::hud::HudEnv,
+    measure: super::hud::Measure<'_>,
+) -> Option<RibbonLayout> {
+    use super::hud::Face;
+    let mode = input.armed_mode()?;
+    let (viewport, s) = (env.viewport, env.ui);
     let building = match mode {
         crate::input::ArmedMode::Build(kind) => Some(kind),
         _ => None,
@@ -403,12 +417,11 @@ fn draw_mode_ribbon(
     let cost = building
         .and_then(|kind| kind.base_stats().construction)
         .map(|construction| construction.cost.to_string());
-    let (label_size, cost_size) = (18.0 * s, 16.0 * s);
     let icon_w = if building.is_some() { 40.0 * s } else { 0.0 };
-    let label_w = measure_text(&label, None, numeric::font_size(label_size), 1.0).width;
-    let cost_w = cost.as_deref().map_or(0.0, |cost| {
-        12.0 * s + measure_text(cost, None, numeric::font_size(cost_size), 1.0).width
-    });
+    let label_w = measure(Face::Body, &label, 18.0 * s);
+    let cost_w = cost
+        .as_deref()
+        .map_or(0.0, |cost| 12.0 * s + measure(Face::Body, cost, 16.0 * s));
     let width = ribbon_width(viewport, s, icon_w + label_w + cost_w);
     // The ribbon sits above whichever panel region lies under it.
     let open = ribbon_geometry(viewport, s, f32::INFINITY, width, minimap);
@@ -417,7 +430,32 @@ fn draw_mode_ribbon(
         .filter(|r| r.w > 0.0 && r.x < open.x + open.w && r.x + r.w > open.x)
         .map(|r| r.y)
         .fold(f32::INFINITY, f32::min);
-    let ribbon = ribbon_geometry(viewport, s, panel_top, width, minimap);
+    Some(RibbonLayout {
+        rect: ribbon_geometry(viewport, s, panel_top, width, minimap),
+        label,
+        cost,
+        building,
+        label_w,
+        icon_w,
+    })
+}
+
+fn draw_mode_ribbon(
+    game: &crate::game::Scene<'_>,
+    sprites: &Sprites,
+    layout: &RibbonLayout,
+    s: f32,
+) {
+    let RibbonLayout {
+        rect: ribbon,
+        label,
+        cost,
+        building,
+        label_w,
+        icon_w,
+    } = layout;
+    let (ribbon, building, label_w, icon_w) = (*ribbon, *building, *label_w, *icon_w);
+    let (label_size, cost_size) = (18.0 * s, 16.0 * s);
     fill_rect(ribbon, Color::from_rgba(20, 20, 24, 248));
     stroke_rect(ribbon, 1.5 * s, SCRAP_COLOR);
     let mut x = ribbon.x + 10.0 * s;
@@ -437,17 +475,16 @@ fn draw_mode_ribbon(
         x += icon_w;
     }
     let baseline = ribbon.y + ribbon.h * 0.64;
-    draw_text(&label, x, baseline, label_size, TEXT_PRIMARY);
+    draw_text(label, x, baseline, label_size, TEXT_PRIMARY);
     if let Some(cost) = cost {
         draw_text(
-            &cost,
+            cost,
             x + label_w + 12.0 * s,
             baseline,
             cost_size,
             SCRAP_COLOR,
         );
     }
-    ribbon
 }
 
 fn toast_origin(
@@ -481,218 +518,198 @@ fn toast_origin(
     )
 }
 
+/// The top bar's texts and where they sit.
+pub(crate) struct TopBarLayout {
+    pub(super) bar: crate::layout::TopBar,
+    width: f32,
+    scrap: String,
+    passive: String,
+    units: String,
+    idle: Option<String>,
+    alert: Option<String>,
+    status: String,
+}
+
+impl TopBarLayout {
+    /// The idle badge; zero-sized while nobody idles.
+    pub(super) fn idle_badge(&self) -> Rect {
+        self.bar.idle_badge
+    }
+
+    /// The under-attack badge; zero-sized without a recent alert.
+    pub(super) fn alert_badge(&self) -> Rect {
+        self.bar.alert_badge
+    }
+}
+
+/// Lays out the top bar: the bank, income, unit count, idle and alert
+/// badges, and the clock with the menu button.
+pub(super) fn top_bar_layout(
+    game: &crate::game::Scene<'_>,
+    bindings: &crate::action::BindingMap,
+    env: super::hud::HudEnv,
+    measure: super::hud::Measure<'_>,
+) -> TopBarLayout {
+    use super::hud::Face;
+    use crate::action::{Action, BindingMap};
+    let s = env.ui;
+    let label = |action| {
+        bindings
+            .chord_for(action)
+            .map(BindingMap::chord_label)
+            .unwrap_or_default()
+    };
+    let scrap = game.state.player(game.presentation.human).scrap;
+    let passive: u32 = game
+        .state
+        .buildings()
+        .iter()
+        .map(|building| crate::panel::building_income(game, building))
+        .sum();
+    let my_units = game
+        .state
+        .units()
+        .iter()
+        .filter(|unit| unit.player == game.presentation.human)
+        .count();
+    let scrap = scrap.to_string();
+    let passive = format!("+{passive}/min passive");
+    let units = my_units.to_string();
+    let idle = crate::input::idle_harvesters(game).len();
+    let idle = (idle > 0).then(|| {
+        idle_badge_text(
+            idle,
+            &label(Action::CycleIdleWorker),
+            crate::platform::TOUCH_ONLY,
+        )
+    });
+    // Alerts age out in a few seconds and hold while paused, so the
+    // badge shows exactly while the minimap still pulses one.
+    let alert = (!game.presentation.alerts.is_empty())
+        .then(|| alert_badge_text(&label(Action::JumpToLastAlert), crate::platform::TOUCH_ONLY));
+    let status = if game.clock.paused {
+        paused_status(&label(Action::TogglePause), crate::platform::TOUCH_ONLY)
+    } else if (game.clock.speed - 1.0).abs() > f64::EPSILON {
+        format!("x{:.2}", game.clock.speed)
+    } else {
+        let seconds = game.state.current_tick() / u64::from(oxide_sim::TICKS_PER_SECOND);
+        format!("{}:{:02}", seconds / 60, seconds % 60)
+    };
+    let bar = crate::layout::top_bar(
+        env.viewport.x,
+        s,
+        crate::platform::TOUCH_ONLY,
+        crate::layout::TopBarText {
+            scrap: measure(Face::Display, &scrap, 21.0 * s),
+            passive: measure(Face::Body, &passive, 16.0 * s),
+            units_label: measure(Face::Display, "UNITS", 13.0 * s),
+            units: measure(Face::Display, &units, 21.0 * s),
+            idle: idle
+                .as_deref()
+                .map(|text| measure(Face::Body, text, 15.0 * s)),
+            alert: alert
+                .as_deref()
+                .map(|text| measure(Face::Body, text, 15.0 * s)),
+            status: measure(Face::Display, &status, 14.0 * s),
+        },
+    );
+    TopBarLayout {
+        bar,
+        width: env.viewport.x,
+        scrap,
+        passive,
+        units,
+        idle,
+        alert,
+        status,
+    }
+}
+
+fn draw_top_bar(top: &TopBarLayout, s: f32) {
+    let TopBarLayout {
+        bar,
+        width,
+        scrap,
+        passive,
+        units,
+        idle,
+        alert,
+        status,
+    } = top;
+    draw_rectangle(0.0, 0.0, *width, crate::layout::TOP_BAR_H * s, PANEL);
+    crate::typography::draw(
+        "SCRAP",
+        bar.scrap_label_x,
+        26.0 * s,
+        13.0 * s,
+        TEXT_SECONDARY,
+    );
+    crate::typography::draw(scrap, bar.scrap_x, 27.0 * s, 21.0 * s, SCRAP_COLOR);
+    draw_text(passive, bar.passive_x, 26.0 * s, 16.0 * s, TEXT_BODY);
+    crate::typography::draw("UNITS", bar.units_x, 26.0 * s, 13.0 * s, TEXT_SECONDARY);
+    crate::typography::draw(units, bar.count_x, 27.0 * s, 21.0 * s, TEXT_PRIMARY);
+    if let Some(text) = idle {
+        fill_rect(bar.idle_badge, TOP_BAR_BADGE);
+        draw_text(
+            text,
+            bar.idle_badge.x + 9.0 * s,
+            26.0 * s,
+            15.0 * s,
+            SCRAP_COLOR,
+        );
+    }
+    if let Some(text) = alert {
+        fill_rect(bar.alert_badge, TOP_BAR_BADGE);
+        draw_text(
+            text,
+            bar.alert_badge.x + 9.0 * s,
+            26.0 * s,
+            15.0 * s,
+            crate::theme::TEXT_DANGER,
+        );
+    }
+    draw_menu_button(bar.menu_button, s);
+    crate::typography::draw(status, bar.status_x, 26.0 * s, 14.0 * s, TEXT_PRIMARY);
+}
+
+/// Draws the HUD the layout pass placed: the top bar, the command panel,
+/// the control groups, the armed-mode ribbon, the QUEUE toggle, the
+/// performance readout, toasts, and the spectator strip.
 pub(crate) fn draw_hud(
     game: &crate::game::Scene<'_>,
     sprites: &Sprites,
     input: &InputState,
     bindings: &crate::action::BindingMap,
+    hud: &super::hud::HudGeometry,
     performance: Option<&crate::performance::PerformanceView>,
 ) {
     let s = ui_scale();
-    // A spectator commands nothing: no bank, unit count, or idle badge;
-    // the viewer's transport bar is its own chrome. The layout still
-    // publishes below so the minimap stays clickable.
-    let mut idle_badge = Rect::new(0.0, 0.0, 0.0, 0.0);
-    let mut alert_badge = Rect::new(0.0, 0.0, 0.0, 0.0);
-    let mut menu_button = Rect::new(0.0, 0.0, 0.0, 0.0);
-    let mut pause_status = Rect::new(0.0, 0.0, 0.0, 0.0);
-    let mut status_space = None;
-    if !game.presentation.spectate {
-        use crate::action::{Action, BindingMap};
-        // Top bar.
-        draw_rectangle(
-            0.0,
-            0.0,
-            screen_width(),
-            crate::layout::TOP_BAR_H * s,
-            PANEL,
-        );
-        let label = |action| {
-            bindings
-                .chord_for(action)
-                .map(BindingMap::chord_label)
-                .unwrap_or_default()
-        };
-        let scrap = game.state.player(game.presentation.human).scrap;
-        let passive: u32 = game
-            .state
-            .buildings()
-            .iter()
-            .map(|building| crate::panel::building_income(game, building))
-            .sum();
-        let my_units = game
-            .state
-            .units()
-            .iter()
-            .filter(|unit| unit.player == game.presentation.human)
-            .count();
-        let scrap_text = scrap.to_string();
-        let passive_text = format!("+{passive}/min passive");
-        let units_text = my_units.to_string();
-        let idle = crate::input::idle_harvesters(game).len();
-        let idle_text = (idle > 0).then(|| {
-            idle_badge_text(
-                idle,
-                &label(Action::CycleIdleWorker),
-                crate::platform::TOUCH_ONLY,
-            )
-        });
-        // Alerts age out in a few seconds and hold while paused, so the
-        // badge shows exactly while the minimap still pulses one.
-        let alert_text = (!game.presentation.alerts.is_empty()).then(|| {
-            alert_badge_text(&label(Action::JumpToLastAlert), crate::platform::TOUCH_ONLY)
-        });
-        let status = if game.clock.paused {
-            paused_status(&label(Action::TogglePause), crate::platform::TOUCH_ONLY)
-        } else if (game.clock.speed - 1.0).abs() > f64::EPSILON {
-            format!("x{:.2}", game.clock.speed)
-        } else {
-            let seconds = game.state.current_tick() / u64::from(oxide_sim::TICKS_PER_SECOND);
-            format!("{}:{:02}", seconds / 60, seconds % 60)
-        };
-        let bar = crate::layout::top_bar(
-            screen_width(),
-            s,
-            crate::platform::TOUCH_ONLY,
-            crate::layout::TopBarText {
-                scrap: crate::typography::measure(&scrap_text, 21.0 * s).width,
-                passive: measure_text(&passive_text, None, numeric::font_size(16.0 * s), 1.0).width,
-                units_label: crate::typography::measure("UNITS", 13.0 * s).width,
-                units: crate::typography::measure(&units_text, 21.0 * s).width,
-                idle: idle_text
-                    .as_deref()
-                    .map(|text| measure_text(text, None, numeric::font_size(15.0 * s), 1.0).width),
-                alert: alert_text
-                    .as_deref()
-                    .map(|text| measure_text(text, None, numeric::font_size(15.0 * s), 1.0).width),
-                status: crate::typography::measure(&status, 14.0 * s).width,
-            },
-        );
-        crate::typography::draw(
-            "SCRAP",
-            bar.scrap_label_x,
-            26.0 * s,
-            13.0 * s,
-            TEXT_SECONDARY,
-        );
-        crate::typography::draw(&scrap_text, bar.scrap_x, 27.0 * s, 21.0 * s, SCRAP_COLOR);
-        draw_text(&passive_text, bar.passive_x, 26.0 * s, 16.0 * s, TEXT_BODY);
-        crate::typography::draw("UNITS", bar.units_x, 26.0 * s, 13.0 * s, TEXT_SECONDARY);
-        crate::typography::draw(&units_text, bar.count_x, 27.0 * s, 21.0 * s, TEXT_PRIMARY);
-        if let Some(text) = &idle_text {
-            idle_badge = bar.idle_badge;
-            fill_rect(idle_badge, TOP_BAR_BADGE);
-            draw_text(
-                text,
-                idle_badge.x + 9.0 * s,
-                26.0 * s,
-                15.0 * s,
-                SCRAP_COLOR,
-            );
-        }
-        if let Some(text) = &alert_text {
-            alert_badge = bar.alert_badge;
-            fill_rect(alert_badge, TOP_BAR_BADGE);
-            draw_text(
-                text,
-                alert_badge.x + 9.0 * s,
-                26.0 * s,
-                15.0 * s,
-                crate::theme::TEXT_DANGER,
-            );
-        }
-        menu_button = bar.menu_button;
-        draw_menu_button(menu_button, s);
-        status_space = Some(bar.status_space);
-        crate::typography::draw(&status, bar.status_x, 26.0 * s, 14.0 * s, TEXT_PRIMARY);
-        // The status toggles pause; its target spans the bar's badge
-        // band so the short clock text is still easy to hit.
-        pause_status = bar.pause_status;
+    if let Some(top_bar) = &hud.top_bar {
+        draw_top_bar(top_bar, s);
     }
-
-    *game.presentation.panel_model.borrow_mut() =
-        crate::panel::build_for_input(game, bindings, input);
-    let panel = game.presentation.panel_model.borrow();
-    let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
-    let mut roster_slots = [(zero, crate::panel::CardAction::None); 8];
-    let mut roster_count = 0;
-    let mut cards = [(zero, crate::panel::CardAction::None); 16];
-    let mut card_count = 0;
-    let mut queue_slots = [(zero, crate::panel::CardAction::None); 8];
-    let mut queue_count = 0;
-    let mut queue_stop = (zero, crate::panel::CardAction::None);
-    let mut panel_top = f32::INFINITY;
-    let mut panel_right = 0.0;
-    let mut orders_dock = Rect::new(0.0, 0.0, 0.0, 0.0);
-    let mut minimap = minimap_rect(game);
-    let mut panel_regions = [zero; 2];
-    if let Some(panel) = panel.as_ref() {
-        let geometry = draw_panel(game, sprites, input, bindings, panel);
-        roster_slots = geometry.roster_slots;
-        roster_count = geometry.roster_count;
-        cards = geometry.cards;
-        card_count = geometry.card_count;
-        queue_slots = geometry.queue_slots;
-        queue_count = geometry.queue_count;
-        queue_stop = geometry.queue_stop;
-        panel_regions = [geometry.info, geometry.actions];
-        panel_top = panel_regions
-            .iter()
-            .filter(|r| r.w > 0.0)
-            .map(|r| r.y)
-            .fold(f32::INFINITY, f32::min);
-        panel_right = panel_regions.iter().map(|r| r.x + r.w).fold(0.0, f32::max);
-        orders_dock = geometry.orders;
-        if geometry.hides_minimap {
-            minimap = zero;
-        }
+    if let (Some(panel), Some(layout)) = (
+        game.presentation.panel_model.borrow().as_ref(),
+        hud.panel.as_ref(),
+    ) {
+        draw_panel(sprites, input, bindings, panel, layout);
     }
-    let (group_column, group_slots) = if game.presentation.spectate {
-        (zero, [None; crate::action::CONTROL_GROUPS])
-    } else {
-        draw_group_column(game, input, minimap, s)
-    };
-    let mode_ribbon = draw_mode_ribbon(game, sprites, input, &panel_regions, minimap);
-    let queue_toggle = if queue_toggle_shown(game, input, crate::platform::TOUCH_ONLY) {
-        let rect = queue_toggle_rect(vec2(screen_width(), screen_height()), s, &panel_regions);
+    if let Some(column) = &hud.group_column {
+        draw_group_column(column, s);
+    }
+    if let Some(ribbon) = &hud.ribbon {
+        draw_mode_ribbon(game, sprites, ribbon, s);
+    }
+    if let Some(rect) = hud.queue_toggle {
         draw_queue_toggle(rect, input.queue_toggle, s);
-        rect
-    } else {
-        zero
-    };
-    // Publish the frame's chrome geometry for hit-testing.
-    let mut layout = crate::layout::LayoutModel::compute(
-        vec2(screen_width(), screen_height()),
-        s,
-        panel_top,
-        panel_right,
-        orders_dock,
-        minimap,
-        idle_badge,
-        menu_button,
-        pause_status,
-        mode_ribbon,
-        roster_slots,
-        roster_count,
-        cards,
-        card_count,
-        queue_slots,
-        queue_count,
-    );
-    layout.panel_regions = panel_regions;
-    layout.queue_toggle = queue_toggle;
-    layout.queue_stop = queue_stop;
-    layout.alert_badge = alert_badge;
-    layout.group_column = group_column;
-    layout.group_slots = group_slots;
-    game.presentation.layout.set(layout);
-
-    if let Some(view) = performance {
-        let panel = super::performance::draw(view, status_space);
-        let mut layout = game.presentation.layout.get();
-        layout.performance = panel;
-        game.presentation.layout.set(layout);
     }
+    if let (Some(view), Some(layout)) = (performance, &hud.performance) {
+        super::performance::draw(view, layout);
+    }
+    let layout = game.presentation.layout.get();
+    let panel_regions = layout.panel_regions;
+    let orders_dock = layout.orders;
+    let queue_toggle = layout.queue_toggle;
+    let mode_ribbon = layout.mode_ribbon;
 
     // Toasts: rejected orders and stalled units, newest at the bottom.
     for (i, toast) in game.presentation.toasts.iter().rev().take(3).enumerate() {
