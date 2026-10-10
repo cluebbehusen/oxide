@@ -122,12 +122,12 @@ pub(crate) enum Pointer {
 }
 
 impl Pointer {
-    /// The pointer an event shows in use, if it shows one.
+    /// The pointer an event shows in use, if it shows one. A wheel
+    /// carries no position, so it leaves the pointer as it was: before
+    /// any motion, hover and edge pan would read a stale mouse point.
     fn of(event: &RawEvent) -> Option<Self> {
         match event {
-            RawEvent::MouseDown { .. } | RawEvent::MouseMove { .. } | RawEvent::Wheel { .. } => {
-                Some(Self::Mouse)
-            }
+            RawEvent::MouseDown { .. } | RawEvent::MouseMove { .. } => Some(Self::Mouse),
             RawEvent::TouchDown { .. } => Some(Self::Touch),
             _ => None,
         }

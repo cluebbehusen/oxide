@@ -4109,11 +4109,13 @@ fn every_screen_tracks_the_pointer_and_keys_in_use() {
     input.keys_seen = false;
     track_hands(&mut input, &touch_down(1, vec2(1.0, 1.0)), false);
     assert_eq!(input.last_pointer, Pointer::Touch);
-    for event in [
-        mouse_move(vec2(2.0, 2.0)),
-        RawEvent::Wheel { delta: 1.0 },
-        left_down(vec2(3.0, 3.0)),
-    ] {
+    track_hands(&mut input, &RawEvent::Wheel { delta: 1.0 }, false);
+    assert_eq!(
+        input.last_pointer,
+        Pointer::Touch,
+        "a wheel has no point for hover or edge pan to read"
+    );
+    for event in [mouse_move(vec2(2.0, 2.0)), left_down(vec2(3.0, 3.0))] {
         input.last_pointer = Pointer::Touch;
         track_hands(&mut input, &event, false);
         assert_eq!(input.last_pointer, Pointer::Mouse, "{event:?}");
