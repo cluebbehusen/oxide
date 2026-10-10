@@ -88,7 +88,7 @@ fn lookahead_steers_for_the_furthest_visible_waypoint_of_a_staircase() {
     let state = scene(UnitKind::Harvester);
     let mut unit = state.units()[0].clone();
     unit.heading = 0;
-    unit.drive_speed = unit.kind.stats().speed;
+    unit.set_drive_speed(unit.kind.stats().speed);
     route(&mut unit, staircase());
     assert_eq!(target_index(&mut unit, &state), ROUTE_LOOKAHEAD);
     for _ in 0..400 {
@@ -107,7 +107,7 @@ fn the_route_cursor_trails_the_hull_not_the_steering_target() {
     let state = scene(UnitKind::Harvester);
     let mut unit = state.units()[0].clone();
     unit.heading = 0;
-    unit.drive_speed = unit.kind.stats().speed;
+    unit.set_drive_speed(unit.kind.stats().speed);
     let waypoints = staircase();
     route(&mut unit, waypoints.clone());
     for _ in 0..80 {
@@ -142,7 +142,7 @@ fn a_chassis_at_rest_facing_its_next_waypoint_rolls_before_looking_ahead() {
     route(&mut unit, staircase());
     assert_eq!(target_index(&mut unit, &state), 0);
     advance(&mut unit, &state.ground_terrain(), &ParkedBodies::default());
-    assert!(unit.drive_speed > Fx::ZERO);
+    assert!(unit.drive_speed() > Fx::ZERO);
     assert!(target_index(&mut unit, &state) > 0);
 }
 
@@ -153,7 +153,7 @@ fn lookahead_stops_where_a_rock_breaks_the_line() {
     let state = scene_with(UnitKind::Harvester, &[(11, 9)]);
     let mut unit = state.units()[0].clone();
     unit.heading = 0;
-    unit.drive_speed = unit.kind.stats().speed;
+    unit.set_drive_speed(unit.kind.stats().speed);
     route(
         &mut unit,
         tiles(&[
@@ -185,7 +185,7 @@ fn a_wide_hull_keeps_the_tile_route_beside_a_wall() {
         let state = scene_with(kind, &wall);
         let mut unit = state.units()[0].clone();
         unit.heading = 0;
-        unit.drive_speed = kind.stats().speed;
+        unit.set_drive_speed(kind.stats().speed);
         route(
             &mut unit,
             tiles(&[(9, 8), (10, 8), (11, 8), (12, 8), (13, 8)]),
@@ -202,7 +202,7 @@ fn a_right_angle_bend_is_driven_as_an_arc_without_stopping() {
         let state = scene_with(kind, &wall);
         let mut unit = state.units()[0].clone();
         unit.heading = 0;
-        unit.drive_speed = kind.stats().speed;
+        unit.set_drive_speed(kind.stats().speed);
         let mut waypoints = tiles(&[(9, 8), (10, 8), (11, 8), (12, 8)]);
         waypoints.extend((9..=14).map(|y| TilePos::new(12, y)));
         route(&mut unit, waypoints);
@@ -218,7 +218,7 @@ fn a_right_angle_bend_is_driven_as_an_arc_without_stopping() {
                 turned = true;
             }
             if turned {
-                min_speed = min_speed.min(unit.drive_speed);
+                min_speed = min_speed.min(unit.drive_speed());
             }
         }
         assert!(turned, "{kind:?} never turned");
@@ -304,16 +304,16 @@ fn each_ground_chassis_accelerates_in_six_ticks_and_stops_in_three() {
         target(&mut unit, TilePos::new(20, 8));
         for _ in 0..5 {
             advance(&mut unit, &state.ground_terrain(), &ParkedBodies::default());
-            assert!(unit.drive_speed < kind.stats().speed, "{kind:?}");
+            assert!(unit.drive_speed() < kind.stats().speed, "{kind:?}");
         }
         advance(&mut unit, &state.ground_terrain(), &ParkedBodies::default());
-        assert_eq!(unit.drive_speed, kind.stats().speed, "{kind:?}");
+        assert_eq!(unit.drive_speed(), kind.stats().speed, "{kind:?}");
         unit.path = None;
         let before = unit.pos;
         for _ in 0..3 {
             advance(&mut unit, &state.ground_terrain(), &ParkedBodies::default());
         }
-        assert_eq!(unit.drive_speed, Fx::ZERO);
+        assert_eq!(unit.drive_speed(), Fx::ZERO);
         assert!(unit.pos.x > before.x);
         let stopped = unit.pos;
         advance(&mut unit, &state.ground_terrain(), &ParkedBodies::default());
@@ -355,7 +355,7 @@ fn retasking_a_heavy_chassis_brakes_before_pivoting_and_then_arrives() {
         let state = scene(kind);
         let mut unit = state.units()[0].clone();
         unit.heading = 0;
-        unit.drive_speed = kind.stats().speed;
+        unit.set_drive_speed(kind.stats().speed);
         let goal = TilePos::new(3, 8);
         target(&mut unit, goal);
         for _ in 0..3 {
@@ -364,12 +364,12 @@ fn retasking_a_heavy_chassis_brakes_before_pivoting_and_then_arrives() {
             assert_eq!(unit.heading, 0);
             assert!(unit.pos.x >= before.x);
         }
-        assert_eq!(unit.drive_speed, Fx::ZERO);
+        assert_eq!(unit.drive_speed(), Fx::ZERO);
         for _ in 0..400 {
             advance(&mut unit, &state.ground_terrain(), &ParkedBodies::default());
         }
         assert_eq!(unit.pos, goal.center(), "{kind:?}");
-        assert_eq!(unit.drive_speed, Fx::ZERO);
+        assert_eq!(unit.drive_speed(), Fx::ZERO);
         assert!(unit.path.is_none());
     }
 }
@@ -382,7 +382,7 @@ fn collision_displacement_does_not_create_motor_speed() {
     let displaced = unit.pos;
     advance(&mut unit, &state.ground_terrain(), &ParkedBodies::default());
     assert_eq!(unit.pos, displaced);
-    assert_eq!(unit.drive_speed, Fx::ZERO);
+    assert_eq!(unit.drive_speed(), Fx::ZERO);
 }
 
 #[test]
@@ -393,11 +393,11 @@ fn braking_does_not_enter_a_newly_claimed_footprint() {
     unit.pos = building.anchor.center();
     unit.pos.x = Fx::from_num(building.anchor.x) - Fx::lit("0.001");
     unit.heading = 0;
-    unit.drive_speed = unit.kind.stats().speed;
+    unit.set_drive_speed(unit.kind.stats().speed);
     let before = unit.pos;
     advance(&mut unit, &state.ground_terrain(), &ParkedBodies::default());
     assert_eq!(unit.pos, before);
-    assert_eq!(unit.drive_speed, Fx::ZERO);
+    assert_eq!(unit.drive_speed(), Fx::ZERO);
 }
 
 #[test]

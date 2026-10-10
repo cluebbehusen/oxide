@@ -338,8 +338,8 @@ tile can lie beyond the airframe's own eyes. A touchdown also needs clearance:
 no other ground body on the tile or within the two bodies' combined radius of
 the resting point, because parked bodies are immovable and such an overlap would
 never resolve. It touches down when it passes within `LANDING_TOUCHDOWN` of the
-tile center and rests where it met the tile, keeping its heading; the `landed`
-flag makes it a ground body for targeting, collision, buried charges, and
+tile center and rests where it met the tile, keeping its heading; its landed
+motor makes it a ground body for targeting, collision, buried charges, and
 footprints while it never moves. A tile that fills during the approach sends the
 landing around to the nearest clear tile; an overflown tile costs a fresh
 run-in. An idle aircraft lands itself after `AUTO_LAND_IDLE_TICKS` of orbit, and
@@ -627,16 +627,16 @@ traversing toward its ordinary opportunistic target; cooldown starts only once
 the turret aligns. Hidden structures cannot attract an advancing weapon or
 reveal themselves through turret tracking.
 
-A unit whose stats carry a brace, today the Bombard, keeps serialized
-`brace_ticks`, bounded by the brace's deployment ticks. It turns with the spades
-stowed, then deploys over that many aligned ticks; its heading stays fixed
-inside the firing tolerance while planted. After a shot, a short recoil window
-precedes retraction, which runs faster than deployment. A new aim, lost firing
-solution, or movement order retracts the spades before further turning or
-translation. Reloading at an unchanged firing stance keeps them planted. A
-braced gun never fires potshots on Advance. Deserialization bounds the
-deployment counter, rejects it on kinds without a brace and requires transported
-riders to have stowed spades.
+A unit whose stats carry a brace, today the Bombard, stands on a braced motor
+while its spades are out, counting deployment ticks up to the brace's
+deployment. It turns with the spades stowed, then deploys over that many aligned
+ticks; its heading stays fixed inside the firing tolerance while planted. After
+a shot, a short recoil window precedes retraction, which runs faster than
+deployment. A new aim, lost firing solution, or movement order retracts the
+spades before further turning or translation. Reloading at an unchanged firing
+stance keeps them planted. A braced gun never fires potshots on Advance.
+Deserialization bounds the deployment counter and rejects a braced motor on
+kinds without a brace; a transported rider keeps no motor at all.
 
 `AttackTarget` resolves through team knowledge to a visible entity, remembered
 building footprint, or mobile contact. Explicit attacks approach weapon range

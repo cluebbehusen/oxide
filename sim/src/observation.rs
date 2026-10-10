@@ -640,7 +640,7 @@ fn own_unit(state: &State, u: &crate::state::Unit) -> UnitObs {
             _ => None,
         },
         repairing: matches!(u.order, Order::Repair { .. } | Order::RepairUnit { .. }),
-        grounded: u.landed,
+        grounded: u.landed(),
     }
 }
 
@@ -659,7 +659,7 @@ fn enemy_unit(u: &crate::state::Unit) -> UnitObs {
         salvaging: None,  // ditto
         founding: None,   // ditto
         repairing: false,
-        grounded: u.landed,
+        grounded: u.landed(),
     }
 }
 

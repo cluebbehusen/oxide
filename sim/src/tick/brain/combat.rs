@@ -97,9 +97,9 @@ impl MotionSnapshot {
             .iter()
             .filter_map(|unit| {
                 if unit.kind.stats().domain == Domain::Ground {
-                    return (unit.drive_speed > Fx::ZERO).then_some((
+                    return (unit.drive_speed() > Fx::ZERO).then_some((
                         unit.id,
-                        chassis::compass::dir(unit.heading) * unit.drive_speed,
+                        chassis::compass::dir(unit.heading) * unit.drive_speed(),
                     ));
                 }
                 let path = unit.path.as_ref()?;
@@ -1472,7 +1472,7 @@ pub(super) fn attack(
     hits: &mut Vec<PendingHit>,
     launches: &mut Vec<crate::state::Shell>,
 ) {
-    let previous_braces = state.unit(id).expect("caller checked").brace_ticks;
+    let previous_braces = state.unit(id).expect("caller checked").braces();
     state.unit_mut(id).expect("caller checked").retract_braces();
     let unit = state.unit(id).expect("caller checked");
     let stats = unit.kind.stats();
@@ -1598,7 +1598,7 @@ pub(super) fn attack(
         {
             leash.patience = crate::stats::LEASH_PATIENCE;
         }
-        unit.brace_ticks = previous_braces;
+        unit.set_braces(previous_braces);
         if !super::super::movement::steer_weapon_heading(
             unit,
             projectile_aim.unwrap_or(aim_point) - pos,

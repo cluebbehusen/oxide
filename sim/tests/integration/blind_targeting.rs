@@ -516,6 +516,7 @@ fn concealed_identity_domain_health_and_position_do_not_change_firing_decisions(
             0 => {
                 document["units"][0]["kind"] = serde_json::json!("harvester");
                 document["units"][0]["worker"] = serde_json::json!({});
+                document["units"][0]["motor"] = serde_json::json!({"motor": "ground"});
             }
             1 => {
                 document["units"][0]["id"] = serde_json::json!(17);

@@ -400,14 +400,14 @@ fn motion_snapshot_tracks_motor_speed_through_retargeting_and_coasting() {
     let target = &mut state.units[1];
     target.kind = UnitKind::Scuttler;
     target.heading = 0;
-    target.drive_speed = target.kind.stats().speed / 6;
+    target.set_drive_speed(target.kind.stats().speed / 6);
     target.path = Some(PathFollow {
         final_point: None,
         goal: TilePos::new(3, 1),
         waypoints: vec![TilePos::new(5, 1), TilePos::new(3, 1)],
         next: 0,
     });
-    let (id, pos, speed) = (target.id, target.pos, target.drive_speed);
+    let (id, pos, speed) = (target.id, target.pos, target.drive_speed());
     let expected = pos + Vec2Fx::new(speed, Fx::ZERO);
     assert_eq!(
         MotionSnapshot::capture(&state).position_after(id, pos, 1),
@@ -419,7 +419,7 @@ fn motion_snapshot_tracks_motor_speed_through_retargeting_and_coasting() {
         MotionSnapshot::capture(&state).position_after(id, pos, 1),
         Some(expected)
     );
-    state.units[1].drive_speed = Fx::ZERO;
+    state.units[1].set_drive_speed(Fx::ZERO);
     state.units[1].path = Some(PathFollow {
         final_point: None,
         goal: TilePos::new(8, 1),
@@ -441,7 +441,7 @@ fn motion_snapshot_ignores_later_route_turns() {
         state.units[1].kind = UnitKind::Scuttler;
         state.units[1].pos = TilePos::new(7, 1).center();
         state.units[1].heading = 0;
-        state.units[1].drive_speed = UnitKind::Scuttler.stats().speed;
+        state.units[1].set_drive_speed(UnitKind::Scuttler.stats().speed);
         let target = state.units[1].id;
         state.units[1].path = Some(PathFollow {
             final_point: None,

@@ -77,6 +77,7 @@ fn route_target(
 ) -> Option<(Vec2Fx, usize, bool)> {
     let radius = unit.kind.stats().radius;
     let contact_radius = crate::tick::brain::contact::collision_radius(unit);
+    let at_rest = unit.drive_speed() == Fx::ZERO;
     loop {
         let path = unit.path.as_ref()?;
         let Some(&waypoint) = path.waypoints.get(path.next as usize) else {
@@ -102,7 +103,7 @@ fn route_target(
         // A chassis at rest that already faces its next waypoint rolls
         // toward it now and finds the longer leg once under way; steering
         // for a farther target from rest would pivot first.
-        let facing = unit.drive_speed == Fx::ZERO && {
+        let facing = at_rest && {
             let bearing = heading_of(path_point(path, path.next as usize) - unit.pos);
             bearing
                 .wrapping_sub(unit.heading)
@@ -187,7 +188,7 @@ pub(super) fn advance(unit: &mut Unit, terrain: &GroundTerrain, parked: &ParkedB
     let pivot = error > u16::from(GROUND_PIVOT_THRESHOLD);
     // A reversal first brakes along the existing heading; every smaller
     // correction steers while rolling.
-    if unit.drive_speed == Fx::ZERO || !pivot {
+    if unit.drive_speed() == Fx::ZERO || !pivot {
         let rate = i16::from(turn_rate);
         unit.heading = unit.heading.wrapping_add_signed(
             i8::try_from(delta.clamp(-rate, rate)).expect("clamping an i8 delta keeps it an i8"),
@@ -202,7 +203,7 @@ pub(super) fn advance(unit: &mut Unit, terrain: &GroundTerrain, parked: &ParkedB
     let landing = target.is_some() && distance <= brake;
     // From rest the chassis pivots onto its bearing before it rolls; only
     // a body already under way steers through a bend.
-    let steering = aligned || unit.drive_speed > Fx::ZERO;
+    let steering = aligned || unit.drive_speed() > Fx::ZERO;
     let mut demand = Fx::ZERO;
     if landing {
         demand = distance;
@@ -224,21 +225,21 @@ pub(super) fn advance(unit: &mut Unit, terrain: &GroundTerrain, parked: &ParkedB
         };
         demand = demand.min(arrival);
     }
-    let rate = if demand > unit.drive_speed {
+    let rate = if demand > unit.drive_speed() {
         increment(max_speed, i64::from(GROUND_ACCEL_TICKS))
     } else {
         brake
     };
-    unit.drive_speed += (demand - unit.drive_speed).clamp(-rate, rate);
+    unit.set_drive_speed(unit.drive_speed() + (demand - unit.drive_speed()).clamp(-rate, rate));
     let travel = if target.is_some() && (aligned || landing) {
         let offset = offset.expect("a target has an offset");
-        if unit.drive_speed >= distance {
+        if unit.drive_speed() >= distance {
             offset
         } else {
-            offset * (unit.drive_speed / distance)
+            offset * (unit.drive_speed() / distance)
         }
     } else {
-        dir(unit.heading) * unit.drive_speed
+        dir(unit.heading) * unit.drive_speed()
     };
     let proposed = unit.pos + travel;
     let here = TilePos::containing(unit.pos);
@@ -257,14 +258,14 @@ pub(super) fn advance(unit: &mut Unit, terrain: &GroundTerrain, parked: &ParkedB
     if allowed {
         unit.pos = proposed;
     } else {
-        unit.drive_speed = Fx::ZERO;
+        unit.set_drive_speed(Fx::ZERO);
     }
     if let Some((point, index, final_point)) = target
         && unit.pos == point
     {
         if final_point {
             unit.path = None;
-            unit.drive_speed = Fx::ZERO;
+            unit.set_drive_speed(Fx::ZERO);
         } else if let Some(path) = unit.path.as_mut()
             // A stand-in point steered for instead, such as a contact exit,
             // does not pass the waypoint it stood in for.

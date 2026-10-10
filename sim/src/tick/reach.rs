@@ -61,7 +61,7 @@ impl Reach {
             .map(|unit| {
                 (unit.hp > 0
                     && unit.path.is_none()
-                    && unit.drive_speed == Fx::ZERO
+                    && unit.drive_speed() == Fx::ZERO
                     && unit.order == Order::Idle)
                     .then(|| (unit.domain(), unit.player))
             })

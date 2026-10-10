@@ -501,7 +501,7 @@ fn unit_view(u: &Unit) -> UnitView {
         order: Some(u.order),
         queue: u.queue.iter().copied().collect(),
         patrolling: Some(u.looping),
-        landed: u.landed,
+        landed: u.landed(),
     }
 }
 

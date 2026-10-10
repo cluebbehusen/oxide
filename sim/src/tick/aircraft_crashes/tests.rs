@@ -18,7 +18,7 @@ fn at(x: i32, y: i32) -> Vec2Fx {
 fn casualty(state: &mut State, kind: UnitKind, motion: Vec2Fx) -> UnitId {
     let id = state.spawn_unit(PlayerId(0), kind, at(20, 16));
     let unit = state.units.iter_mut().find(|unit| unit.id == id).unwrap();
-    unit.air_motion = motion;
+    unit.motor = crate::state::Motor::Airborne { motion };
     unit.hp = 0;
     id
 }
@@ -134,7 +134,7 @@ fn pit_impacts_and_grounded_or_small_casualties_do_not_blast() {
         .iter_mut()
         .find(|u| u.id == parked)
         .unwrap()
-        .landed = true;
+        .touch_down();
     casualty(&mut state, UnitKind::Talon, Vec2Fx::ZERO);
     schedule(&mut state);
     assert_eq!(state.aircraft_crashes.len(), 1);
@@ -179,11 +179,11 @@ fn stored_momentum_follows_actual_motion_and_is_bounded_after_collision() {
     let id = state.spawn_unit(PlayerId(0), UnitKind::Skyhook, at(20, 16));
     let before = capture_positions(&state);
     remember_motion(&mut state, &before);
-    assert_eq!(state.unit(id).unwrap().air_motion, Vec2Fx::ZERO);
+    assert_eq!(state.unit(id).unwrap().air_motion(), Vec2Fx::ZERO);
     let delta = Vec2Fx::new(Fx::lit("0.04"), Fx::lit("-0.03"));
     state.units.iter_mut().find(|u| u.id == id).unwrap().pos += delta;
     remember_motion(&mut state, &before);
-    assert_eq!(state.unit(id).unwrap().air_motion, delta);
+    assert_eq!(state.unit(id).unwrap().air_motion(), delta);
     assert_eq!(
         state.unit(id).unwrap().heading,
         chassis::compass::heading_of(delta)
@@ -193,9 +193,9 @@ fn stored_momentum_follows_actual_motion_and_is_bounded_after_collision() {
     state.validate_invariants().unwrap();
     let unit = state.units.iter_mut().find(|u| u.id == id).unwrap();
     unit.kind = UnitKind::Condor;
-    unit.landed = true;
+    unit.touch_down();
     remember_motion(&mut state, &before);
-    assert_eq!(state.unit(id).unwrap().air_motion, Vec2Fx::ZERO);
+    assert_eq!(state.unit(id).unwrap().air_motion(), Vec2Fx::ZERO);
 }
 
 #[test]

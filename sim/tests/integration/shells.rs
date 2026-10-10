@@ -444,18 +444,19 @@ fn neighbor_shot(
         );
     }
     let mut value = serde_json::to_value(&state).unwrap();
-    value["units"][0]["brace_ticks"] = serde_json::json!(
-        oxide_sim::UnitKind::Bombard
+    value["units"][0]["motor"] = serde_json::json!({
+        "motor": "braced",
+        "ticks": oxide_sim::UnitKind::Bombard
             .stats()
             .brace
             .expect("the bombard braces")
-            .deploy_ticks
-    );
+            .deploy_ticks,
+    });
     // Start at cruise speed to keep the shot on the authored visibility boundary.
-    value["units"][2]["drive_speed"] = serde_json::json!(UnitKind::Harvester.stats().speed);
+    value["units"][2]["motor"]["speed"] = serde_json::json!(UnitKind::Harvester.stats().speed);
     if !air {
         for index in [1, 3] {
-            value["units"][index]["drive_speed"] =
+            value["units"][index]["motor"]["speed"] =
                 serde_json::json!(UnitKind::Harvester.stats().speed);
         }
     }
@@ -515,7 +516,7 @@ fn neighbor_shot(
         victim.path.is_some(),
         "the fire-time target must still be moving"
     );
-    assert_eq!(victim.drive_speed, victim.kind.stats().speed);
+    assert_eq!(victim.drive_speed(), victim.kind.stats().speed);
     assert_eq!(victim.heading, 128);
     assert!(before.can_see(PlayerId(0), victim.tile()));
     assert_eq!(before.can_see(PlayerId(0), neighbor_unit.tile()), !hidden);
@@ -592,7 +593,7 @@ fn advance_fire_leads_the_same_moving_path_without_becoming_an_attack() {
         )]);
     }
     assert_eq!(
-        state.unit(target).unwrap().drive_speed,
+        state.unit(target).unwrap().drive_speed(),
         UnitKind::Scuttler.stats().speed
     );
     common::face_target(&mut state, launcher, Target::Unit(target));
@@ -1022,7 +1023,7 @@ fn predictive_aim_falls_back_before_crossing_a_peak() {
         "the target must still be approaching the peak"
     );
     assert_eq!(victim.pos.y, chassis::fx::Fx::lit("8.5"));
-    assert!(victim.drive_speed > chassis::fx::Fx::ZERO);
+    assert!(victim.drive_speed() > chassis::fx::Fx::ZERO);
     let current = victim.pos;
     let (_, aim, _) = unit_launch(&events, bombard).expect("the current line is legal");
     assert_eq!(

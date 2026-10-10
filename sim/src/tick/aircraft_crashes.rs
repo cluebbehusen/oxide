@@ -1,7 +1,7 @@
 use crate::event::Event;
 use crate::ids::UnitId;
 use crate::map::Terrain;
-use crate::state::{AircraftCrash, State};
+use crate::state::{AircraftCrash, Motor, State};
 use crate::stats::{AIRCRAFT_CRASH_TICKS, Domain};
 use chassis::fx::{Fx, Vec2Fx, sqrt};
 use chassis::grid::TilePos;
@@ -25,21 +25,22 @@ pub(super) fn remember_motion(state: &mut State, before: &[(UnitId, Vec2Fx)]) {
         debug_assert_eq!(unit.id, id);
         let delta = unit.pos - pos;
         let speed = unit.kind.stats().speed;
-        unit.air_motion = if unit.domain() == Domain::Ground {
-            Vec2Fx::ZERO
-        } else if delta.length_sq() > speed * speed {
+        let remembered = if delta.length_sq() > speed * speed {
             delta * (speed / (sqrt(delta.length_sq()) + const { Fx::lit("0.000001") }))
         } else {
             delta
         };
+        if let Motor::Airborne { motion } = &mut unit.motor {
+            *motion = remembered;
+        }
         if unit
             .kind
             .stats()
             .crash
             .is_some_and(|crash| crash.aligns_to_motion)
-            && unit.air_motion != Vec2Fx::ZERO
+            && unit.air_motion() != Vec2Fx::ZERO
         {
-            unit.heading = chassis::compass::heading_of(unit.air_motion);
+            unit.heading = chassis::compass::heading_of(unit.air_motion());
         }
     }
 }
@@ -49,7 +50,7 @@ pub(super) fn schedule(state: &mut State) {
         if unit.hp != 0 || unit.domain() != Domain::Air || unit.kind.stats().crash.is_none() {
             continue;
         }
-        let coast = unit.air_motion
+        let coast = unit.air_motion()
             * Fx::from_num(AIRCRAFT_CRASH_TICKS)
             * crate::stats::AIRCRAFT_CRASH_COAST;
         state.aircraft_crashes.push(AircraftCrash {

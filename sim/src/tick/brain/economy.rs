@@ -387,7 +387,7 @@ pub(super) fn commit_unit_welds(
                 continue;
             };
             let me = unit.player;
-            if unit.drive_speed != Fx::ZERO || footprint_eviction_pending(state, weld.welder) {
+            if unit.drive_speed() != Fx::ZERO || footprint_eviction_pending(state, weld.welder) {
                 // The movement pre-pass, after weld resolution, will make
                 // this welder walk off newly claimed ground. It cannot light
                 // the torch and move in the same tick.
@@ -404,7 +404,7 @@ pub(super) fn commit_unit_welds(
                 continue;
             };
             if t.path.is_none()
-                && t.drive_speed == Fx::ZERO
+                && t.drive_speed() == Fx::ZERO
                 && !matches!(t.order, Order::Found { .. })
                 && !footprint_eviction_pending(state, weld.patient)
                 && unit.in_repair_reach(t)

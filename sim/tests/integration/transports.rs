@@ -805,7 +805,7 @@ fn a_rider_that_stalled_on_its_way_boards_dormant() {
         .unwrap();
     assert!(state.units()[slot].path.is_some(), "walking to the sling");
     let mut doc = serde_json::to_value(&state).unwrap();
-    doc["units"][slot]["stall_ticks"] = serde_json::json!(1);
+    doc["units"][slot]["motor"]["stall_ticks"] = serde_json::json!(1);
     let mut state: oxide_sim::State = serde_json::from_value(doc).unwrap();
     let mut boarded = false;
     for _ in 0..300 {

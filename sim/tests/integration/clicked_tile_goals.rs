@@ -671,7 +671,7 @@ fn a_condor_hands_off_only_once_its_click_is_explored() {
         "premise: in reach before the click was seen"
     );
     run_until(&mut state, 800, |state, _| {
-        state.unit(condor).unwrap().landed
+        state.unit(condor).unwrap().landed()
     });
 }
 

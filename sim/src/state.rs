@@ -350,9 +350,8 @@ pub struct Unit {
     pub kind: UnitKind,
     /// World position (tile units).
     pub pos: Vec2Fx,
-    /// Last airborne displacement per tick, retained for crash momentum.
-    #[serde(default, skip_serializing_if = "is_zero_motion")]
-    pub air_motion: Vec2Fx,
+    /// How the body moves, by its kind's movement class.
+    pub motor: Motor,
     /// Current hit points.
     pub hp: u32,
     /// The harvest gear's load and delivery, for exactly the kinds that
@@ -362,9 +361,6 @@ pub struct Unit {
     /// Ticks until each weapon may fire again, indexed like
     /// `kind.stats().weapons` (unused slots stay zero).
     pub cooldowns: [u32; crate::stats::MAX_WEAPONS],
-    /// Bombard spade deployment, from stowed zero to fully planted.
-    #[serde(default, skip_serializing_if = "crate::is_default")]
-    pub brace_ticks: u8,
     /// Order-specific counter (extraction progress).
     pub progress: u32,
     /// Current intent.
@@ -394,29 +390,78 @@ pub struct Unit {
     /// steer by it. Every `u8` is a valid compass heading.
     #[serde(default, skip_serializing_if = "crate::is_default")]
     pub heading: u8,
-    /// Ground motor speed; overlap corrections do not contribute to it.
-    #[serde(default, skip_serializing_if = "crate::is_default")]
-    pub drive_speed: Fx,
-    /// Running ticks in which contact cancelled most of this body's intended
-    /// progress along its route; reaching [`crate::stats::STALL_REPLAN_TICKS`]
-    /// drops the route for a fresh plan.
-    #[serde(default, skip_serializing_if = "crate::is_default")]
-    pub stall_ticks: u8,
     /// Independent ground gun bearing; absent mounts follow the hull initially.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turret_heading: Option<u8>,
     /// Machines riding aboard this transport.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cargo: Vec<Rider>,
-    /// Parked on the ground at its tile center. Only turn-limited kinds
-    /// land; a landed body is physically a ground body (see
-    /// [`Unit::domain`]) until an order lifts it off again.
-    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
-    pub landed: bool,
 }
 
 fn is_zero_motion(motion: &Vec2Fx) -> bool {
     *motion == Vec2Fx::ZERO
+}
+
+/// How a body moves. Ground kinds drive or, for a Bombard, stand braced;
+/// aircraft fly, and the turn-limited ones may park.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "motor", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Motor {
+    /// A ground chassis under its own power.
+    Ground {
+        /// Motor speed; overlap corrections do not contribute to it.
+        #[serde(default, skip_serializing_if = "crate::is_default")]
+        speed: Fx,
+        /// Running ticks in which contact cancelled most of this body's
+        /// intended progress along its route; reaching
+        /// [`crate::stats::STALL_REPLAN_TICKS`] drops the route for a fresh
+        /// plan.
+        #[serde(default, skip_serializing_if = "crate::is_default")]
+        stall_ticks: u8,
+    },
+    /// A Bombard's spades deploying or planted: it stands still until they
+    /// stow.
+    Braced {
+        /// Deployment, up to fully planted.
+        ticks: core::num::NonZeroU8,
+    },
+    /// An aircraft in flight.
+    Airborne {
+        /// Last airborne displacement per tick, retained for crash
+        /// momentum.
+        #[serde(default, skip_serializing_if = "is_zero_motion")]
+        motion: Vec2Fx,
+    },
+    /// A turn-limited aircraft parked on the ground at its tile center. It
+    /// is physically a ground body (see [`Unit::domain`]) until an order
+    /// lifts it off again.
+    Landed,
+}
+
+impl Motor {
+    /// A body of `kind` standing still.
+    fn at_rest(kind: UnitKind) -> Self {
+        match kind.stats().domain {
+            crate::stats::Domain::Ground => Self::Ground {
+                speed: Fx::ZERO,
+                stall_ticks: 0,
+            },
+            crate::stats::Domain::Air => Self::Airborne {
+                motion: Vec2Fx::ZERO,
+            },
+        }
+    }
+
+    /// Whether a body of `kind` may move this way.
+    fn fits(self, kind: UnitKind) -> bool {
+        let stats = kind.stats();
+        match self {
+            Self::Ground { .. } => stats.domain == crate::stats::Domain::Ground,
+            Self::Braced { .. } => stats.brace.is_some(),
+            Self::Airborne { .. } => stats.domain == crate::stats::Domain::Air,
+            Self::Landed => stats.turn_rate > 0,
+        }
+    }
 }
 
 /// A machine riding aboard a transport. Cargo lives OUTSIDE the world's
@@ -528,14 +573,11 @@ impl Unit {
             player,
             kind,
             pos,
-            air_motion: Vec2Fx::ZERO,
+            motor: Motor::at_rest(kind),
             hp: kind.stats().max_hp,
             worker: kind.stats().harvest.map(|_| Worker::default()),
             cooldowns: [0; crate::stats::MAX_WEAPONS],
-            brace_ticks: 0,
             turret_heading: None,
-            drive_speed: Fx::ZERO,
-            stall_ticks: 0,
             progress: 0,
             order: Order::Idle,
             queue: std::collections::VecDeque::new(),
@@ -544,7 +586,6 @@ impl Unit {
             leash: None,
             settled: 0,
             heading,
-            landed: false,
             cargo: Vec::new(),
         }
     }
@@ -559,7 +600,83 @@ impl Unit {
         if let Some(brace) = stats.brace
             && self.cooldowns[0] <= stats.weapons[0].cooldown_ticks - brace.recoil_ticks
         {
-            self.brace_ticks = self.brace_ticks.saturating_sub(brace.retract_per_tick);
+            self.set_braces(self.braces().saturating_sub(brace.retract_per_tick));
+        }
+    }
+
+    /// Ground motor speed; zero for a body not driving.
+    pub fn drive_speed(&self) -> Fx {
+        match self.motor {
+            Motor::Ground { speed, .. } => speed,
+            Motor::Braced { .. } | Motor::Airborne { .. } | Motor::Landed => Fx::ZERO,
+        }
+    }
+
+    /// Sets a driving body's motor speed.
+    pub(crate) fn set_drive_speed(&mut self, value: Fx) {
+        debug_assert!(matches!(self.motor, Motor::Ground { .. }));
+        if let Motor::Ground { speed, .. } = &mut self.motor {
+            *speed = value;
+        }
+    }
+
+    /// Spade deployment, from stowed zero to fully planted.
+    pub fn braces(&self) -> u8 {
+        match self.motor {
+            Motor::Braced { ticks } => ticks.get(),
+            Motor::Ground { .. } | Motor::Airborne { .. } | Motor::Landed => 0,
+        }
+    }
+
+    /// Deploys or stows a standing Bombard's spades. Stowing them returns
+    /// it to its motor at rest; deploying drops any stall count, which a
+    /// body standing braced never keeps.
+    pub(crate) fn set_braces(&mut self, ticks: u8) {
+        match core::num::NonZeroU8::new(ticks) {
+            Some(ticks) => {
+                debug_assert_eq!(self.drive_speed(), Fx::ZERO, "only a stopped body braces");
+                self.motor = Motor::Braced { ticks };
+            }
+            None if matches!(self.motor, Motor::Braced { .. }) => {
+                self.motor = Motor::at_rest(self.kind);
+            }
+            None => {}
+        }
+    }
+
+    /// Whether this airframe is parked on the ground.
+    pub fn landed(&self) -> bool {
+        self.motor == Motor::Landed
+    }
+
+    /// Parks a turn-limited airframe where it stands.
+    pub(crate) fn touch_down(&mut self) {
+        self.motor = Motor::Landed;
+    }
+
+    /// Lifts a parked airframe back into the air; any other body is left
+    /// as it is.
+    pub(crate) fn lift_off(&mut self) {
+        if self.landed() {
+            self.motor = Motor::Airborne {
+                motion: Vec2Fx::ZERO,
+            };
+        }
+    }
+
+    /// The last airborne displacement per tick, kept for crash momentum.
+    pub fn air_motion(&self) -> Vec2Fx {
+        match self.motor {
+            Motor::Airborne { motion } => motion,
+            Motor::Ground { .. } | Motor::Braced { .. } | Motor::Landed => Vec2Fx::ZERO,
+        }
+    }
+
+    /// Running ticks of contact-cancelled progress along the route.
+    pub fn stall_ticks(&self) -> u8 {
+        match self.motor {
+            Motor::Ground { stall_ticks, .. } => stall_ticks,
+            Motor::Braced { .. } | Motor::Airborne { .. } | Motor::Landed => 0,
         }
     }
 
@@ -589,14 +706,14 @@ impl Unit {
 
     /// Whether ground work may advance without the motor moving this body.
     pub fn work_stopped(&self) -> bool {
-        self.path.is_none() && self.drive_speed == Fx::ZERO
+        self.path.is_none() && self.drive_speed() == Fx::ZERO
     }
 
     /// The movement layer this body occupies right now: a landed airframe
     /// is a ground body for targeting, collision, charges, and footprints,
     /// whatever its kind flies as.
     pub fn domain(&self) -> crate::stats::Domain {
-        if self.landed {
+        if self.landed() {
             crate::stats::Domain::Ground
         } else {
             self.kind.stats().domain
@@ -1279,8 +1396,9 @@ impl State {
     ///   map.
     /// - Entity lists: strictly sorted by id, both id counters ahead of
     ///   every live id.
-    /// - Units: owner in the table, hp inside `(0, max_hp]`, meters and
-    ///   per-weapon cooldowns bounded, queue within
+    /// - Units: owner in the table, a motor, harvest gear, turret bearing
+    ///   and cargo hold only where the kind has them, hp inside
+    ///   `(0, max_hp]`, meters and per-weapon cooldowns bounded, queue within
     ///   [`crate::stats::ORDER_QUEUE_CAP`], every coordinate inside the
     ///   envelope, every anchored Harvest source inside its work zone,
     ///   every entity named by an order actually minted.
@@ -1388,10 +1506,10 @@ impl State {
         // met: a touchdown needs that clearance and nothing moves a parked
         // body afterwards.
         for (i, a) in units.iter().enumerate() {
-            if !a.landed {
+            if !a.landed() {
                 continue;
             }
-            for b in units[i + 1..].iter().filter(|b| b.landed) {
+            for b in units[i + 1..].iter().filter(|b| b.landed()) {
                 let clearance = a.kind.stats().radius + b.kind.stats().radius;
                 if a.pos.dist_sq(b.pos) < clearance * clearance {
                     return Err(E::LandedOverlap(a.id, b.id));
@@ -1489,14 +1607,13 @@ impl State {
             id,
             player,
             kind,
-            // `pos`, `air_motion`, and the envelope of every order, leash,
-            // and path are checked by the whole-unit helpers below.
+            // `pos`, airborne motion, and the envelope of every order,
+            // leash, and path are checked by the whole-unit helpers below.
             pos,
-            air_motion: _,
+            motor,
             hp,
             worker,
             cooldowns,
-            brace_ticks,
             progress,
             order,
             queue,
@@ -1505,11 +1622,8 @@ impl State {
             leash,
             settled: _,
             heading,
-            drive_speed,
-            stall_ticks,
             turret_heading,
             cargo,
-            landed,
         } = u;
         let id = *id;
         if usize::from(player.0) >= self.players.len() {
@@ -1522,7 +1636,11 @@ impl State {
         if *hp == 0 || *hp > stats.max_hp {
             return Err(E::UnitHpOutOfRange(id));
         }
-        if worker.is_some() != stats.harvest.is_some() {
+        if worker.is_some() != stats.harvest.is_some()
+            || !motor.fits(*kind)
+            || (turret_heading.is_some() && !kind.has_ground_turret())
+            || (!cargo.is_empty() && stats.transport_capacity == 0)
+        {
             return Err(E::UnitPartMismatch(id));
         }
         let Worker {
@@ -1569,21 +1687,23 @@ impl State {
         if queue.len() > crate::stats::ORDER_QUEUE_CAP {
             return Err(E::OverlongUnitQueue(id));
         }
-        if *brace_ticks > stats.brace.map_or(0, |brace| brace.deploy_ticks) {
-            return Err(E::InvalidUnitBraces(id));
-        }
-        if *drive_speed < Fx::ZERO
-            || *drive_speed > stats.speed
-            || (*drive_speed != Fx::ZERO
-                && (stats.domain != crate::stats::Domain::Ground || *brace_ticks != 0))
-        {
-            return Err(E::InvalidGroundSpeed(id));
-        }
-        if *stall_ticks >= crate::stats::STALL_REPLAN_TICKS
-            || (*stall_ticks != 0
-                && (stats.domain != crate::stats::Domain::Ground || path.is_none()))
-        {
-            return Err(E::InvalidStallTicks(id));
+        match *motor {
+            Motor::Ground { speed, stall_ticks } => {
+                if speed < Fx::ZERO || speed > stats.speed {
+                    return Err(E::InvalidGroundSpeed(id));
+                }
+                if stall_ticks >= crate::stats::STALL_REPLAN_TICKS
+                    || (stall_ticks != 0 && path.is_none())
+                {
+                    return Err(E::InvalidStallTicks(id));
+                }
+            }
+            Motor::Braced { ticks } => {
+                if ticks.get() > stats.brace.map_or(0, |brace| brace.deploy_ticks) {
+                    return Err(E::InvalidUnitBraces(id));
+                }
+            }
+            Motor::Airborne { .. } | Motor::Landed => {}
         }
         if danger_retry_at.is_some_and(|tick| {
             tick > self
@@ -1591,9 +1711,6 @@ impl State {
                 .saturating_add(crate::stats::HARVEST_DANGER_RETRY_TICKS)
         }) {
             return Err(E::InvalidDangerRetry(id));
-        }
-        if turret_heading.is_some() && !kind.has_ground_turret() {
-            return Err(E::InvalidTurretHeading(id));
         }
         if leash.is_some_and(|leash| {
             leash.patience > crate::stats::LEASH_PATIENCE
@@ -1608,10 +1725,7 @@ impl State {
         if !orders().all(order_goals_canonical) {
             return Err(E::NonCanonicalGoal(id));
         }
-        if *landed {
-            if stats.turn_rate == 0 {
-                return Err(E::LandedNonAircraft(id));
-            }
+        if *motor == Motor::Landed {
             let touchdown = crate::stats::LANDING_TOUCHDOWN;
             if pos.dist_sq(u.tile().center()) > touchdown * touchdown {
                 return Err(E::LandedOffCenter(id));
@@ -1658,11 +1772,8 @@ impl State {
         // Cargo is a trusted enclave: nothing in the tick pipeline
         // re-examines a rider until it is set down, so a forged save must
         // not smuggle in anything the sling could never have taken — the
-        // wrong carrier, the wrong rider kind, an overfull hold, live
-        // orders, or an aliased id.
-        if !cargo.is_empty() && stats.transport_capacity == 0 {
-            return Err(E::CargoOnNonTransport(id));
-        }
+        // wrong carrier, the wrong rider kind, an overfull hold, or an
+        // aliased id.
         let hold: u32 = cargo
             .iter()
             .map(|r| u32::from(r.kind.stats().transport_size))
@@ -1695,7 +1806,7 @@ impl State {
             return Err(E::ScrapBeyondCapacity(*id));
         }
         if turret_heading.is_some() && !kind.has_ground_turret() {
-            return Err(E::InvalidTurretHeading(*id));
+            return Err(E::UnitPartMismatch(*id));
         }
         // Cooldowns are the one scalar boarding does NOT reset — a machine
         // slung mid-cooldown keeps it frozen — so the bound is the walking
@@ -2233,7 +2344,7 @@ impl State {
         for unit in self.units.iter().filter(|u| {
             u.hp > 0
                 && u.domain() == crate::stats::Domain::Ground
-                && u.drive_speed == Fx::ZERO
+                && u.drive_speed() == Fx::ZERO
                 && u.path.is_none()
                 && !self.hostile(player, u.player)
         }) {
@@ -2774,9 +2885,6 @@ pub enum StateIntegrityError {
     /// Motor speed exceeds the chassis limit or belongs to a stationary/air body.
     #[error("unit {0} carries invalid ground motor speed")]
     InvalidGroundSpeed(UnitId),
-    /// Only ground units with independent gun mounts carry a turret bearing.
-    #[error("unit {0} carries an unsupported independent turret heading")]
-    InvalidTurretHeading(UnitId),
     /// A unit's order queue is longer than [`crate::stats::ORDER_QUEUE_CAP`].
     #[error("unit {0} queues more orders than the cap allows")]
     OverlongUnitQueue(UnitId),
@@ -2841,16 +2949,15 @@ pub enum StateIntegrityError {
     /// Two buildings that mark the occupancy grid cover the same tile.
     #[error("buildings {0} and {1} overlap")]
     OverlappingBuildings(BuildingId, BuildingId),
-    /// A machine with no sling claims to carry cargo.
-    #[error("unit {0} carries cargo without being a transport")]
-    CargoOnNonTransport(UnitId),
     /// A transport's riders total more room than its sling offers.
     #[error("unit {0} carries more cargo than its sling holds")]
     CargoBeyondCapacity(UnitId),
     /// A rider of a kind no sling can take (a flyer, or a transport).
     #[error("unit {0} carries a rider that can never be carried")]
     UncarriableCargo(UnitId),
-    /// A unit carries a part its kind does not have, or lacks one it does.
+    /// A unit carries a part its kind does not have, or lacks one it does:
+    /// harvest gear, a motor of the wrong movement class, a turret bearing
+    /// without a ground turret, or cargo without a sling.
     #[error("unit {0} carries parts that do not match its kind")]
     UnitPartMismatch(UnitId),
     /// A rider outside the living hp range.
@@ -2859,9 +2966,6 @@ pub enum StateIntegrityError {
     /// A rider whose weapon cooldowns exceed its own weapon table.
     #[error("unit {0} carries a rider with impossible weapon cooldowns")]
     CargoCooldownOutOfRange(UnitId),
-    /// A machine that cannot land is marked landed.
-    #[error("unit {0} is landed but is not an aircraft that can land")]
-    LandedNonAircraft(UnitId),
     /// A landed airframe resting farther from its tile center than a
     /// touchdown allows.
     #[error("unit {0} is landed off its tile center")]
@@ -2949,7 +3053,7 @@ fn cooldowns_out_of_range(
 }
 
 fn valid_air_motion(unit: &Unit) -> bool {
-    let motion = unit.air_motion;
+    let motion = unit.air_motion();
     let speed = unit.kind.stats().speed;
     if motion == Vec2Fx::ZERO {
         return true;

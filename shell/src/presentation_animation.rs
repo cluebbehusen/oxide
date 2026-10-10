@@ -1121,7 +1121,7 @@ fn active_unit_repair(state: &State, unit: &Unit) -> Option<Vec2Fx> {
                 && patient.hp < patient.kind.stats().max_hp
                 && patient.path.is_none()
                 && !matches!(patient.order, Order::Found { .. })
-                && patient.drive_speed == chassis::fx::Fx::ZERO
+                && patient.drive_speed() == chassis::fx::Fx::ZERO
                 && unit.in_repair_reach(patient))
             .then_some(patient.pos)
         }),

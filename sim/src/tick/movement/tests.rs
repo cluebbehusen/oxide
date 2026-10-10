@@ -75,13 +75,13 @@ fn contact_that_cancels_progress_drops_the_route_after_the_stall_bound() {
             .collect();
         for tick in 1..crate::stats::STALL_REPLAN_TICKS {
             note_stalls(&mut state, &travel, &refused, &driven);
-            assert_eq!(state.units[slot].stall_ticks, tick);
+            assert_eq!(state.units[slot].stall_ticks(), tick);
             assert!(state.units[slot].path.is_some());
         }
         // One tick of real progress clears the count.
         state.units[slot].pos += travel[slot];
         note_stalls(&mut state, &travel, &refused, &driven);
-        assert_eq!(state.units[slot].stall_ticks, 0);
+        assert_eq!(state.units[slot].stall_ticks(), 0);
         assert!(state.units[slot].path.is_some());
         state.units[slot].pos -= travel[slot];
         for _ in 1..crate::stats::STALL_REPLAN_TICKS {
@@ -93,7 +93,7 @@ fn contact_that_cancels_progress_drops_the_route_after_the_stall_bound() {
             state.units[slot].path.is_none(),
             "the stalled route was kept"
         );
-        assert_eq!(state.units[slot].stall_ticks, 0);
+        assert_eq!(state.units[slot].stall_ticks(), 0);
     }
 }
 
@@ -117,13 +117,13 @@ fn refused_steps_drop_the_route_after_the_stall_bound() {
     let mut refused = pivoting.clone();
     refused[slot] = true;
     note_stalls(&mut state, &travel, &pivoting, &driven);
-    assert_eq!(state.units[slot].stall_ticks, 0);
+    assert_eq!(state.units[slot].stall_ticks(), 0);
     for tick in 1..crate::stats::STALL_REPLAN_TICKS {
         note_stalls(&mut state, &travel, &refused, &driven);
-        assert_eq!(state.units[slot].stall_ticks, tick);
+        assert_eq!(state.units[slot].stall_ticks(), tick);
     }
     note_stalls(&mut state, &travel, &pivoting, &driven);
-    assert_eq!(state.units[slot].stall_ticks, 0);
+    assert_eq!(state.units[slot].stall_ticks(), 0);
     for _ in 1..crate::stats::STALL_REPLAN_TICKS {
         note_stalls(&mut state, &travel, &refused, &driven);
     }
@@ -133,7 +133,7 @@ fn refused_steps_drop_the_route_after_the_stall_bound() {
         state.units[slot].path.is_none(),
         "the refused route was kept"
     );
-    assert_eq!(state.units[slot].stall_ticks, 0);
+    assert_eq!(state.units[slot].stall_ticks(), 0);
 }
 
 #[test]
@@ -157,7 +157,7 @@ fn a_route_dropped_after_stalls_were_noted_takes_its_count_with_it() {
         .map(|(unit, &step)| unit.pos + step)
         .collect();
     note_stalls(&mut state, &travel, &refused, &driven);
-    assert_eq!(state.units[slot].stall_ticks, 1);
+    assert_eq!(state.units[slot].stall_ticks(), 1);
     state
         .validate_invariants()
         .expect("a stalled walker is valid");
@@ -170,7 +170,7 @@ fn a_route_dropped_after_stalls_were_noted_takes_its_count_with_it() {
         Err(crate::state::StateIntegrityError::InvalidStallTicks(_))
     ));
     forget_stalls_without_routes(&mut state);
-    assert_eq!(state.units[slot].stall_ticks, 0);
+    assert_eq!(state.units[slot].stall_ticks(), 0);
     state
         .validate_invariants()
         .expect("the count left with the route");
@@ -430,7 +430,7 @@ fn coasting_worker_is_not_anchored_until_its_motor_stops() {
         anchor: TilePos::new(7, 1),
         retiring: false,
     };
-    unit.drive_speed = unit.kind.stats().speed;
+    unit.set_drive_speed(unit.kind.stats().speed);
     let before = unit.pos;
     assert!(!is_anchored(unit));
     ground::advance(unit, &terrain, &parked);
@@ -439,7 +439,7 @@ fn coasting_worker_is_not_anchored_until_its_motor_stops() {
     for _ in 0..2 {
         ground::advance(unit, &terrain, &parked);
     }
-    assert_eq!(unit.drive_speed, Fx::ZERO);
+    assert_eq!(unit.drive_speed(), Fx::ZERO);
     assert!(is_anchored(unit));
 }
 

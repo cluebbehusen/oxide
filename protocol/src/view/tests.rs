@@ -254,7 +254,7 @@ fn the_fog_view_keeps_a_hostile_landing_while_hiding_its_program() {
     }]);
     for _ in 0..1_500 {
         state.tick(&[]);
-        if !state.unit(condor).is_some_and(|u| u.landed) {
+        if !state.unit(condor).is_some_and(oxide_sim::Unit::landed) {
             continue;
         }
         let fog = FogView::capture(&state, PlayerId(0));

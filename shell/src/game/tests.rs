@@ -705,12 +705,12 @@ fn playback_and_seeks_face_a_parked_airframe_by_its_heading() {
     let condor = game.state.units()[0].id;
     for _ in 0..600 {
         game.advance_ticks(1);
-        if game.state.unit(condor).is_some_and(|u| u.landed) {
+        if game.state.unit(condor).is_some_and(oxide_sim::Unit::landed) {
             break;
         }
     }
     let parked = game.state.unit(condor).expect("the Condor survives");
-    assert!(parked.landed, "premise: the idle Condor parks itself");
+    assert!(parked.landed(), "premise: the idle Condor parks itself");
     let expected =
         f32::from(parked.heading) * std::f32::consts::TAU / 256.0 + std::f32::consts::FRAC_PI_2;
     let snapshot = (*game.state).clone();

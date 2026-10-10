@@ -193,8 +193,8 @@ pub(super) fn run(
             // unchanged and the first airborne tick steers from the parked
             // heading at the ordinary turn rate.
             let unit = state.unit_mut(id).expect("just seen");
-            if unit.landed && !unit.stays_parked() {
-                unit.landed = false;
+            if !unit.stays_parked() {
+                unit.lift_off();
             }
         }
         let reported = events.len();

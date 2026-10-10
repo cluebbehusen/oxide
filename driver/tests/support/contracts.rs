@@ -437,7 +437,7 @@ fn air() -> BTreeMap<String, String> {
         },
     );
     p.until("bomber landing", 1500, |p| {
-        p.state.unit(bomber).unwrap().landed
+        p.state.unit(bomber).unwrap().landed()
     });
     assert!(
         p.state
@@ -461,7 +461,7 @@ fn air() -> BTreeMap<String, String> {
         },
     );
     p.until("bomber takeoff", 100, |p| {
-        !p.state.unit(bomber).unwrap().landed
+        !p.state.unit(bomber).unwrap().landed()
     });
     p.until("bomber release", 1500, |p| p.events.iter().any(|e| matches!(e, Event::ShellLaunched { shooter: Target::Unit(id), .. } if *id == bomber)));
     p.until("bomber damage", 200, |p| {

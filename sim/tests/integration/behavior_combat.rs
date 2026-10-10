@@ -172,12 +172,12 @@ fn bombard_retracts_before_retargeting_or_moving_and_resumes_mid_deployment() {
         let report = state.tick(&commands);
         assert!(!fired(&report.events));
         assert_eq!(state.unit(id).unwrap().heading, 0);
-        assert_eq!(state.unit(id).unwrap().brace_ticks, tick + 1);
+        assert_eq!(state.unit(id).unwrap().braces(), tick + 1);
     }
     let document = serde_json::to_value(&state).unwrap();
     let mut resumed: oxide_sim::State = serde_json::from_value(document.clone()).unwrap();
     let mut forged = document;
-    forged["units"][0]["brace_ticks"] = serde_json::json!(13);
+    forged["units"][0]["motor"] = serde_json::json!({"motor": "braced", "ticks": 13});
     assert!(
         serde_json::from_value::<oxide_sim::State>(forged)
             .unwrap_err()
@@ -210,7 +210,7 @@ fn bombard_retracts_before_retargeting_or_moving_and_resumes_mid_deployment() {
             );
         } else {
             assert_ne!(u.heading, 0);
-            assert_eq!(u.brace_ticks, 0);
+            assert_eq!(u.braces(), 0);
         }
     }
     for tick in 0..12 {
@@ -234,7 +234,7 @@ fn bombard_retracts_before_retargeting_or_moving_and_resumes_mid_deployment() {
                 "spades must leave the ground before translation"
             );
         } else {
-            assert_eq!(u.brace_ticks, 0);
+            assert_eq!(u.braces(), 0);
             assert!(u.pos.x > planted.x);
         }
     }
@@ -242,12 +242,12 @@ fn bombard_retracts_before_retargeting_or_moving_and_resumes_mid_deployment() {
         let before = state.unit(id).unwrap().heading;
         let report = state.tick(&[]);
         let u = state.unit(id).unwrap();
-        if u.brace_ticks > 0 {
+        if u.braces() > 0 {
             assert_eq!(u.heading, before);
         }
         if fired(&report.events) {
             assert_eq!(
-                u.brace_ticks,
+                u.braces(),
                 oxide_sim::UnitKind::Bombard
                     .stats()
                     .brace
@@ -289,7 +289,7 @@ fn bombard_cannot_fire_unbraced_advance_potshots() {
                 .iter()
                 .any(|e| matches!(e, Event::ShellLaunched { .. }))
         );
-        assert_eq!(state.unit(id).unwrap().brace_ticks, 0);
+        assert_eq!(state.unit(id).unwrap().braces(), 0);
     }
     assert!(state.unit(id).unwrap().pos.y > start.y);
 }

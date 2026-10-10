@@ -252,7 +252,7 @@ pub(crate) fn selection_info(game: &Scene<'_>, panel: &Panel) -> SelectionInfo {
         let stats = u.kind.stats();
         info.health = Some((u.hp, stats.max_hp));
         info.ownership(game, u.player);
-        if u.landed {
+        if u.landed() {
             info.status.push("Landed".into());
         }
         info.row(
