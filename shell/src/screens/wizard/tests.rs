@@ -2,15 +2,20 @@ use super::*;
 use macroquad::prelude::vec2;
 use oxide_protocol::MouseButton;
 
+/// The card at display position `row`, which must be on this page.
+fn card(layout: &SetupLayout, row: usize) -> CardRects {
+    layout.cards[row].expect("the card is on this page")
+}
+
 #[test]
 fn the_setup_hint_speaks_touch_on_touch_only_builds() {
     assert_eq!(
-        setup_hint(false, true, 0, false),
+        setup_hint(false, true, Cell::Seat, false),
         "{confirm} starts the match - {back} back"
     );
     for one_team in [false, true] {
         for on_start in [false, true] {
-            for cell in 0..5 {
+            for cell in Cell::ALL {
                 crate::platform::assert_touch_copy(setup_hint(one_team, on_start, cell, true));
                 assert!(setup_hint(one_team, on_start, cell, false).contains("{back}"));
             }
@@ -183,7 +188,7 @@ fn the_team_chip_cycles_through_ffa_and_every_team() {
     drive(&mut w, &mut draft, Key::Home);
     drive(&mut w, &mut draft, Key::Right);
     drive(&mut w, &mut draft, Key::Right);
-    assert_eq!(w.setup_cell, 4, "the team chip is the last cell");
+    assert_eq!(w.setup_cell, Cell::Team, "the team chip is the last cell");
     drive(&mut w, &mut draft, Key::Enter);
     assert_eq!(
         draft.seats[draft.seat_choice].team_choice, 1,
@@ -216,20 +221,29 @@ fn setup_cells_wrap_past_the_dead_ones() {
     // Your own card has no difficulty or stance chip: the seat, faction
     // and team cells are live.
     drive(&mut w, &mut draft, Key::Home);
-    assert_eq!(w.setup_cell, 0);
+    assert_eq!(w.setup_cell, Cell::Seat);
     drive(&mut w, &mut draft, Key::Left);
-    assert_eq!(w.setup_cell, 4, "left from the seat wraps to the team chip");
+    assert_eq!(
+        w.setup_cell,
+        Cell::Team,
+        "left from the seat wraps to the team chip"
+    );
     drive(&mut w, &mut draft, Key::Right);
     assert_eq!(
-        w.setup_cell, 0,
+        w.setup_cell,
+        Cell::Seat,
         "right from the team chip wraps to the seat"
     );
     drive(&mut w, &mut draft, Key::Right);
-    assert_eq!(w.setup_cell, 3, "the opponent chips are skipped");
+    assert_eq!(
+        w.setup_cell,
+        Cell::Faction,
+        "the opponent chips are skipped"
+    );
     // An AI card has every cell.
     drive(&mut w, &mut draft, Key::Down);
     drive(&mut w, &mut draft, Key::Left);
-    assert_eq!(w.setup_cell, 2);
+    assert_eq!(w.setup_cell, Cell::Stance);
 }
 
 #[test]
@@ -428,13 +442,16 @@ fn the_back_button_clears_grid_and_setup_content() {
         for scenario in [Scenario::skirmish(), team_map.clone()] {
             let setup = setup_layout(&scenario, 0, view, ui);
             let content = setup
-                .seats
+                .cards
                 .iter()
-                .chain(setup.headings.iter().map(|(_, rect)| rect))
-                .chain([&setup.start, &setup.preview]);
+                .flatten()
+                .map(|card| card.card)
+                .chain(setup.headings.iter().map(|(_, rect)| *rect))
+                .chain(setup.start)
+                .chain([setup.preview]);
             for rect in content {
                 assert!(
-                    !back.overlaps(rect),
+                    !back.overlaps(&rect),
                     "setup content under Back at {view} ui {ui}"
                 );
             }
@@ -524,7 +541,7 @@ fn omitted_singleton_teams_keep_their_setup_card() {
     sorted.sort_unstable();
     assert_eq!(sorted, (0..scenario.players.len()).collect::<Vec<_>>());
     let layout = setup_layout(&scenario, 0, vec2(1280.0, 800.0), 1.0);
-    assert_eq!(layout.seats.len(), scenario.players.len());
+    assert_eq!(layout.cards.len(), scenario.players.len());
 
     // A large authored id must not swallow an omitted seat either.
     scenario.players[2].team = Some(202);
@@ -560,11 +577,11 @@ fn the_faction_chip_cycles_on_every_card_including_yours() {
     // Left from faction walks the two visible bot controls before the
     // seat action. The hidden seeded identity is never exposed.
     drive(&mut w, &mut draft, Key::Left);
-    assert_eq!(w.setup_cell, 2);
+    assert_eq!(w.setup_cell, Cell::Stance);
     drive(&mut w, &mut draft, Key::Left);
-    assert_eq!(w.setup_cell, 1);
+    assert_eq!(w.setup_cell, Cell::Difficulty);
     drive(&mut w, &mut draft, Key::Left);
-    assert_eq!(w.setup_cell, 0);
+    assert_eq!(w.setup_cell, Cell::Seat);
     drive(&mut w, &mut draft, Key::Enter);
     assert_eq!(
         draft.seat_choice, order[1],
@@ -581,7 +598,7 @@ fn keyboard_cycles_difficulty_and_stance_directly_and_independently() {
     drive(&mut wizard, &mut draft, Key::Home);
     drive(&mut wizard, &mut draft, Key::Down);
     drive(&mut wizard, &mut draft, Key::Right);
-    assert_eq!(wizard.setup_cell, 1);
+    assert_eq!(wizard.setup_cell, Cell::Difficulty);
     drive(&mut wizard, &mut draft, Key::Enter);
 
     assert_eq!(wizard.mode_name(), "match_setup");
@@ -594,7 +611,7 @@ fn keyboard_cycles_difficulty_and_stance_directly_and_independently() {
     assert_eq!(draft.seats[opponent].team_choice, original.team_choice);
 
     drive(&mut wizard, &mut draft, Key::Right);
-    assert_eq!(wizard.setup_cell, 2);
+    assert_eq!(wizard.setup_cell, Cell::Stance);
     drive(&mut wizard, &mut draft, Key::Enter);
     assert_eq!(draft.seats[opponent].difficulty, BotDifficulty::Veteran);
     assert_eq!(draft.seats[opponent].stance, BotStance::Aggressive);
@@ -618,7 +635,7 @@ fn direct_bot_control_activation_ends_the_input_batch() {
     let order = seat_display_order(draft.scenario.as_deref().unwrap());
     let opponent = order[1];
     wizard.setup_sel = 1;
-    wizard.setup_cell = 1;
+    wizard.setup_cell = Cell::Difficulty;
     wizard.setup_page = 0;
 
     let mut mouse = Vec2::ZERO;
@@ -638,7 +655,7 @@ fn direct_bot_control_activation_ends_the_input_batch() {
     assert_eq!(out, Out::Stay);
     assert_eq!(draft.seats[opponent].difficulty, BotDifficulty::Veteran);
     assert_eq!(draft.seats[opponent].stance, BotStance::Balanced);
-    assert_eq!(wizard.setup_cell, 1);
+    assert_eq!(wizard.setup_cell, Cell::Difficulty);
     assert_eq!(wizard.mode_name(), "match_setup");
     assert_eq!(sounds, [(SoundKind::Click, None)]);
 }
@@ -659,8 +676,8 @@ fn mouse_and_touch_cycle_the_direct_bot_controls() {
         crate::render::viewport(),
         crate::render::ui_scale(),
     );
-    let difficulty = setup.bot_controls[row][0].center();
-    let stance = setup.bot_controls[row][1].center();
+    let difficulty = card(&setup, row).difficulty.unwrap().center();
+    let stance = card(&setup, row).stance.unwrap().center();
     let mut mouse = Vec2::ZERO;
     let mut sounds = Vec::new();
     wizard
@@ -685,7 +702,7 @@ fn mouse_and_touch_cycle_the_direct_bot_controls() {
     assert_eq!(draft.seats[opponent].difficulty, BotDifficulty::Veteran);
     assert_eq!(draft.seats[opponent].stance, BotStance::Balanced);
     assert_eq!(wizard.mode_name(), "match_setup");
-    assert_eq!(wizard.setup_cell, 1);
+    assert_eq!(wizard.setup_cell, Cell::Difficulty);
 
     wizard
         .update(
@@ -709,7 +726,7 @@ fn mouse_and_touch_cycle_the_direct_bot_controls() {
     assert_eq!(draft.seats[opponent].difficulty, BotDifficulty::Veteran);
     assert_eq!(draft.seats[opponent].stance, BotStance::Aggressive);
     assert_eq!(wizard.mode_name(), "match_setup");
-    assert_eq!(wizard.setup_cell, 2);
+    assert_eq!(wizard.setup_cell, Cell::Stance);
     assert_eq!(sounds, [(SoundKind::Click, None); 2]);
 }
 
@@ -722,7 +739,7 @@ fn the_difficulty_chip_cycles_through_remote_and_hosting_follows_it() {
     let opponent = seat_display_order(&scenario)[row];
     let stance = draft.seats[opponent].stance;
     wizard.setup_sel = row;
-    wizard.setup_cell = 1;
+    wizard.setup_cell = Cell::Difficulty;
     let start = |wizard: &Wizard, draft: &NewMatchDraft| {
         wizard.ui_surface(draft).1.last().cloned().unwrap()
     };
@@ -750,7 +767,8 @@ fn the_difficulty_chip_cycles_through_remote_and_hosting_follows_it() {
     assert!(wizard.ui_surface(&draft).1[row].contains("(remote)"));
     drive(&mut wizard, &mut draft, Key::Right);
     assert_eq!(
-        wizard.setup_cell, 3,
+        wizard.setup_cell,
+        Cell::Faction,
         "the stance chip is inert on a remote chair"
     );
     let layout = setup_layout(
@@ -759,7 +777,7 @@ fn the_difficulty_chip_cycles_through_remote_and_hosting_follows_it() {
         crate::render::viewport(),
         crate::render::ui_scale(),
     );
-    let hidden = layout.bot_controls[row][1].center();
+    let hidden = card(&layout, row).stance.unwrap().center();
     let tap = [
         RawEvent::TouchDown {
             id: 1,
@@ -778,7 +796,7 @@ fn the_difficulty_chip_cycles_through_remote_and_hosting_follows_it() {
     assert_eq!(draft.seats[opponent].stance, stance);
     assert_ne!(draft.seat_choice, opponent);
 
-    wizard.setup_cell = 0;
+    wizard.setup_cell = Cell::Seat;
     drive(&mut wizard, &mut draft, Key::Enter);
     assert_eq!(draft.seat_choice, opponent, "a remote chair can be taken");
     assert_eq!(start(&wizard, &draft), "Start match");
@@ -847,8 +865,8 @@ fn compact_setup_pages_to_a_nonoverlapping_opponent_touch_target() {
         wizard.setup_page,
     );
     let row = 1;
-    let difficulty = first_page.bot_controls[row][0];
-    let touch = setup_touch_cell_rect(&first_page, row, 1).unwrap();
+    let difficulty = card(&first_page, row).difficulty.unwrap();
+    let touch = card(&first_page, row).touch_cell(Cell::Difficulty).unwrap();
     assert!(touch.h >= MIN_TOUCH_TARGET);
     let at = vec2(touch.center().x, touch.y + 1.0);
     assert!(
@@ -888,7 +906,7 @@ fn compact_setup_touch_only_edges_activate_every_editable_chip() {
         "/../scenarios/compass-grand.json"
     ));
 
-    for cell in 1..=4 {
+    for cell in [Cell::Difficulty, Cell::Stance, Cell::Faction, Cell::Team] {
         let scenario = Scenario::load(&path).expect("shipped eight-seat map");
         let mut draft = NewMatchDraft::default();
         draft.set_scenario(scenario, Some(path.clone()));
@@ -912,12 +930,12 @@ fn compact_setup_touch_only_edges_activate_every_editable_chip() {
             crate::render::ui_scale(),
             0,
         );
-        let visual = setup_cell_rect(&layout, row, cell).unwrap();
-        let touch = setup_touch_cell_rect(&layout, row, cell).unwrap();
+        let visual = card(&layout, row).cell(cell).unwrap();
+        let touch = card(&layout, row).touch_cell(cell).unwrap();
         let at = vec2(touch.center().x, touch.y + 1.0);
         assert!(
             !visual.contains(at),
-            "cell {cell} probe must exercise its touch-only edge"
+            "{cell:?} probe must exercise its touch-only edge"
         );
 
         let mut mouse = Vec2::ZERO;
@@ -926,12 +944,12 @@ fn compact_setup_touch_only_edges_activate_every_editable_chip() {
             .update(
                 &[
                     RawEvent::TouchDown {
-                        id: cell as u64,
+                        id: 7,
                         x: at.x,
                         y: at.y,
                     },
                     RawEvent::TouchUp {
-                        id: cell as u64,
+                        id: 7,
                         x: at.x,
                         y: at.y,
                     },
@@ -944,23 +962,23 @@ fn compact_setup_touch_only_edges_activate_every_editable_chip() {
         assert_eq!(out, Out::Stay);
         assert_eq!(sounds, [(SoundKind::Click, None)]);
         match cell {
-            1 => {
+            Cell::Difficulty => {
                 assert_eq!(
                     draft.seats[seat].difficulty,
                     cycle_difficulty(initial_difficulty, 1)
                 );
                 assert_eq!(draft.seats[seat].stance, initial_stance);
             }
-            2 => assert_eq!(draft.seats[seat].stance, cycle_stance(initial_stance, 1)),
-            3 => assert_eq!(
+            Cell::Stance => assert_eq!(draft.seats[seat].stance, cycle_stance(initial_stance, 1)),
+            Cell::Faction => assert_eq!(
                 draft.seats[seat].faction_choice,
                 (initial_faction + 1) % FACTION_CHIP_ITEMS.len()
             ),
-            4 => assert_eq!(
+            Cell::Team => assert_eq!(
                 draft.seats[seat].team_choice,
                 (initial_team + 1) % (draft.seats.len() + 1)
             ),
-            _ => unreachable!(),
+            Cell::Seat => unreachable!("the loop covers the editable chips"),
         }
     }
 }
@@ -979,10 +997,10 @@ fn setup_mouse_activation_requires_release_on_the_armed_cell() {
     );
     let row = 1;
     let seat = order[row];
-    let seat_at = layout.cells[row][0].center();
-    let faction_at = layout.cells[row][1].center();
-    let team_at = layout.cells[row][2].center();
-    let start_at = layout.start.center();
+    let seat_at = card(&layout, row).seat.center();
+    let faction_at = card(&layout, row).faction.center();
+    let team_at = card(&layout, row).team.center();
+    let start_at = layout.start.unwrap().center();
     let mut mouse = Vec2::ZERO;
     let mut sounds = Vec::new();
 
@@ -1031,7 +1049,7 @@ fn setup_mouse_activation_requires_release_on_the_armed_cell() {
     assert_eq!(out, Out::Stay);
     assert_eq!(draft.seats[seat].faction_choice, 1);
     assert_eq!(wizard.setup_sel, row);
-    assert_eq!(wizard.setup_cell, 3);
+    assert_eq!(wizard.setup_cell, Cell::Faction);
 
     let out = wizard
         .update(
@@ -1092,9 +1110,9 @@ fn setup_touch_activation_belongs_to_its_first_finger_and_armed_cell() {
     );
     let row = 1;
     let seat = order[row];
-    let faction = layout.cells[row][1];
+    let faction = card(&layout, row).faction;
     let faction_at = faction.center();
-    let team_at = layout.cells[row][2].center();
+    let team_at = card(&layout, row).team.center();
     let mut mouse = Vec2::ZERO;
     let mut sounds = Vec::new();
 
@@ -1110,7 +1128,16 @@ fn setup_touch_activation_belongs_to_its_first_finger_and_armed_cell() {
             &mut sounds,
         )
         .expect("update");
-    assert_eq!(wizard.setup_press.armed_touch(), Some((7, (row, 3))));
+    assert_eq!(
+        wizard.setup_press.armed_touch(),
+        Some((
+            7,
+            SetupZone::Card {
+                row,
+                cell: Cell::Faction
+            }
+        ))
+    );
     assert_eq!(mouse, faction_at);
 
     // A second finger cannot steal or resolve the first finger's press.
@@ -1133,7 +1160,16 @@ fn setup_touch_activation_belongs_to_its_first_finger_and_armed_cell() {
             &mut sounds,
         )
         .expect("update");
-    assert_eq!(wizard.setup_press.armed_touch(), Some((7, (row, 3))));
+    assert_eq!(
+        wizard.setup_press.armed_touch(),
+        Some((
+            7,
+            SetupZone::Card {
+                row,
+                cell: Cell::Faction
+            }
+        ))
+    );
     assert_eq!(mouse, faction_at);
 
     // The owner releases over another cell, so the gesture cancels.
@@ -1189,7 +1225,7 @@ fn setup_touch_activation_belongs_to_its_first_finger_and_armed_cell() {
     assert_eq!(out, Out::Stay);
     assert_eq!(draft.seats[seat].faction_choice, 1);
     assert_eq!(wizard.setup_sel, row);
-    assert_eq!(wizard.setup_cell, 3);
+    assert_eq!(wizard.setup_cell, Cell::Faction);
     assert_eq!(sounds, vec![(SoundKind::Click, None)]);
 }
 
@@ -1213,23 +1249,26 @@ fn the_setup_layout_fits_the_smallest_supported_window() {
         assert_eq!(pages[1].visible_range, [5, 9]);
         assert!(pages[0].page_next.is_some_and(|rect| rect.h >= 44.0));
         assert!(pages[1].page_prev.is_some_and(|rect| rect.h >= 44.0));
-        assert!(pages[1].start.h >= 44.0);
-        assert!(pages[1].start.y + pages[1].start.h <= view.y);
+        let start = pages[1].start.expect("Start closes the last page");
+        assert!(start.h >= 44.0);
+        assert!(start.y + start.h <= view.y);
 
         let mut seen = Vec::new();
         for layout in &pages {
-            for (pos, card) in layout
-                .seats
+            for (pos, rects) in layout
+                .cards
                 .iter()
                 .enumerate()
-                .filter(|(_, card)| card.w > 0.0)
+                .filter_map(|(pos, rects)| Some((pos, (*rects)?)))
             {
+                let card = rects.card;
                 seen.push(pos);
                 assert!(card.h >= 44.0, "visible cards keep a 44px target");
                 assert!(card.y + card.h <= view.y);
-                assert!(layout.cells[pos][0].w > 24.0);
-                let touches: Vec<Rect> = (0..5)
-                    .filter_map(|cell| setup_touch_cell_rect(layout, pos, cell))
+                assert!(rects.seat.w > 24.0);
+                let touches: Vec<Rect> = Cell::ALL
+                    .into_iter()
+                    .filter_map(|cell| rects.touch_cell(cell))
                     .collect();
                 for touch in &touches {
                     assert!(
@@ -1246,7 +1285,7 @@ fn the_setup_layout_fits_the_smallest_supported_window() {
                         "semantic setup targets never overlap"
                     );
                 }
-                for chip in layout.cells[pos].iter().skip(1).filter(|chip| chip.w > 0.0) {
+                for chip in [rects.faction, rects.team] {
                     assert!(chip.h <= card.h + 0.01);
                     assert!(chip.x >= card.x);
                 }
@@ -1261,29 +1300,28 @@ fn the_setup_layout_fits_the_smallest_supported_window() {
 fn the_setup_layout_never_overlaps_its_own_parts() {
     let scenario = Scenario::load("../scenarios/compass-grand.json").expect("shipped");
     let layout = setup_layout(&scenario, 0, vec2(1280.0, 800.0), 1.0);
-    assert_eq!(layout.seats.len(), 8);
-    for pair in layout.seats.windows(2) {
+    let cards: Vec<CardRects> = layout.cards.iter().flatten().copied().collect();
+    assert_eq!(cards.len(), 8);
+    for pair in cards.windows(2) {
         assert!(
-            pair[0].y + pair[0].h <= pair[1].y + 0.01,
+            pair[0].card.y + pair[0].card.h <= pair[1].card.y + 0.01,
             "seat cards stack without overlap"
         );
     }
-    let last = layout.seats.last().unwrap();
-    assert!(
-        layout.start.y >= last.y + last.h,
-        "Start sits under the cards"
-    );
+    let last = cards.last().unwrap().card;
+    let start = layout.start.expect("the full layout shows Start");
+    assert!(start.y >= last.y + last.h, "Start sits under the cards");
     assert!(
         layout.preview.x >= last.x + last.w,
         "the preview never crosses the cards"
     );
     assert!(
-        layout.start.y + layout.start.h <= 800.0,
+        start.y + start.h <= 800.0,
         "everything fits an 800px window"
     );
-    for (pos, cells) in layout.cells.iter().enumerate() {
-        let card = layout.seats[pos];
-        for r in cells.iter().filter(|r| r.w > 0.0) {
+    for (pos, rects) in cards.iter().enumerate() {
+        let card = rects.card;
+        for r in Cell::ALL.into_iter().filter_map(|cell| rects.cell(cell)) {
             assert!(
                 r.x >= card.x - 0.01
                     && r.y >= card.y - 0.01
@@ -1292,33 +1330,18 @@ fn the_setup_layout_never_overlaps_its_own_parts() {
                 "cell rects nest inside their card"
             );
         }
-        assert!(
-            cells[1].w > 0.0 && cells[2].w > 0.0,
-            "every card carries faction and team chips"
-        );
-        let controls = layout.bot_controls[pos];
         if seat_display_order(&scenario)[pos] == 0 {
-            assert_eq!(controls, [Rect::new(0.0, 0.0, 0.0, 0.0); 2]);
+            assert_eq!((rects.difficulty, rects.stance), (None, None));
         } else {
+            let (Some(difficulty), Some(stance)) = (rects.difficulty, rects.stance) else {
+                panic!("every opponent carries separate difficulty and stance controls");
+            };
             assert!(
-                controls.iter().all(|control| control.w > 0.0),
-                "every opponent carries separate difficulty and stance controls"
-            );
-            assert!(
-                cells[0].x + cells[0].w <= controls[0].x + 0.01,
+                rects.seat.x + rects.seat.w <= difficulty.x + 0.01,
                 "the bot controls never overlap the take-seat control"
             );
-            for control in controls {
-                assert!(
-                    control.x >= card.x
-                        && control.x + control.w <= card.x + card.w
-                        && control.y >= card.y
-                        && control.y + control.h <= card.y + card.h,
-                    "each bot control nests inside its card"
-                );
-            }
             assert!(
-                controls[0].x + controls[0].w <= controls[1].x,
+                difficulty.x + difficulty.w <= stance.x,
                 "difficulty and stance controls never overlap"
             );
         }
