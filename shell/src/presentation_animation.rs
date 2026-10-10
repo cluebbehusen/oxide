@@ -718,18 +718,11 @@ impl AnimationController {
                     )
                 })
         });
-        let propulsion = match facts.kind {
-            UnitKind::Buzzard => PropulsionState::LiftRotors {
-                cycle: clock.cycle(facts.id.0, BUZZARD_ROTOR_PERIOD, options.reduced_motion),
-            },
-            UnitKind::Wisp => PropulsionState::LiftRotors {
-                cycle: clock.cycle(facts.id.0, WISP_ROTOR_PERIOD, options.reduced_motion),
-            },
-            UnitKind::Skyhook => PropulsionState::LiftRotors {
-                cycle: clock.cycle(facts.id.0, SKYHOOK_ROTOR_PERIOD, options.reduced_motion),
-            },
-            _ => PropulsionState::None,
-        };
+        let propulsion = rotor_period(facts.kind).map_or(PropulsionState::None, |period| {
+            PropulsionState::LiftRotors {
+                cycle: clock.cycle(facts.id.0, period, options.reduced_motion),
+            }
+        });
         UnitAnimationState {
             work_target: facts.work_target,
             welding_arm: self.welding_arm(facts, work, clock, options),
@@ -739,7 +732,7 @@ impl AnimationController {
             attack: self.unit_attack(facts.id, facts.kind, clock),
             weapons,
             propulsion,
-            scanner: matches!(facts.kind, UnitKind::Kestrel | UnitKind::Gnat)
+            scanner: (facts.kind.role() == oxide_sim::stats::Role::Scout)
                 .then(|| clock.cycle(facts.id.0, 96, options.reduced_motion)),
             transport: self.transport_action(facts.id, clock),
             demolition_preparation: facts
@@ -1035,11 +1028,37 @@ fn weapon_cycle(remaining: u32, total: u32, tick_fraction: f32) -> WeaponCycle {
 }
 
 fn unit_move_period(kind: UnitKind) -> u64 {
+    rotor_period(kind).unwrap_or(GROUND_MOVE_PERIOD)
+}
+
+/// Ticks per lift-rotor cycle for a rotorcraft; none for every other kind.
+/// Every kind is listed, so a new one must say whether it flies on rotors.
+fn rotor_period(kind: UnitKind) -> Option<u64> {
     match kind {
-        UnitKind::Buzzard => BUZZARD_ROTOR_PERIOD,
-        UnitKind::Wisp => WISP_ROTOR_PERIOD,
-        UnitKind::Skyhook => SKYHOOK_ROTOR_PERIOD,
-        _ => GROUND_MOVE_PERIOD,
+        UnitKind::Buzzard => Some(BUZZARD_ROTOR_PERIOD),
+        UnitKind::Wisp => Some(WISP_ROTOR_PERIOD),
+        UnitKind::Skyhook => Some(SKYHOOK_ROTOR_PERIOD),
+        UnitKind::Harvester
+        | UnitKind::Sentinel
+        | UnitKind::Scuttler
+        | UnitKind::Lancer
+        | UnitKind::Bombard
+        | UnitKind::Flakhound
+        | UnitKind::Stinger
+        | UnitKind::Darter
+        | UnitKind::Talon
+        | UnitKind::Warden
+        | UnitKind::Tender
+        | UnitKind::Excavator
+        | UnitKind::Kestrel
+        | UnitKind::Gnat
+        | UnitKind::Shrike
+        | UnitKind::Sylph
+        | UnitKind::Condor
+        | UnitKind::Moth
+        | UnitKind::Breaker
+        | UnitKind::Avalanche
+        | UnitKind::Sapper => None,
     }
 }
 

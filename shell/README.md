@@ -46,6 +46,7 @@ crate-level rustdoc.
   feedback, and share hit-test geometry.
 - `entity_lod` derives filtered entity textures for world rendering and UI
   portraits; `strategic_markers` draws role and allegiance cues at distant zoom.
+- `look` declares each unit kind's presentation in one exhaustive match.
 - `assets`, `typography`, `audio_mix`, and `soundtrack` own presentation
   resources. `mixer` plays clips and holds the one table of what the shell
   decides per sound kind: its clip, bus, mix weight, and whether it is a blast

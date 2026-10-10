@@ -8,24 +8,7 @@ pub(crate) fn supported(kind: UnitKind) -> bool {
 }
 
 fn runs(kind: UnitKind) -> &'static [[f32; 4]] {
-    match kind {
-        UnitKind::Sentinel => &[[18., 52., 33., 111.], [95., 52., 110., 111.]],
-        UnitKind::Warden => &[
-            [11., 37., 30., 57.],
-            [98., 37., 117., 57.],
-            [11., 88., 30., 110.],
-            [98., 88., 117., 110.],
-        ],
-        UnitKind::Lancer => &[[16., 74., 32., 111.], [96., 74., 112., 111.]],
-        UnitKind::Harvester => &[[20., 48., 33., 107.], [95., 48., 108., 107.]],
-        UnitKind::Excavator => &[[17., 50., 32., 109.], [96., 50., 111., 109.]],
-        UnitKind::Tender => &[[20., 52., 33., 108.], [95., 52., 108., 108.]],
-        UnitKind::Avalanche => &[[27., 38., 36., 102.], [93., 38., 102., 102.]],
-        UnitKind::Breaker => &[[23., 42., 38., 107.], [90., 42., 105., 107.]],
-        UnitKind::Bombard => &[[16., 58., 31., 107.], [97., 58., 112., 107.]],
-        UnitKind::Flakhound => &[[14., 73., 31., 111.], [97., 73., 114., 111.]],
-        _ => &[],
-    }
+    crate::look::unit(kind).belts
 }
 
 pub(crate) fn gauge(kind: UnitKind, scale: f32) -> f32 {

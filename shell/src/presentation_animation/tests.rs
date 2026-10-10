@@ -1156,3 +1156,14 @@ fn capture_and_retention_entrypoints_follow_the_current_world() {
     controller.retain_live(&state);
     assert!(controller.building_attacks.is_empty());
 }
+
+#[test]
+fn only_rotorcraft_spin_lift_rotors() {
+    for kind in UnitKind::ALL {
+        let stats = kind.stats();
+        let rotorcraft = stats.domain == oxide_sim::stats::Domain::Air
+            && stats.turn_rate == 0
+            && stats.cruise_turn_rate == 0;
+        assert_eq!(rotor_period(kind).is_some(), rotorcraft, "{kind:?}");
+    }
+}

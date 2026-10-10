@@ -19,12 +19,8 @@ pub struct Sprites {
     excavator_body: Option<[[Rect; 3]; 3]>,
     scuttler_body: Option<[[Rect; 3]; 3]>,
     tender_body: Option<[[Rect; 3]; 3]>,
-    sentinel_rig: Option<UnitRig>,
-    warden_rig: Option<UnitRig>,
-    lancer_rig: Option<UnitRig>,
-    buzzard_rig: Option<UnitRig>,
-    wisp_rig: Option<UnitRig>,
-    skyhook_rig: Option<UnitRig>,
+    /// Hull and mount layers for every kind whose look draws a rig.
+    unit_rigs: std::collections::HashMap<UnitKind, UnitRig>,
     bombard_spades: Option<[Rect; 5]>,
     scout_radar: Option<Rect>,
     array_rig: Option<ArrayRig>,
@@ -169,6 +165,20 @@ fn worker_body_rows(rects: &Manifest, stem: &str) -> Result<Option<[[Rect; 3]; 3
         return Ok(None);
     }
     Ok(Some(variant_rows(rects, stem, ["", "_move1", "_move2"])?))
+}
+
+/// Every rig the atlas ships for a kind whose look draws one; its mount has
+/// a frame per action frame.
+fn unit_rigs(rects: &Manifest) -> Result<std::collections::HashMap<UnitKind, UnitRig>> {
+    let mut rigs = std::collections::HashMap::new();
+    for kind in UnitKind::ALL {
+        if crate::look::unit(kind).rig
+            && let Some(rig) = unit_rig(rects, unit_stem(kind), unit_action_suffixes(kind).len())?
+        {
+            rigs.insert(kind, rig);
+        }
+    }
+    Ok(rigs)
 }
 
 fn unit_rig(rects: &Manifest, stem: &str, actions: usize) -> Result<Option<UnitRig>> {
@@ -624,9 +634,9 @@ fn unit_art(rects: &Manifest) -> Result<Vec<UnitArt>> {
 /// The two locomotion poses: tracked hulls ship tread frames, everything
 /// else ships move frames.
 fn unit_move_suffixes(kind: UnitKind) -> [&'static str; 2] {
-    match kind {
-        UnitKind::Harvester | UnitKind::Flakhound => TREAD_SUFFIXES,
-        _ => MOVE_SUFFIXES,
+    match crate::look::unit(kind).move_rows {
+        crate::look::MoveRows::Tread => TREAD_SUFFIXES,
+        crate::look::MoveRows::Move => MOVE_SUFFIXES,
     }
 }
 
@@ -768,14 +778,11 @@ fn atlas_keys(atlas: &Manifest) -> Vec<String> {
         }
     }
     keys.extend((0..12).map(|index| format!("quarry_dressing_{index}")));
-    for (stem, action_count) in [
-        ("sentinel", 4),
-        ("warden", 4),
-        ("lancer", 6),
-        ("buzzard", 4),
-        ("wisp", 4),
-        ("skyhook", 4),
-    ] {
+    for (stem, action_count) in UnitKind::ALL
+        .into_iter()
+        .filter(|kind| crate::look::unit(*kind).rig)
+        .map(|kind| (unit_stem(kind), unit_action_suffixes(kind).len()))
+    {
         for suffix in ["", "_move1", "_move2"] {
             keys.extend(variant_keys(&format!("rig_{stem}_hull"), suffix));
         }
@@ -951,12 +958,7 @@ impl Sprites {
         ] = pick(&rects, SINGLE_KEYS)?;
         let entity_lod = crate::entity_lod::EntityLod::load(&rects, page_height)?;
         Ok(Self {
-            sentinel_rig: unit_rig(&rects, "sentinel", 4)?,
-            warden_rig: unit_rig(&rects, "warden", 4)?,
-            lancer_rig: unit_rig(&rects, "lancer", 6)?,
-            buzzard_rig: unit_rig(&rects, "buzzard", 4)?,
-            wisp_rig: unit_rig(&rects, "wisp", 4)?,
-            skyhook_rig: unit_rig(&rects, "skyhook", 4)?,
+            unit_rigs: unit_rigs(&rects)?,
             bombard_spades: bombard_spade_rows(&rects)?,
             array_rig: array_rig(&rects)?,
             scout_radar: rects
@@ -1043,14 +1045,11 @@ impl Sprites {
         cargo: usize,
         phase: usize,
     ) -> Option<(Rect, Rect)> {
-        if kind == UnitKind::Harvester {
-            return self.harvester_body(faction, cargo);
-        }
-        let rows = match kind {
-            UnitKind::Excavator => self.excavator_body.as_ref()?,
-            UnitKind::Scuttler => self.scuttler_body.as_ref()?,
-            UnitKind::Tender => self.tender_body.as_ref()?,
-            _ => return None,
+        let rows = match crate::look::unit(kind).tool? {
+            crate::look::WorkerTool::Scoop => return self.harvester_body(faction, cargo),
+            crate::look::WorkerTool::Drum => self.excavator_body.as_ref()?,
+            crate::look::WorkerTool::Shears => self.scuttler_body.as_ref()?,
+            crate::look::WorkerTool::Welder => self.tender_body.as_ref()?,
         };
         let row = rows[phase.min(2)];
         Some((row[faction_index(faction)], row[ACCENT]))
@@ -1552,15 +1551,7 @@ impl Sprites {
     }
 
     pub(crate) fn unit_rig(&self, kind: UnitKind) -> Option<&UnitRig> {
-        match kind {
-            UnitKind::Sentinel => self.sentinel_rig.as_ref(),
-            UnitKind::Warden => self.warden_rig.as_ref(),
-            UnitKind::Lancer => self.lancer_rig.as_ref(),
-            UnitKind::Buzzard => self.buzzard_rig.as_ref(),
-            UnitKind::Wisp => self.wisp_rig.as_ref(),
-            UnitKind::Skyhook => self.skyhook_rig.as_ref(),
-            _ => None,
-        }
+        self.unit_rigs.get(&kind)
     }
 
     pub(crate) fn scout_radar(&self) -> Option<Rect> {

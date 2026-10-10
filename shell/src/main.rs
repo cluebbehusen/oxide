@@ -24,6 +24,7 @@ mod game;
 mod hints;
 mod input;
 mod layout;
+mod look;
 mod menu;
 mod mixer;
 mod netplay;

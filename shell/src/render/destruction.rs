@@ -351,7 +351,7 @@ fn draw_unit_wreck(
             zoom,
         );
     }
-    if body.kind != oxide_sim::UnitKind::Sapper {
+    if body.kind.stats().demolition.is_none() {
         let (radius, payload) = if large_airframe(body.kind) {
             (scale * 0.75, ProjectileKind::Missile)
         } else {
@@ -666,7 +666,7 @@ pub(super) fn draw_ground_effects(game: &Scene<'_>, sprites: &Sprites) {
                 );
             }
             EffectKind::Debris { at, body, seed } => {
-                let delay = if body.kind == oxide_sim::UnitKind::Sapper {
+                let delay = if body.kind.stats().demolition.is_some() {
                     0.1
                 } else {
                     0.0

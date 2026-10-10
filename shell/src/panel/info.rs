@@ -6,7 +6,7 @@ use oxide_sim::stats::{
     BuildingKind, CHARGE_ARRAY_DETECT_RADIUS, CHARGE_BASE_ARRAY_DETECT_RADIUS, CHARGE_BLAST_RADIUS,
     CHARGE_DAMAGE, CHARGE_SCOUT_DETECT_RADIUS, CHARGE_TRIGGER_RADIUS, CRUCIBLE_SMELT_RADIUS,
     Domain, FOUNDRY_DRIP_START_TICK, RADAR_DETECT_RADIUS, REPAIR_BAY_PERIOD, REPAIR_BAY_RADIUS,
-    REPAIR_BAY_STEP, UnitKind, WeaponStats,
+    REPAIR_BAY_STEP, WeaponStats,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -268,7 +268,7 @@ pub(crate) fn selection_info(game: &Scene<'_>, panel: &Panel) -> SelectionInfo {
             format!("{} tiles", stats.vision),
             Some(Cap(CapabilityIcon::Vision)),
         );
-        if matches!(u.kind, UnitKind::Kestrel | UnitKind::Gnat) {
+        if crate::look::scout(u.kind) {
             info.row(
                 "Mine detection",
                 format!("{CHARGE_SCOUT_DETECT_RADIUS} tiles"),

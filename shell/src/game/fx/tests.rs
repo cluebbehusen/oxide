@@ -1120,17 +1120,23 @@ fn defense_tracking_game() -> (crate::game::Game, BuildingId, UnitId) {
 
 #[test]
 fn every_weapon_family_uses_its_physical_report() {
-    assert_eq!(unit_shot_style(UnitKind::Scuttler, 0), ShotStyle::Contact);
-    assert_eq!(unit_shot_style(UnitKind::Lancer, 0), ShotStyle::Rail);
     assert_eq!(
-        unit_shot_style(UnitKind::Flakhound, 0),
+        unit_shot_style(UnitKind::Scuttler, 0).unwrap(),
+        ShotStyle::Contact
+    );
+    assert_eq!(
+        unit_shot_style(UnitKind::Lancer, 0).unwrap(),
+        ShotStyle::Rail
+    );
+    assert_eq!(
+        unit_shot_style(UnitKind::Flakhound, 0).unwrap(),
         ShotStyle::FlakBurst {
             yoke_delay: FlakYokeDelay::OneTick,
             rounds_per_yoke: 2,
         }
     );
     assert_eq!(
-        unit_shot_style(UnitKind::Stinger, 0),
+        unit_shot_style(UnitKind::Stinger, 0).unwrap(),
         ShotStyle::FlakBurst {
             yoke_delay: FlakYokeDelay::None,
             rounds_per_yoke: 1,
@@ -1139,25 +1145,37 @@ fn every_weapon_family_uses_its_physical_report() {
     // Both Sentinel slots speak through its one physical barrel;
     // the second is a weaker skyward poke, not a paired flak gun.
     assert_eq!(
-        unit_shot_style(UnitKind::Sentinel, 0),
+        unit_shot_style(UnitKind::Sentinel, 0).unwrap(),
         ShotStyle::Kinetic { heavy: false }
     );
     assert_eq!(
-        unit_shot_style(UnitKind::Sentinel, 1),
+        unit_shot_style(UnitKind::Sentinel, 1).unwrap(),
         ShotStyle::Kinetic { heavy: false }
     );
     assert_eq!(
-        unit_shot_style(UnitKind::Warden, 0),
+        unit_shot_style(UnitKind::Warden, 0).unwrap(),
         ShotStyle::Kinetic { heavy: true }
     );
-    assert_eq!(unit_shot_style(UnitKind::Breaker, 0), ShotStyle::Mortar);
     assert_eq!(
-        unit_shot_style(UnitKind::Buzzard, 0),
+        unit_shot_style(UnitKind::Breaker, 0).unwrap(),
+        ShotStyle::Mortar
+    );
+    assert_eq!(
+        unit_shot_style(UnitKind::Buzzard, 0).unwrap(),
         ShotStyle::Kinetic { heavy: true }
     );
-    assert_eq!(unit_shot_style(UnitKind::Darter, 0), ShotStyle::ForgeSpot);
-    assert_eq!(unit_shot_style(UnitKind::Talon, 0), ShotStyle::ForgeSpot);
-    assert_eq!(unit_shot_style(UnitKind::Wisp, 0), ShotStyle::ForgeSpot);
+    assert_eq!(
+        unit_shot_style(UnitKind::Darter, 0).unwrap(),
+        ShotStyle::ForgeSpot
+    );
+    assert_eq!(
+        unit_shot_style(UnitKind::Talon, 0).unwrap(),
+        ShotStyle::ForgeSpot
+    );
+    assert_eq!(
+        unit_shot_style(UnitKind::Wisp, 0).unwrap(),
+        ShotStyle::ForgeSpot
+    );
     assert_eq!(
         defense_shot_style(BuildingKind::FlakTurret, 0),
         ShotStyle::FlakBurst {
@@ -1410,18 +1428,42 @@ fn only_bombard_and_bastion_use_real_shell_entities() {
 
 #[test]
 fn approved_combatants_use_their_own_reports() {
-    assert_eq!(unit_fire_sound(UnitKind::Sentinel), SoundKind::SentinelFire);
-    assert_eq!(unit_fire_sound(UnitKind::Scuttler), SoundKind::ScuttlerFire);
-    assert_eq!(unit_fire_sound(UnitKind::Lancer), SoundKind::LancerFire);
     assert_eq!(
-        unit_fire_sound(UnitKind::Flakhound),
+        unit_fire_sound(UnitKind::Sentinel).unwrap(),
+        SoundKind::SentinelFire
+    );
+    assert_eq!(
+        unit_fire_sound(UnitKind::Scuttler).unwrap(),
+        SoundKind::ScuttlerFire
+    );
+    assert_eq!(
+        unit_fire_sound(UnitKind::Lancer).unwrap(),
+        SoundKind::LancerFire
+    );
+    assert_eq!(
+        unit_fire_sound(UnitKind::Flakhound).unwrap(),
         SoundKind::FlakhoundFire
     );
-    assert_eq!(unit_fire_sound(UnitKind::Stinger), SoundKind::StingerFire);
-    assert_eq!(unit_fire_sound(UnitKind::Buzzard), SoundKind::BuzzardFire);
-    assert_eq!(unit_fire_sound(UnitKind::Darter), SoundKind::DarterFire);
-    assert_eq!(unit_fire_sound(UnitKind::Talon), SoundKind::TalonFire);
-    assert_eq!(unit_fire_sound(UnitKind::Wisp), SoundKind::WispFire);
+    assert_eq!(
+        unit_fire_sound(UnitKind::Stinger).unwrap(),
+        SoundKind::StingerFire
+    );
+    assert_eq!(
+        unit_fire_sound(UnitKind::Buzzard).unwrap(),
+        SoundKind::BuzzardFire
+    );
+    assert_eq!(
+        unit_fire_sound(UnitKind::Darter).unwrap(),
+        SoundKind::DarterFire
+    );
+    assert_eq!(
+        unit_fire_sound(UnitKind::Talon).unwrap(),
+        SoundKind::TalonFire
+    );
+    assert_eq!(
+        unit_fire_sound(UnitKind::Wisp).unwrap(),
+        SoundKind::WispFire
+    );
     assert_eq!(
         defense_fire_sound(BuildingKind::FlakTurret),
         SoundKind::FlakTurretFire
@@ -1438,7 +1480,11 @@ fn approved_combatants_use_their_own_reports() {
 
 #[test]
 fn generic_combatants_keep_the_generic_report() {
-    assert_eq!(unit_fire_sound(UnitKind::Harvester), SoundKind::Laser);
+    assert_eq!(
+        unit_fire_sound(UnitKind::Harvester),
+        None,
+        "an unarmed worker has no report"
+    );
     assert_eq!(defense_fire_sound(BuildingKind::Turret), SoundKind::Laser);
 }
 
@@ -1526,11 +1572,14 @@ fn shot_visuals_begin_at_the_authored_muzzle_not_chassis_center() {
     );
     assert_eq!(visual_shot_origin(from, from, 0.38), from);
     let buzzard_muzzle = 38.0 / 128.0 * crate::render::unit_draw_scale(UnitKind::Buzzard);
-    assert_eq!(unit_muzzle_reach(UnitKind::Buzzard), buzzard_muzzle);
+    assert_eq!(
+        unit_muzzle_reach(UnitKind::Buzzard).unwrap(),
+        buzzard_muzzle
+    );
     let origin = unit_shot_origin(UnitKind::Buzzard, from, to);
     assert!((origin.x - (from.x + buzzard_muzzle)).abs() < 1e-5);
     assert!((origin.y - (from.y - 0.18)).abs() < 1e-5);
-    assert_eq!(unit_muzzle_reach(UnitKind::Darter), 0.32);
+    assert_eq!(unit_muzzle_reach(UnitKind::Darter).unwrap(), 0.32);
     for kind in [
         UnitKind::Darter,
         UnitKind::Talon,
@@ -1544,9 +1593,9 @@ fn shot_visuals_begin_at_the_authored_muzzle_not_chassis_center() {
         );
     }
     let warden_muzzle = 46.0 / 128.0 * crate::render::unit_draw_scale(UnitKind::Warden);
-    assert!((unit_muzzle_reach(UnitKind::Warden) - warden_muzzle).abs() < 0.002);
+    assert!((unit_muzzle_reach(UnitKind::Warden).unwrap() - warden_muzzle).abs() < 0.002);
     assert_eq!(
-        unit_muzzle_reach(UnitKind::Breaker),
+        unit_muzzle_reach(UnitKind::Breaker).unwrap(),
         40.0 / 128.0 * crate::render::unit_draw_scale(UnitKind::Breaker)
     );
     assert!(

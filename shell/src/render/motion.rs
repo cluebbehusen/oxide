@@ -4,6 +4,7 @@
 //! facts. This module maps those facts onto atlas rows without
 //! consulting wall time or changing gameplay state.
 
+use crate::look::Gait;
 use crate::numeric;
 use oxide_sim::{BuildingKind, UnitKind};
 
@@ -87,7 +88,7 @@ pub(crate) enum BuildingBodyFrame {
 /// Selects a unit frame with action transients taking precedence over every
 /// concurrent state.
 pub(crate) fn unit_frame(kind: UnitKind, state: UnitAnimationState) -> UnitFrame {
-    if kind == UnitKind::Skyhook
+    if kind.stats().transport_capacity > 0
         && let Some(action) = state.transport
     {
         return skyhook_transport_frame(action);
@@ -102,7 +103,7 @@ pub(crate) fn unit_frame(kind: UnitKind, state: UnitAnimationState) -> UnitFrame
         return UnitFrame::Action(unit_preparation_frame(kind, progress));
     }
 
-    if kind == UnitKind::Sapper
+    if kind.stats().demolition.is_some()
         && let Some(progress) = state.demolition_preparation
     {
         return UnitFrame::Action(cycle_index(progress, 3));
@@ -151,11 +152,13 @@ pub(crate) fn unit_frame(kind: UnitKind, state: UnitAnimationState) -> UnitFrame
     if let LocomotionState::Moving { cycle } = state.locomotion {
         return match state.propulsion {
             PropulsionState::LiftRotors { cycle } => lift_rotor_frame(cycle),
-            PropulsionState::None if has_treads(kind) => match tread_phase(cycle) {
-                0 => UnitFrame::Idle,
-                phase => UnitFrame::Moving(phase - 1),
-            },
-            PropulsionState::None if matches!(kind, UnitKind::Scuttler | UnitKind::Sapper) => {
+            PropulsionState::None if crate::look::unit(kind).gait == Gait::Treads => {
+                match tread_phase(cycle) {
+                    0 => UnitFrame::Idle,
+                    phase => UnitFrame::Moving(phase - 1),
+                }
+            }
+            PropulsionState::None if crate::look::unit(kind).gait == Gait::Legs => {
                 match cycle_index(cycle, 4) {
                     0 => UnitFrame::Moving(0),
                     2 => UnitFrame::Moving(1),
@@ -177,21 +180,6 @@ pub(crate) fn unit_frame(kind: UnitKind, state: UnitAnimationState) -> UnitFrame
     preparation.map_or(UnitFrame::Idle, |progress| {
         UnitFrame::Action(unit_preparation_frame(kind, progress))
     })
-}
-
-fn has_treads(kind: UnitKind) -> bool {
-    matches!(
-        kind,
-        UnitKind::Sentinel
-            | UnitKind::Warden
-            | UnitKind::Lancer
-            | UnitKind::Breaker
-            | UnitKind::Avalanche
-            | UnitKind::Bombard
-            | UnitKind::Flakhound
-            | UnitKind::Stinger
-            | UnitKind::Tender
-    )
 }
 
 /// Base, tread one, tread two form one forward belt loop.

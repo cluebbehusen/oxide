@@ -745,13 +745,9 @@ impl Game {
 }
 
 pub(crate) fn rotor_hull_turn_rate(kind: UnitKind) -> Option<f32> {
-    match kind {
-        UnitKind::Skyhook => Some(0.25),
-        UnitKind::Buzzard | UnitKind::Wisp => Some(
-            0.3 * kind.stats().speed.to_num::<f32>()
-                / UnitKind::Buzzard.stats().speed.to_num::<f32>(),
-        ),
-        _ => None,
+    match crate::look::unit(kind).gait {
+        crate::look::Gait::Rotor { hull_turn } => Some(hull_turn),
+        crate::look::Gait::Treads | crate::look::Gait::Legs | crate::look::Gait::Plain => None,
     }
 }
 
