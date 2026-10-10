@@ -113,8 +113,8 @@ pub(super) fn pick(game: &Game, screen: Vec2, ui: f32, pointer: Pointer) -> Opti
         .map(|b| Picked::Building(b.id, b.player))
 }
 
-/// Whether HUD chrome swallows a click at `screen`, per the layout the
-/// renderer published this frame.
+/// Whether HUD chrome swallows a click at `screen`, per the published
+/// HUD layout.
 pub(super) fn click_on_hud(game: &Game, screen: Vec2) -> bool {
     game.presentation.layout.get().chrome_owns(screen)
 }
