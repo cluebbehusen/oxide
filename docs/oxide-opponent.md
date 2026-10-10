@@ -127,7 +127,6 @@ other non-derivable state persists between decisions:
 - missions and their phases;
 - the investment list and saving target;
 - the previous bank and spending used to estimate income;
-- reaction and hesitation timers, and cooldowns;
 - the position of any random stream;
 - the pending own-event buffer.
 
@@ -208,12 +207,14 @@ its faction fields.
 - **Stance** bounds posture: minimum home defense, minimum attack size, and how
   early and how large attacks get. Offensive missions leave the home defense
   behind while an enemy could reach home; defense takes every unit.
-- **Difficulty** sets cognitive and execution limits: reaction delay,
-  hesitation, unit orders per decision, memory decay, deterministic noise in
-  estimates, and decision interval. It also sets how well a seat carries out its
-  repertoire: lower rungs attack piecemeal, pick targets worse, focus fire on
-  the nearest enemy or by a rough read of its wounds, leave reinforcements at
-  home, end fights on time while winning, withdraw at even odds, and lift
-  without a fresh look or without counting bomber cover. Every rung keeps every
-  capability. Lower rungs make understandable mistakes, and higher rungs beat
-  lower ones.
+- **Difficulty** sets cognitive and execution limits: how often a seat decides,
+  which is its reaction time; how many unit orders one decision may give, which
+  is its attention; and how much strength an attack must bring over the known
+  defense. The lowest rung also misjudges the enemy's strength by a
+  deterministic draw from its seed. Memory fades at the same rate on every rung.
+  Difficulty also sets how well a seat carries out its repertoire: lower rungs
+  attack piecemeal, pick targets worse, focus fire on the nearest enemy or by a
+  rough read of its wounds, leave reinforcements at home, end fights on time
+  while winning, withdraw at even odds, and lift without a fresh look or without
+  counting bomber cover. Every rung keeps every capability. Lower rungs make
+  understandable mistakes, and higher rungs beat lower ones.
