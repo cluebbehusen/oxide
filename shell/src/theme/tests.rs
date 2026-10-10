@@ -88,3 +88,20 @@ fn strokes_scale_and_never_vanish() {
     let widths = [Stroke::Hairline, Stroke::Edge, Stroke::Focus, Stroke::Heavy].map(|s| s.at(1.0));
     assert!(widths.windows(2).all(|pair| pair[0] < pair[1]));
 }
+
+#[test]
+fn the_type_ramp_climbs_and_scales() {
+    let ramp = [
+        Type::Caption,
+        Type::Small,
+        Type::Body,
+        Type::Label,
+        Type::Heading,
+        Type::Row,
+        Type::Title,
+        Type::Display,
+    ];
+    let sizes = ramp.map(|step| step.at(1.0));
+    assert!(sizes.windows(2).all(|pair| pair[0] < pair[1]));
+    assert_eq!(Type::Body.at(1.5), 24.0);
+}

@@ -489,8 +489,19 @@ impl Browser {
         let ui = crate::render::ui_scale();
         let layout = self.layout(entries, view, ui);
         for (label, rect) in &layout.headings {
-            draw_text(label, rect.x, rect.y + rect.h * 0.62, 22.0 * ui, TEXT_TITLE);
-            let dims = measure_text(label, None, numeric::font_size(22.0 * ui), 1.0);
+            draw_text(
+                label,
+                rect.x,
+                rect.y + rect.h * 0.62,
+                crate::theme::Type::Heading.at(ui),
+                TEXT_TITLE,
+            );
+            let dims = measure_text(
+                label,
+                None,
+                numeric::font_size(crate::theme::Type::Heading.at(ui)),
+                1.0,
+            );
             draw_rectangle(
                 rect.x + dims.width + 14.0 * ui,
                 rect.y + rect.h * 0.5,
@@ -538,7 +549,7 @@ impl Browser {
                 Stroke::Edge
             };
             stroke_rect(*rect, stroke.at(ui), border);
-            let name_size = 17.0 * ui;
+            let name_size = crate::theme::Type::Body.at(ui);
             let name = measure_text(&entry.label, None, numeric::font_size(name_size), 1.0);
             draw_text(
                 &entry.label,
@@ -570,7 +581,7 @@ impl Browser {
             (view.y - bottom).max(0.0),
             crate::render::OUTSIDE,
         );
-        let title_size = 64.0 * ui;
+        let title_size = crate::theme::Type::Title.at(ui);
         let dims = measure_text("OXIDE", None, numeric::font_size(title_size), 1.0);
         draw_text(
             "OXIDE",
@@ -603,7 +614,7 @@ impl Browser {
                 .blurb
                 .clone()
                 .unwrap_or_else(|| "machines eating a dead world".to_string());
-            let mut size = 18.0 * ui;
+            let mut size = crate::theme::Type::Label.at(ui);
             let mut dims = measure_text(&blurb, None, numeric::font_size(size), 1.0);
             let max = view.x * 0.8;
             if dims.width > max {
@@ -619,12 +630,17 @@ impl Browser {
             );
         }
         let hint = crate::menu::binding_hint(browser_hint(crate::platform::TOUCH_ONLY));
-        let dims = measure_text(&hint, None, numeric::font_size(16.0 * ui), 1.0);
+        let dims = measure_text(
+            &hint,
+            None,
+            numeric::font_size(crate::theme::Type::Body.at(ui)),
+            1.0,
+        );
         draw_text(
             &hint,
             (view.x - dims.width) * 0.5,
             view.y - 20.0 * ui,
-            16.0 * ui,
+            crate::theme::Type::Body.at(ui),
             crate::hints::fade(TEXT_SECONDARY),
         );
     }

@@ -8,6 +8,7 @@ use crate::nav::{Axis, Nav, step_line};
 use crate::numeric;
 use crate::numeric::Fit;
 use crate::press::{Fed, Press};
+use crate::theme::Type;
 use crate::{render, theme};
 use macroquad::prelude::*;
 use oxide_protocol::{Key, RawEvent};
@@ -144,14 +145,14 @@ impl ResultsMetrics {
     /// Six or more players in a short window.
     const COMPACT: Self = Self {
         title_y: 43.0,
-        title_size: 32.0,
+        title_size: Type::Title.px(),
         meta_y: 62.0,
-        meta_size: 13.0,
+        meta_size: Type::Small.px(),
         header_y: 79.0,
-        header_size: 11.0,
+        header_size: Type::Caption.px(),
         rule_offset: 13.0,
         row_height: 16.0,
-        row_size: 12.0,
+        row_size: Type::Small.px(),
         row_baseline: 0.78,
         marker_radius: 3.4,
         graph_row_padding: 0.45,
@@ -162,14 +163,14 @@ impl ResultsMetrics {
     fn standard(short: bool) -> Self {
         Self {
             title_y: 48.0,
-            title_size: 40.0,
+            title_size: Type::Title.px(),
             meta_y: 68.0,
-            meta_size: 17.0,
+            meta_size: Type::Body.px(),
             header_y: 91.0,
-            header_size: 17.0,
+            header_size: Type::Body.px(),
             rule_offset: 16.0,
             row_height: if short { 22.0 } else { 27.0 },
-            row_size: 18.0,
+            row_size: Type::Label.px(),
             row_baseline: 0.85,
             marker_radius: 4.0,
             graph_row_padding: 1.15,
@@ -228,8 +229,18 @@ fn results_layout(viewport: Vec2, scale: f32, player_count: usize) -> ResultsLay
         row_size: row_size * scale,
         row_baseline,
         marker_radius: marker_radius * scale,
-        graph_title_size: (if compact_roster { 14.0 } else { 17.0 }) * scale,
-        graph_label_size: (if compact_roster { 13.0 } else { 16.0 }) * scale,
+        graph_title_size: if compact_roster {
+            Type::Small
+        } else {
+            Type::Body
+        }
+        .at(scale),
+        graph_label_size: if compact_roster {
+            Type::Small
+        } else {
+            Type::Body
+        }
+        .at(scale),
         graph_top: graph_top * scale,
         graph_bottom: graph_bottom * scale,
     }
@@ -483,14 +494,9 @@ impl ResultsScreen {
         let stats = game.end_stats.as_ref();
         let duration = stats.map_or(0, |report| report.final_tick);
         let meta = format!("{subtitle}  |  {}", format_duration(duration));
-        let mut meta_size = layout.meta_size;
-        let min_meta_size = 10.0 * s;
-        let max_meta_width = panel.w - 24.0 * s;
-        let mut meta_dims = measure_text(&meta, None, numeric::font_size(meta_size), 1.0);
-        while meta_dims.width > max_meta_width && meta_size > min_meta_size {
-            meta_size = (meta_size - s).max(min_meta_size);
-            meta_dims = measure_text(&meta, None, numeric::font_size(meta_size), 1.0);
-        }
+        let meta_size =
+            crate::typography::fit(&meta, layout.meta_size, panel.w - 24.0 * s, 10.0 * s);
+        let meta_dims = measure_text(&meta, None, numeric::font_size(meta_size), 1.0);
         draw_text(
             &meta,
             (viewport.x - meta_dims.width) * 0.5,
@@ -667,7 +673,7 @@ impl ResultsScreen {
                 "Compiling the final record...",
                 left,
                 header_y + 30.0 * s,
-                16.0 * s,
+                crate::theme::Type::Body.at(s),
                 theme::TEXT_BODY,
             );
         }

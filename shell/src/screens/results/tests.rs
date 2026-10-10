@@ -31,10 +31,10 @@ fn eight_player_results_reserve_a_readable_small_screen_graph() {
     let last_row =
         layout.header_y + layout.rule_offset + (7.0 + layout.row_baseline) * layout.row_height;
 
-    assert_eq!(layout.title_size, 32.0);
+    assert_eq!(layout.title_size, Type::Title.px());
     assert!(layout.compact_roster);
     assert!(!layout.wide_table);
-    assert_eq!(layout.row_size, 12.0);
+    assert_eq!(layout.row_size, Type::Small.px());
     assert!(layout.meta_y < layout.header_y);
     assert!(last_row + layout.marker_radius < layout.graph_top);
     assert!(layout.graph_bottom - layout.graph_top >= 80.0);
@@ -48,9 +48,9 @@ fn wide_results_use_room_for_readable_table_copy() {
 
     assert!(!layout.compact_roster);
     assert!(layout.wide_table);
-    assert_eq!(layout.header_size, 17.0);
-    assert_eq!(layout.row_size, 18.0);
-    assert_eq!(layout.graph_label_size, 16.0);
+    assert_eq!(layout.header_size, Type::Body.px());
+    assert_eq!(layout.row_size, Type::Label.px());
+    assert_eq!(layout.graph_label_size, Type::Body.px());
     assert!(columns.player < columns.stats[0]);
     assert!(columns.stats.windows(2).all(|pair| pair[0] < pair[1]));
     assert!(columns.stats[5] < 1248.0);

@@ -179,7 +179,7 @@ impl TextField {
         let s = crate::render::ui_scale();
         let view = crate::render::viewport();
         let layout = layout(view, s);
-        let title_size = 48.0 * s;
+        let title_size = crate::theme::Type::Title.at(s);
         let dims = measure_text(self.title, None, numeric::font_size(title_size), 1.0);
         draw_text(
             self.title,
@@ -188,7 +188,7 @@ impl TextField {
             title_size,
             crate::theme::TEXT_TITLE,
         );
-        let hint_size = 18.0 * s;
+        let hint_size = crate::theme::Type::Label.at(s);
         let dims = measure_text(hint, None, numeric::font_size(hint_size), 1.0);
         draw_text(
             hint,
@@ -215,7 +215,7 @@ impl TextField {
         );
         let text = format!("{}_", self.value);
         let room = field.w - 24.0 * s;
-        let mut size = 22.0 * s;
+        let mut size = crate::theme::Type::Heading.at(s);
         let width = measure_text(&text, None, numeric::font_size(size), 1.0).width;
         if width > room {
             size = (size * room / width).max(10.0);

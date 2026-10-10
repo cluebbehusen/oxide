@@ -493,7 +493,13 @@ fn draw_catalog(
     fill_rect(band, crate::theme::SURFACE_BAND);
     draw_rectangle(band.x, band.y, band.w, s, crate::theme::EDGE_WARM);
     if !grouped {
-        crate::typography::draw("BUILD", 12.0 * s, band.y + 20.0 * s, 15.0 * s, TEXT_PRIMARY);
+        crate::typography::draw(
+            "BUILD",
+            12.0 * s,
+            band.y + 20.0 * s,
+            crate::theme::Type::Body.at(s),
+            TEXT_PRIMARY,
+        );
     }
     if grouped {
         for (category, (index, label)) in [
@@ -521,7 +527,7 @@ fn draw_catalog(
                 &label,
                 slots[index].x + 5.0 * s,
                 band.y + 20.0 * s,
-                11.0 * s,
+                crate::theme::Type::Caption.at(s),
                 TEXT_SECONDARY,
             );
         }
@@ -561,7 +567,15 @@ fn draw_catalog(
         );
         let names = card_title_lines(
             &card.title,
-            |text| measure_text(text, None, numeric::font_size(15.0 * s), 1.0).width,
+            |text| {
+                measure_text(
+                    text,
+                    None,
+                    numeric::font_size(crate::theme::Type::Body.at(s)),
+                    1.0,
+                )
+                .width
+            },
             rect.w - 49.0 * s,
         );
         for (line, name) in names.iter().enumerate() {
@@ -569,7 +583,7 @@ fn draw_catalog(
                 name,
                 rect.x + 44.0 * s,
                 rect.y + (if names.len() > 1 { 16.0 } else { 22.0 } + line as f32 * 14.0) * s,
-                15.0 * s,
+                crate::theme::Type::Body.at(s),
                 if card.enabled {
                     TEXT_PRIMARY
                 } else {
@@ -582,7 +596,7 @@ fn draw_catalog(
                 &cost.to_string(),
                 rect.x + 44.0 * s,
                 rect.y + 42.0 * s,
-                13.0 * s,
+                crate::theme::Type::Small.at(s),
                 if card.enabled {
                     SCRAP_COLOR
                 } else {
@@ -590,12 +604,18 @@ fn draw_catalog(
                 },
             );
         }
-        let key_width = measure_text(&card.hotkey, None, numeric::font_size(11.0 * s), 1.0).width;
+        let key_width = measure_text(
+            &card.hotkey,
+            None,
+            numeric::font_size(crate::theme::Type::Caption.at(s)),
+            1.0,
+        )
+        .width;
         draw_text(
             &card.hotkey,
             rect.x + rect.w - key_width - 5.0 * s,
             rect.y + 42.0 * s,
-            11.0 * s,
+            crate::theme::Type::Caption.at(s),
             TEXT_SECONDARY,
         );
     }
@@ -667,7 +687,6 @@ pub(crate) fn layout_panel(
     env: super::hud::HudEnv,
     measure: super::hud::Measure<'_>,
 ) -> PanelLayout {
-    use super::hud::Face;
     let (viewport, s) = (env.viewport, env.ui);
     let mini = minimap_rect_scaled(
         game.state.map().width(),
@@ -692,9 +711,7 @@ pub(crate) fn layout_panel(
         rally_card_count(&panel.cards),
     );
     let (cards_x, _, _, _) = card_metrics(viewport, s);
-    let measured = measure_info(panel, cards_x, s, small, |text, size| {
-        measure(Face::Display, text, size)
-    });
+    let measured = measure_info(panel, cards_x, s, small, measure);
     let (card_rects, cards_w) = command_card_geometry(viewport, s, packing, &panel.cards);
     let action_rect = action_panel_rect(packing, cards_x, cards_w, !panel.cards.is_empty());
     let info_rect = selection_info_rect(viewport, cards_x, measured.height, action_rect);
@@ -762,7 +779,11 @@ fn layout_dock(
     };
     if !panel.queue.is_empty() {
         let queue_label_width = queue_label_width(panel, |text| {
-            measure(super::hud::Face::Body, text, 14.0 * s)
+            measure(
+                super::hud::Face::Body,
+                text,
+                crate::theme::Type::Small.at(s),
+            )
         }) + 16.0 * s;
         grid_dock.w = grid_dock.w.max(queue_label_width);
     }
@@ -995,7 +1016,7 @@ pub(crate) fn draw_panel(
             title,
             52.0 * s,
             top + (24.0 + index as f32 * 17.0) * s,
-            15.0 * s,
+            crate::theme::Type::Body.at(s),
             TEXT_PRIMARY,
         );
     }
@@ -1092,7 +1113,7 @@ pub(crate) fn draw_panel(
             "SELECTED UNITS",
             12.0 * s,
             label_y,
-            12.0 * s,
+            crate::theme::Type::Small.at(s),
             TEXT_SECONDARY,
         );
         for (card, &rect) in panel.roster.iter().zip(roster) {
@@ -1137,7 +1158,7 @@ pub(crate) fn draw_panel(
             } else {
                 &card.title
             };
-            let mut size = 11.0 * s;
+            let mut size = crate::theme::Type::Caption.at(s);
             let mut dims = measure_text(label, None, numeric::font_size(size), 1.0);
             while dims.width > rect.w - 6.0 * s && size > 8.0 * s {
                 size -= 0.5 * s;
@@ -1194,7 +1215,7 @@ pub(crate) fn draw_panel(
             continue;
         }
         let horizontal = rect.w >= 100.0 * s;
-        let icon_size = 24.0 * s;
+        let icon_size = crate::theme::Type::Heading.at(s);
         draw_icon(
             Rect::new(
                 if horizontal {
@@ -1216,13 +1237,18 @@ pub(crate) fn draw_panel(
         };
         let title_top = rect.y + if horizontal { 4.0 } else { 32.0 } * s;
         let title_bottom = if let Some(cost) = card.cost {
-            let dims = measure_text(cost.to_string(), None, numeric::font_size(16.0 * s), 1.0);
+            let dims = measure_text(
+                cost.to_string(),
+                None,
+                numeric::font_size(crate::theme::Type::Body.at(s)),
+                1.0,
+            );
             rect.y + rect.h - 5.0 * s - dims.offset_y - 3.0 * s
         } else {
             rect.y + rect.h - 4.0 * s
         };
         let title_width = rect.x + rect.w - name_x - 4.0 * s;
-        let mut title_size = 14.0 * s;
+        let mut title_size = crate::theme::Type::Small.at(s);
         let (names, ascent) = loop {
             let names = card_title_lines(
                 &card.title,
@@ -1256,12 +1282,17 @@ pub(crate) fn draw_panel(
         }
         if let Some(cost) = card.cost {
             let label = format!("{cost}");
-            let dims = measure_text(&label, None, numeric::font_size(16.0 * s), 1.0);
+            let dims = measure_text(
+                &label,
+                None,
+                numeric::font_size(crate::theme::Type::Body.at(s)),
+                1.0,
+            );
             draw_text(
                 &label,
                 rect.x + rect.w - dims.width - 5.0 * s,
                 rect.y + rect.h - 5.0 * s,
-                16.0 * s,
+                crate::theme::Type::Body.at(s),
                 if card.enabled {
                     SCRAP_COLOR
                 } else {
@@ -1278,7 +1309,7 @@ pub(crate) fn draw_panel(
                 } else {
                     rect.y + 13.0 * s
                 },
-                12.0 * s,
+                crate::theme::Type::Small.at(s),
                 TEXT_SECONDARY,
             );
         }
@@ -1294,7 +1325,7 @@ pub(crate) fn draw_panel(
                     rect.x + 4.0 * s
                 },
                 rect.y + rect.h - 5.0 * s,
-                11.0 * s,
+                crate::theme::Type::Caption.at(s),
                 if card.enabled {
                     TEXT_SECONDARY
                 } else {
@@ -1343,7 +1374,7 @@ fn draw_dock(
             &panel.queue_label,
             8.0 * s,
             list.y + 17.0 * s,
-            14.0 * s,
+            crate::theme::Type::Small.at(s),
             TEXT_PRIMARY,
         );
     }
@@ -1377,7 +1408,7 @@ fn draw_dock(
                 &card.title,
                 rect.x + 42.0 * s,
                 rect.y + 27.0 * s,
-                13.0 * s,
+                crate::theme::Type::Small.at(s),
                 TEXT_PRIMARY,
             );
         }
@@ -1412,7 +1443,7 @@ fn draw_dock(
                 format!("{}", i + 1),
                 rect.x + 3.0 * s,
                 rect.y + 13.0 * s,
-                11.0 * s,
+                crate::theme::Type::Caption.at(s),
                 TEXT_SECONDARY,
             );
         }
@@ -1436,8 +1467,14 @@ fn draw_dock(
         }
         if let Some(group) = group.filter(|_| !wide_group) {
             let label = format!("x{}", group.count);
-            let width =
-                measure_text(&label, None, numeric::font_size(12.0 * s), 1.0).width + 4.0 * s;
+            let width = measure_text(
+                &label,
+                None,
+                numeric::font_size(crate::theme::Type::Small.at(s)),
+                1.0,
+            )
+            .width
+                + 4.0 * s;
             draw_rectangle(
                 rect.right() - width - 2.0 * s,
                 rect.y + 2.0 * s,
@@ -1449,7 +1486,7 @@ fn draw_dock(
                 label,
                 rect.right() - width,
                 rect.y + 13.0 * s,
-                12.0 * s,
+                crate::theme::Type::Small.at(s),
                 TEXT_PRIMARY,
             );
         }
@@ -1462,7 +1499,7 @@ fn draw_dock(
                 format!("{name} x {}", group.count),
                 rect.x + 42.0 * s,
                 rect.y + 18.0 * s,
-                13.0 * s,
+                crate::theme::Type::Small.at(s),
                 TEXT_PRIMARY,
             );
             draw_text(
@@ -1477,7 +1514,7 @@ fn draw_dock(
                 },
                 rect.x + 42.0 * s,
                 rect.y + 34.0 * s,
-                11.0 * s,
+                crate::theme::Type::Caption.at(s),
                 TEXT_SECONDARY,
             );
         }
@@ -1499,7 +1536,7 @@ fn draw_dock(
             format!("+{hidden}"),
             12.0 * s,
             dock.y + dock.h - 8.0 * s,
-            13.0 * s,
+            crate::theme::Type::Small.at(s),
             TEXT_SECONDARY,
         );
     }
@@ -1564,7 +1601,7 @@ pub(crate) fn draw_panel_tooltip(game: &crate::game::Scene<'_>, input: &InputSta
     let comparison = matches!(card.action, crate::panel::CardAction::Upgrade)
         .then_some(panel.info.upgrade.as_ref())
         .flatten();
-    let size = 17.0 * s;
+    let size = crate::theme::Type::Body.at(s);
     let pad = 12.0 * s;
     // The box wraps descriptions at a reading width, capped by the
     // window, instead of growing to the longest line.

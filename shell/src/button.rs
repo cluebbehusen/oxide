@@ -51,7 +51,7 @@ pub(crate) fn draw(rect: Rect, label: &str, active: bool, s: f32) {
             theme::TEXT_DISABLED
         },
     );
-    let size = 16.0 * s;
+    let size = crate::theme::Type::Body.at(s);
     let dims = measure_text(label, None, numeric::font_size(size), 1.0);
     draw_text(
         label,

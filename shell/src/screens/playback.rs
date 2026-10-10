@@ -146,7 +146,7 @@ pub fn scrub_rect(game: &Scene<'_>, viewport: Vec2) -> macroquad::prelude::Rect 
 
 pub fn playback_hud(pb: &PlaybackSession, bindings: &BindingMap, viewport: Vec2, mouse: Vec2) {
     let s = render::ui_scale();
-    let size = 18.0 * s;
+    let size = crate::theme::Type::Label.at(s);
     for (rect, button) in transport_buttons(s) {
         let label = match button {
             Transport::Back => "BACK",
@@ -347,7 +347,7 @@ fn composition_band(
     );
     // Legend across the top edge.
     let mut x = band.x + 4.0 * s;
-    let size = 13.0 * s;
+    let size = crate::theme::Type::Small.at(s);
     for (index, kind) in named.iter().enumerate() {
         let label = format!("{kind} ");
         draw_text(&label, x, band.y - 4.0 * s, size, BAND_COLORS[index]);

@@ -26,7 +26,7 @@ use std::path::PathBuf;
 
 use crate::theme::{
     BORDER_FAINT, BORDER_STRONG, CARD_IDLE, CHIP, MIN_TOUCH_TARGET, SURFACE_MENU, SURFACE_PLATE,
-    Stroke, TEXT_DANGER, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TITLE,
+    Stroke, TEXT_DANGER, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TITLE, Type,
 };
 
 /// One seat's editable choices in the draft.
@@ -747,12 +747,12 @@ pub fn draw_seat_markers(
         }
         draw_circle(px, py, 7.5 * ui, accent);
         let label = format!("{}", seat + 1);
-        let tw = measure_text(&label, None, numeric::font_size(13.0 * ui), 1.0).width;
+        let tw = measure_text(&label, None, numeric::font_size(Type::Small.at(ui)), 1.0).width;
         draw_text(
             &label,
             px - tw * 0.5,
             py + 4.5 * ui,
-            13.0 * ui,
+            Type::Small.at(ui),
             SURFACE_PLATE,
         );
     }
@@ -1056,9 +1056,9 @@ impl Wizard {
         let title = "MATCH SETUP";
         let compact = layout.page_count > 1;
         let tsize = if compact {
-            (56.0 * ui).min(42.0)
+            Type::Title.at(ui).min(42.0)
         } else {
-            56.0 * ui
+            Type::Title.at(ui)
         };
         let tdims = measure_text(title, None, numeric::font_size(tsize), 1.0);
         draw_text(
@@ -1077,19 +1077,25 @@ impl Wizard {
             } else {
                 scenario.name.clone()
             };
-            let sdims = measure_text(&sub, None, numeric::font_size(18.0 * ui), 1.0);
+            let sdims = measure_text(&sub, None, numeric::font_size(Type::Label.at(ui)), 1.0);
             draw_text(
                 &sub,
                 (view.x - sdims.width) * 0.5,
                 92.0 * ui,
-                18.0 * ui,
+                Type::Label.at(ui),
                 TEXT_SECONDARY,
             );
         }
 
         for (label, rect) in &layout.headings {
-            draw_text(label, rect.x, rect.y + rect.h * 0.7, 17.0 * ui, TEXT_TITLE);
-            let dims = measure_text(label, None, numeric::font_size(17.0 * ui), 1.0);
+            draw_text(
+                label,
+                rect.x,
+                rect.y + rect.h * 0.7,
+                Type::Body.at(ui),
+                TEXT_TITLE,
+            );
+            let dims = measure_text(label, None, numeric::font_size(Type::Body.at(ui)), 1.0);
             draw_rectangle(
                 rect.x + dims.width + 12.0 * ui,
                 rect.y + rect.h * 0.55,
@@ -1133,7 +1139,7 @@ impl Wizard {
             }
             draw_circle(chip_x, cy, disc, accent);
             let num = format!("{}", seat + 1);
-            let num_font = (14.0 * ui).min(rect.h * 0.55);
+            let num_font = Type::Small.at(ui).min(rect.h * 0.55);
             let ndims = measure_text(&num, None, numeric::font_size(num_font), 1.0);
             draw_text(
                 &num,
@@ -1142,15 +1148,16 @@ impl Wizard {
                 num_font,
                 SURFACE_PLATE,
             );
-            let mut name_font = (16.0 * ui).min(rect.h * 0.62);
             let text_right = card
                 .difficulty
                 .map_or(card.seat.x + card.seat.w, |difficulty| difficulty.x);
             let name_room = (text_right - rect.x - 48.0 * ui).max(20.0);
-            let nw = measure_text(&display, None, numeric::font_size(name_font), 1.0).width;
-            if nw > name_room {
-                name_font = (name_font * name_room / nw).max(8.0);
-            }
+            let name_font = crate::typography::fit(
+                &display,
+                Type::Body.at(ui).min(rect.h * 0.62),
+                name_room,
+                8.0,
+            );
             draw_text(
                 &display,
                 rect.x + 44.0 * ui,
@@ -1160,7 +1167,7 @@ impl Wizard {
             );
             if is_you {
                 let tag = "your seat";
-                let tag_font = (14.0 * ui).min(rect.h * 0.55);
+                let tag_font = Type::Small.at(ui).min(rect.h * 0.55);
                 let tdims = measure_text(tag, None, numeric::font_size(tag_font), 1.0);
                 let fac = card.faction;
                 draw_text(
@@ -1198,12 +1205,8 @@ impl Wizard {
                     .at(ui),
                     if on_cell { TEXT_TITLE } else { accent },
                 );
-                let mut font = 13.0 * ui;
-                let mut dims = measure_text(label, None, numeric::font_size(font), 1.0);
-                if dims.width > control.w - 6.0 {
-                    font = (font * (control.w - 6.0) / dims.width).max(8.0);
-                    dims = measure_text(label, None, numeric::font_size(font), 1.0);
-                }
+                let font = crate::typography::fit(label, Type::Small.at(ui), control.w - 6.0, 8.0);
+                let dims = measure_text(label, None, numeric::font_size(font), 1.0);
                 draw_text(
                     label,
                     control.x + (control.w - dims.width) * 0.5,
@@ -1239,12 +1242,8 @@ impl Wizard {
                 );
                 // The label fits its chip: squeezed cards shrink the type
                 // instead of spilling text across neighbors.
-                let mut font = 13.0 * ui;
-                let mut ldims = measure_text(label, None, numeric::font_size(font), 1.0);
-                if ldims.width > chip.w - 6.0 {
-                    font = (font * (chip.w - 6.0) / ldims.width).max(8.0);
-                    ldims = measure_text(label, None, numeric::font_size(font), 1.0);
-                }
+                let font = crate::typography::fit(label, Type::Small.at(ui), chip.w - 6.0, 8.0);
+                let ldims = measure_text(label, None, numeric::font_size(font), 1.0);
                 draw_text(
                     label,
                     chip.x + (chip.w - ldims.width) * 0.5,
@@ -1295,12 +1294,12 @@ impl Wizard {
                 },
             );
             let label = start_label(draft);
-            let ldims = measure_text(label, None, numeric::font_size(20.0 * ui), 1.0);
+            let ldims = measure_text(label, None, numeric::font_size(Type::Heading.at(ui)), 1.0);
             draw_text(
                 label,
                 start.x + (start.w - ldims.width) * 0.5,
                 start.y + start.h * 0.66,
-                20.0 * ui,
+                Type::Heading.at(ui),
                 if !one_team && start_selected {
                     TEXT_PRIMARY
                 } else {
@@ -1331,12 +1330,8 @@ impl Wizard {
                 Stroke::Edge.at(ui),
                 TEXT_SECONDARY,
             );
-            let mut size = 16.0 * ui;
-            let mut dims = measure_text(&label, None, numeric::font_size(size), 1.0);
-            if dims.width > rect.w - 8.0 {
-                size = (size * (rect.w - 8.0) / dims.width).max(8.0);
-                dims = measure_text(&label, None, numeric::font_size(size), 1.0);
-            }
+            let size = crate::typography::fit(&label, Type::Body.at(ui), rect.w - 8.0, 8.0);
+            let dims = measure_text(&label, None, numeric::font_size(size), 1.0);
             draw_text(
                 &label,
                 rect.x + (rect.w - dims.width) * 0.5,
@@ -1389,12 +1384,12 @@ impl Wizard {
                 crate::platform::TOUCH_ONLY,
             );
             let hint = crate::menu::binding_hint(hint);
-            let hdims = measure_text(&hint, None, numeric::font_size(16.0 * ui), 1.0);
+            let hdims = measure_text(&hint, None, numeric::font_size(Type::Body.at(ui)), 1.0);
             draw_text(
                 &hint,
                 (view.x - hdims.width) * 0.5,
                 view.y - 20.0 * ui,
-                16.0 * ui,
+                Type::Body.at(ui),
                 // The one-team warning is information, not coaching.
                 if one_team {
                     TEXT_DANGER

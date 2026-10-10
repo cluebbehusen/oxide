@@ -62,7 +62,7 @@ fn draw_group_slot(
         crate::layout::GroupSlot::Recall(_) => {
             fill_rect(rect, crate::theme::BADGE);
             let text = count.to_string();
-            let mut size = 17.0 * s;
+            let mut size = crate::theme::Type::Body.at(s);
             while measure_text(&text, None, numeric::font_size(size), 1.0).width > rect.w - 14.0 * s
                 && size > 11.0 * s
             {
@@ -99,7 +99,7 @@ fn draw_group_slot(
         number.to_string(),
         rect.x + 4.0 * s,
         rect.y + 12.0 * s,
-        12.0 * s,
+        crate::theme::Type::Small.at(s),
         if matches!(slot, crate::layout::GroupSlot::Empty(_)) {
             TEXT_DISABLED
         } else {
@@ -204,7 +204,12 @@ pub(crate) fn draw_salvage_tooltip(game: &crate::game::Scene<'_>, input: &InputS
         None => return,
     };
     let s = ui_scale();
-    let dims = measure_text(&text, None, numeric::font_size(16.0 * s), 1.0);
+    let dims = measure_text(
+        &text,
+        None,
+        numeric::font_size(crate::theme::Type::Body.at(s)),
+        1.0,
+    );
     let (x, y) = (point.x + 14.0 * s, point.y - 10.0 * s);
     draw_rectangle(
         x - 4.0 * s,
@@ -213,7 +218,7 @@ pub(crate) fn draw_salvage_tooltip(game: &crate::game::Scene<'_>, input: &InputS
         20.0 * s,
         PANEL,
     );
-    draw_text(&text, x, y, 16.0 * s, SCRAP_COLOR);
+    draw_text(&text, x, y, crate::theme::Type::Body.at(s), SCRAP_COLOR);
 }
 
 pub(crate) fn draw_overlay(game: &crate::game::Scene<'_>, alpha: f32) {
@@ -280,7 +285,7 @@ pub(crate) fn draw_overlay_info(game: &crate::game::Scene<'_>) {
     } else {
         60.0 * s
     };
-    let size = 14.0 * s;
+    let size = crate::theme::Type::Small.at(s);
     let width = measure_text(&info, None, numeric::font_size(size), 1.0).width;
     draw_text(
         &info,
@@ -426,10 +431,10 @@ pub(super) fn ribbon_layout(
         .and_then(|kind| kind.base_stats().construction)
         .map(|construction| construction.cost.to_string());
     let icon_w = if building.is_some() { 40.0 * s } else { 0.0 };
-    let label_w = measure(Face::Body, &label, 18.0 * s);
-    let cost_w = cost
-        .as_deref()
-        .map_or(0.0, |cost| 12.0 * s + measure(Face::Body, cost, 16.0 * s));
+    let label_w = measure(Face::Body, &label, crate::theme::Type::Label.at(s));
+    let cost_w = cost.as_deref().map_or(0.0, |cost| {
+        12.0 * s + measure(Face::Body, cost, crate::theme::Type::Body.at(s))
+    });
     let width = ribbon_width(viewport, s, icon_w + label_w + cost_w);
     // The ribbon sits above whichever panel region lies under it.
     let open = ribbon_geometry(viewport, s, f32::INFINITY, width, minimap);
@@ -463,7 +468,10 @@ fn draw_mode_ribbon(
         icon_w,
     } = layout;
     let (ribbon, building, label_w, icon_w) = (*ribbon, *building, *label_w, *icon_w);
-    let (label_size, cost_size) = (18.0 * s, 16.0 * s);
+    let (label_size, cost_size) = (
+        crate::theme::Type::Label.at(s),
+        crate::theme::Type::Body.at(s),
+    );
     fill_rect(ribbon, crate::theme::SURFACE_PLATE);
     stroke_rect(ribbon, crate::theme::Stroke::Edge.at(s), SCRAP_COLOR);
     let mut x = ribbon.x + 10.0 * s;
@@ -608,17 +616,17 @@ pub(super) fn top_bar_layout(
         s,
         crate::platform::TOUCH_ONLY,
         crate::layout::TopBarText {
-            scrap: measure(Face::Display, &scrap, 21.0 * s),
-            passive: measure(Face::Body, &passive, 16.0 * s),
-            units_label: measure(Face::Display, "UNITS", 13.0 * s),
-            units: measure(Face::Display, &units, 21.0 * s),
+            scrap: measure(Face::Display, &scrap, crate::theme::Type::Heading.at(s)),
+            passive: measure(Face::Body, &passive, crate::theme::Type::Body.at(s)),
+            units_label: measure(Face::Display, "UNITS", crate::theme::Type::Small.at(s)),
+            units: measure(Face::Display, &units, crate::theme::Type::Heading.at(s)),
             idle: idle
                 .as_deref()
-                .map(|text| measure(Face::Body, text, 15.0 * s)),
+                .map(|text| measure(Face::Body, text, crate::theme::Type::Body.at(s))),
             alert: alert
                 .as_deref()
-                .map(|text| measure(Face::Body, text, 15.0 * s)),
-            status: measure(Face::Display, &status, 14.0 * s),
+                .map(|text| measure(Face::Body, text, crate::theme::Type::Body.at(s))),
+            status: measure(Face::Display, &status, crate::theme::Type::Small.at(s)),
         },
     );
     TopBarLayout {
@@ -649,20 +657,44 @@ fn draw_top_bar(top: &TopBarLayout, s: f32) {
         "SCRAP",
         bar.scrap_label_x,
         26.0 * s,
-        13.0 * s,
+        crate::theme::Type::Small.at(s),
         TEXT_SECONDARY,
     );
-    crate::typography::draw(scrap, bar.scrap_x, 27.0 * s, 21.0 * s, SCRAP_COLOR);
-    draw_text(passive, bar.passive_x, 26.0 * s, 16.0 * s, TEXT_BODY);
-    crate::typography::draw("UNITS", bar.units_x, 26.0 * s, 13.0 * s, TEXT_SECONDARY);
-    crate::typography::draw(units, bar.count_x, 27.0 * s, 21.0 * s, TEXT_PRIMARY);
+    crate::typography::draw(
+        scrap,
+        bar.scrap_x,
+        27.0 * s,
+        crate::theme::Type::Heading.at(s),
+        SCRAP_COLOR,
+    );
+    draw_text(
+        passive,
+        bar.passive_x,
+        26.0 * s,
+        crate::theme::Type::Body.at(s),
+        TEXT_BODY,
+    );
+    crate::typography::draw(
+        "UNITS",
+        bar.units_x,
+        26.0 * s,
+        crate::theme::Type::Small.at(s),
+        TEXT_SECONDARY,
+    );
+    crate::typography::draw(
+        units,
+        bar.count_x,
+        27.0 * s,
+        crate::theme::Type::Heading.at(s),
+        TEXT_PRIMARY,
+    );
     if let Some(text) = idle {
         fill_rect(bar.idle_badge, crate::theme::BADGE);
         draw_text(
             text,
             bar.idle_badge.x + 9.0 * s,
             26.0 * s,
-            15.0 * s,
+            crate::theme::Type::Body.at(s),
             SCRAP_COLOR,
         );
     }
@@ -672,12 +704,18 @@ fn draw_top_bar(top: &TopBarLayout, s: f32) {
             text,
             bar.alert_badge.x + 9.0 * s,
             26.0 * s,
-            15.0 * s,
+            crate::theme::Type::Body.at(s),
             crate::theme::TEXT_DANGER,
         );
     }
     draw_menu_button(bar.menu_button, s);
-    crate::typography::draw(status, bar.status_x, 26.0 * s, 14.0 * s, TEXT_PRIMARY);
+    crate::typography::draw(
+        status,
+        bar.status_x,
+        26.0 * s,
+        crate::theme::Type::Small.at(s),
+        TEXT_PRIMARY,
+    );
 }
 
 /// Draws the HUD the layout pass placed: the top bar, the command panel,
@@ -742,7 +780,7 @@ pub(crate) fn draw_hud(
             mode_ribbon,
             i,
         );
-        let mut size = 20.0 * s;
+        let mut size = crate::theme::Type::Heading.at(s);
         let available = (screen_width() - origin.x - 12.0 * s).max(1.0);
         while measure_text(&toast.text, None, numeric::font_size(size), 1.0).width > available
             && size > 12.0 * s
@@ -767,7 +805,12 @@ pub(crate) fn draw_hud(
         } else {
             "ELIMINATED - SPECTATING"
         };
-        let dims = measure_text(text, None, numeric::font_size(24.0 * s), 1.0);
+        let dims = measure_text(
+            text,
+            None,
+            numeric::font_size(crate::theme::Type::Heading.at(s)),
+            1.0,
+        );
         let x = (screen_width() - dims.width) * 0.5;
         draw_rectangle(
             x - 12.0 * s,
@@ -776,7 +819,7 @@ pub(crate) fn draw_hud(
             30.0 * s,
             PANEL,
         );
-        draw_text(text, x, 60.0 * s, 24.0 * s, DANGER);
+        draw_text(text, x, 60.0 * s, crate::theme::Type::Heading.at(s), DANGER);
     }
 }
 
@@ -789,7 +832,7 @@ pub(crate) fn draw_result_overlay(game: &crate::game::Scene<'_>) {
     }
     let s = ui_scale();
     let text = "SURRENDERED";
-    let size = 48.0 * s;
+    let size = crate::theme::Type::Title.at(s);
     let dims = measure_text(text, None, numeric::font_size(size), 1.0);
     let x = (screen_width() - dims.width) * 0.5;
     let y = screen_height() * 0.38;
@@ -802,12 +845,17 @@ pub(crate) fn draw_result_overlay(game: &crate::game::Scene<'_>) {
     );
     draw_text(text, x, y, size, DANGER);
     let sub = crate::menu::binding_hint(concede_hint(crate::platform::TOUCH_ONLY));
-    let sub_dims = measure_text(&sub, None, numeric::font_size(18.0 * s), 1.0);
+    let sub_dims = measure_text(
+        &sub,
+        None,
+        numeric::font_size(crate::theme::Type::Label.at(s)),
+        1.0,
+    );
     draw_text(
         &sub,
         (screen_width() - sub_dims.width) * 0.5,
         y + 28.0 * s,
-        18.0 * s,
+        crate::theme::Type::Label.at(s),
         TEXT_BODY,
     );
 }

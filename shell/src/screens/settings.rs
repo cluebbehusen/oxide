@@ -442,7 +442,7 @@ impl SettingsScreen {
             .draw_with_coaching(self.subtitle(), self.coaching());
         if let Some(notice) = &self.notice {
             let s = render::ui_scale();
-            let size = 16.0 * s;
+            let size = crate::theme::Type::Body.at(s);
             let width = measure_text(&notice.text, None, numeric::font_size(size), 1.0).width;
             draw_text(
                 &notice.text,

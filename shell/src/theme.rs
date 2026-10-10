@@ -129,5 +129,47 @@ impl Stroke {
     }
 }
 
+/// The chrome's type sizes, in logical px.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Type {
+    /// Hotkey corners and the smallest captions.
+    Caption,
+    /// Secondary labels, chips and badges.
+    Small,
+    /// Running text.
+    Body,
+    /// Prominent labels: the mode ribbon, key help.
+    Label,
+    /// Section headings and subtitles.
+    Heading,
+    /// Menu rows.
+    Row,
+    /// Screen titles.
+    Title,
+    /// The home screen's wordmark.
+    Display,
+}
+
+impl Type {
+    /// The size at UI scale `ui`.
+    pub fn at(self, ui: f32) -> f32 {
+        self.px() * ui
+    }
+
+    /// The size in logical px.
+    pub const fn px(self) -> f32 {
+        match self {
+            Self::Caption => 11.0,
+            Self::Small => 13.0,
+            Self::Body => 16.0,
+            Self::Label => 18.0,
+            Self::Heading => 22.0,
+            Self::Row => 26.0,
+            Self::Title => 40.0,
+            Self::Display => 96.0,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;

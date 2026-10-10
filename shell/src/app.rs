@@ -492,7 +492,13 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         {
             if let Some(msg) = notice.show(get_time()) {
                 let s = render::ui_scale();
-                let width = measure_text(msg, None, numeric::font_size(16.0 * s), 1.0).width;
+                let width = measure_text(
+                    msg,
+                    None,
+                    numeric::font_size(crate::theme::Type::Body.at(s)),
+                    1.0,
+                )
+                .width;
                 let y = if screen.kind() == ScreenKind::Results {
                     screens::results::action_rects(vec2(screen_width(), screen_height()), s)[0].y
                         - 10.0 * s
@@ -503,7 +509,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                     msg,
                     (screen_width() - width) * 0.5,
                     y,
-                    16.0 * s,
+                    crate::theme::Type::Body.at(s),
                     theme::TEXT_DANGER,
                 );
             } else {

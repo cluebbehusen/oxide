@@ -575,7 +575,7 @@ impl<R: Clone> Menu<R> {
     fn draw_face(&self, subtitle: &str, coaching: Option<&str>, busy: bool) {
         let subtitle = binding_hint(subtitle);
         let s = ui();
-        let title_size = 96.0 * s;
+        let title_size = crate::theme::Type::Display.at(s);
         let dims = measure_text(&self.title, None, numeric::font_size(title_size), 1.0);
         draw_text(
             &self.title,
@@ -585,13 +585,13 @@ impl<R: Clone> Menu<R> {
             TEXT_TITLE,
         );
         // The subtitle shrinks to fit the window; map blurbs run long.
-        let mut sub_size = 20.0 * s;
-        let mut sub_dims = measure_text(&subtitle, None, numeric::font_size(sub_size), 1.0);
-        let max_width = view_w() * 0.55;
-        if sub_dims.width > max_width {
-            sub_size = (sub_size * max_width / sub_dims.width).max(12.0 * s);
-            sub_dims = measure_text(&subtitle, None, numeric::font_size(sub_size), 1.0);
-        }
+        let sub_size = crate::typography::fit(
+            &subtitle,
+            crate::theme::Type::Heading.at(s),
+            view_w() * 0.55,
+            12.0 * s,
+        );
+        let sub_dims = measure_text(&subtitle, None, numeric::font_size(sub_size), 1.0);
         draw_text(
             &subtitle,
             (view_w() - sub_dims.width) * 0.5,
@@ -606,14 +606,17 @@ impl<R: Clone> Menu<R> {
             visible,
             ..
         } = self.window();
-        let text_size = (26.0 * s * (row / (ITEM_HEIGHT * s))).clamp(18.0 * s, 26.0 * s);
+        let text_size = (crate::theme::Type::Row.at(s) * (row / (ITEM_HEIGHT * s))).clamp(
+            crate::theme::Type::Label.at(s),
+            crate::theme::Type::Row.at(s),
+        );
         for (index, line) in self.lines.iter().enumerate() {
             let Some(rect) = self.item_rect(index) else {
                 continue;
             };
             let label = match line {
                 Line::Header(text) => {
-                    let size = (20.0 * s).min(text_size);
+                    let size = crate::theme::Type::Heading.at(s).min(text_size);
                     let dims = measure_text(text, None, numeric::font_size(size), 1.0);
                     draw_text(
                         text,
@@ -668,9 +671,7 @@ impl<R: Clone> Menu<R> {
                         (key(0), columns.primary),
                         (key(1), columns.secondary),
                     ] {
-                        let measured =
-                            measure_text(&text, None, numeric::font_size(text_size), 1.0).width;
-                        let size = text_size * (column.w / measured.max(1.0)).min(1.0);
+                        let size = crate::typography::fit(&text, text_size, column.w, 1.0);
                         draw_text(&text, column.x, rect.y + rect.h * 0.68, size, color);
                     }
                 }
@@ -692,7 +693,7 @@ impl<R: Clone> Menu<R> {
                 "^",
                 r.x + r.w * 0.5,
                 r.y - 6.0 * s,
-                22.0 * s,
+                crate::theme::Type::Heading.at(s),
                 TEXT_SECONDARY,
             );
         }
@@ -702,7 +703,7 @@ impl<R: Clone> Menu<R> {
                 "v",
                 r.x + r.w * 0.5,
                 r.y + row + 14.0 * s,
-                22.0 * s,
+                crate::theme::Type::Heading.at(s),
                 TEXT_SECONDARY,
             );
         }
@@ -716,13 +717,13 @@ impl<R: Clone> Menu<R> {
             || menu_footer(crate::platform::TOUCH_ONLY, scrolls),
             binding_hint,
         );
-        let mut hint_size = 18.0 * s;
-        let mut hint_dims = measure_text(&hint, None, numeric::font_size(hint_size), 1.0);
-        let max_width = view_w() - 32.0 * s;
-        if hint_dims.width > max_width {
-            hint_size = (hint_size * max_width / hint_dims.width).max(12.0 * s);
-            hint_dims = measure_text(&hint, None, numeric::font_size(hint_size), 1.0);
-        }
+        let hint_size = crate::typography::fit(
+            &hint,
+            crate::theme::Type::Label.at(s),
+            view_w() - 32.0 * s,
+            12.0 * s,
+        );
+        let hint_dims = measure_text(&hint, None, numeric::font_size(hint_size), 1.0);
         draw_text(
             &hint,
             (view_w() - hint_dims.width) * 0.5,

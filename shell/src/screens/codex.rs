@@ -218,7 +218,7 @@ impl CodexScreen {
 
         // The page: description, figures, weapons, and what else the
         // kind does — the same lines the training tooltip shows.
-        let body_size = 16.0 * s;
+        let body_size = crate::theme::Type::Body.at(s);
         let line_h = 20.0 * s;
         let body_w = w - pad * 2.0;
         let measure = |t: &str| measure_text(t, None, numeric::font_size(body_size), 1.0).width;
@@ -288,8 +288,20 @@ impl CodexScreen {
             }
         }
         let text_x = plate_x + plates_w + pad;
-        draw_text(&name, text_x, plate_y + 30.0 * s, 34.0 * s, TEXT_PRIMARY);
-        draw_text(&role, text_x, plate_y + 54.0 * s, 16.0 * s, TEXT_ACCENT);
+        draw_text(
+            &name,
+            text_x,
+            plate_y + 30.0 * s,
+            crate::theme::Type::Title.at(s),
+            TEXT_PRIMARY,
+        );
+        draw_text(
+            &role,
+            text_x,
+            plate_y + 54.0 * s,
+            crate::theme::Type::Body.at(s),
+            TEXT_ACCENT,
+        );
         let mut y = text_top;
         for (line, color) in lines {
             if y > box_bottom - pad * 0.5 {

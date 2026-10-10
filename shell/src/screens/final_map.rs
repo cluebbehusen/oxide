@@ -87,7 +87,7 @@ impl FinalMapScreen {
     pub fn draw_hud(bindings: &BindingMap, mouse: Vec2) {
         let scale = render::ui_scale();
         crate::button::draw_back(mouse);
-        let size = 17.0 * scale;
+        let size = crate::theme::Type::Body.at(scale);
         let line = if !crate::hints::showing() {
             "FINAL BATTLEFIELD".to_string()
         } else if crate::platform::TOUCH_ONLY {
