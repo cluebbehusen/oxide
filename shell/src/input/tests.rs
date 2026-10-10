@@ -4097,6 +4097,40 @@ fn publish_minimap(game: &Game) -> macroquad::math::Rect {
 }
 
 #[test]
+fn a_modifier_stays_held_until_both_of_its_keys_come_up() {
+    let poll = |pressed, released, down| KeyPoll {
+        pressed,
+        released,
+        down,
+    };
+    let (idle, held) = (KeyPoll::default(), poll(false, false, true));
+    let (lands, lifts) = (poll(true, false, true), poll(false, true, false));
+    let edges = |a: KeyPoll, b: KeyPoll| {
+        let mut events = Vec::new();
+        modifier_edges(Key::Shift, a, b, &mut events);
+        events
+    };
+    let down = RawEvent::KeyDown { key: Key::Shift };
+    let up = RawEvent::KeyUp { key: Key::Shift };
+    assert_eq!(edges(lands, idle), [down], "the first key presses it");
+    assert_eq!(edges(held, lands), [], "the second key adds nothing");
+    assert_eq!(edges(lifts, held), [], "one of a held pair keeps it");
+    assert_eq!(edges(idle, lifts), [up], "the last release lets go");
+    assert_eq!(edges(lands, lands), [down], "a pair lands as one press");
+    assert_eq!(edges(lifts, lifts), [up], "and lifts as one release");
+    assert_eq!(
+        edges(poll(true, true, false), idle),
+        [down, up],
+        "a tap inside one frame keeps both edges"
+    );
+    assert_eq!(
+        edges(lifts, lands),
+        [],
+        "handing over from one key to the other in a frame keeps it held"
+    );
+}
+
+#[test]
 fn hardware_touch_phases_speak_the_funnel_vocabulary() {
     // The polling adapter translates macroquad's touch phases into the
     // exact events the harness injects — one vocabulary, so a real
