@@ -1,13 +1,14 @@
-//! What each unit kind looks and sounds like in the shell, declared in one
-//! place. [`unit()`] is one exhaustive match, so a new kind must state every
-//! presentation fact here instead of drawing with another kind's defaults.
-//! Facts the simulation already states (rotorcraft, large airframes,
-//! scouts, demolition, braced siege) are read from its stats instead.
+//! What each unit and defense kind looks and sounds like in the shell,
+//! declared in one place. [`unit()`] and [`defense()`] are exhaustive
+//! matches, so a new kind must state every presentation fact here instead of
+//! drawing with another kind's defaults. Facts the simulation already states
+//! (rotorcraft, large airframes, scouts, demolition, braced siege, upgrade
+//! ladders) are read from its stats instead, and frame counts from the atlas.
 
 use crate::game::{FlakYokeDelay, ShotStyle, SoundKind};
 use macroquad::prelude::{Vec2, vec2};
-use oxide_sim::UnitKind;
 use oxide_sim::stats::Role;
+use oxide_sim::{BuildingKind, UnitKind};
 
 /// The usual sprite size against a unit's tile.
 const DEFAULT_SCALE: f32 = 1.05;
@@ -112,6 +113,37 @@ pub(crate) enum MarkerRole {
     Support,
     Transport,
     Demolition,
+}
+
+/// A defense's mount and how its gun reports.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct DefenseLook {
+    /// The rotating mount's atlas stem; an upgraded rung's mount appends
+    /// `_t{tier}`.
+    pub(crate) mount: &'static str,
+    /// Whether the hull's own charge rack animates with the mount.
+    pub(crate) charge_rack: bool,
+    /// How a direct-fire gun reports; a defense that fires shells reports
+    /// through them.
+    pub(crate) report: Option<DefenseReport>,
+}
+
+/// How a direct-fire defense reports.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct DefenseReport {
+    /// The report heard when it fires.
+    pub(crate) sound: SoundKind,
+    /// The shot drawn at each rung of the upgrade ladder.
+    pub(crate) shots: &'static [ShotStyle],
+    /// Where the muzzle sits along the shot, in tiles.
+    pub(crate) muzzle: f32,
+}
+
+impl DefenseReport {
+    /// The shot drawn at `tier`, holding the ladder's top for a higher one.
+    pub(crate) fn shot(&self, tier: u8) -> ShotStyle {
+        self.shots[usize::from(tier).min(self.shots.len() - 1)]
+    }
 }
 
 /// Whether a unit sees buried charges, as the simulation's scouts do.
@@ -389,6 +421,54 @@ pub(crate) fn unit(kind: UnitKind) -> UnitLook {
             marker: M::Demolition,
             ..plain
         },
+    }
+}
+
+/// The presentation of a defense; none for a building without guns.
+pub(crate) fn defense(kind: BuildingKind) -> Option<DefenseLook> {
+    match kind {
+        BuildingKind::Turret => Some(DefenseLook {
+            mount: "turret_barrel",
+            charge_rack: false,
+            report: Some(DefenseReport {
+                sound: SoundKind::Laser,
+                shots: &[ShotStyle::ForgeSpot; 3],
+                muzzle: 0.44,
+            }),
+        }),
+        BuildingKind::FlakTurret => Some(DefenseLook {
+            mount: "flak_mount",
+            charge_rack: false,
+            report: Some(DefenseReport {
+                sound: SoundKind::FlakTurretFire,
+                shots: &[
+                    ShotStyle::FlakBurst {
+                        yoke_delay: FlakYokeDelay::OneAndHalfTicks,
+                        rounds_per_yoke: 2,
+                    },
+                    ShotStyle::FlakBurst {
+                        yoke_delay: FlakYokeDelay::OneAndHalfTicks,
+                        rounds_per_yoke: 3,
+                    },
+                ],
+                muzzle: 0.47,
+            }),
+        }),
+        BuildingKind::Bastion => Some(DefenseLook {
+            mount: "bastion_mount",
+            charge_rack: true,
+            report: None,
+        }),
+        BuildingKind::Foundry
+        | BuildingKind::Fabricator
+        | BuildingKind::Array
+        | BuildingKind::Reclaimer
+        | BuildingKind::RepairBay
+        | BuildingKind::Extractor
+        | BuildingKind::Airworks
+        | BuildingKind::Crucible
+        | BuildingKind::Barricade
+        | BuildingKind::ScuttleCharge => None,
     }
 }
 

@@ -223,6 +223,12 @@ real state. Array and Reclaimer may loop because their operation is continuous.
 Projectile count, launch point, timing, and damage reports must agree with the
 animation.
 
+The shell owns animation timing, tied to simulation ticks and muzzle effects;
+the generator records none. The shell counts a row's frames from the consecutive
+`_actionN` or `_workN` keys the atlas ships, so adding or removing a frame needs
+no count edit, but every frame index the shell selects must stay below that
+count. A new unit or defense states its presentation in `shell/src/look.rs`.
+
 ## Approve and promote
 
 1. Record the source/control SHA-256 and provenance, then present stable

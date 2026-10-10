@@ -633,23 +633,30 @@ targeting, damage, shell arrivals or splash centers.
 `assets` loads the generated sprite atlas. Its manifest covers every resolved
 sprite key; the renderer does not load individual sprite textures. Optional rigs
 may fall back to composite sprites, but incomplete rig families are rejected.
-Procedural quarry boundaries and pits derive from map geometry with fog-aware
-visibility. The shell extends allied unit sight discs and completed-building
-footprint sight into a bounded off-map quarry margin. Its presentation-only
-exploration cache updates on every tick, including bulk advances, and rebuilds
-during explicit command-log reconstruction. Player checkpoints retain that cache
-directly. Map tiles show authoritative simulation fog; the replay viewer is
-fog-free. Animation, heading, and weapon effects use the relevant simulation
-state rather than inventing movement or firing delays.
+Frame counts come from the atlas: a row family holds as many frames as it ships
+consecutive `_actionN` or `_workN` keys, and every rung of a building's upgrade
+ladder ships its own hull, and mount for a defense. The animation code owns
+timing and which frame each moment shows; tests keep every selected frame below
+the shipped count. Procedural quarry boundaries and pits derive from map
+geometry with fog-aware visibility. The shell extends allied unit sight discs
+and completed-building footprint sight into a bounded off-map quarry margin. Its
+presentation-only exploration cache updates on every tick, including bulk
+advances, and rebuilds during explicit command-log reconstruction. Player
+checkpoints retain that cache directly. Map tiles show authoritative simulation
+fog; the replay viewer is fog-free. Animation, heading, and weapon effects use
+the relevant simulation state rather than inventing movement or firing delays.
 
 `look` declares each unit kind's presentation in one exhaustive match: draw
 scale, gait and tread belts, the atlas rows of its locomotion poses, whether a
 separate mount layer draws over its hull, its worker body, a large airframe's
 shadow and lift, its weapon's report (sound, shot style and muzzle), and its
-strategic marker. A new kind must state each of them there. Facts the simulation
-already states are read from its stats instead of a hand list: rotorcraft (no
-flight turn rate), large airframes (a crash), scouts, demolition, braced siege,
-and a weapon's projectile payload.
+strategic marker. Each defense kind likewise declares its mount, whether its
+hull's charge rack animates with it, and a direct-fire gun's report at every
+rung. A new kind must state each of them there. Facts the simulation already
+states are read from its stats instead of a hand list: rotorcraft (no flight
+turn rate), large airframes (a crash), scouts, demolition, braced siege, a
+weapon's projectile payload, which buildings fight or train, and upgrade
+ladders.
 
 `entity_lod` derives full, half, quarter, and eighth-resolution entity textures
 at startup without changing authored atlas bytes. Regions pack in descending

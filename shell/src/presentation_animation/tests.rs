@@ -249,7 +249,7 @@ fn projectile_launch_drives_bombard_and_bastion_reports() {
 
 #[test]
 fn bastion_report_is_a_single_hard_recoil_then_a_short_settle() {
-    let timing = building_attack_timing(BuildingKind::Bastion);
+    let timing = building_attack_timing(BuildingKind::Bastion).unwrap();
     assert_eq!(timing.report_ticks, 1.0);
     assert_eq!(timing.recover_ticks, 3.0);
     assert!(matches!(
@@ -1165,5 +1165,13 @@ fn only_rotorcraft_spin_lift_rotors() {
             && stats.turn_rate == 0
             && stats.cruise_turn_rate == 0;
         assert_eq!(rotor_period(kind).is_some(), rotorcraft, "{kind:?}");
+    }
+}
+
+#[test]
+fn only_buildings_with_guns_report_and_recover() {
+    for kind in BuildingKind::ALL {
+        let armed = kind.tiers().iter().any(|stats| !stats.weapons.is_empty());
+        assert_eq!(building_attack_timing(kind).is_some(), armed, "{kind:?}");
     }
 }
