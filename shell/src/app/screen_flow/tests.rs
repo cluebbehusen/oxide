@@ -300,7 +300,7 @@ fn a_notice_lands_where_the_player_is_looking() {
     };
     let deliver = |game: &mut Game, screen: &mut Screen| {
         let mut menu = None;
-        deliver_notices(&mut vec![notice()], game, &mut menu, screen, 10.0);
+        deliver_notices(&mut vec![notice()], game, &mut menu, screen);
         menu
     };
 
@@ -342,11 +342,45 @@ fn a_notice_lands_where_the_player_is_looking() {
     ] {
         let menu = deliver(&mut game, &mut screen);
         assert_eq!(
-            menu,
-            Some(("could not save settings: disk full".to_owned(), 18.0)),
+            menu.map(|notice| notice.text).as_deref(),
+            Some("could not save settings: disk full"),
             "{}",
             screen.mode()
         );
     }
     assert_eq!(game.presentation.toasts.len(), 1, "nothing else toasts");
+}
+
+#[test]
+fn a_menu_notice_ages_only_while_a_screen_shows_it() {
+    let mut notice = MenuNotice {
+        text: "diagnostics exported".to_owned(),
+        until: None,
+    };
+    // However long the final map hid it, its time starts on screen.
+    assert_eq!(notice.show(100.0), Some("diagnostics exported"));
+    assert_eq!(
+        notice.show(100.0 + MENU_NOTICE_SECS - 0.5),
+        Some("diagnostics exported")
+    );
+    assert_eq!(notice.show(100.0 + MENU_NOTICE_SECS), None);
+}
+
+#[test]
+fn a_frame_that_leaves_live_play_runs_no_ticks() {
+    let mut game =
+        Game::with_viewport(oxide_sim::Scenario::skirmish(), vec2(1280.0, 800.0)).unwrap();
+    let start = game.state.current_tick();
+    let gap = SUSPENSION_GAP_SECS * 2.0;
+    advance_live_match(&mut game, gap, None, true);
+    assert_eq!(
+        game.state.current_tick(),
+        start,
+        "the gap behind a pause request is never caught up"
+    );
+    advance_live_match(&mut game, gap, None, false);
+    assert!(
+        game.state.current_tick() > start,
+        "a frame that stays in play runs what it owes"
+    );
 }
