@@ -401,9 +401,9 @@ keeps it until the screen changes; draw code reads `hints::alpha`. Menu footers
 carry the coaching (`Menu::draw_with_coaching`), and screens that mix
 information with key help show only the information until then.
 
-Touch-only builds hide rows they cannot use: Controls and the left-handed preset
-(key rebinding), edge pan (no hovering pointer), Open diagnostics folder (no
-file manager), and Quit (the platform closes apps). A match the platform
+Touch-only builds hide rows they cannot use: Open diagnostics folder (no file
+manager) and Quit (the platform closes apps). Controls, the left-handed preset,
+and edge pan stay for an attached keyboard or trackpad. A match the platform
 terminates in the background returns through recovery.
 
 ## Persistence and replay

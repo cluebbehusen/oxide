@@ -211,14 +211,11 @@ impl Row {
         Row::ExportDiagnostics,
     ];
 
-    /// Rows a touch-only build cannot use: key rebinding needs a
-    /// keyboard, edge pan needs a hovering pointer, and there is no file
-    /// manager to open a folder in.
+    /// Rows a touch-only build cannot use: it has no file manager to
+    /// open a folder in. A keyboard or trackpad can join a touch device
+    /// at any time, so their rows stay.
     fn needs_desktop(self) -> bool {
-        matches!(
-            self,
-            Row::EdgePan | Row::LeftHandedPreset | Row::Controls | Row::OpenDiagnostics
-        )
+        matches!(self, Row::OpenDiagnostics)
     }
 
     fn label(self, config: &Config) -> String {
