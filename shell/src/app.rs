@@ -76,7 +76,7 @@ struct App {
     /// A menu-context error line (message, wall-clock deadline): map
     /// and launch failures report here and the menus stay up — the
     /// in-game toast strip only draws with the HUD.
-    menu_notice: Option<(String, f64)>,
+    menu_notice: Option<screen_flow::MenuNotice>,
     /// Messages for the player, delivered to whatever screen is up once
     /// the frame's transitions settle.
     notices: Vec<Notice>,
@@ -468,7 +468,6 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             &mut app.game,
             &mut app.menu_notice,
             &mut screen,
-            get_time(),
         );
         let rerun = screen_frame.rerun;
         let profile_frame_active = screen_frame.profile_frame_active;
@@ -489,9 +488,9 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         // The menu-context error line draws over whichever menu is up;
         // the gameplay screens speak through the HUD's toast strip.
         if !screen.kind().gameplay()
-            && let Some((msg, until)) = &app.menu_notice
+            && let Some(notice) = &mut app.menu_notice
         {
-            if get_time() < *until {
+            if let Some(msg) = notice.show(get_time()) {
                 let s = render::ui_scale();
                 let width = measure_text(msg, None, numeric::font_size(16.0 * s), 1.0).width;
                 let y = if screen.kind() == ScreenKind::Results {
