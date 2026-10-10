@@ -82,7 +82,7 @@ impl ViewerTouch {
                     _ => {}
                 }
             }
-            RawEvent::TouchUp { id, .. } => {
+            RawEvent::TouchUp { id, .. } | RawEvent::TouchCancel { id } => {
                 self.fingers.retain(|(known, _)| *known != id);
                 if self.fingers.len() < 2 {
                     self.pinching = false;

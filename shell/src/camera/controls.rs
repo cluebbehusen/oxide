@@ -131,7 +131,7 @@ impl ViewerHands {
                     self.touch.apply(event, camera, ui);
                 }
             }
-            RawEvent::TouchUp { id, .. } => {
+            RawEvent::TouchUp { id, .. } | RawEvent::TouchCancel { id } => {
                 if self.minimap_finger == Some(id) {
                     self.minimap_finger = None;
                 } else {

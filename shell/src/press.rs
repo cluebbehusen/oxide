@@ -1,7 +1,7 @@
 //! The pointer gesture menus and screen buttons share: a press arms the
 //! zone under it, and only a release on that same zone commits. Dragging
 //! away cancels, and the first finger down owns a touch gesture until it
-//! lifts.
+//! lifts or the platform cancels it.
 //!
 //! A screen supplies its own hit test and feeds each pointer event through
 //! [`Press::feed`]; the type only remembers what was armed. A scrolling
@@ -133,6 +133,10 @@ impl<Z: Copy + PartialEq> Press<Z> {
             RawEvent::TouchUp { id, x, y } if self.owns(id) => {
                 claimed(self.touch_up(zone_at(vec2(x, y), true)))
             }
+            RawEvent::TouchCancel { id } if self.owns(id) => {
+                self.touch = None;
+                Fed::Held
+            }
             _ => Fed::Ignored,
         }
     }
@@ -204,6 +208,7 @@ impl<Z: Copy + PartialEq> ScrollPress<Z> {
             RawEvent::TouchDown { id, .. }
             | RawEvent::TouchMove { id, .. }
             | RawEvent::TouchUp { id, .. }
+            | RawEvent::TouchCancel { id }
                 if self.scrolling() && self.drag.is_some_and(|drag| drag.id != id) =>
             {
                 return Swipe::Held;
@@ -231,7 +236,9 @@ impl<Z: Copy + PartialEq> ScrollPress<Z> {
                     }
                 }
             }
-            RawEvent::TouchUp { id, .. } if self.drag.is_some_and(|drag| drag.id == id) => {
+            RawEvent::TouchUp { id, .. } | RawEvent::TouchCancel { id }
+                if self.drag.is_some_and(|drag| drag.id == id) =>
+            {
                 let scrolled = self.drag.take().is_some_and(|drag| drag.scrolling);
                 if scrolled {
                     return Swipe::Held;

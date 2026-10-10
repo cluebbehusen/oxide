@@ -514,6 +514,20 @@ pub(super) fn up(
     }
 }
 
+/// The platform took a finger away. Nothing it started completes: no
+/// tap, box, ghost build, or card press. A pair partner left down is
+/// spent, as when its partner lifts.
+pub(super) fn cancel(input: &mut InputState, id: u64) {
+    let Some(pos) = input.touches.iter().position(|(tid, _)| *tid == id) else {
+        return;
+    };
+    input.touches.remove(pos);
+    if let [(_, survivor)] = input.touches.as_mut_slice() {
+        survivor.spent = true;
+    }
+    input.pair = None;
+}
+
 /// Whether lifting `finger` over `card` presses it: only the card it landed
 /// on, and a chip that discards work only if it was not held. A finger held
 /// past the long-press threshold on such a chip was reading its preview, and

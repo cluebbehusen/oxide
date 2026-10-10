@@ -339,6 +339,33 @@ fn a_touch_on_the_scrub_band_seeks_and_a_drag_retargets() {
 }
 
 #[test]
+fn a_cancelled_scrub_finger_keeps_its_seek_and_frees_the_bar() {
+    let mut pb = session();
+    let bar = scrub_rect(&pb.view(), vec2(1280.0, 800.0));
+    let y = bar.y - 8.0;
+    feed(
+        &mut pb,
+        &[RawEvent::TouchDown {
+            id: 1,
+            x: bar.x + bar.w * 0.5,
+            y,
+        }],
+    );
+    feed(&mut pb, &[RawEvent::TouchCancel { id: 1 }]);
+    assert_eq!(pb.scrub_finger, None);
+    assert_eq!(pb.seeking, Some(30), "the seek it made stands");
+    feed(
+        &mut pb,
+        &[RawEvent::TouchDown {
+            id: 2,
+            x: bar.x + bar.w,
+            y,
+        }],
+    );
+    assert_eq!(pb.seeking, Some(60), "the next finger scrubs");
+}
+
+#[test]
 fn a_touch_drag_on_the_battlefield_moves_only_the_camera() {
     let mut pb = session();
     let before = pb.presentation.camera.center;

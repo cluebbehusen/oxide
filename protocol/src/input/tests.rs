@@ -18,15 +18,16 @@ fn event_tag(event: &RawEvent) -> usize {
         RawEvent::TouchDown { .. } => 6,
         RawEvent::TouchMove { .. } => 7,
         RawEvent::TouchUp { .. } => 8,
-        RawEvent::Text { .. } => 9,
+        RawEvent::TouchCancel { .. } => 9,
+        RawEvent::Text { .. } => 10,
     }
 }
 
-const EVENT_VARIANTS: usize = 10;
+const EVENT_VARIANTS: usize = 11;
 
 #[test]
 fn every_raw_event_variant_including_touch_survives_a_roundtrip() {
-    // Pins the wire contract for every variant, including the touch trio.
+    // Pins the wire contract for every variant, including the touch events.
     let events = [
         RawEvent::MouseMove { x: 1.5, y: 2.5 },
         RawEvent::MouseDown {
@@ -57,6 +58,7 @@ fn every_raw_event_variant_including_touch_survives_a_roundtrip() {
             x: 12.0,
             y: 13.0,
         },
+        RawEvent::TouchCancel { id: 7 },
         RawEvent::Text { ch: 'k' },
     ];
     assert_every_tag_sampled(events.iter().map(event_tag), EVENT_VARIANTS, "raw event");

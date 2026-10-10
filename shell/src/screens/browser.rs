@@ -475,7 +475,7 @@ impl Browser {
                     *mouse = vec2(x, y);
                     self.hover = card_at(self, *mouse);
                 }
-                RawEvent::TouchUp { .. } => self.hover = None,
+                RawEvent::TouchUp { .. } | RawEvent::TouchCancel { .. } => self.hover = None,
                 _ => {}
             }
         }

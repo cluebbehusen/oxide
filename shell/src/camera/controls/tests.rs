@@ -121,6 +121,44 @@ fn a_viewer_steers_from_the_minimap_until_the_press_lets_go() {
 }
 
 #[test]
+fn a_cancelled_minimap_finger_stops_steering() {
+    let mut hands = ViewerHands::default();
+    let mut camera = camera();
+    let mut mouse = Vec2::ZERO;
+    let prefs = CameraPrefs::default();
+    let on_map = |world: Vec2| MinimapPoint {
+        under: Some(world),
+        clamped: Some(world),
+    };
+    let mut feed = |event: RawEvent, minimap: MinimapPoint, camera: &mut Camera| {
+        hands.pointer(&event, minimap, camera, &mut mouse, prefs, 1.0);
+    };
+    let (x, y) = (1200.0, 700.0);
+    feed(
+        RawEvent::TouchDown { id: 1, x, y },
+        on_map(vec2(10.0, 10.0)),
+        &mut camera,
+    );
+    feed(
+        RawEvent::TouchMove { id: 1, x, y },
+        on_map(vec2(30.0, 20.0)),
+        &mut camera,
+    );
+    let steered = camera.center;
+    feed(
+        RawEvent::TouchCancel { id: 1 },
+        MinimapPoint::default(),
+        &mut camera,
+    );
+    feed(
+        RawEvent::TouchMove { id: 1, x, y },
+        on_map(vec2(5.0, 5.0)),
+        &mut camera,
+    );
+    assert_eq!(camera.center, steered, "a cancelled finger stops steering");
+}
+
+#[test]
 fn a_viewer_middle_drag_pans_against_the_pointer() {
     let mut hands = ViewerHands::default();
     let mut camera = camera();

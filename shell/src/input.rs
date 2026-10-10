@@ -754,10 +754,8 @@ fn touch_event(phase: mq::TouchPhase, id: u64, x: f32, y: f32) -> Option<RawEven
     match phase {
         mq::TouchPhase::Started => Some(RawEvent::TouchDown { id, x, y }),
         mq::TouchPhase::Moved => Some(RawEvent::TouchMove { id, x, y }),
-        // A cancelled touch (palm rejection, app switch) lifts like any
-        // other: the gesture state must not wait for a finger the OS
-        // already took away.
-        mq::TouchPhase::Ended | mq::TouchPhase::Cancelled => Some(RawEvent::TouchUp { id, x, y }),
+        mq::TouchPhase::Ended => Some(RawEvent::TouchUp { id, x, y }),
+        mq::TouchPhase::Cancelled => Some(RawEvent::TouchCancel { id }),
         mq::TouchPhase::Stationary => None,
     }
 }
@@ -1379,6 +1377,7 @@ fn apply_event(game: &mut Game, input: &mut InputState, bindings: &BindingMap, e
             // consumer — letters reach the world as semantic keys.
         }
         RawEvent::TouchUp { id, x, y } => touch::up(game, input, bindings, id, vec2(x, y)),
+        RawEvent::TouchCancel { id } => touch::cancel(input, id),
     }
     if input.construction_open()
         && !matches!(

@@ -490,7 +490,9 @@ impl PlaybackSession {
                 *seek_to = Some(self.tick_at(bar, x));
                 return;
             }
-            RawEvent::TouchUp { id, .. } if self.scrub_finger == Some(id) => {
+            RawEvent::TouchUp { id, .. } | RawEvent::TouchCancel { id }
+                if self.scrub_finger == Some(id) =>
+            {
                 self.scrub_finger = None;
                 return;
             }

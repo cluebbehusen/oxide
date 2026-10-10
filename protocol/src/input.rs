@@ -82,6 +82,12 @@ pub enum RawEvent {
         /// Window y.
         y: f32,
     },
+    /// The platform took a touch away (a system gesture, palm
+    /// rejection). The finger ends without completing any gesture.
+    TouchCancel {
+        /// Stable touch id.
+        id: u64,
+    },
     /// A typed character, for text entry (save names). The shell emits
     /// these only for printable ASCII, since UI strings stay ASCII and the
     /// menu font is Latin-1. Screens consume them only while a text field

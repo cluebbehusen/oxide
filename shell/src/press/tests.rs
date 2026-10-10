@@ -215,3 +215,47 @@ fn a_second_finger_neither_taps_nor_scrolls_while_the_first_drags() {
         }
     );
 }
+
+fn touch_cancel(id: u64) -> RawEvent {
+    RawEvent::TouchCancel { id }
+}
+
+#[test]
+fn a_cancelled_finger_disarms_its_press_without_activating() {
+    let mut press = Press::default();
+    assert_eq!(press.feed(&touch_down(3, 0.0), zone), Fed::Held);
+    assert_eq!(
+        press.feed(&touch_cancel(4), zone),
+        Fed::Ignored,
+        "another finger's cancel is not the press's"
+    );
+    assert_eq!(press.armed_touch(), Some((3, 1)));
+    assert_eq!(press.feed(&touch_cancel(3), zone), Fed::Held);
+    assert_eq!(press.armed_touch(), None);
+    assert_eq!(
+        press.feed(&touch_up(3, 0.0), zone),
+        Fed::Ignored,
+        "a lift after the cancel activates nothing"
+    );
+}
+
+#[test]
+fn a_cancelled_list_finger_neither_taps_nor_keeps_scrolling() {
+    let mut press = ScrollPress::default();
+    press.feed(&touch_down(3, 100.0), 1.0, zone);
+    assert_eq!(press.feed(&touch_cancel(3), 1.0, zone), Swipe::Held);
+    assert_eq!(press.armed_touch(), None, "the tap is gone");
+
+    press.feed(&touch_down(4, 100.0), 1.0, zone);
+    press.feed(&touch_move(4, 140.0), 1.0, zone);
+    assert_eq!(press.feed(&touch_cancel(5), 1.0, zone), Swipe::Held);
+    assert!(press.scrolling(), "another finger's cancel changes nothing");
+    assert_eq!(press.feed(&touch_cancel(4), 1.0, zone), Swipe::Held);
+    assert!(!press.scrolling());
+    press.feed(&touch_down(6, 100.0), 1.0, zone);
+    assert_eq!(
+        press.feed(&touch_up(6, 100.0), 1.0, zone),
+        Swipe::Activated(1),
+        "the next finger taps afresh"
+    );
+}
