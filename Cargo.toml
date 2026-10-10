@@ -59,7 +59,7 @@ similar_names = "allow"
 # the OpenGL view the shell renders with blank on iOS. Drop the patch once
 # releases carry these changes.
 [patch.crates-io]
-miniquad = { git = "https://github.com/cluebbehusen/miniquad", rev = "dc866df08367db757f3b84ed4c63a545932705d1" }
+miniquad = { git = "https://github.com/cluebbehusen/miniquad", rev = "25970594db2e8b24f6c0e423125a391ec8af7bd5" }
 
 # `cargo run` is how the game is played day to day, and an unoptimized
 # `fixed`-point sim ticks ~25x slower than release — big battles would eat
