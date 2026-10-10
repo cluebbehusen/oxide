@@ -715,7 +715,6 @@ fn construction_requires_the_assigned_harvester_at_the_site() {
         cooldown: 0,
         salvage_drained: 0,
         salvage_credited: 0,
-        salvaged: false,
     };
     let mut builder = Unit {
         air_motion: Vec2Fx::ZERO,

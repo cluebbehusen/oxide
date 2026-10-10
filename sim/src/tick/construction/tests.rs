@@ -15,9 +15,11 @@ fn last_worker_wreck_survives_provisional_site_cleanup_and_refund() {
         let tile = state.unit(worker).unwrap().tile();
         let value = state.unit(worker).unwrap().kind.stats().cost * crate::stats::WRECK_VALUE_NUM
             / crate::stats::WRECK_VALUE_DEN;
-        let site = state.place_site(PlayerId(0), BuildingKind::Turret, tile);
-        state.building_mut(site).unwrap().provisional = provisional;
-        state.rebuild_building_occupancy();
+        let site = if provisional {
+            state.place_provisional_site(PlayerId(0), BuildingKind::Turret, tile)
+        } else {
+            state.place_site(PlayerId(0), BuildingKind::Turret, tile)
+        };
         let cost = BuildingKind::Turret.base_stats().construction.unwrap().cost;
         state.player_mut(PlayerId(0)).scrap -= cost;
         let bank = state.player(PlayerId(0)).scrap;
@@ -25,7 +27,7 @@ fn last_worker_wreck_survives_provisional_site_cleanup_and_refund() {
         unit.order = Order::Build { site };
         unit.hp = 0;
         let mut events = Vec::new();
-        super::super::cleanup(&mut state, &mut events);
+        super::super::cleanup(&mut state, &[], &mut events);
         cancel_abandoned(&mut state, &mut events);
         assert!(state.unit(worker).is_none());
         assert!(state.building(site).is_none());
@@ -56,9 +58,7 @@ fn paid_site_activation_does_not_recheck_lost_prerequisites() {
         })
         .unwrap();
     assert!(!state.prerequisites_met(PlayerId(0), kind));
-    let site = state.place_site(PlayerId(0), kind, anchor);
-    state.building_mut(site).unwrap().provisional = true;
-    state.rebuild_building_occupancy();
+    let site = state.place_provisional_site(PlayerId(0), kind, anchor);
     state.unit_mut(worker).unwrap().order = Order::Found { kind, anchor };
     state.refresh_vision();
     assert!(
@@ -89,9 +89,7 @@ fn a_lethal_hit_to_the_last_worker_refunds_its_unstarted_site() {
     let tile = state.unit(worker).unwrap().tile();
     let shooter = state.spawn_unit(PlayerId(1), UnitKind::Sentinel, tile.offset(1, 0).center());
     let anchor = TilePos::new(state.map.width() - 5, 2);
-    let site = state.place_site(PlayerId(0), BuildingKind::Turret, anchor);
-    state.building_mut(site).unwrap().provisional = true;
-    state.rebuild_building_occupancy();
+    let site = state.place_provisional_site(PlayerId(0), BuildingKind::Turret, anchor);
     let worker_state = state.unit_mut(worker).unwrap();
     worker_state.hp = 1;
     worker_state.order = Order::Found {

@@ -46,9 +46,7 @@ fn tiny_state() -> State {
             faction: Faction::Ferrous,
             team: 0,
             scrap: 0,
-            recovery_allowance: 0,
-            recovery_target: 0,
-            recovery_ready: true,
+            recovery: Recovery::Ready,
             resigned: false,
             eliminated_at: None,
         }],
@@ -98,6 +96,17 @@ fn building_blocks_passability() {
         assert!(!state.passable(TilePos::new(pos.0, pos.1)));
     }
     assert!(state.passable(TilePos::new(3, 3)));
+}
+
+#[test]
+fn a_provisional_site_over_a_hidden_building_leaves_its_ground_blocked() {
+    let mut state = tiny_state();
+    state.place_building(PlayerId(0), BuildingKind::Foundry, TilePos::new(1, 1));
+    let before = state.building_occupancy.clone();
+    state.place_provisional_site(PlayerId(0), BuildingKind::Turret, TilePos::new(1, 1));
+    assert_eq!(state.building_occupancy, before);
+    state.rebuild_building_occupancy();
+    assert_eq!(state.building_occupancy, before);
 }
 
 #[test]

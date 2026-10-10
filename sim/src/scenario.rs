@@ -414,9 +414,7 @@ impl Scenario {
                     faction: spec.faction,
                     team,
                     scrap: spec.scrap,
-                    recovery_allowance: 0,
-                    recovery_target: 0,
-                    recovery_ready: true,
+                    recovery: crate::state::Recovery::Ready,
                     resigned: false,
                     eliminated_at: None,
                 }

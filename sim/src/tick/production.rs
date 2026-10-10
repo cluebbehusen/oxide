@@ -10,7 +10,7 @@
 use super::{rect_adjacent_tiles, spawn_doorstep_key};
 use crate::event::Event;
 use crate::ids::{PlayerId, UnitId};
-use crate::state::{Order, State};
+use crate::state::{Order, Recovery, State};
 use crate::stats::{BuildingKind, Domain};
 use chassis::grid::TilePos;
 
@@ -25,18 +25,17 @@ pub(super) fn capture_recovery_entitlements(state: &mut State) {
         .map(|(index, _)| PlayerId::from_index(index))
         .collect();
     for player in players {
-        if !super::harvester_recovery_needed(state, player) || !state.player(player).recovery_ready
+        if !super::harvester_recovery_needed(state, player)
+            || state.player(player).recovery != Recovery::Ready
         {
             continue;
         }
         let target = state.recovery_package_target(player);
         let allowance = target.saturating_sub(state.player(player).scrap);
-        let seat = state.player_mut(player);
-        seat.recovery_target =
-            u16::try_from(target).expect("a recovery package fits the u16 ledger");
-        seat.recovery_allowance =
-            u16::try_from(allowance).expect("an allowance never exceeds its target");
-        seat.recovery_ready = false;
+        state.player_mut(player).recovery = Recovery::Active {
+            target: u16::try_from(target).expect("a recovery package fits the u16 ledger"),
+            allowance: u16::try_from(allowance).expect("an allowance never exceeds its target"),
+        };
     }
 }
 
@@ -136,15 +135,15 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
         .map(|(index, _)| PlayerId::from_index(index))
         .collect();
     for player in &players {
-        if !super::harvester_recovery_needed(state, *player) || state.player(*player).recovery_ready
-        {
+        if !super::harvester_recovery_needed(state, *player) {
             continue;
         }
         let seat = state.player_mut(*player);
-        let headroom = u32::from(seat.recovery_target).saturating_sub(seat.scrap);
-        seat.recovery_allowance = seat
-            .recovery_allowance
-            .min(u16::try_from(headroom).expect("headroom never exceeds the u16 target"));
+        if let Recovery::Active { target, allowance } = &mut seat.recovery {
+            let headroom = u32::from(*target).saturating_sub(seat.scrap);
+            *allowance = (*allowance)
+                .min(u16::try_from(headroom).expect("headroom never exceeds the u16 target"));
+        }
     }
 
     if state
@@ -156,11 +155,14 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
                 continue;
             }
             let seat = state.player_mut(player);
-            if seat.recovery_allowance == 0 || seat.scrap >= u32::from(seat.recovery_target) {
+            let Recovery::Active { target, allowance } = &mut seat.recovery else {
+                continue;
+            };
+            if *allowance == 0 || seat.scrap >= u32::from(*target) {
                 continue;
             }
             seat.scrap = seat.scrap.saturating_add(1);
-            seat.recovery_allowance -= 1;
+            *allowance -= 1;
         }
     }
 

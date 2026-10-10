@@ -120,11 +120,14 @@ struct PendingHpDrain {
     step: u32,
 }
 
+/// Runs every machine's decision and resolves the tick's buffered work.
+/// Returns the pending boardings and unloads, and the buildings salvage
+/// stripped to nothing, which cleanup removes without wreck.
 pub(super) fn run(
     state: &mut State,
     index: &mut super::spatial::UnitIndex,
     events: &mut Vec<Event>,
-) -> logistics::Pending {
+) -> (logistics::Pending, Vec<crate::ids::BuildingId>) {
     // Positions and unit slots hold still until resolution, so acquisition
     // and arrival queries share this index. Orders, speed and landed state
     // can change during the loop and must still be read from the live unit.
@@ -282,8 +285,8 @@ pub(super) fn run(
     // (flight is at least one tick), so ordering here cannot matter.
     land_shells(state, &mut hits, events);
     state.shells.extend(launches);
-    resolve_hits(state, &hits, &builds, &heals, &drains, events);
-    logistics_pending
+    let salvaged = resolve_hits(state, &hits, &builds, &heals, &drains, events);
+    (logistics_pending, salvaged)
 }
 
 mod combat;
@@ -311,13 +314,14 @@ fn resolve_hits(
     heals: &[PendingUnitHeal],
     drains: &[PendingHpDrain],
     events: &mut Vec<Event>,
-) {
+) -> Vec<crate::ids::BuildingId> {
     struct Work {
         building: crate::ids::BuildingId,
         gain: i64,
         drain: i64,
         completes: Option<(crate::ids::PlayerId, crate::stats::BuildingKind)>,
     }
+    let mut salvaged = Vec::new();
     let mut incidents = Vec::new();
     for hit in hits {
         match hit.victim {
@@ -495,7 +499,7 @@ fn resolve_hits(
                 / (1000 * u64::from(stats.max_hp));
             let due = u32::try_from(target).unwrap_or(u32::MAX) - b.salvage_credited;
             if after == 0 {
-                b.salvaged = true;
+                salvaged.push(b.id);
             }
             if due > 0 {
                 b.salvage_credited += due;
@@ -513,6 +517,7 @@ fn resolve_hits(
             retaliate(state, uid, hit.attacker);
         }
     }
+    salvaged
 }
 
 /// Resolves every buffered unit heal, with the building resolver's rules: a
@@ -613,20 +618,7 @@ fn repair_bay_aura(
             continue;
         };
         let owner = b.player;
-        // The aura is automatic, so unlike a voluntary purchase it must not
-        // spend the captured recovery package. Reserve the seat's actual
-        // package, not the universal maximum, which would strand the army
-        // the Repair Bay exists to sustain.
-        let recovery_reserve = if super::harvester_recovery_needed(state, owner) {
-            let seat = state.player(owner);
-            if seat.recovery_ready {
-                state.recovery_package_target(owner)
-            } else {
-                u32::from(seat.recovery_target)
-            }
-        } else {
-            0
-        };
+        let recovery_reserve = state.recovery_reserve(owner);
         let patients: Vec<UnitId> = state
             .units
             .iter()
@@ -694,16 +686,7 @@ fn repair_bay_aura(
             continue;
         };
         let owner = source.player;
-        let recovery_reserve = if super::harvester_recovery_needed(state, owner) {
-            let seat = state.player(owner);
-            if seat.recovery_ready {
-                state.recovery_package_target(owner)
-            } else {
-                u32::from(seat.recovery_target)
-            }
-        } else {
-            0
-        };
+        let recovery_reserve = state.recovery_reserve(owner);
         let patients: Vec<crate::ids::BuildingId> = state
             .buildings
             .iter()

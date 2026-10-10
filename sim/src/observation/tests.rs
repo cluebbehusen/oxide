@@ -27,10 +27,8 @@ fn paid_provisional_sites_are_marked_for_their_team_and_hidden_from_enemies() {
             .id;
         let anchor = state.unit(worker).unwrap().tile();
         let kind = BuildingKind::Turret;
-        let site = state.place_site(PlayerId(0), kind, anchor);
-        state.building_mut(site).unwrap().provisional = true;
+        let site = state.place_provisional_site(PlayerId(0), kind, anchor);
         state.unit_mut(worker).unwrap().order = Order::Found { kind, anchor };
-        state.rebuild_building_occupancy();
         let own = ObservationData::fog_honest(&state, PlayerId(0));
         assert_eq!(own.version, OBSERVATION_VERSION);
         assert!(

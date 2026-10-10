@@ -146,7 +146,7 @@ impl State {
             production::run(self, &mut events);
             charges::cancel_discovered(self, &mut events);
             production::decay_abandoned_sites(self);
-            let boardings = brain::run(self, &mut index, &mut events);
+            let (boardings, salvaged) = brain::run(self, &mut index, &mut events);
             // Boarding and unloading mutate the unit list, which must hold
             // still under the brains, so they resolve between the last
             // decision and the first movement.
@@ -173,7 +173,7 @@ impl State {
             aircraft_crashes::remember_motion(self, &air_positions);
             aircraft_crashes::land(self, &mut events);
             charges::detonate_under_units(self, &mut events);
-            cleanup(self, &mut events);
+            cleanup(self, &salvaged, &mut events);
             construction::cancel_abandoned(self, &mut events);
             if self.tick.is_multiple_of(crate::stats::WRECK_DECAY_TICKS) {
                 self.map.decay_wrecks();
@@ -198,8 +198,9 @@ impl State {
 
 /// Removes entities that hit 0 hp this tick, reporting each, and leaves a
 /// fraction of every destroyed entity's cost on the ground as wreck salvage
-/// (buildings split theirs across the footprint).
-fn cleanup(state: &mut State, events: &mut Vec<Event>) {
+/// (buildings split theirs across the footprint). `salvaged` names the
+/// buildings salvage, not fire, took apart.
+fn cleanup(state: &mut State, salvaged: &[crate::ids::BuildingId], events: &mut Vec<Event>) {
     let dead_charges: Vec<_> = state
         .buildings
         .iter()
@@ -244,7 +245,7 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
         // destruction event, and its prepaid production queue refunds
         // in full (training spends only time — the CancelTrain rule,
         // applied to the whole line at once).
-        if building.salvaged {
+        if salvaged.contains(&building.id) {
             events.push(Event::BuildingSalvaged {
                 building: building.id,
                 player: building.player,

@@ -21,7 +21,7 @@ pub use ids::{AttackTarget, BuildingId, ContactId, PlayerId, RememberedBuilding,
 pub use scenario::Scenario;
 pub use state::{
     Aim, Building, ExtractorIncome, Faction, GameResult, Goal, Leash, Order, OrderKey,
-    PlaceRefusal, Player, State, StateIntegrityError, Unit,
+    PlaceRefusal, Player, Recovery, State, StateIntegrityError, Unit,
 };
 pub use stats::{BuildingKind, ProjectileKind, UnitKind};
 pub use tick::CommandPhaseView;
