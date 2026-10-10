@@ -5,10 +5,19 @@ use crate::common;
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
 use oxide_sim::stats::FOUNDRY_RECOVERY_RESERVE;
-use oxide_sim::{BuildingKind, Command, Event, Order, PlayerId, UnitKind};
+use oxide_sim::{BuildingKind, Command, Event, Order, PlayerId, Recovery, State, UnitKind};
 use serde_json::json;
 
 use common::*;
+
+/// Seat 0's captured recovery package as `(target, allowance)`, or none
+/// while a new cycle may still begin.
+fn package(state: &State) -> Option<(u32, u32)> {
+    match state.player(PlayerId(0)).recovery {
+        Recovery::Ready => None,
+        Recovery::Active { target, allowance } => Some((target.into(), allowance.into())),
+    }
+}
 
 #[test]
 fn harvester_gathers_and_deposits() {
@@ -180,7 +189,7 @@ fn spending_the_recovery_package_does_not_refill_the_entitlement() {
     while state.player(PlayerId(0)).scrap < FOUNDRY_RECOVERY_RESERVE {
         state.tick(&[]);
     }
-    assert_eq!(state.player(PlayerId(0)).recovery_allowance, 0);
+    assert_eq!(package(&state).map(|(_, allowance)| allowance), Some(0));
 
     let foundry = state
         .buildings()
@@ -259,9 +268,9 @@ fn first_tick_spending_cannot_expand_a_recovery_entitlement() {
         seat.scrap,
         FOUNDRY_RECOVERY_RESERVE - 2 * UnitKind::Scuttler.stats().cost
     );
-    assert_eq!(u32::from(seat.recovery_target), FOUNDRY_RECOVERY_RESERVE);
     assert_eq!(
-        seat.recovery_allowance, 0,
+        package(&state),
+        Some((FOUNDRY_RECOVERY_RESERVE, 0)),
         "the pre-command bank closed the entitlement before the paid queue reshaped it"
     );
 }
@@ -272,15 +281,8 @@ fn a_paid_ground_screen_reduces_the_captured_package_to_one_worker() {
     scenario.players[0].scrap = 0;
     let mut state = scenario.build().unwrap();
     state.tick(&[]);
-    let seat = state.player(PlayerId(0));
-    assert_eq!(
-        u32::from(seat.recovery_target),
-        UnitKind::Harvester.stats().cost
-    );
-    assert_eq!(
-        u32::from(seat.recovery_allowance),
-        UnitKind::Harvester.stats().cost - 1
-    );
+    let cost = UnitKind::Harvester.stats().cost;
+    assert_eq!(package(&state), Some((cost, cost - 1)));
 }
 
 #[test]
@@ -290,7 +292,7 @@ fn any_harvesting_machine_keeps_its_seat_off_recovery() {
     let mut state = scenario.build().unwrap();
     state.tick(&[]);
     assert!(
-        state.player(PlayerId(0)).recovery_ready,
+        state.player(PlayerId(0)).recovery == Recovery::Ready,
         "an Excavator gathers, so its seat is not stranded"
     );
     assert_eq!(state.player(PlayerId(0)).scrap, 0);
@@ -314,7 +316,7 @@ fn any_harvesting_machine_keeps_its_seat_off_recovery() {
     for _ in 0..20 {
         state.tick(&[]);
         assert!(
-            state.player(PlayerId(0)).recovery_ready,
+            state.player(PlayerId(0)).recovery == Recovery::Ready,
             "a Harvester riding a transport still belongs to the economy"
         );
     }
@@ -332,15 +334,10 @@ fn artillery_anti_air_and_flyers_do_not_count_as_recovery_screens() {
         scenario.players[0].scrap = 0;
         let mut state = scenario.build().unwrap();
         state.tick(&[]);
-        let seat = state.player(PlayerId(0));
         assert_eq!(
-            u32::from(seat.recovery_target),
-            FOUNDRY_RECOVERY_RESERVE,
+            package(&state),
+            Some((FOUNDRY_RECOVERY_RESERVE, FOUNDRY_RECOVERY_RESERVE - 1)),
             "{kind:?} cannot directly screen a ground worker"
-        );
-        assert_eq!(
-            u32::from(seat.recovery_allowance),
-            FOUNDRY_RECOVERY_RESERVE - 1
         );
     }
 }
@@ -368,8 +365,8 @@ fn a_prepaid_worker_death_preserves_only_the_unspent_recovery_remainder() {
     )]);
     let remainder = FOUNDRY_RECOVERY_RESERVE - UnitKind::Harvester.stats().cost;
     assert_eq!(
-        u32::from(state.player(PlayerId(0)).recovery_allowance),
-        remainder
+        package(&state).map(|(_, allowance)| allowance),
+        Some(remainder)
     );
     run_until(&mut state, 200, |state, _| {
         state
@@ -439,7 +436,7 @@ fn a_real_harvester_deposit_rearms_one_future_recovery_cycle() {
         })
     });
     let bank = state.player(PlayerId(0)).scrap;
-    assert!(state.player(PlayerId(0)).recovery_ready);
+    assert_eq!(package(&state), None);
 
     let mut value = serde_json::to_value(&state).unwrap();
     value["units"]
@@ -448,14 +445,12 @@ fn a_real_harvester_deposit_rearms_one_future_recovery_cycle() {
         .retain(|unit| unit["player"] != json!(0));
     let mut state: oxide_sim::State = serde_json::from_value(value).unwrap();
     state.tick(&[]);
-    assert!(!state.player(PlayerId(0)).recovery_ready);
     assert_eq!(
-        u32::from(state.player(PlayerId(0)).recovery_target),
-        FOUNDRY_RECOVERY_RESERVE
-    );
-    assert_eq!(
-        u32::from(state.player(PlayerId(0)).recovery_allowance),
-        FOUNDRY_RECOVERY_RESERVE - state.player(PlayerId(0)).scrap
+        package(&state),
+        Some((
+            FOUNDRY_RECOVERY_RESERVE,
+            FOUNDRY_RECOVERY_RESERVE - state.player(PlayerId(0)).scrap
+        ))
     );
     run_until(&mut state, 20, |state, _| {
         state.player(PlayerId(0)).scrap > bank

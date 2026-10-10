@@ -746,9 +746,8 @@ fn every_checklist_row_refuses_its_forgery() {
         (
             "an emergency entitlement larger than its captured target",
             |d| {
-                d["players"][0]["recovery_ready"] = json!(false);
-                d["players"][0]["recovery_target"] = json!(50);
-                d["players"][0]["recovery_allowance"] = json!(51);
+                d["players"][0]["recovery"] =
+                    json!({"recovery": "active", "target": 50, "allowance": 51});
             },
             "player p0 carries an invalid recovery ledger",
         ),

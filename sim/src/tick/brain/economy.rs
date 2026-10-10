@@ -1491,9 +1491,7 @@ fn deposit_cargo(state: &mut State, id: UnitId, foundry: BuildingId, events: &mu
     let credited = seat.scrap.saturating_add(carrying) - seat.scrap;
     seat.scrap += credited;
     if credited > 0 {
-        seat.recovery_allowance = 0;
-        seat.recovery_target = 0;
-        seat.recovery_ready = true;
+        seat.recovery = crate::state::Recovery::Ready;
     }
     events.push(Event::ScrapDeposited {
         unit: id,

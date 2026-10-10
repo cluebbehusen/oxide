@@ -38,8 +38,31 @@ pub enum Faction {
     Cupric,
 }
 
+/// Whether a seat whose economy is stranded may begin a recovery cycle, or
+/// the package the current cycle captured.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "recovery", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Recovery {
+    /// A new cycle may begin. A real Harvester deposit returns here;
+    /// merely training, cancelling, or losing a worker does not.
+    #[default]
+    Ready,
+    /// A cycle is under way.
+    Active {
+        /// Bank target captured when the cycle began. It is fixed for the
+        /// cycle so selling, queueing, or losing a screen cannot expand
+        /// the entitlement after the fact.
+        target: u16,
+        /// Emergency scrap still available. The allowance is finite:
+        /// spending the credited package cannot make the Foundry mint it a
+        /// second time.
+        allowance: u16,
+    },
+}
+
 /// A participant in the match.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Player {
     /// Display name.
     pub name: String,
@@ -50,23 +73,9 @@ pub struct Player {
     pub team: u8,
     /// Scrap in the bank.
     pub scrap: u32,
-    /// Emergency scrap still available in the current stranded-economy
-    /// cycle. The allowance is finite: spending the credited package
-    /// cannot make the Foundry mint it a second time.
+    /// The seat's stranded-economy recovery cycle.
     #[serde(default, skip_serializing_if = "crate::is_default")]
-    pub recovery_allowance: u16,
-    /// Bank target captured when the current recovery cycle began. It is
-    /// fixed for the cycle so selling, queueing, or losing a screen cannot
-    /// expand the entitlement after the fact.
-    #[serde(default, skip_serializing_if = "crate::is_default")]
-    pub recovery_target: u16,
-    /// Whether one new recovery cycle may begin. A real Harvester deposit
-    /// re-arms it; merely training, cancelling, or losing a worker does not.
-    #[serde(
-        default = "default_true",
-        skip_serializing_if = "core::clone::Clone::clone"
-    )]
-    pub recovery_ready: bool,
+    pub recovery: Recovery,
     /// Whether this seat conceded ([`crate::Command::Surrender`]): its
     /// Foundries no longer keep its team in the match and its commands
     /// reject, while its machines play out their brains as remnants.
@@ -875,6 +884,21 @@ impl State {
             })
     }
 
+    /// Scrap an automatic Repair Bay leaves in a stranded seat's bank: the
+    /// package its current recovery cycle captured, or the one a new cycle
+    /// would capture. Like a voluntary purchase, the aura must not spend
+    /// the package, but reserving the universal maximum instead would
+    /// strand the army the bay exists to sustain.
+    pub(crate) fn recovery_reserve(&self, player: PlayerId) -> u32 {
+        if !self.harvester_recovery_needed(player) {
+            return 0;
+        }
+        match self.player(player).recovery {
+            Recovery::Ready => self.recovery_package_target(player),
+            Recovery::Active { target, .. } => u32::from(target),
+        }
+    }
+
     /// Bank target for a newly stranded economy. A surviving paid ground
     /// screen means the seat needs only a replacement worker; otherwise
     /// the public package includes one cheapest dependable guard.
@@ -1165,9 +1189,7 @@ impl State {
                 faction: _,
                 team,
                 scrap: _,
-                recovery_allowance,
-                recovery_target,
-                recovery_ready,
+                recovery,
                 resigned: _,
                 eliminated_at,
             } = player;
@@ -1177,10 +1199,9 @@ impl State {
             if usize::from(*team) >= self.players.len() {
                 return Err(E::ForeignTeam(seat));
             }
-            if u32::from(*recovery_allowance) > crate::stats::FOUNDRY_RECOVERY_RESERVE
-                || u32::from(*recovery_target) > crate::stats::FOUNDRY_RECOVERY_RESERVE
-                || recovery_allowance > recovery_target
-                || (*recovery_ready && (*recovery_allowance != 0 || *recovery_target != 0))
+            if let Recovery::Active { target, allowance } = recovery
+                && (u32::from(*target) > crate::stats::FOUNDRY_RECOVERY_RESERVE
+                    || allowance > target)
             {
                 return Err(E::InvalidRecoveryLedger(seat));
             }

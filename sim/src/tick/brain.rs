@@ -618,20 +618,7 @@ fn repair_bay_aura(
             continue;
         };
         let owner = b.player;
-        // The aura is automatic, so unlike a voluntary purchase it must not
-        // spend the captured recovery package. Reserve the seat's actual
-        // package, not the universal maximum, which would strand the army
-        // the Repair Bay exists to sustain.
-        let recovery_reserve = if super::harvester_recovery_needed(state, owner) {
-            let seat = state.player(owner);
-            if seat.recovery_ready {
-                state.recovery_package_target(owner)
-            } else {
-                u32::from(seat.recovery_target)
-            }
-        } else {
-            0
-        };
+        let recovery_reserve = state.recovery_reserve(owner);
         let patients: Vec<UnitId> = state
             .units
             .iter()
@@ -699,16 +686,7 @@ fn repair_bay_aura(
             continue;
         };
         let owner = source.player;
-        let recovery_reserve = if super::harvester_recovery_needed(state, owner) {
-            let seat = state.player(owner);
-            if seat.recovery_ready {
-                state.recovery_package_target(owner)
-            } else {
-                u32::from(seat.recovery_target)
-            }
-        } else {
-            0
-        };
+        let recovery_reserve = state.recovery_reserve(owner);
         let patients: Vec<crate::ids::BuildingId> = state
             .buildings
             .iter()
