@@ -98,18 +98,103 @@ impl BindingColumns {
     }
 }
 
-/// A titled, selectable list.
+/// What a menu row says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Label {
+    /// One line of text.
+    Text(String),
+    /// A Controls row: the action's name and its primary and secondary
+    /// chords, drawn in [`BindingColumns`]; `marked` brackets the chord
+    /// the keyboard has chosen.
+    Binding {
+        name: String,
+        keys: [String; 2],
+        marked: Option<usize>,
+    },
+}
+
+impl std::fmt::Display for Label {
+    /// The row as one line, as automation reads it: `Pan up: W | [I]`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Label::Text(text) => f.write_str(text),
+            Label::Binding { name, keys, marked } => {
+                let key = |slot: usize| {
+                    if *marked == Some(slot) {
+                        format!("[{}]", keys[slot])
+                    } else {
+                        keys[slot].clone()
+                    }
+                };
+                write!(f, "{name}: {} | {}", key(0), key(1))
+            }
+        }
+    }
+}
+
+impl From<&str> for Label {
+    fn from(text: &str) -> Self {
+        Label::Text(text.to_string())
+    }
+}
+
+impl From<String> for Label {
+    fn from(text: String) -> Self {
+        Label::Text(text)
+    }
+}
+
+/// One line of a menu: a section heading, or a row standing for `R`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Line<R> {
+    /// A section label: drawn dimmer, skipped by the cursor, never
+    /// activated.
+    Header(String),
+    /// A selectable row.
+    Row(Label, R),
+}
+
+/// A row the player activated: what it stands for and, for a Controls
+/// row clicked or tapped on a chord, which chord.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Activation<R> {
+    pub value: R,
+    pub column: Option<usize>,
+}
+
+/// What automation reads off a menu.
+pub struct MenuView {
+    pub title: String,
+    pub selected: usize,
+    pub items: Vec<String>,
+    pub visible_range: [usize; 2],
+    pub hover: Option<usize>,
+}
+
+/// Where the list lives this frame.
+#[derive(Debug, Clone, Copy)]
+struct ListWindow {
+    /// The first visible row's top edge.
+    top: f32,
+    /// The distance from one row to the next.
+    pitch: f32,
+    /// The first visible row.
+    first: usize,
+    /// How many rows show.
+    visible: usize,
+}
+
+/// A titled, selectable list whose rows stand for values of `R`.
 ///
 /// Three independent pieces of state, deliberately: `selected` is the
 /// keyboard cursor and activation target, `scroll` is which window of
 /// rows is shown, and `hover` is only a highlight. If hover moves the
 /// selection or the window follows it, a stationary pointer can walk the
 /// whole list by itself.
-pub struct Menu {
+pub struct Menu<R> {
     /// Heading above the list.
     pub title: String,
-    /// One label per row.
-    pub items: Vec<String>,
+    lines: Vec<Line<R>>,
     /// Keyboard cursor; what Enter activates.
     pub selected: usize,
     /// First visible row — moved by the wheel, paging keys, and
@@ -127,9 +212,6 @@ pub struct Menu {
     press: ScrollPress<usize>,
     /// Drag travel not yet spent on a whole row of scrolling.
     carry: f32,
-    /// Section-label rows: drawn dimmer, skipped by the cursor, never
-    /// activated.
-    headers: Vec<usize>,
     /// Horizontal offset of the list as a fraction of the viewport
     /// width, zero for a centered list: the codex shifts its list left
     /// to make room for the page beside it.
@@ -144,52 +226,129 @@ fn view_h() -> f32 {
     crate::render::viewport().y
 }
 
-impl Menu {
-    /// Builds a menu with the first row highlighted.
-    pub fn new(title: impl Into<String>, items: Vec<String>) -> Self {
-        Self::with_headers(title, items, Vec::new())
+impl Menu<usize> {
+    /// A plain list whose rows stand for their own indices.
+    pub fn list(title: impl Into<String>, items: Vec<String>) -> Self {
+        Self::new(
+            title,
+            items
+                .into_iter()
+                .enumerate()
+                .map(|(index, item)| Line::Row(Label::Text(item), index))
+                .collect(),
+        )
+    }
+}
+
+impl<R: Clone> Menu<R> {
+    /// A menu over `rows` with no headings, the first row highlighted.
+    pub fn rows(title: impl Into<String>, rows: impl IntoIterator<Item = (Label, R)>) -> Self {
+        Self::new(
+            title,
+            rows.into_iter()
+                .map(|(label, value)| Line::Row(label, value))
+                .collect(),
+        )
     }
 
-    /// A menu whose `headers` rows are section labels: skipped by the
-    /// cursor, inert to clicks, drawn as headings.
-    pub fn with_headers(title: impl Into<String>, items: Vec<String>, headers: Vec<usize>) -> Self {
+    /// A menu over `lines`, the first row highlighted.
+    pub fn new(title: impl Into<String>, lines: Vec<Line<R>>) -> Self {
         let mut menu = Self {
             title: title.into(),
-            items,
+            lines,
             selected: 0,
             scroll: 0,
             hover: None,
             wheel_accum: 0.0,
             press: ScrollPress::default(),
             carry: 0.0,
-            headers,
             shift: 0.0,
         };
         menu.selected = menu.settle(0, false);
         menu
     }
 
-    /// Whether a row is a section label.
+    /// Whether a line is a section label.
     pub fn is_header(&self, index: usize) -> bool {
-        self.headers.contains(&index)
+        matches!(self.lines.get(index), Some(Line::Header(_)))
+    }
+
+    /// The menu's lines.
+    pub fn lines(&self) -> &[Line<R>] {
+        &self.lines
+    }
+
+    /// What the selected row stands for; `None` on an empty or
+    /// all-heading list.
+    pub fn value(&self) -> Option<&R> {
+        match self.lines.get(self.selected)? {
+            Line::Row(_, value) => Some(value),
+            Line::Header(_) => None,
+        }
+    }
+
+    /// Selects the first row whose value `pick` accepts; false when none
+    /// does.
+    pub fn select_where(&mut self, pick: impl Fn(&R) -> bool) -> bool {
+        let found = self
+            .lines
+            .iter()
+            .position(|line| matches!(line, Line::Row(_, value) if pick(value)));
+        if let Some(index) = found {
+            self.select(index);
+        }
+        found.is_some()
+    }
+
+    /// Replaces the lines in place, keeping the cursor, the scroll window
+    /// and the pointer's press: a row relabelled after it cycles a value
+    /// stays under the cursor.
+    pub fn set_lines(&mut self, lines: Vec<Line<R>>) {
+        self.lines = lines;
+        self.selected = self.settle(self.selected.min(self.lines.len().saturating_sub(1)), false);
+    }
+
+    /// The rows as automation reads them.
+    pub fn view(&self) -> MenuView {
+        MenuView {
+            title: self.title.clone(),
+            selected: self.selected,
+            items: self
+                .lines
+                .iter()
+                .map(|line| match line {
+                    Line::Header(text) => text.clone(),
+                    Line::Row(label, _) => label.to_string(),
+                })
+                .collect(),
+            visible_range: self.visible_range(),
+            hover: self.hover,
+        }
+    }
+
+    /// Whether any row draws as Controls columns, which widen the list.
+    fn wide(&self) -> bool {
+        self.lines
+            .iter()
+            .any(|line| matches!(line, Line::Row(Label::Binding { .. }, _)))
     }
 
     /// The nearest non-header row from `index`, toward the start when
     /// `back`, without wrapping; `index` itself on an all-header list.
     fn settle(&self, index: usize, back: bool) -> usize {
-        crate::nav::nearest(self.items.len(), index, back, |row| !self.is_header(row))
+        crate::nav::nearest(self.lines.len(), index, back, |row| !self.is_header(row))
             .unwrap_or(index)
     }
 
     /// Moves the keyboard cursor and scrolls just enough to show it —
     /// the only coupling between selection and the scroll window.
     pub fn select(&mut self, index: usize) {
-        self.selected = self.settle(index.min(self.items.len().saturating_sub(1)), false);
+        self.selected = self.settle(index.min(self.lines.len().saturating_sub(1)), false);
         self.ensure_visible();
     }
 
     fn ensure_visible(&mut self) {
-        let (_, _, _, visible) = self.layout();
+        let visible = self.window().visible;
         if self.selected < self.scroll {
             self.scroll = self.selected;
         } else if self.selected >= self.scroll + visible {
@@ -198,8 +357,8 @@ impl Menu {
     }
 
     fn scroll_by(&mut self, delta: i64) {
-        let (_, _, _, visible) = self.layout();
-        let max = self.items.len().saturating_sub(visible);
+        let visible = self.window().visible;
+        let max = self.lines.len().saturating_sub(visible);
         self.scroll = (self.scroll.fit::<i64>() + delta)
             .clamp(0, max.fit::<i64>())
             .fit::<usize>();
@@ -220,7 +379,7 @@ impl Menu {
             self.hover = None;
         }
         self.carry += dy;
-        let (_, row, _, _) = self.layout();
+        let row = self.window().pitch;
         while self.carry >= row {
             self.scroll_by(-1);
             self.carry -= row;
@@ -232,7 +391,7 @@ impl Menu {
     }
 
     fn row_at(&self, point: Vec2) -> Option<usize> {
-        (0..self.items.len()).find(|i| self.item_rect(*i).is_some_and(|r| r.contains(point)))
+        (0..self.lines.len()).find(|i| self.item_rect(*i).is_some_and(|r| r.contains(point)))
     }
 
     /// Where the list lives this frame: top edge, row height, and the
@@ -240,59 +399,62 @@ impl Menu {
     /// block and the hint line — rows pack as tight as `row_pitch`
     /// allows when the window is short, and past that the list scrolls
     /// around the selection instead of running off the screen.
-    fn layout(&self) -> (f32, f32, usize, usize) {
+    fn window(&self) -> ListWindow {
         let s = ui();
         let top_bound = (view_h() * 0.36).max(view_h() * 0.28 + 64.0 * s);
         let bottom_bound = view_h() - 64.0 * s;
         let avail = (bottom_bound - top_bound).max(ITEM_HEIGHT * s);
-        let n = self.items.len().max(1);
-        let row = row_pitch(avail, n, s, crate::platform::TOUCH_ONLY);
-        let visible = numeric::to_usize((avail / row).floor()).clamp(1, n);
-        // The window is scroll state, clamped — never a function of the
-        // selection, or hovering near an edge walks the list.
-        let first = self.scroll.min(n.saturating_sub(visible));
-        let top = top_bound + (avail - visible as f32 * row) * 0.5;
-        (top, row, first, visible)
+        let n = self.lines.len().max(1);
+        let pitch = row_pitch(avail, n, s, crate::platform::TOUCH_ONLY);
+        let visible = numeric::to_usize((avail / pitch).floor()).clamp(1, n);
+        ListWindow {
+            top: top_bound + (avail - visible as f32 * pitch) * 0.5,
+            pitch,
+            // The window is scroll state, clamped — never a function of
+            // the selection, or hovering near an edge walks the list.
+            first: self.scroll.min(n.saturating_sub(visible)),
+            visible,
+        }
     }
 
     /// Touchable bounds for one visible row.
     pub(crate) fn item_rect(&self, index: usize) -> Option<Rect> {
         let s = ui();
-        let (top, row, first, visible) = self.layout();
+        let ListWindow {
+            top,
+            pitch,
+            first,
+            visible,
+        } = self.window();
         if index < first || index >= first + visible {
             return None;
         }
-        let width = if self.title == "CONTROLS" {
+        let width = if self.wide() {
             (760.0 * s).min(view_w() - 32.0 * s)
         } else {
             ITEM_WIDTH * s
         };
         Some(Rect::new(
             (view_w() - width) * 0.5 + view_w() * self.shift,
-            top + (index - first) as f32 * row,
+            top + (index - first) as f32 * pitch,
             width,
-            row - ROW_GAP * s,
+            pitch - ROW_GAP * s,
         ))
-    }
-
-    /// Row under the pointer, if any.
-    pub fn hover(&self) -> Option<usize> {
-        self.hover
     }
 
     /// Half-open range of rows currently drawn by the scroll window.
     pub fn visible_range(&self) -> [usize; 2] {
-        let (_, _, first, visible) = self.layout();
-        [first, first + visible]
+        let window = self.window();
+        [window.first, window.first + window.visible]
     }
 
-    /// Feeds a frame of events through the menu; returns the activated row,
-    /// if any. Mouse position updates come along in the same events.
-    pub fn handle(&mut self, events: &[RawEvent], mouse: &mut Vec2) -> Option<usize> {
+    /// Feeds a frame of events through the menu; returns the activated
+    /// row, if any. Mouse position updates come along in the same events.
+    pub fn handle(&mut self, events: &[RawEvent], mouse: &mut Vec2) -> Option<Activation<R>> {
         // An empty list has nothing to select, scroll, or activate —
         // and its wrap-around arithmetic divides by zero. The shelf can
         // legitimately be empty on a fresh profile.
-        if self.items.is_empty() {
+        if self.lines.is_empty() {
             return None;
         }
         for event in events {
@@ -307,11 +469,17 @@ impl Menu {
                     continue;
                 }
                 Swipe::Activated(row) => {
-                    if let Some(p) = crate::press::position(event) {
+                    let point = crate::press::position(event);
+                    if let Some(p) = point {
                         *mouse = p;
                     }
                     self.selected = row;
-                    return Some(row);
+                    let column = point.zip(self.item_rect(row)).and_then(|(p, rect)| {
+                        matches!(self.lines[row], Line::Row(Label::Binding { .. }, _))
+                            .then(|| BindingColumns::of(rect, ui()).slot_at(p.x))
+                            .flatten()
+                    });
+                    return self.activation(row, column);
                 }
                 Swipe::Held | Swipe::Ignored => {}
             }
@@ -351,12 +519,12 @@ impl Menu {
                 }
                 RawEvent::KeyDown { .. } => match crate::nav::Nav::decode(event) {
                     Some(crate::nav::Nav::Confirm) if !self.is_header(self.selected) => {
-                        return Some(self.selected);
+                        return self.activation(self.selected, None);
                     }
                     Some(nav) => {
-                        let (_, _, _, visible) = self.layout();
+                        let visible = self.window().visible;
                         if let Some(row) = crate::nav::step_line(
-                            self.items.len(),
+                            self.lines.len(),
                             self.selected,
                             nav,
                             crate::nav::Axis::Vertical,
@@ -374,6 +542,16 @@ impl Menu {
             }
         }
         None
+    }
+
+    fn activation(&self, row: usize, column: Option<usize>) -> Option<Activation<R>> {
+        match &self.lines[row] {
+            Line::Row(_, value) => Some(Activation {
+                value: value.clone(),
+                column,
+            }),
+            Line::Header(_) => None,
+        }
     }
 
     /// Draws the menu (over whatever the caller already drew).
@@ -422,24 +600,32 @@ impl Menu {
             TEXT_SECONDARY,
         );
 
-        let (_, row, first, visible) = self.layout();
+        let ListWindow {
+            pitch: row,
+            first,
+            visible,
+            ..
+        } = self.window();
         let text_size = (26.0 * s * (row / (ITEM_HEIGHT * s))).clamp(18.0 * s, 26.0 * s);
-        for (index, label) in self.items.iter().enumerate() {
+        for (index, line) in self.lines.iter().enumerate() {
             let Some(rect) = self.item_rect(index) else {
                 continue;
             };
-            if self.is_header(index) {
-                let size = (20.0 * s).min(text_size);
-                let dims = measure_text(label, None, numeric::font_size(size), 1.0);
-                draw_text(
-                    label,
-                    rect.x + (rect.w - dims.width) * 0.5,
-                    rect.y + rect.h * 0.68,
-                    size,
-                    TEXT_SECONDARY,
-                );
-                continue;
-            }
+            let label = match line {
+                Line::Header(text) => {
+                    let size = (20.0 * s).min(text_size);
+                    let dims = measure_text(text, None, numeric::font_size(size), 1.0);
+                    draw_text(
+                        text,
+                        rect.x + (rect.w - dims.width) * 0.5,
+                        rect.y + rect.h * 0.68,
+                        size,
+                        TEXT_SECONDARY,
+                    );
+                    continue;
+                }
+                Line::Row(label, _) => label,
+            };
             let selected = index == self.selected && !busy;
             let hovered = self.hover == Some(index) && !busy;
             if selected {
@@ -453,29 +639,36 @@ impl Menu {
                 (false, true) => TEXT_PRIMARY,
                 (false, false) => TEXT_BODY,
             };
-            if self.title == "CONTROLS"
-                && let Some((name, keys)) = label.rsplit_once(": ")
-                && let Some((primary, secondary)) = keys.split_once(" | ")
-            {
-                let columns = BindingColumns::of(rect, s);
-                for (text, column) in [
-                    (name, columns.name),
-                    (primary, columns.primary),
-                    (secondary, columns.secondary),
-                ] {
-                    let measured =
-                        measure_text(text, None, numeric::font_size(text_size), 1.0).width;
-                    let size = text_size * (column.w / measured.max(1.0)).min(1.0);
-                    draw_text(text, column.x, rect.y + rect.h * 0.68, size, color);
+            match label {
+                Label::Binding { name, keys, marked } => {
+                    let columns = BindingColumns::of(rect, s);
+                    let key = |slot: usize| {
+                        if *marked == Some(slot) {
+                            format!("[{}]", keys[slot])
+                        } else {
+                            keys[slot].clone()
+                        }
+                    };
+                    for (text, column) in [
+                        (name.clone(), columns.name),
+                        (key(0), columns.primary),
+                        (key(1), columns.secondary),
+                    ] {
+                        let measured =
+                            measure_text(&text, None, numeric::font_size(text_size), 1.0).width;
+                        let size = text_size * (column.w / measured.max(1.0)).min(1.0);
+                        draw_text(&text, column.x, rect.y + rect.h * 0.68, size, color);
+                    }
                 }
-            } else {
-                draw_text(
-                    label,
-                    rect.x + 18.0 * s,
-                    rect.y + rect.h * 0.68,
-                    text_size,
-                    color,
-                );
+                Label::Text(text) => {
+                    draw_text(
+                        text,
+                        rect.x + 18.0 * s,
+                        rect.y + rect.h * 0.68,
+                        text_size,
+                        color,
+                    );
+                }
             }
         }
         // Scroll cues when the list is windowed.
@@ -489,7 +682,7 @@ impl Menu {
                 TEXT_SECONDARY,
             );
         }
-        if first + visible < self.items.len() {
+        if first + visible < self.lines.len() {
             let r = self.item_rect(first + visible - 1).unwrap();
             draw_text(
                 "v",
@@ -500,11 +693,11 @@ impl Menu {
             );
         }
 
-        if self.items.is_empty() || busy {
+        if self.lines.is_empty() || busy {
             return;
         }
 
-        let scrolls = first > 0 || first + visible < self.items.len();
+        let scrolls = first > 0 || first + visible < self.lines.len();
         let hint = coaching.map_or_else(
             || menu_footer(crate::platform::TOUCH_ONLY, scrolls),
             binding_hint,

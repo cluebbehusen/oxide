@@ -28,10 +28,11 @@ fn drive(shelf: &mut Shelf, key: Key) -> Out {
 fn activate(shelf: &mut Shelf, label: &str) -> Out {
     let target = shelf
         .menu
+        .view()
         .items
         .iter()
         .position(|i| i == label)
-        .unwrap_or_else(|| panic!("no row labeled {label} in {:?}", shelf.menu.items));
+        .unwrap_or_else(|| panic!("no row labeled {label} in {:?}", shelf.menu.view().items));
     while shelf.menu.selected < target {
         drive(shelf, Key::Down);
     }
@@ -52,7 +53,7 @@ fn the_back_button_leaves_even_after_every_record_is_deleted() {
         "/nowhere/m.json".into(),
     )]);
     shelf.set_catalog(Vec::new());
-    assert!(shelf.menu.items.is_empty());
+    assert!(shelf.menu.view().items.is_empty());
     assert_eq!(drive(&mut shelf, Key::Enter), Out::Stay);
     for touch in [false, true] {
         let mut mouse = vec2(0.0, 0.0);
@@ -75,7 +76,7 @@ fn a_record_says_how_to_act_only_as_coaching() {
         shelf.coaching().as_deref(),
         Some("{confirm} watches | {delete} twice deletes")
     );
-    shelf.arming = Some(shelf.menu.selected);
+    shelf.arming = shelf.menu.value().copied();
     assert!(
         shelf.subtitle().contains("again to delete"),
         "an armed delete says so"
@@ -91,7 +92,7 @@ fn records_shelve_into_their_sections_and_the_cursor_skips_the_headers() {
         entry("done", true, RecordKind::Match, "/nowhere/m.json".into()),
     ]);
     assert_eq!(
-        shelf.menu.items,
+        shelf.menu.view().items,
         vec!["SAVES", "live", "named", "REPLAYS", "done"],
         "saves first, replays after"
     );
@@ -100,7 +101,7 @@ fn records_shelve_into_their_sections_and_the_cursor_skips_the_headers() {
     // Walking down never rests on the REPLAYS header.
     drive(&mut shelf, Key::Down);
     drive(&mut shelf, Key::Down);
-    assert_eq!(shelf.menu.items[shelf.menu.selected], "done");
+    assert_eq!(shelf.menu.view().items[shelf.menu.selected], "done");
 }
 
 #[test]

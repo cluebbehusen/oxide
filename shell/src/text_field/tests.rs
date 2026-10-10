@@ -18,9 +18,17 @@ fn key(key: Key) -> [RawEvent; 1] {
 #[test]
 fn the_field_edits_caps_and_commits_a_trimmed_value() {
     let mut field = TextField::new("JOIN MATCH", "JOIN", "ab\u{e9}c", 5);
-    assert_eq!(field.menu().items, vec!["abc_"], "the prefill is filtered");
+    assert_eq!(
+        field.menu(0).view().items,
+        vec!["abc_"],
+        "the prefill is filtered"
+    );
     feed(&mut field, &text("def"));
-    assert_eq!(field.menu().items, vec!["abcde_"], "the cap refuses more");
+    assert_eq!(
+        field.menu(0).view().items,
+        vec!["abcde_"],
+        "the cap refuses more"
+    );
     feed(&mut field, &key(Key::Backspace));
     feed(&mut field, &text(" "));
     assert_eq!(

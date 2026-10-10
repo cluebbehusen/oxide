@@ -1,6 +1,27 @@
 use super::*;
 use macroquad::prelude::vec2;
 
+/// Where `row` sits on this build's settings face.
+fn index(row: Row) -> usize {
+    rows(crate::platform::TOUCH_ONLY)
+        .iter()
+        .position(|offered| *offered == row)
+        .expect("the row is offered on this build")
+}
+
+/// The Controls face's lines before Reset: the action each row binds,
+/// `None` for section headings.
+fn control_rows() -> Vec<Option<Action>> {
+    controls_lines(&Config::default(), 0)
+        .iter()
+        .filter_map(|line| match line {
+            Line::Header(_) => Some(None),
+            Line::Row(_, Item::Binding(action)) => Some(Some(*action)),
+            Line::Row(_, Item::ResetBindings | Item::Setting(_)) => None,
+        })
+        .collect()
+}
+
 #[test]
 fn a_capture_prompt_is_information_and_key_help_is_coaching() {
     let config = Config::default();
@@ -12,7 +33,9 @@ fn a_capture_prompt_is_information_and_key_help_is_coaching() {
     );
     screen.goto_controls(&config, 1);
     assert!(screen.coaching().is_some(), "the controls key help too");
-    screen.face = Face::Controls { rebinding: Some(1) };
+    screen.face = Face::Controls {
+        rebinding: Some(Action::PanUp),
+    };
     assert!(
         screen.subtitle().starts_with("press the new chord"),
         "an armed capture always says it is listening"
@@ -47,18 +70,18 @@ fn marker_settings_apply_live_and_remain_touch_reachable_in_small_windows() {
     crate::render::set_user_scale(1.5);
     let mut config = Config::default();
     let mut screen = SettingsScreen::open(&config);
-    screen.menu.select(Row::MarkerTiming.index());
+    screen.menu.select(index(Row::MarkerTiming));
     for (label, midpoint) in [("Earlier", 26.0), ("Later", 14.0), ("Standard", 20.0)] {
         let update = drive(&mut screen, &mut config, &press(Key::Enter), false);
         assert!(update.dirty);
-        assert!(screen.menu.items[Row::MarkerTiming.index()].ends_with(label));
+        assert!(screen.menu.view().items[index(Row::MarkerTiming)].ends_with(label));
         assert_eq!(crate::strategic_markers::marker_alpha(midpoint), 0.5);
     }
-    screen.menu.select(Row::MarkerSize.index());
+    screen.menu.select(index(Row::MarkerSize));
     for size in [1.25, 1.5, 0.75, 1.0] {
         let rect = screen
             .menu
-            .item_rect(Row::MarkerSize.index())
+            .item_rect(index(Row::MarkerSize))
             .expect("selected size row visible");
         let (x, y) = (rect.x + rect.w * 0.5, rect.y + rect.h * 0.5);
         let update = drive(
@@ -82,11 +105,13 @@ fn marker_settings_apply_live_and_remain_touch_reachable_in_small_windows() {
 fn the_back_button_steps_out_one_level_like_escape() {
     let mut config = Config::default();
     let mut screen = SettingsScreen::open(&config);
-    assert!(!screen.menu.items.iter().any(|item| item == "Back"));
+    assert!(!screen.menu.view().items.iter().any(|item| item == "Back"));
     let back = crate::button::press_back(true);
 
     screen.goto_controls(&config, 1);
-    screen.face = Face::Controls { rebinding: Some(1) };
+    screen.face = Face::Controls {
+        rebinding: Some(Action::PanUp),
+    };
     let update = drive(&mut screen, &mut config, &back, false);
     assert_eq!(
         screen.face,
@@ -98,7 +123,7 @@ fn the_back_button_steps_out_one_level_like_escape() {
 
     drive(&mut screen, &mut config, &back, false);
     assert_eq!(screen.face, Face::Settings);
-    assert_eq!(screen.menu.selected, Row::Controls.index());
+    assert_eq!(screen.menu.selected, index(Row::Controls));
 
     let update = drive(&mut screen, &mut config, &back, false);
     assert_eq!(update.out, Out::Leave);
@@ -118,7 +143,7 @@ fn press(key: Key) -> Vec<RawEvent> {
 fn cycling_a_row_edits_the_config_and_reports_dirty() {
     let mut config = Config::default();
     let mut s = SettingsScreen::open(&config);
-    for _ in 0..Row::ReducedMotion.index() {
+    for _ in 0..index(Row::ReducedMotion) {
         drive(&mut s, &mut config, &press(Key::Down), false);
     }
     let up = drive(&mut s, &mut config, &press(Key::Enter), false);
@@ -126,7 +151,7 @@ fn cycling_a_row_edits_the_config_and_reports_dirty() {
     assert!(up.dirty, "the caller is told to persist");
     assert_eq!(
         s.menu.selected,
-        Row::ReducedMotion.index(),
+        index(Row::ReducedMotion),
         "the cursor stays on the tuned row"
     );
 }
@@ -135,7 +160,7 @@ fn cycling_a_row_edits_the_config_and_reports_dirty() {
 fn music_volume_is_a_live_persisted_settings_row() {
     let mut config = Config::default();
     let mut screen = SettingsScreen::open(&config);
-    let music = Row::MusicVolume.index();
+    let music = index(Row::MusicVolume);
     for _ in 0..music {
         drive(&mut screen, &mut config, &press(Key::Down), false);
     }
@@ -143,7 +168,7 @@ fn music_volume_is_a_live_persisted_settings_row() {
     assert!(update.dirty);
     assert_eq!(config.volumes.music, 0.0);
     assert_eq!(screen.menu.selected, music);
-    assert_eq!(screen.menu.items[music], "Music volume: 0%");
+    assert_eq!(screen.menu.view().items[music], "Music volume: 0%");
 }
 
 #[test]
@@ -196,7 +221,7 @@ fn performance_cycles_with_keyboard_mouse_and_touch_in_small_windows() {
         crate::render::set_user_scale(scale);
         let mut config = Config::default();
         let mut screen = SettingsScreen::open(&config);
-        for _ in 0..Row::PerformanceDisplay.index() {
+        for _ in 0..index(Row::PerformanceDisplay) {
             drive(&mut screen, &mut config, &press(Key::Down), false);
         }
         for mode in [
@@ -206,7 +231,7 @@ fn performance_cycles_with_keyboard_mouse_and_touch_in_small_windows() {
         ] {
             let rect = screen
                 .menu
-                .item_rect(Row::PerformanceDisplay.index())
+                .item_rect(index(Row::PerformanceDisplay))
                 .expect("selected row visible");
             let (x, y) = (rect.center().x, rect.center().y);
             let events = match mode {
@@ -231,17 +256,20 @@ fn performance_cycles_with_keyboard_mouse_and_touch_in_small_windows() {
             let update = drive(&mut screen, &mut config, &events, false);
             assert!(update.dirty);
             assert_eq!(config.performance_display, mode);
-            assert_eq!(screen.menu.selected, Row::PerformanceDisplay.index());
+            assert_eq!(screen.menu.selected, index(Row::PerformanceDisplay));
             assert_eq!(
-                screen.menu.items[Row::PerformanceDisplay.index()],
+                screen.menu.view().items[index(Row::PerformanceDisplay)],
                 format!("Performance display: {}", mode.label())
             );
         }
         assert_eq!(
-            screen.menu.items[Row::LeftHandedPreset.index()],
+            screen.menu.view().items[index(Row::LeftHandedPreset)],
             "Apply left-handed bindings"
         );
-        assert_eq!(screen.menu.items[Row::Controls.index()], "Controls...");
+        assert_eq!(
+            screen.menu.view().items[index(Row::Controls)],
+            "Controls..."
+        );
     }
 }
 
@@ -379,7 +407,7 @@ fn leaving_the_controls_face_clears_the_notice() {
 fn the_left_handed_preset_moves_the_verbs_and_reset_walks_home() {
     let mut config = Config::default();
     let mut s = SettingsScreen::open(&config);
-    for _ in 0..Row::LeftHandedPreset.index() {
+    for _ in 0..index(Row::LeftHandedPreset) {
         drive(&mut s, &mut config, &press(Key::Down), false);
     }
     let up = drive(&mut s, &mut config, &press(Key::Enter), false);
@@ -439,18 +467,18 @@ fn escaping_controls_returns_the_cursor_to_the_controls_row() {
     let mut config = Config::default();
     let mut screen = SettingsScreen::open(&config);
     assert_eq!(
-        settings_menu(&config).items[Row::Controls.index()],
+        settings_menu(&config).view().items[index(Row::Controls)],
         "Controls...",
         "the derived index names the row it claims"
     );
-    screen.menu.select(Row::Controls.index());
+    screen.menu.select(index(Row::Controls));
     drive(&mut screen, &mut config, &press(Key::Enter), false);
     assert!(matches!(screen.face, Face::Controls { .. }));
     drive(&mut screen, &mut config, &press(Key::Escape), false);
     assert!(matches!(screen.face, Face::Settings));
     assert_eq!(
         screen.menu.selected,
-        Row::Controls.index(),
+        index(Row::Controls),
         "the cursor comes back to the row that was activated"
     );
 }
@@ -592,8 +620,13 @@ fn click_pan_up_at(
         ],
         false,
     );
-    assert!(matches!(screen.face, Face::Controls { rebinding: Some(r) } if r == row));
-    (screen.binding_slot, screen.menu.items[row].clone())
+    assert_eq!(
+        screen.face,
+        Face::Controls {
+            rebinding: Some(Action::PanUp)
+        }
+    );
+    (screen.binding_slot, screen.menu.view().items[row].clone())
 }
 
 #[test]
@@ -627,19 +660,20 @@ fn diagnostics_rows_survive_without_a_capture_toggle() {
     let menu = settings_menu(&config);
     assert!(
         !menu
+            .view()
             .items
             .iter()
             .any(|item| item.starts_with("Diagnostics:"))
     );
     assert_eq!(
-        menu.items[Row::OpenDiagnostics.index()],
+        menu.view().items[index(Row::OpenDiagnostics)],
         "Open diagnostics folder"
     );
     assert_eq!(
-        menu.items[Row::ExportDiagnostics.index()],
+        menu.view().items[index(Row::ExportDiagnostics)],
         "Export diagnostic report"
     );
-    assert_eq!(menu.items[Row::Controls.index()], "Controls...");
+    assert_eq!(menu.view().items[index(Row::Controls)], "Controls...");
     let mut old = serde_json::to_value(&config).unwrap();
     old.as_object_mut()
         .unwrap()

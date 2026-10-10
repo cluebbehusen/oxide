@@ -3,7 +3,7 @@
 //! Windowless update; the main loop opens sessions and draws.
 
 use crate::game::SoundKind;
-use crate::menu::Menu;
+use crate::menu::{Label, Line, Menu};
 use crate::saves::ReplayEntry;
 use macroquad::prelude::Vec2;
 use oxide_protocol::{Key, RawEvent};
@@ -26,16 +26,6 @@ pub enum Out {
     Delete(std::path::PathBuf),
 }
 
-/// What one menu row stands for. Rows are values, not index arithmetic,
-/// because the section headers shift every index below them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RowKind {
-    /// A section label; the cursor skips it, clicks ignore it.
-    Header,
-    /// A record, by index into `entries`.
-    Entry(usize),
-}
-
 /// The shelf screen: discovered records, their sectioned menu, and the
 /// two-press delete arming state.
 pub struct Shelf {
@@ -43,13 +33,12 @@ pub struct Shelf {
     /// within its section.
     pub entries: Vec<ReplayEntry>,
     pub(crate) catalog_ready: bool,
-    /// The rows: section headers and one row per entry. The exit is the
-    /// BACK button outside the rows, so no delete-refresh can drop it
-    /// and strand a mouse-only player in an exitless menu.
-    pub menu: Menu,
-    /// What each menu row stands for, parallel to `menu.items`.
-    rows: Vec<RowKind>,
-    /// Menu row armed for deletion; X on the same row confirms.
+    /// The rows: section headers and one row per entry, standing for its
+    /// index into `entries`. The exit is the BACK button outside the
+    /// rows, so no delete-refresh can drop it and strand a mouse-only
+    /// player in an exitless menu.
+    pub menu: Menu<usize>,
+    /// Entry armed for deletion; X on the same entry confirms.
     pub arming: Option<usize>,
     back: crate::button::BackButton,
 }
@@ -63,18 +52,11 @@ impl Shelf {
     }
 
     pub(crate) fn set_catalog(&mut self, entries: Vec<ReplayEntry>) {
-        let selected = self.rows.get(self.menu.selected).and_then(|row| match row {
-            RowKind::Entry(i) => Some(self.entries[*i].path.clone()),
-            RowKind::Header => None,
-        });
+        let selected = self.menu.value().map(|i| self.entries[*i].path.clone());
         let mut fresh = Self::from_entries(entries);
-        if let Some(path) = selected
-            && let Some(row) = fresh
-                .rows
-                .iter()
-                .position(|row| matches!(row, RowKind::Entry(i) if fresh.entries[*i].path == path))
-        {
-            fresh.menu.select(row);
+        if let Some(path) = selected {
+            let paths: Vec<_> = fresh.entries.iter().map(|e| e.path.clone()).collect();
+            fresh.menu.select_where(|i| paths[*i] == path);
         }
         fresh.catalog_ready = true;
         // A refresh landing mid-press must not drop the BACK gesture.
@@ -86,9 +68,7 @@ impl Shelf {
     /// Sections appear only when they have rows; an empty shelf is just
     /// the empty-state subtitle.
     pub fn from_entries(entries: Vec<ReplayEntry>) -> Self {
-        let mut items: Vec<String> = Vec::new();
-        let mut rows: Vec<RowKind> = Vec::new();
-        let mut headers: Vec<usize> = Vec::new();
+        let mut lines = Vec::new();
         for (title, resumable) in [("SAVES", true), ("REPLAYS", false)] {
             let section: Vec<usize> = entries
                 .iter()
@@ -99,19 +79,15 @@ impl Shelf {
             if section.is_empty() {
                 continue;
             }
-            headers.push(items.len());
-            items.push(title.to_string());
-            rows.push(RowKind::Header);
+            lines.push(Line::Header(title.to_string()));
             for i in section {
-                items.push(entries[i].label.clone());
-                rows.push(RowKind::Entry(i));
+                lines.push(Line::Row(Label::Text(entries[i].label.clone()), i));
             }
         }
         Self {
             entries,
             catalog_ready: true,
-            menu: Menu::with_headers("SAVES & REPLAYS", items, headers),
-            rows,
+            menu: Menu::new("SAVES & REPLAYS", lines),
             arming: None,
             back: crate::button::BackButton::default(),
         }
@@ -143,11 +119,7 @@ impl Shelf {
         }
         if let Some(row) = picked {
             sounds.push((SoundKind::Click, None));
-            let entry = match self.rows.get(row) {
-                Some(RowKind::Entry(i)) => self.entries.get(*i),
-                _ => return Out::Stay,
-            };
-            return match entry {
+            return match self.entries.get(row.value) {
                 Some(entry) if entry.compatible && entry.kind.resumable() => {
                     Out::Load(entry.path.clone())
                 }
@@ -162,14 +134,13 @@ impl Shelf {
         }
         if x_pressed
             && self.catalog_ready
-            && let Some(RowKind::Entry(i)) = self.rows.get(self.menu.selected).copied()
+            && let Some(&i) = self.menu.value()
         {
-            let row = self.menu.selected;
-            if self.arming == Some(row) {
+            if self.arming == Some(i) {
                 self.arming = None;
                 return Out::Delete(self.entries[i].path.clone());
             }
-            self.arming = Some(row);
+            self.arming = Some(i);
         }
         Out::Stay
     }
@@ -177,34 +148,28 @@ impl Shelf {
     /// How to act on the focused row: coaching for the footer. None while
     /// a delete is armed, since the subtitle already says what to press.
     pub fn coaching(&self) -> Option<String> {
-        if self.arming == Some(self.menu.selected) {
+        let i = *self.menu.value()?;
+        if self.arming == Some(i) {
             return None;
         }
-        match self.rows.get(self.menu.selected) {
-            Some(RowKind::Entry(i)) => self
-                .entries
-                .get(*i)
-                .map(|entry| entry.hint.clone())
-                .filter(|hint| !hint.is_empty()),
-            _ => None,
-        }
+        self.entries
+            .get(i)
+            .map(|entry| entry.hint.clone())
+            .filter(|hint| !hint.is_empty())
     }
 
     /// The focused row's detail line.
     pub fn subtitle(&self) -> String {
         if self.entries.is_empty() {
             "nothing recorded yet: finish a match or quit one mid-way".to_string()
-        } else if self.arming == Some(self.menu.selected) {
+        } else if self.arming.is_some() && self.arming == self.menu.value().copied() {
             "press {delete} again to delete this record".to_string()
         } else {
-            match self.rows.get(self.menu.selected) {
-                Some(RowKind::Entry(i)) => self
-                    .entries
-                    .get(*i)
-                    .map(|e| e.blurb.clone())
-                    .unwrap_or_default(),
-                _ => String::new(),
-            }
+            self.menu
+                .value()
+                .and_then(|i| self.entries.get(*i))
+                .map(|e| e.blurb.clone())
+                .unwrap_or_default()
         }
     }
 }

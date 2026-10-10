@@ -2,21 +2,26 @@ use super::*;
 use macroquad::prelude::vec2;
 use oxide_protocol::{Key, RawEvent};
 
-fn sectioned() -> Menu {
-    // rows: [H] a b [H] c d
-    Menu::with_headers(
+/// Rows `[H] a b [H] c d`, each row standing for its own index.
+fn sectioned() -> Menu<usize> {
+    let row = |label: &str, index| Line::Row(Label::from(label), index);
+    Menu::new(
         "T",
-        ["- one -", "a", "b", "- two -", "c", "d"]
-            .into_iter()
-            .map(String::from)
-            .collect(),
-        vec![0, 3],
+        vec![
+            Line::Header("- one -".to_string()),
+            row("a", 1),
+            row("b", 2),
+            Line::Header("- two -".to_string()),
+            row("c", 4),
+            row("d", 5),
+        ],
     )
 }
 
-fn press(menu: &mut Menu, key: Key) -> Option<usize> {
+fn press(menu: &mut Menu<usize>, key: Key) -> Option<usize> {
     let mut mouse = vec2(0.0, 0.0);
     menu.handle(&[RawEvent::KeyDown { key }], &mut mouse)
+        .map(|picked| picked.value)
 }
 
 #[test]
@@ -46,10 +51,12 @@ fn a_header_never_activates() {
 
 #[test]
 fn an_all_header_menu_refuses_keyboard_activation() {
-    let mut menu = Menu::with_headers(
+    let mut menu: Menu<usize> = Menu::new(
         "HEADERS",
-        vec!["one".to_string(), "two".to_string()],
-        vec![0, 1],
+        vec![
+            Line::Header("one".to_string()),
+            Line::Header("two".to_string()),
+        ],
     );
 
     assert!(menu.is_header(menu.selected));
@@ -92,7 +99,7 @@ fn mouse_activation_requires_a_release_on_the_armed_row() {
         ),
         None
     );
-    assert_eq!(menu.hover(), Some(2));
+    assert_eq!(menu.view().hover, Some(2));
     assert_eq!(menu.selected, 1, "hover is not keyboard selection");
 
     assert_eq!(
@@ -130,7 +137,10 @@ fn mouse_activation_requires_a_release_on_the_armed_row() {
             ],
             &mut mouse,
         ),
-        Some(2)
+        Some(Activation {
+            value: 2,
+            column: None
+        })
     );
     assert_eq!(menu.selected, 2);
 }
@@ -164,4 +174,57 @@ fn fractional_trackpad_motion_accumulates_before_scrolling_a_row() {
         start,
         "three partial notches cross one row"
     );
+}
+
+fn controls() -> Menu<usize> {
+    Menu::new(
+        "KEYS",
+        vec![
+            Line::Header("Camera".to_string()),
+            Line::Row(
+                Label::Binding {
+                    name: "Pan up".to_string(),
+                    keys: ["W".to_string(), "I".to_string()],
+                    marked: Some(1),
+                },
+                1,
+            ),
+        ],
+    )
+}
+
+#[test]
+fn a_binding_row_reads_as_one_line_with_its_marked_chord() {
+    assert_eq!(controls().view().items, vec!["Camera", "Pan up: W | [I]"]);
+}
+
+#[test]
+fn binding_rows_widen_the_list_and_report_the_clicked_chord() {
+    crate::render::set_viewport(1280.0, 800.0);
+    let mut menu = controls();
+    let plain = Menu::list("PLAIN", vec!["one".to_string(), "two".to_string()]);
+    let row = menu.item_rect(1).expect("the binding row shows");
+    assert!(row.w > plain.item_rect(1).expect("a plain row").w);
+    let columns = BindingColumns::of(row, crate::render::ui_scale());
+    let click = |x: f32| {
+        let button = oxide_protocol::MouseButton::Left;
+        let y = row.center().y;
+        [
+            RawEvent::MouseDown { button, x, y },
+            RawEvent::MouseUp { button, x, y },
+        ]
+    };
+    let mut mouse = vec2(0.0, 0.0);
+    let picked = menu.handle(&click(columns.secondary.center().x), &mut mouse);
+    assert_eq!(
+        picked,
+        Some(Activation {
+            value: 1,
+            column: Some(1)
+        })
+    );
+    let picked = menu.handle(&click(columns.name.center().x), &mut mouse);
+    assert_eq!(picked.and_then(|picked| picked.column), None);
+    let picked = menu.handle(&[RawEvent::KeyDown { key: Key::Enter }], &mut mouse);
+    assert_eq!(picked.and_then(|picked| picked.column), None);
 }

@@ -6,7 +6,7 @@
 use crate::action::{Action, BindingMap, Chord};
 use crate::config::Config;
 use crate::game::SoundKind;
-use crate::menu::Menu;
+use crate::menu::{Label, Line, Menu};
 use crate::nav::{Axis, Nav, step_line};
 use crate::numeric;
 use crate::render;
@@ -18,10 +18,10 @@ use oxide_protocol::{Key, RawEvent};
 pub enum Face {
     /// Volume, scale, camera, motion rows.
     Settings,
-    /// Key remapping; `rebinding` is the armed row awaiting its chord.
+    /// Key remapping; `rebinding` is the action awaiting its chord.
     Controls {
-        /// The action row armed for rebinding, if any.
-        rebinding: Option<usize>,
+        /// The action armed for rebinding, if any.
+        rebinding: Option<Action>,
     },
 }
 
@@ -154,18 +154,22 @@ fn control_sections() -> Vec<(&'static str, Vec<Action>)> {
     ]);
     sections
 }
-fn control_rows() -> Vec<Option<Action>> {
-    control_sections()
-        .into_iter()
-        .flat_map(|(_, actions)| std::iter::once(None).chain(actions.into_iter().map(Some)))
-        .collect()
+/// What a row of either face stands for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Item {
+    /// A settings row.
+    Setting(Row),
+    /// A Controls row: its action's two chords.
+    Binding(Action),
+    /// Controls' last row: every binding back to the classic map.
+    ResetBindings,
 }
 
 /// One settings row. Rows are values, not indices: the label, the cycle
 /// step, and the activation route all key off the row itself, so inserting a
 /// row cannot leave a stale index pointing at its neighbour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Row {
+pub(crate) enum Row {
     MasterVolume,
     EffectsVolume,
     UiVolume,
@@ -206,14 +210,6 @@ impl Row {
         Row::OpenDiagnostics,
         Row::ExportDiagnostics,
     ];
-
-    /// Where this row sits in this build's menu.
-    fn index(self) -> usize {
-        rows(crate::platform::TOUCH_ONLY)
-            .iter()
-            .position(|row| *row == self)
-            .expect("the row is offered on this build")
-    }
 
     /// Rows a touch-only build cannot use: key rebinding needs a
     /// keyboard, edge pan needs a hovering pointer, and there is no file
@@ -272,14 +268,15 @@ fn rows(touch_only: bool) -> Vec<Row> {
         .collect()
 }
 
-fn settings_menu(config: &Config) -> Menu {
-    Menu::new(
-        "SETTINGS",
-        rows(crate::platform::TOUCH_ONLY)
-            .iter()
-            .map(|row| row.label(config))
-            .collect(),
-    )
+fn settings_lines(config: &Config) -> Vec<Line<Item>> {
+    rows(crate::platform::TOUCH_ONLY)
+        .into_iter()
+        .map(|row| Line::Row(Label::Text(row.label(config)), Item::Setting(row)))
+        .collect()
+}
+
+fn settings_menu(config: &Config) -> Menu<Item> {
+    Menu::new("SETTINGS", settings_lines(config))
 }
 
 /// Advances one settings row to its next value step. Returns false on
@@ -338,29 +335,31 @@ fn cycle_setting(config: &mut Config, row: Row) -> bool {
     true
 }
 
-fn controls_menu(config: &Config, selected_slot: usize) -> Menu {
-    let mut items = Vec::new();
-    let mut headers = Vec::new();
+/// Controls' lines, the chosen chord column bracketed on every row.
+fn controls_lines(config: &Config, selected_slot: usize) -> Vec<Line<Item>> {
+    let mut lines = Vec::new();
     for (section, actions) in control_sections() {
-        headers.push(items.len());
-        items.push(section.to_uppercase());
+        lines.push(Line::Header(section.to_uppercase()));
         for action in actions {
-            let label = |slot| {
-                let value = config
+            let key = |slot| {
+                config
                     .bindings
                     .chord_at(action, slot)
-                    .map_or_else(|| "unbound".into(), BindingMap::chord_label);
-                if slot == selected_slot {
-                    format!("[{value}]")
-                } else {
-                    value
-                }
+                    .map_or_else(|| "unbound".into(), BindingMap::chord_label)
             };
-            items.push(format!("{}: {} | {}", action.label(), label(0), label(1)));
+            let label = Label::Binding {
+                name: action.label(),
+                keys: [key(0), key(1)],
+                marked: Some(selected_slot),
+            };
+            lines.push(Line::Row(label, Item::Binding(action)));
         }
     }
-    items.push("Reset all to defaults".into());
-    Menu::with_headers("CONTROLS", items, headers)
+    lines.push(Line::Row(
+        Label::from("Reset all to defaults"),
+        Item::ResetBindings,
+    ));
+    lines
 }
 
 /// The settings screen (both faces).
@@ -368,7 +367,7 @@ pub struct SettingsScreen {
     /// Which face is up.
     pub face: Face,
     /// The face's live menu.
-    pub menu: Menu,
+    pub menu: Menu<Item>,
     /// The screen's status line, if one is up.
     pub notice: Option<Notice>,
     binding_slot: usize,
@@ -424,13 +423,14 @@ impl SettingsScreen {
     fn leave_controls(&mut self, config: &Config) {
         self.face = Face::Settings;
         self.menu = settings_menu(config);
-        self.menu.select(Row::Controls.index());
+        self.menu
+            .select_where(|item| *item == Item::Setting(Row::Controls));
         self.notice = None;
     }
 
     fn goto_controls(&mut self, config: &Config, select: usize) {
         self.face = Face::Controls { rebinding: None };
-        self.menu = controls_menu(config, self.binding_slot);
+        self.menu = Menu::new("CONTROLS", controls_lines(config, self.binding_slot));
         self.menu.select(select);
         self.notice = None;
     }
@@ -498,8 +498,9 @@ impl SettingsScreen {
             Face::Settings => {
                 if escaped {
                     update.out = Out::Leave;
-                } else if let Some(index) = self.menu.handle(events, mouse) {
-                    let row = rows(crate::platform::TOUCH_ONLY)[index];
+                } else if let Some(Item::Setting(row)) =
+                    self.menu.handle(events, mouse).map(|picked| picked.value)
+                {
                     sounds.push((SoundKind::Click, None));
                     // Any activation clears the standing notice.
                     self.notice = None;
@@ -507,9 +508,7 @@ impl SettingsScreen {
                         // Apply live, persist, keep the cursor on the
                         // row being tuned.
                         update.dirty = true;
-                        let selected = self.menu.selected;
-                        self.menu = settings_menu(config);
-                        self.menu.select(selected);
+                        self.menu.set_lines(settings_lines(config));
                     } else if row == Row::LeftHandedPreset {
                         // The left-handed preset replaces the whole
                         // profile (custom rebinds included — Controls'
@@ -520,9 +519,7 @@ impl SettingsScreen {
                             text: "left-handed profile applied".to_string(),
                             danger: false,
                         });
-                        let selected = self.menu.selected;
-                        self.menu = settings_menu(config);
-                        self.menu.select(selected);
+                        self.menu.set_lines(settings_lines(config));
                     } else if row == Row::OpenDiagnostics {
                         update.out = Out::OpenDiagnostics;
                     } else if row == Row::ExportDiagnostics {
@@ -533,7 +530,7 @@ impl SettingsScreen {
                 }
             }
             Face::Controls {
-                rebinding: Some(row),
+                rebinding: Some(target),
             } => {
                 // Armed: the next key is the answer, read raw before any
                 // binding resolution so its current meaning does not fire.
@@ -557,22 +554,18 @@ impl SettingsScreen {
                     }
                 }
                 match pressed {
-                    Some((Key::Escape, false, false))
-                        if control_rows()[row] != Some(Action::Back) =>
-                    {
+                    Some((Key::Escape, false, false)) if target != Action::Back => {
                         self.face = Face::Controls { rebinding: None };
                         self.notice = None;
                     }
                     Some((key, ctrl, shift)) => {
-                        let Some(target) = control_rows()[row] else {
-                            return update;
-                        };
                         let chord = Chord { key, ctrl, shift };
                         if config
                             .bindings
                             .rebind_slot(target, self.binding_slot, chord)
                         {
                             update.dirty = true;
+                            let row = self.menu.selected;
                             self.goto_controls(config, row);
                         } else {
                             // Refused: name the holder, so the player
@@ -614,47 +607,36 @@ impl SettingsScreen {
                     self.goto_controls(config, row);
                 } else if escaped {
                     self.leave_controls(config);
-                } else if x_pressed
-                    && control_rows()
-                        .get(self.menu.selected)
-                        .is_some_and(Option::is_some)
-                {
+                } else if x_pressed && let Some(&Item::Binding(target)) = self.menu.value() {
                     // X on a row unbinds it (outside capture mode, so the
                     // key is free to mean this).
-                    let target = control_rows()[self.menu.selected].expect("action row");
                     config.bindings.unbind_slot(target, self.binding_slot);
                     update.dirty = true;
                     let row = self.menu.selected;
                     self.goto_controls(config, row);
-                } else if let Some(row) = self.menu.handle(events, mouse) {
+                } else if let Some(picked) = self.menu.handle(events, mouse) {
                     sounds.push((SoundKind::Click, None));
                     self.notice = None;
-                    if events.iter().any(|e| {
-                        matches!(
-                            e,
-                            RawEvent::MouseDown { .. }
-                                | RawEvent::TouchDown { .. }
-                                | RawEvent::MouseUp { .. }
-                                | RawEvent::TouchUp { .. }
-                        )
-                    }) && let Some(rect) = self.menu.item_rect(row)
-                        && let Some(slot) =
-                            crate::menu::BindingColumns::of(rect, crate::render::ui_scale())
-                                .slot_at(mouse.x)
-                    {
+                    // A click on a chord chooses its column.
+                    if let Some(slot) = picked.column {
                         self.binding_slot = slot;
                     }
-                    if control_rows().get(row).is_some_and(Option::is_some) {
-                        self.face = Face::Controls {
-                            rebinding: Some(row),
-                        };
-                        // The brackets mark the chord being captured.
-                        self.menu.items = controls_menu(config, self.binding_slot).items;
-                    } else if row == control_rows().len() {
-                        // Reset to defaults.
-                        config.bindings = BindingMap::classic();
-                        update.dirty = true;
-                        self.goto_controls(config, row);
+                    match picked.value {
+                        Item::Binding(action) => {
+                            self.face = Face::Controls {
+                                rebinding: Some(action),
+                            };
+                            // The brackets mark the chord being captured.
+                            self.menu
+                                .set_lines(controls_lines(config, self.binding_slot));
+                        }
+                        Item::ResetBindings => {
+                            config.bindings = BindingMap::classic();
+                            update.dirty = true;
+                            let row = self.menu.selected;
+                            self.goto_controls(config, row);
+                        }
+                        Item::Setting(_) => {}
                     }
                 }
             }

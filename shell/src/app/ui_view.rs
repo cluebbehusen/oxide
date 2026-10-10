@@ -2,7 +2,7 @@
 //! reports it.
 
 use super::{App, Screen, ScreenKind};
-use crate::menu::Menu;
+use crate::menu::MenuView;
 use crate::render;
 use crate::screens::results::ResultsScreen;
 use macroquad::prelude::{Rect, screen_height};
@@ -16,10 +16,10 @@ pub(super) fn live_rect(screen: &Screen, rect: Rect) -> Option<[f32; 4]> {
 }
 
 pub(super) fn capture_ui(screen: &Screen, app: &App) -> UiView {
-    let (mode_name, menu): (&str, Option<&Menu>) = match screen {
-        Screen::Home(home) => (screen.mode(), Some(&home.menu)),
-        Screen::Settings { screen: sc, .. } => (screen.mode(), Some(&sc.menu)),
-        Screen::Codex { screen: codex, .. } => (screen.mode(), Some(&codex.menu)),
+    let (mode_name, menu): (&str, Option<MenuView>) = match screen {
+        Screen::Home(home) => (screen.mode(), Some(home.menu.view())),
+        Screen::Settings { screen: sc, .. } => (screen.mode(), Some(sc.menu.view())),
+        Screen::Codex { screen: codex, .. } => (screen.mode(), Some(codex.menu.view())),
         Screen::Wizard(w) => {
             // The wizard's custom screens (grid, setup) report the same
             // protocol surface the row menus do.
@@ -57,18 +57,34 @@ pub(super) fn capture_ui(screen: &Screen, app: &App) -> UiView {
                 group_column: None,
             };
         }
-        Screen::Replays(shelf) => (screen.mode(), Some(&shelf.menu)),
-        Screen::Lobby { screen: lobby, .. } => (screen.mode(), Some(&lobby.menu)),
-        Screen::Busy(busy) => (screen.mode(), Some(&busy.menu)),
-        Screen::Pause(ps) => (screen.mode(), Some(&ps.menu)),
+        Screen::Replays(shelf) => (screen.mode(), Some(shelf.menu.view())),
+        Screen::Lobby { screen: lobby, .. } => (screen.mode(), Some(lobby.menu.view())),
+        Screen::Busy(busy) => (screen.mode(), Some(busy.menu.view())),
+        Screen::Pause(ps) => (screen.mode(), Some(ps.menu.view())),
+    };
+    let (title, selected, items, visible_range, hover) = match menu {
+        Some(MenuView {
+            title,
+            selected,
+            items,
+            visible_range,
+            hover,
+        }) => (
+            Some(title),
+            Some(selected),
+            items,
+            Some(visible_range),
+            hover,
+        ),
+        None => (None, None, Vec::new(), None, None),
     };
     UiView {
         mode: mode_name.to_string(),
-        title: menu.map(|menu| menu.title.clone()),
-        selected: menu.map(|menu| menu.selected),
-        items: menu.map_or_else(Vec::new, |menu| menu.items.clone()),
-        visible_range: menu.map(Menu::visible_range),
-        hover: menu.and_then(Menu::hover),
+        title,
+        selected,
+        items,
+        visible_range,
+        hover,
         menu_button: live_rect(screen, app.game.presentation.layout.get().menu_button),
         pause_status: live_rect(screen, app.game.presentation.layout.get().pause_status),
         group_column: live_rect(screen, app.game.presentation.layout.get().group_column),

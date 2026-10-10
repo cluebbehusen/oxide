@@ -109,8 +109,11 @@ impl TextField {
     /// The field as a one-row menu, for the UI report. The caret is a
     /// static underscore, never a blink, so reduced motion holds and the
     /// shots suite stays deterministic.
-    pub fn menu(&self) -> Menu {
-        Menu::new(self.title, vec![format!("{}_", self.value)])
+    pub fn menu<R: Clone>(&self, value: R) -> Menu<R> {
+        Menu::rows(
+            self.title,
+            [(crate::menu::Label::Text(format!("{}_", self.value)), value)],
+        )
     }
 
     /// Consumes a request to raise the on-screen keyboard again.

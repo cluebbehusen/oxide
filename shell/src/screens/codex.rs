@@ -6,7 +6,7 @@
 
 use crate::assets::Sprites;
 use crate::game::SoundKind;
-use crate::menu::Menu;
+use crate::menu::{Label, Line, Menu};
 use crate::numeric;
 use crate::numeric::Fit;
 use crate::panel::{
@@ -84,10 +84,9 @@ fn sections() -> Vec<(&'static str, Vec<Entry>)> {
 
 /// The codex screen: the list and what each row opens.
 pub struct CodexScreen {
-    /// The live list: section headers and one row per kind.
-    pub menu: Menu,
-    /// The page behind each row (`None` for headers).
-    entries: Vec<Option<Entry>>,
+    /// The live list: section headers and one row per kind, each
+    /// standing for its page.
+    pub menu: Menu<Entry>,
     back: crate::button::BackButton,
 }
 
@@ -95,28 +94,22 @@ impl CodexScreen {
     /// Opens on the first machine. Where leaving lands is the
     /// coordinator's business.
     pub fn open() -> Self {
-        let mut items = Vec::new();
-        let mut entries = Vec::new();
-        let mut headers = Vec::new();
+        let mut lines = Vec::new();
         for (title, section) in sections() {
-            headers.push(items.len());
-            items.push(title.to_string());
-            entries.push(None);
+            lines.push(Line::Header(title.to_string()));
             for entry in section {
                 let name = match entry {
                     Entry::Unit(kind) => kind.name(),
                     Entry::Building(kind) => kind.name(),
                 };
-                items.push(entity_name(name));
-                entries.push(Some(entry));
+                lines.push(Line::Row(Label::Text(entity_name(name)), entry));
             }
         }
         // The list shifts left to make room for the page beside it.
-        let mut menu = Menu::with_headers("ROSTER", items, headers);
+        let mut menu = Menu::new("ROSTER", lines);
         menu.shift = -0.24;
         Self {
             menu,
-            entries,
             back: crate::button::BackButton::default(),
         }
     }
@@ -132,7 +125,7 @@ impl CodexScreen {
 
     /// The page under the cursor, if the cursor is on a kind.
     pub fn selected_entry(&self) -> Option<Entry> {
-        self.entries.get(self.menu.selected).copied().flatten()
+        self.menu.value().copied()
     }
 
     /// Applies a frame's events. Rows are pages, not verbs: moving the

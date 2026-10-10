@@ -350,17 +350,7 @@ impl Screen {
             Self::Replays(_) => "replays",
             Self::Lobby { .. } => "lobby",
             Self::Busy(busy) => busy.mode(),
-            Self::Pause(pause) => {
-                if pause.saving_failed() {
-                    "save_failed"
-                } else if pause.naming() {
-                    "save_name"
-                } else if pause.confirming() {
-                    "confirm_pause"
-                } else {
-                    "pause_menu"
-                }
-            }
+            Self::Pause(pause) => pause.mode_name(),
         }
     }
 }

@@ -1,6 +1,11 @@
 use super::*;
 use macroquad::prelude::vec2;
 
+/// Whether the confirmation dialog is up.
+fn confirming(p: &PauseScreen) -> bool {
+    matches!(p.face, Face::Confirm(_))
+}
+
 #[test]
 fn a_lan_match_menu_offers_no_save_or_restart() {
     let lan = PauseScreen::open(false, true).for_lan_match();
@@ -8,7 +13,7 @@ fn a_lan_match_menu_offers_no_save_or_restart() {
     assert!(!lan.rows.contains(&Row::SaveGame));
     assert!(!lan.rows.contains(&Row::Restart));
     assert!(lan.rows.contains(&Row::Surrender));
-    assert_eq!(lan.rows.len(), lan.menu.items.len());
+    assert_eq!(lan.rows.len(), lan.menu.view().items.len());
 }
 
 #[test]
@@ -17,19 +22,20 @@ fn a_lan_menu_keeps_its_rows_through_every_dialog() {
         assert_eq!(p.menu.title, "MENU");
         assert!(
             !p.menu
+                .view()
                 .items
                 .iter()
                 .any(|i| i == "Save Game" || i == "Restart")
         );
-        assert_eq!(p.menu.items.len(), p.rows.len());
+        assert_eq!(p.menu.view().items.len(), p.rows.len());
     };
     for label in ["Surrender", "Main Menu", "Quit"] {
         let mut p = PauseScreen::open(false, true).for_lan_match();
         activate(&mut p, label);
-        assert!(p.confirming());
+        assert!(confirming(&p));
         drive(&mut p, Key::Enter);
         lan_rows(&p);
-        assert_eq!(p.menu.items[p.menu.selected], label);
+        assert_eq!(p.menu.view().items[p.menu.selected], label);
         assert_eq!(activate(&mut p, "Settings"), Out::Settings);
     }
     let mut p = PauseScreen::open(false, true)
@@ -37,7 +43,7 @@ fn a_lan_menu_keeps_its_rows_through_every_dialog() {
         .with_save_failed("x".to_string(), LeaveVerb::MainMenu, false);
     assert_eq!(drive(&mut p, Key::Escape), Out::Stay);
     lan_rows(&p);
-    assert_eq!(p.menu.items[p.menu.selected], "Main Menu");
+    assert_eq!(p.menu.view().items[p.menu.selected], "Main Menu");
 }
 
 fn drive(p: &mut PauseScreen, key: Key) -> Out {
@@ -55,10 +61,11 @@ fn drive(p: &mut PauseScreen, key: Key) -> Out {
 fn activate(p: &mut PauseScreen, label: &str) -> Out {
     let target = p
         .menu
+        .view()
         .items
         .iter()
         .position(|i| i == label)
-        .unwrap_or_else(|| panic!("no row labeled {label} in {:?}", p.menu.items));
+        .unwrap_or_else(|| panic!("no row labeled {label} in {:?}", p.menu.view().items));
     while p.menu.selected < target {
         drive(p, Key::Down);
     }
@@ -97,12 +104,13 @@ fn a_notice_reads_as_the_subtitle_until_a_row_is_picked() {
 fn consequential_rows_confirm_with_cancel_preselected() {
     let mut p = PauseScreen::open(false, true);
     assert_eq!(activate(&mut p, "Restart"), Out::Stay, "Restart only arms");
-    assert!(p.confirming(), "the dialog is up");
+    assert!(confirming(&p), "the dialog is up");
     // Bare Enter declines: Cancel is the preselected row.
     assert_eq!(drive(&mut p, Key::Enter), Out::Stay);
-    assert!(!p.confirming(), "Cancel closed the dialog");
+    assert!(!confirming(&p), "Cancel closed the dialog");
     assert_eq!(
-        p.menu.items[p.menu.selected], "Restart",
+        p.menu.view().items[p.menu.selected],
+        "Restart",
         "the cursor returns to the armed row"
     );
     // Armed again, a deliberate second motion confirms.
@@ -135,20 +143,20 @@ fn escape_resumes_from_the_menu_but_only_cancels_the_dialog() {
     assert_eq!(drive(&mut p, Key::Escape), Out::Resume);
     let mut p = PauseScreen::open(false, true);
     activate(&mut p, "Main Menu");
-    assert!(p.confirming());
+    assert!(confirming(&p));
     assert_eq!(
         drive(&mut p, Key::Escape),
         Out::Stay,
         "Escape in the dialog cancels, never resumes past it"
     );
-    assert!(!p.confirming());
+    assert!(!confirming(&p));
 }
 
 #[test]
 fn resume_needs_no_confirmation_and_watch_exists_only_after_the_end() {
     let mut p = PauseScreen::open(true, false);
     assert!(
-        !p.menu.items.iter().any(|i| i == "Save Game"),
+        !p.menu.view().items.iter().any(|i| i == "Save Game"),
         "a finished match is a replay, not a resumable named save"
     );
     assert_eq!(drive(&mut p, Key::Enter), Out::Resume);
@@ -158,15 +166,15 @@ fn resume_needs_no_confirmation_and_watch_exists_only_after_the_end() {
     // the right target.
     let mut p = PauseScreen::open(false, true);
     assert!(
-        !p.menu.items.iter().any(|i| i == "Watch Replay"),
+        !p.menu.view().items.iter().any(|i| i == "Watch Replay"),
         "mid-match playback would be a fog-free scout of the enemy"
     );
     assert!(
-        p.menu.items.iter().any(|i| i == "Save Game"),
+        p.menu.view().items.iter().any(|i| i == "Save Game"),
         "a running match can be saved by name"
     );
     assert_eq!(activate(&mut p, "Restart"), Out::Stay, "Restart arms");
-    assert!(p.confirming());
+    assert!(confirming(&p));
     drive(&mut p, Key::Down);
     assert_eq!(drive(&mut p, Key::Enter), Out::Restart);
 }
@@ -185,7 +193,8 @@ fn the_save_failure_dialog_preselects_cancel_and_returns_to_the_verb() {
     assert_eq!(drive(&mut p, Key::Enter), Out::Stay);
     assert!(!p.saving_failed(), "Cancel closed the dialog");
     assert_eq!(
-        p.menu.items[p.menu.selected], "Quit",
+        p.menu.view().items[p.menu.selected],
+        "Quit",
         "the cursor returns to the verb that raised the dialog"
     );
 }
@@ -290,7 +299,7 @@ fn the_cancel_button_abandons_like_escape() {
     let (mut p, layout) = naming_at_1280("Skirmish | t40");
     assert_eq!(pointer(&mut p, &tap(layout.cancel.center())).0, Out::Stay);
     assert!(!p.naming());
-    assert_eq!(p.menu.items[p.menu.selected], "Save Game");
+    assert_eq!(p.menu.view().items[p.menu.selected], "Save Game");
 }
 
 #[test]
@@ -326,11 +335,12 @@ fn tapping_the_field_requests_the_keyboard_once() {
 fn save_game_never_confirms_and_bare_enter_saves_the_suggestion() {
     let mut p = PauseScreen::open(false, true);
     assert_eq!(activate(&mut p, "Save Game"), Out::SaveGame);
-    assert!(!p.confirming(), "saving destroys nothing — no dialog");
+    assert!(!confirming(&p), "saving destroys nothing — no dialog");
     p.begin_naming("skirmish | t100");
     assert!(p.naming());
     assert_eq!(
-        p.menu.items[0], "skirmish | t100_",
+        p.menu.view().items[0],
+        "skirmish | t100_",
         "prefilled, with a static caret"
     );
     // Enter alone commits the suggested name without any typing.
@@ -346,15 +356,16 @@ fn the_name_field_edits_with_text_and_backspace_and_escape_cancels() {
     p.begin_naming("");
     type_text(&mut p, "abc");
     assert_eq!(drive(&mut p, Key::Backspace), Out::Stay);
-    assert_eq!(p.menu.items[0], "ab_");
+    assert_eq!(p.menu.view().items[0], "ab_");
     // Letter keys are not text: only Text events edit the buffer, so an
     // injected semantic H cannot type.
     drive(&mut p, Key::H);
-    assert_eq!(p.menu.items[0], "ab_");
+    assert_eq!(p.menu.view().items[0], "ab_");
     assert_eq!(drive(&mut p, Key::Escape), Out::Stay, "Escape abandons");
     assert!(!p.naming());
     assert_eq!(
-        p.menu.items[p.menu.selected], "Save Game",
+        p.menu.view().items[p.menu.selected],
+        "Save Game",
         "the cursor returns to the verb"
     );
     // An empty name refuses to commit instead of writing a blank.
@@ -387,26 +398,26 @@ fn repeated_backspace_edges_clear_the_name_field_in_one_frame() {
         },
     ];
     assert_eq!(p.update(&repeats, &mut mouse, &mut sounds), Out::Stay);
-    assert_eq!(p.menu.items[0], "_");
+    assert_eq!(p.menu.view().items[0], "_");
 }
 
 #[test]
 fn the_name_field_caps_its_length_and_the_verdict_shows_until_the_next_pick() {
     let mut p = PauseScreen::open(false, true);
     p.begin_naming(&"x".repeat(40));
-    let shown = p.menu.items[0].clone();
+    let shown = p.menu.view().items[0].clone();
     assert_eq!(
         shown.chars().count(),
         PauseScreen::NAME_MAX + 1,
         "cap+caret"
     );
     type_text(&mut p, "y");
-    assert_eq!(p.menu.items[0], shown, "a full field refuses more");
+    assert_eq!(p.menu.view().items[0], shown, "a full field refuses more");
     drive(&mut p, Key::Enter);
     p.end_naming("saved: x".to_string());
     assert!(!p.naming());
     assert_eq!(p.subtitle("map"), "saved: x", "the verdict is the subtitle");
-    assert_eq!(p.menu.items[p.menu.selected], "Save Game");
+    assert_eq!(p.menu.view().items[p.menu.selected], "Save Game");
     assert_eq!(activate(&mut p, "Resume"), Out::Resume);
     assert_eq!(p.subtitle("map"), "map", "an activation clears the verdict");
 }
@@ -415,7 +426,7 @@ fn the_name_field_caps_its_length_and_the_verdict_shows_until_the_next_pick() {
 fn surrender_exists_mid_match_only_and_confirms_with_cancel_preselected() {
     let mut p = PauseScreen::open(false, true);
     assert_eq!(activate(&mut p, "Surrender"), Out::Stay, "Surrender arms");
-    assert!(p.confirming(), "conceding asks first");
+    assert!(confirming(&p), "conceding asks first");
     assert_eq!(
         p.subtitle("map"),
         "this concedes the match",
@@ -423,9 +434,10 @@ fn surrender_exists_mid_match_only_and_confirms_with_cancel_preselected() {
     );
     // Bare Enter declines: Cancel is the preselected row.
     assert_eq!(drive(&mut p, Key::Enter), Out::Stay);
-    assert!(!p.confirming(), "Cancel closed the dialog");
+    assert!(!confirming(&p), "Cancel closed the dialog");
     assert_eq!(
-        p.menu.items[p.menu.selected], "Surrender",
+        p.menu.view().items[p.menu.selected],
+        "Surrender",
         "the cursor returns to the armed row"
     );
     // A deliberate second motion concedes.
@@ -435,14 +447,14 @@ fn surrender_exists_mid_match_only_and_confirms_with_cancel_preselected() {
     // A decided match has nothing left to give up.
     let p = PauseScreen::open(true, false);
     assert!(
-        !p.menu.items.iter().any(|i| i == "Surrender"),
+        !p.menu.view().items.iter().any(|i| i == "Surrender"),
         "a decided match offers Watch Replay, not concession"
     );
     // A seat with no voice (resigned or eliminated) gets no verb
     // the sim would only reject.
     let p = PauseScreen::open(false, false);
     assert!(
-        !p.menu.items.iter().any(|i| i == "Surrender"),
+        !p.menu.view().items.iter().any(|i| i == "Surrender"),
         "a spectating seat cannot concede twice"
     );
 }
@@ -453,6 +465,40 @@ fn settings_opens_without_confirmation_on_both_faces() {
     for finished in [false, true] {
         let mut p = PauseScreen::open(finished, true);
         assert_eq!(activate(&mut p, "Settings"), Out::Settings);
-        assert!(!p.confirming(), "Settings is not a destructive row");
+        assert!(!confirming(&p), "Settings is not a destructive row");
+    }
+}
+
+#[test]
+fn every_confirmable_verb_asks_then_acts_or_returns_to_its_row() {
+    for verb in [
+        Confirmable::Surrender,
+        Confirmable::Restart,
+        Confirmable::MainMenu,
+        Confirmable::Quit,
+    ] {
+        let mut p = PauseScreen::open(false, true);
+        assert_eq!(verb.row().confirmable(), Some(verb));
+        assert!(
+            p.menu
+                .select_where(|choice| *choice == Choice::Row(verb.row()))
+        );
+        assert_eq!(drive(&mut p, Key::Enter), Out::Stay);
+        assert_eq!(p.mode_name(), "confirm_pause");
+        assert_eq!(p.subtitle("map"), verb.consequence());
+        assert_eq!(drive(&mut p, Key::Escape), Out::Stay);
+        assert_eq!(p.menu.value(), Some(&Choice::Row(verb.row())));
+        drive(&mut p, Key::Enter);
+        drive(&mut p, Key::Down);
+        assert_eq!(drive(&mut p, Key::Enter), verb.out());
+    }
+    for row in [
+        Row::Resume,
+        Row::SaveGame,
+        Row::WatchReplay,
+        Row::Settings,
+        Row::Roster,
+    ] {
+        assert_eq!(row.confirmable(), None, "{row:?} acts without asking");
     }
 }
